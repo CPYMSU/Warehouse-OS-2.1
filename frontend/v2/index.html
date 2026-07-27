@@ -6,6 +6,8 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
 <meta http-equiv="Pragma" content="no-cache"/>
 <meta http-equiv="Expires" content="0"/>
+<!-- MapLibre 在 React 路由卸載時會主動取消尚未完成的樣式請求；只消除該特定 teardown AbortError。 -->
+<script src="maplibre-abort-guard.js?v=20260727-teardown1"></script>
 <script>
 /* Safari / mobile boot watchdog: never leave an unexplained empty root. */
 (function () {
