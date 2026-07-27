@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "智能倉儲",
+    "slug": "warehouse-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "warehouse",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#1B6BFF",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ncsyaikg.warehouse"
+    },
+    "android": {
+      "package": "com.ncsyaikg.warehouse",
+      "adaptiveIcon": {
+        "backgroundColor": "#1B6BFF"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "extra": {
+      "apiBase": "https://ncsyaikg.com"
+    },
+    "plugins": ["expo-asset"]
+  }
+}

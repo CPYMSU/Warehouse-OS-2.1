@@ -1,0 +1,59 @@
+.payee { margin-bottom: 24rpx; padding: 26rpx; }
+.payee-label { color: var(--swiss-accent, #E0261C); font-size: 18rpx; font-weight: 800; letter-spacing: 3rpx; }
+.payee-name { margin-top: 34rpx; font-size: 38rpx; font-weight: 800; }
+.payee-meta, .payee-mode { margin-top: 10rpx; color: #85806F; font-size: 20rpx; }
+.amount-grid { display: grid; grid-template-columns: 1fr 1fr; border-top: 2rpx solid var(--swiss-ink, #141414); border-left: 2rpx solid var(--swiss-ink, #141414); }
+.amount { height: 150rpx; padding: 32rpx 22rpx; border-right: 2rpx solid var(--swiss-ink, #141414); border-bottom: 2rpx solid var(--swiss-ink, #141414); font-size: 48rpx; font-weight: 800; }
+.amount.active { background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); }
+.currency { margin-right: 8rpx; color: var(--swiss-accent, #E0261C); font-size: 25rpx; }
+.custom { display: flex; align-items: center; height: 120rpx; padding: 0 24rpx; border: 4rpx solid var(--swiss-ink, #141414); background: #FAF8F2; font-size: 42rpx; }
+.custom input { flex: 1; margin-left: 16rpx; font-family: "DIN Alternate", monospace; font-size: 52rpx; font-weight: 800; }
+.notice { margin-top: 28rpx; color: #85806F; font-size: 22rpx; line-height: 1.7; }
+.recharge-lock { margin-top: 24rpx; padding: 18rpx; border-left: 10rpx solid #167A55; background: #E2EEE7; }
+.recharge-lock text, .recharge-lock label { display: block; }
+.recharge-lock text { color: #167A55; font-family: monospace; font-size: 14rpx; font-weight: 900; letter-spacing: 2rpx; }
+.recharge-lock label { margin-top: 8rpx; font-size: 19rpx; font-weight: 800; line-height: 1.5; }
+.gift-entry { display: flex; width: 100%; min-height: 112rpx; margin-top: 24rpx; padding: 22rpx; align-items: center; gap: 18rpx; border: 2rpx solid var(--swiss-accent, #E0261C); border-radius: 0; background: transparent; color: var(--swiss-ink, #141414); line-height: 1; text-align: left; }
+.gift-entry-index { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 16rpx; font-weight: 800; }
+.gift-entry view { flex: 1; }
+.gift-entry-title, .gift-entry-note { display: block; }
+.gift-entry-title { font-size: 26rpx; font-weight: 800; }
+.gift-entry-note { margin-top: 8rpx; color: #85806F; font-size: 17rpx; line-height: 1.3; }
+.gift-entry-command { padding: 8rpx; border: 2rpx solid var(--swiss-accent, #E0261C); color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 15rpx; font-weight: 900; letter-spacing: 2rpx; }
+.submit { width: 100%; margin-top: 48rpx; }
+.process { margin-top: 30rpx; padding: 26rpx; }
+.process-label { color: var(--swiss-accent, #E0261C); font-size: 17rpx; font-weight: 800; letter-spacing: 3rpx; }
+.process-row { display: flex; gap: 18rpx; padding: 22rpx 0; border-bottom: 2rpx solid rgba(var(--swiss-ink-rgb, 20, 20, 20),.18); }
+.process-row > text { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 20rpx; font-weight: 800; }
+.process-row view { flex: 1; }
+.process-row label, .process-row view text { display: block; }
+.process-row label { font-size: 25rpx; font-weight: 800; }
+.process-row view text { margin-top: 7rpx; color: #85806F; font-size: 20rpx; line-height: 1.5; }
+.empty-card { padding: 34rpx; border: 2rpx dashed #85806F; color: #85806F; text-align: center; }
+.transaction-card { margin-top: 22rpx; padding: 26rpx; border: 2rpx solid var(--swiss-ink, #141414); border-top-width: 8rpx; background: #FAF8F2; }
+.status-awaiting_operator { border-top-color: var(--swiss-accent, #E0261C); }
+.status-awaiting_consumer { border-top-color: #167A55; }
+.status-declined, .status-cancelled, .status-expired { border-top-color: #85806F; }
+.card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20rpx; }
+.card-type { color: var(--swiss-accent, #E0261C); font-size: 16rpx; font-weight: 800; letter-spacing: 3rpx; }
+.card-status { margin-top: 10rpx; font-size: 26rpx; font-weight: 800; }
+.card-amount { font-size: 42rpx; font-weight: 800; }
+.card-meta { margin-top: 20rpx; color: #85806F; font-size: 16rpx; word-break: break-all; }
+.operator-note { margin-top: 18rpx; padding: 16rpx; background: #F0ECE2; font-size: 20rpx; }
+.receipt-lines { margin-top: 18rpx; padding: 8rpx 0; border-top: 2rpx dashed var(--swiss-ink, #141414); border-bottom: 2rpx dashed var(--swiss-ink, #141414); }
+.receipt-line { display: flex; padding: 11rpx 0; align-items: center; justify-content: space-between; gap: 16rpx; }
+.receipt-line view { min-width: 0; flex: 1; }
+.receipt-line view text, .receipt-line view label { display: block; }
+.receipt-line view text { overflow: hidden; font-size: 18rpx; font-weight: 900; text-overflow: ellipsis; white-space: nowrap; }
+.receipt-line view label { margin-top: 5rpx; color: #85806F; font-size: 14rpx; }
+.receipt-line > text { font-size: 19rpx; font-weight: 900; }
+.event-list { margin-top: 22rpx; border-top: 2rpx solid var(--swiss-ink, #141414); }
+.event-row { display: flex; gap: 16rpx; padding: 17rpx 0; border-bottom: 2rpx solid rgba(var(--swiss-ink-rgb, 20, 20, 20),.12); }
+.event-dot { width: 12rpx; height: 12rpx; margin-top: 7rpx; background: var(--swiss-accent, #E0261C); }
+.event-row view { flex: 1; }
+.event-row label, .event-row view text { display: block; }
+.event-row label { font-size: 21rpx; font-weight: 800; }
+.event-row view text { margin-top: 5rpx; color: #85806F; font-family: monospace; font-size: 16rpx; }
+.card-actions { display: flex; gap: 14rpx; margin-top: 22rpx; }
+.card-btn { flex: 1; margin: 0; border: 2rpx solid var(--swiss-ink, #141414); border-radius: 0; background: transparent; font-size: 21rpx; font-weight: 800; }
+.card-btn.confirm { border-color: #167A55; background: #167A55; color: #fff; }

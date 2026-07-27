@@ -1,0 +1,29 @@
+<theme-provider>
+<view class="page consumption-page">
+  <view class="eyebrow">05 — CONSUMPTION ARCHIVE</view>
+  <view class="title">消费记录</view>
+  <view class="rule"></view>
+  <view wx:if="{{companyName}}" class="company-context">
+    <view><view class="context-label">CURRENT COMPANY / 消费公司</view><view class="context-name">{{companyName}}</view><view class="context-mode">{{companyMode}}</view></view>
+    <view class="context-total"><text class="mono">¥{{totalSpentText}}</text><label>已载入消费</label></view>
+  </view>
+  <view class="archive-note">只展示已经完成扣款的消费收据；充值申请、礼品卡领取和待确认扣费不会混入消费记录。</view>
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">正在整理消费卡片</view></view>
+  <view wx:elif="{{error}}" class="error">{{error}}</view>
+  <view wx:elif="{{!receipts.length}}" class="state"><view class="state-mark">0</view><view class="state-text">暂无消费记录</view></view>
+  <view wx:else id="consumptionArchive" class="receipt-archive">
+    <view class="archive-head"><text>SWISS RECEIPTS</text><label class="mono">{{receipts.length}} CARDS</label></view>
+    <view wx:for="{{visibleReceipts}}" wx:key="card_no" class="consumption-receipt">
+      <view class="receipt-brand"><image src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/><view><text>BONFIREWORK</text><label>CONSUMPTION RECEIPT</label></view><text class="receipt-status">PAID</text></view>
+      <view class="receipt-hero"><view><text>MERCHANT</text><label>{{item.companyName}}</label><view>{{item.descriptionText}}</view></view><text class="receipt-amount mono">¥{{item.amountText}}</text></view>
+      <view wx:if="{{item.lines.length}}" class="receipt-lines">
+        <view wx:for="{{item.lines}}" wx:key="line_no" class="receipt-line"><view><text>{{item.typeText}} / {{item.item_name}}</text><label class="mono">{{item.quantity}} × ¥{{item.unitPriceText}} / {{item.unit_name}}</label></view><text class="mono">¥{{item.lineTotalText}}</text></view>
+      </view>
+      <view wx:else class="receipt-description">{{item.descriptionText}}</view>
+      <view class="receipt-meta"><view><text>TIME / 本地时间</text><label class="mono">{{item.createdText}}</label></view><view><text>METHOD</text><label>{{item.settlementText}}</label></view></view>
+      <view class="receipt-foot"><text class="mono">{{item.receiptNo}}</text><text class="receipt-seal">双方同号留存</text></view>
+    </view>
+    <view wx:if="{{pageCount > 1}}" class="receipt-pager"><button disabled="{{page === 0}}" data-delta="-1" bindtap="changePage">上一页</button><text class="mono">{{pageText}}</text><button disabled="{{page + 1 >= pageCount}}" data-delta="1" bindtap="changePage">下一页</button></view>
+  </view>
+</view>
+</theme-provider>

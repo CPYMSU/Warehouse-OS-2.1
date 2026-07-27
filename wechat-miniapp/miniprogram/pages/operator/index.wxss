@@ -1,0 +1,133 @@
+.field-label { color: var(--swiss-accent, #E0261C); font-size: 19rpx; font-weight: 800; letter-spacing: 3rpx; }
+.picker-line { display: flex; min-height: 84rpx; align-items: center; justify-content: space-between; border-bottom: 2rpx solid var(--swiss-ink, #141414); font-size: 28rpx; font-weight: 800; }
+.picker-line text:last-child { color: var(--swiss-accent, #E0261C); font-size: 20rpx; }
+.business-card { margin-top: 24rpx; padding: 30rpx; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); }
+.business-mode { color: var(--swiss-accent, #E0261C); font-size: 18rpx; font-weight: 800; letter-spacing: 4rpx; }
+.business-name { margin-top: 26rpx; font-size: 52rpx; font-weight: 800; line-height: 1.06; }
+.business-role { margin-top: 12rpx; color: #B8B29F; font-family: monospace; font-size: 20rpx; }
+.business-grid { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 54rpx; border-top: 2rpx solid var(--swiss-on-ink, #F5F2EB); }
+.business-grid view { padding-top: 20rpx; }
+.business-grid text { display: block; font-family: monospace; font-size: 46rpx; font-weight: 800; }
+.business-grid label { color: #B8B29F; font-size: 18rpx; }
+.business-action { display: flex; width: 100%; min-height: 126rpx; margin: 18rpx 0 0; padding: 22rpx; align-items: center; gap: 20rpx; border: 2rpx solid var(--swiss-ink, #141414); border-radius: 0; background: transparent; color: var(--swiss-ink, #141414); line-height: 1; text-align: left; }
+.business-action.red { border-color: var(--swiss-accent, #E0261C); background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); }
+.business-action.black { background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); }
+.business-action-index { font-family: monospace; font-size: 20rpx; font-weight: 800; }
+.business-action view { flex: 1; }
+.business-action-title { display: block; font-size: 30rpx; font-weight: 800; }
+.business-action-note { display: block; margin-top: 10rpx; opacity: .68; font-size: 19rpx; }
+.business-action-command { padding-top: 7rpx; border-top: 2rpx solid currentColor; font-size: 15rpx; font-weight: 900; letter-spacing: 2rpx; }
+.transaction-section { margin-top: 38rpx; }
+.transaction-head { display: flex; align-items: flex-end; justify-content: space-between; padding-bottom: 18rpx; border-bottom: 4rpx solid var(--swiss-ink, #141414); }
+.transaction-kicker { color: var(--swiss-accent, #E0261C); font-size: 17rpx; font-weight: 800; letter-spacing: 3rpx; }
+.transaction-title { margin-top: 8rpx; font-size: 32rpx; font-weight: 800; }
+.transaction-count { color: var(--swiss-accent, #E0261C); font-size: 42rpx; font-weight: 800; }
+.scan-payment { display: flex; width: 100%; min-height: 112rpx; margin-top: 20rpx; padding: 22rpx; align-items: center; gap: 18rpx; border: 0; border-radius: 0; background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); line-height: 1; text-align: left; }
+.scan-payment-index { font-family: monospace; font-size: 17rpx; font-weight: 800; }
+.scan-payment view { flex: 1; }
+.scan-payment-title, .scan-payment-note { display: block; }
+.scan-payment-title { font-size: 27rpx; font-weight: 800; }
+.scan-payment-note { margin-top: 8rpx; opacity: .75; font-size: 17rpx; }
+.scan-payment-command { padding: 9rpx; border: 2rpx solid currentColor; font-family: monospace; font-size: 16rpx; font-weight: 900; letter-spacing: 2rpx; }
+.charge-form { margin: 20rpx 0; padding: 24rpx; }
+.charge-form-title { font-size: 28rpx; font-weight: 800; }
+.charge-form-note { margin-top: 8rpx; color: #85806F; font-size: 19rpx; line-height: 1.5; }
+.charge-label { margin-top: 20rpx; color: var(--swiss-accent, #E0261C); font-size: 16rpx; font-weight: 800; letter-spacing: 2rpx; }
+.charge-input { height: 70rpx; border-bottom: 2rpx solid var(--swiss-ink, #141414); font-size: 24rpx; font-weight: 700; }
+.charge-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22rpx; }
+.charge-submit { width: 100%; margin-top: 24rpx; border: 0; border-radius: 0; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); font-size: 22rpx; font-weight: 800; }
+.gift-form { margin: 20rpx 0; padding: 24rpx; border-top-color: var(--swiss-accent, #E0261C); }
+.gift-form-kicker { color: var(--swiss-accent, #E0261C); font-size: 16rpx; font-weight: 800; letter-spacing: 3rpx; }
+.gift-form-title { margin-top: 8rpx; font-size: 32rpx; font-weight: 800; }
+.gift-form-note { margin-top: 8rpx; color: #85806F; font-size: 19rpx; line-height: 1.5; }
+.gift-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22rpx; }
+.gift-picker { display: flex; height: 70rpx; align-items: center; justify-content: space-between; gap: 10rpx; border-bottom: 2rpx solid var(--swiss-ink, #141414); font-size: 20rpx; font-weight: 800; }
+.gift-picker-command { color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 900; letter-spacing: 2rpx; }
+.gift-submit { width: 100%; margin-top: 24rpx; border: 0; border-radius: 0; background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); font-size: 22rpx; font-weight: 800; }
+.issued-gift { position: relative; overflow: hidden; margin: 20rpx 0; padding: 24rpx; border-top-color: var(--swiss-accent, #E0261C); background: #F5F2EB; }
+.issued-gift::before { position: absolute; top: -80rpx; right: -70rpx; width: 190rpx; height: 190rpx; border: 28rpx solid rgba(var(--swiss-accent-rgb, 224, 38, 28),.1); border-radius: 50%; content: ""; }
+.issued-gift-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 16rpx; }
+.issued-gift-mark { width: 58rpx; height: 58rpx; }
+.issued-gift-brand { color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 800; letter-spacing: 2rpx; }
+.issued-gift-type { margin-top: 5rpx; font-size: 20rpx; font-weight: 800; }
+.issued-gift-body { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 260rpx; gap: 24rpx; align-items: end; margin-top: 28rpx; }
+.issued-gift-value text, .issued-gift-value label { display: block; }
+.issued-gift-value text { color: #85806F; font-size: 17rpx; font-weight: 800; letter-spacing: 3rpx; }
+.issued-gift-value label { margin-top: 12rpx; font-size: 54rpx; font-weight: 800; }
+.gift-qr-frame { position: relative; width: 260rpx; height: 260rpx; overflow: hidden; border: 2rpx solid var(--swiss-ink, #141414); background: #FAF8F2; }
+.gift-qr { display: block; width: 256rpx; height: 256rpx; }
+.gift-scan-line { position: absolute; right: 10rpx; left: 10rpx; height: 4rpx; background: var(--swiss-accent, #E0261C); box-shadow: 0 0 12rpx rgba(var(--swiss-accent-rgb, 224, 38, 28),.65); animation: giftScan 2.4s ease-in-out infinite; }
+.issued-gift-no { position: relative; z-index: 1; margin-top: 20rpx; padding-top: 16rpx; border-top: 2rpx solid var(--swiss-ink, #141414); color: #85806F; font-size: 15rpx; word-break: break-all; }
+.issued-gift-expiry { position: relative; z-index: 1; margin-top: 8rpx; color: #85806F; font-size: 15rpx; }
+.gift-actions { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 12rpx; margin-top: 20rpx; }
+.gift-action { margin: 0; border: 2rpx solid var(--swiss-ink, #141414); border-radius: 0; background: transparent; font-size: 20rpx; font-weight: 800; }
+.gift-action.share { border-color: var(--swiss-accent, #E0261C); background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); }
+@keyframes giftScan {
+  0%, 100% { top: 12rpx; opacity: .35; }
+  50% { top: 240rpx; opacity: 1; }
+}
+.transaction-empty { padding: 30rpx; border: 2rpx dashed #85806F; color: #85806F; text-align: center; }
+.operator-card { padding: 24rpx; border-right: 2rpx solid var(--swiss-ink, #141414); border-bottom: 2rpx solid var(--swiss-ink, #141414); border-left: 2rpx solid var(--swiss-ink, #141414); background: #FAF8F2; }
+.operator-card.status-awaiting_operator { border-left-width: 10rpx; border-left-color: var(--swiss-accent, #E0261C); }
+.operator-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20rpx; }
+.operator-card-type { color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 800; letter-spacing: 2rpx; }
+.member-ref { font-size: 26rpx; font-weight: 800; }
+.operator-card-status { margin-top: 7rpx; color: #85806F; font-size: 19rpx; }
+.operator-card-amount { font-size: 38rpx; font-weight: 800; }
+.operator-card-meta { margin-top: 16rpx; color: #85806F; font-size: 15rpx; word-break: break-all; }
+.operator-card-description { margin-top: 14rpx; padding: 14rpx; background: #F0ECE2; font-size: 20rpx; }
+.operator-receipt-lines { margin-top: 14rpx; padding: 8rpx 0; border-top: 2rpx dashed var(--swiss-ink, #141414); border-bottom: 2rpx dashed var(--swiss-ink, #141414); }
+.operator-receipt-line { display: flex; padding: 10rpx 0; align-items: center; justify-content: space-between; gap: 16rpx; }
+.operator-receipt-line view { min-width: 0; flex: 1; }
+.operator-receipt-line view text, .operator-receipt-line view label { display: block; }
+.operator-receipt-line view text { overflow: hidden; font-size: 18rpx; font-weight: 900; text-overflow: ellipsis; white-space: nowrap; }
+.operator-receipt-line view label { margin-top: 4rpx; color: #85806F; font-size: 14rpx; }
+.operator-receipt-line > text { font-size: 18rpx; font-weight: 900; }
+.operator-card-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 12rpx; margin-top: 20rpx; }
+.operator-card-btn { margin: 0; border: 0; border-radius: 0; font-size: 20rpx; font-weight: 800; }
+.operator-card-btn.decline { border: 2rpx solid var(--swiss-accent, #E0261C); background: transparent; color: var(--swiss-accent, #E0261C); }
+.operator-card-btn.confirm { background: #167A55; color: #fff; }
+.warehouse-card { margin-top: 34rpx; padding: 26rpx 0; border-top: 4rpx solid var(--swiss-ink, #141414); border-bottom: 2rpx solid var(--swiss-ink, #141414); }
+.warehouse-title { margin-bottom: 10rpx; font-size: 28rpx; font-weight: 800; }
+.link-btn { width: 100%; margin-top: 20rpx; border: 0; border-radius: 0; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); font-size: 23rpx; font-weight: 800; }
+.warehouse-warning { margin-top: 12rpx; color: var(--swiss-accent, #E0261C); font-size: 20rpx; }
+.empty-panel { padding: 34rpx; border: 2rpx solid var(--swiss-ink, #141414); border-top-width: 8rpx; }
+.empty-title { margin-bottom: 12rpx; font-size: 34rpx; font-weight: 800; }
+.full-btn { width: 100%; margin-top: 22rpx; }
+.add-company { width: 100%; margin-top: 36rpx; border: 2rpx dashed #85806F; border-radius: 0; background: transparent; color: #85806F; font-size: 22rpx; }
+
+.workspace-nav { position: relative; z-index: 2; display: flex; width: 100%; max-width: 100%; gap: 8rpx; margin: 18rpx 0 0; padding: 9rpx 0; align-items: stretch; overflow: hidden; border-top: 3rpx solid var(--swiss-ink, #141414); border-bottom: 3rpx solid var(--swiss-ink, #141414); }
+.workspace-tab { position: relative; display: flex; width: 136rpx; min-width: 136rpx; max-width: 136rpx; min-height: 76rpx; margin: 0; padding: 10rpx 11rpx; align-items: flex-start; justify-content: space-between; overflow: hidden; border: 2rpx solid var(--swiss-ink, #141414); border-radius: 0; background: #F1EEE5; color: var(--swiss-ink, #141414); line-height: 1; text-align: left; flex-direction: column; }
+.workspace-tab::after { display: none; }
+.workspace-tab text { font-family: monospace; font-size: 15rpx; font-weight: 900; letter-spacing: 1rpx; }
+.workspace-tab .workspace-tab-label { font-size: 22rpx; font-weight: 900; }
+.workspace-tab.active { background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); }
+.workspace-tab.active::before { position: absolute; right: 8rpx; bottom: 8rpx; width: 12rpx; height: 12rpx; background: var(--swiss-accent, #E0261C); content: ""; }
+.workspace-badge { position: absolute; top: 9rpx; right: 8rpx; min-width: 27rpx; padding: 4rpx 6rpx; background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); font-size: 11rpx; text-align: center; }
+.workspace-error { margin-top: 16rpx; }
+.workspace-panel { margin-top: 28rpx; animation: workspaceReveal .24s ease-out both; }
+.workspace-heading { display: flex; min-height: 88rpx; padding-bottom: 15rpx; align-items: flex-end; justify-content: space-between; gap: 20rpx; border-bottom: 4rpx solid var(--swiss-ink, #141414); }
+.workspace-heading > view { min-width: 0; flex: 1; }
+.workspace-heading > view text, .workspace-heading > view label { display: block; }
+.workspace-heading > view text { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 14rpx; font-weight: 900; letter-spacing: 2rpx; }
+.workspace-heading > view label { margin-top: 7rpx; font-size: 31rpx; font-weight: 900; }
+.workspace-heading-note { max-width: 210rpx; color: #85806F; font-size: 15rpx; font-weight: 800; line-height: 1.35; text-align: right; }
+.workspace-heading-count { color: var(--swiss-accent, #E0261C); font-size: 40rpx; font-weight: 900; }
+.business-menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3rpx; margin-top: 20rpx; background: var(--swiss-ink, #141414); }
+.business-menu-grid .business-action.compact { min-width: 0; min-height: 192rpx; margin: 0; padding: 17rpx; align-items: stretch; justify-content: space-between; gap: 12rpx; flex-direction: column; }
+.business-menu-grid .business-action.compact > view { width: 100%; flex: 0 0 auto; }
+.business-menu-grid .business-action-title { font-size: 25rpx; line-height: 1.12; }
+.business-menu-grid .business-action-note { font-size: 16rpx; line-height: 1.35; }
+.business-menu-grid .business-action-command { align-self: flex-start; padding-top: 5rpx; }
+.transaction-section { margin-top: 28rpx; }
+.list-caption { display: flex; margin-top: 30rpx; padding: 12rpx 0; align-items: center; justify-content: space-between; border-top: 3rpx solid var(--swiss-ink, #141414); border-bottom: 2rpx solid var(--swiss-ink, #141414); }
+.list-caption text { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 14rpx; font-weight: 900; letter-spacing: 2rpx; }
+.list-caption label { color: #85806F; font-size: 15rpx; font-weight: 800; }
+.swiss-pager { display: grid; grid-template-columns: 1fr auto 1fr; margin-top: 18rpx; align-items: center; border-top: 3rpx solid var(--swiss-ink, #141414); border-bottom: 3rpx solid var(--swiss-ink, #141414); }
+.swiss-pager button { min-height: 68rpx; margin: 0; border: 0; border-radius: 0; background: transparent; font-size: 17rpx; font-weight: 900; }
+.swiss-pager button:first-child { border-right: 2rpx solid var(--swiss-ink, #141414); }
+.swiss-pager button:last-child { border-left: 2rpx solid var(--swiss-ink, #141414); }
+.swiss-pager text { padding: 0 22rpx; color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 900; }
+.workspace-panel > .gift-form { margin-top: 18rpx; }
+.workspace-panel > .warehouse-card { margin-top: 18rpx; }
+@keyframes workspaceReveal { from { opacity: 0; transform: translateY(12rpx); } to { opacity: 1; transform: translateY(0); } }

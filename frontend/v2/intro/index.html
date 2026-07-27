@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<script>document.documentElement.classList.add("js")</script>
+<title>WAREHOUSE OS 2.0</title>
+<meta name="description" content="一句话出入库,一句话对账。AI 秘书执行,每一步都有审计留痕。库存 · ERP · 复式财务 · 资产 · 采购 · 地图,15 个模块,一个秘书。"/>
+<link rel="icon" type="image/png" href="../brand/bonfire-platform-mark.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --paper:#F5F2EB; --paper-2:#EFEBE1; --white:#FCFBF7;
+  --ink:#141414; --ink-2:#4A4740; --ink-3:#746E58; --ink-4:#8F8974;
+  --red:#E0261C; --ok:#1F7A33;
+  --hair:rgba(20,20,20,.16); --hair-soft:rgba(20,20,20,.08);
+  --f:"Inter","Helvetica Neue",Helvetica,Arial,"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --fm:"Space Grotesk","SF Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:var(--f);background:var(--paper);color:var(--ink);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+::selection{background:var(--ink);color:var(--paper)}
+a{color:inherit}
+.mono{font-family:var(--fm)}
+.label{font-family:var(--fm);font-size:10px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-2)}
+.label.red{color:var(--red)}
+.label.dim{color:var(--ink-3)}
+.wrap{max-width:1200px;margin:0 auto;padding:0 28px}
+
+/* ── 網格紙背景 ── */
+.gridpaper{position:relative}
+.gridpaper::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(var(--hair-soft) 1px,transparent 1px),linear-gradient(90deg,var(--hair-soft) 1px,transparent 1px);
+  background-size:72px 72px}
+
+/* ── 報頭 ── */
+.mast{position:sticky;top:0;z-index:50;background:color-mix(in oklab,var(--paper) 88%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:2px solid var(--ink)}
+.mast .wrap{height:58px;display:flex;align-items:center;gap:18px}
+.wordmark{font-size:17px;font-weight:800;letter-spacing:-.03em;display:flex;align-items:center;gap:10px;text-decoration:none}
+.wordmark img{flex-shrink:0;object-fit:contain}
+.mnav{margin-left:auto;display:flex;gap:2px;align-items:center}
+.mnav a{padding:7px 12px;font-size:13px;font-weight:550;color:var(--ink-2);text-decoration:none;transition:color .13s}
+.mnav a:hover{color:var(--ink)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:40px;padding:0 20px;font-size:13.5px;font-weight:650;letter-spacing:.01em;background:transparent;color:var(--ink);border:1px solid var(--ink);text-decoration:none;transition:background .14s,color .14s,border-color .14s;white-space:nowrap;cursor:pointer}
+.btn:hover{background:var(--ink);color:var(--paper)}
+.btn.primary{background:var(--ink);color:var(--paper)}
+.btn.primary:hover{background:var(--red);border-color:var(--red);color:#fff}
+.btn.sm{height:33px;padding:0 14px;font-size:12.5px}
+.btn.lg{height:50px;padding:0 30px;font-size:15px}
+
+/* ── HERO ── */
+.hero{padding:90px 0 70px;border-bottom:2px solid var(--ink);overflow:hidden}
+.red-block{width:88px;height:24px;background:var(--red);margin-bottom:36px}
+.hero h1{font-size:clamp(46px,7.2vw,104px);line-height:1.04;letter-spacing:-.05em;font-weight:800;max-width:20ch}
+.hero h1 .hollow{color:transparent;-webkit-text-stroke:2.2px var(--ink)}
+.hero h1 .red{color:var(--red)}
+.hero .sub{margin-top:28px;font-size:clamp(15px,1.6vw,19px);color:var(--ink-2);max-width:52ch;line-height:1.75}
+.hero .ctas{margin-top:40px;display:flex;gap:12px;flex-wrap:wrap}
+.hero-meta{margin-top:56px;display:flex;gap:26px;flex-wrap:wrap}
+.hero-platform{display:flex;align-items:center;gap:14px}
+.hero-platform img{width:74px;height:74px;border-radius:50%;object-fit:contain}
+.hero-platform-copy{display:flex;flex-direction:column;gap:5px}
+
+/* ── 數字帶 ── */
+.statband{border-bottom:1px solid var(--hair)}
+.statband .wrap{display:grid;grid-template-columns:repeat(4,1fr)}
+.stat{padding:34px 24px;border-right:1px solid var(--hair)}
+.stat:last-child{border-right:0}
+.stat b{font-family:var(--fm);font-size:56px;font-weight:700;line-height:.95;letter-spacing:-.04em;display:block}
+.stat b i{font-style:normal;font-size:22px;color:var(--ink-3)}
+.stat span{display:block;margin-top:10px;font-size:12.5px;color:var(--ink-3)}
+.stat.red b{color:var(--red)}
+
+/* ── 章節 ── */
+.section{padding:88px 0 76px;border-bottom:1px solid var(--hair)}
+.sec-head{margin-bottom:44px;max-width:760px}
+.sec-head h2{font-size:clamp(30px,4vw,52px);line-height:1.05;letter-spacing:-.045em;font-weight:800;margin-top:14px}
+.sec-head p{margin-top:16px;font-size:16px;color:var(--ink-2);line-height:1.75}
+
+/* ── 對話演示 ── */
+.demo{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center}
+.chat{background:var(--white);border:1px solid var(--ink);box-shadow:12px 12px 0 rgba(20,20,20,.08)}
+.chat-head{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:2px solid var(--ink)}
+.chat-dot{width:8px;height:8px;background:var(--ok);animation:blink 1.8s steps(2,start) infinite}
+@keyframes blink{to{visibility:hidden}}
+.chat-body{padding:18px 16px;display:flex;flex-direction:column;gap:10px;min-height:300px}
+.bu{align-self:flex-end;max-width:86%;background:var(--ink);color:var(--paper);padding:10px 14px;font-size:13.5px;line-height:1.55}
+.step{display:flex;align-items:center;gap:8px;font-family:var(--fm);font-size:10.5px;letter-spacing:.05em;color:var(--ink-3)}
+.step b{color:var(--ok);font-weight:700}
+.ba{align-self:flex-start;max-width:94%;border-left:2px solid var(--ink);padding:6px 0 6px 14px;font-size:13.5px;line-height:1.7;color:var(--ink-2)}
+.ba strong{color:var(--ink)}
+.pill-list{display:flex;flex-direction:column;gap:0;border-top:2px solid var(--ink)}
+.pill-item{display:flex;gap:16px;padding:20px 4px;border-bottom:1px solid var(--hair)}
+.pill-item .no{font-family:var(--fm);font-size:11px;color:var(--red);letter-spacing:.15em;padding-top:4px;flex-shrink:0}
+.pill-item h3{font-size:17px;letter-spacing:-.02em;font-weight:750}
+.pill-item p{margin-top:5px;font-size:13.5px;color:var(--ink-3);line-height:1.65}
+
+/* ── 模塊矩陣 ── */
+.matrix{display:grid;grid-template-columns:repeat(5,1fr);border-top:2px solid var(--ink);border-left:1px solid var(--hair)}
+.cell{padding:22px 18px;border-right:1px solid var(--hair);border-bottom:1px solid var(--hair);transition:background .15s;cursor:pointer;position:relative}
+.cell:hover{background:var(--white)}
+.cell::after{content:"+";position:absolute;top:14px;right:14px;font-family:var(--fm);font-size:14px;color:var(--ink-4);opacity:0;transition:opacity .15s}
+.cell:hover::after,.cell:focus-visible::after{opacity:1}
+.cell:focus-visible{outline:2px solid var(--red);outline-offset:-2px}
+
+/* ── 模塊浮窗 ── */
+.overlay{position:fixed;inset:0;z-index:90;background:rgba(20,20,20,.42);display:none;align-items:flex-start;justify-content:center;padding:6vh 20px 20px;overflow-y:auto}
+.overlay.on{display:flex}
+.modal{width:min(640px,100%);background:var(--paper);border:1px solid var(--ink);box-shadow:16px 16px 0 rgba(20,20,20,.25);animation:mpop .28s cubic-bezier(.2,.7,.3,1) both}
+@keyframes mpop{from{transform:translateY(16px);opacity:0}to{transform:none;opacity:1}}
+.modal-head{display:flex;align-items:flex-start;gap:14px;padding:22px 24px 18px;border-bottom:2px solid var(--ink)}
+.modal-head .m-no{font-family:var(--fm);font-size:11px;letter-spacing:.2em;color:var(--red);padding-top:8px}
+.modal-head h3{font-size:26px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
+.modal-head .m-en{font-family:var(--fm);font-size:9.5px;letter-spacing:.18em;color:var(--ink-3);text-transform:uppercase;margin-top:6px}
+.modal-close{margin-left:auto;width:34px;height:34px;border:1px solid var(--ink);display:grid;place-items:center;background:transparent;cursor:pointer;font-family:var(--fm);font-size:15px;transition:background .13s,color .13s}
+.modal-close:hover{background:var(--ink);color:var(--paper)}
+.modal-body{padding:20px 24px 24px}
+.modal-body .m-desc{font-size:14.5px;line-height:1.8;color:var(--ink-2)}
+.modal-body ul{list-style:none;margin:18px 0 0;border-top:1px solid var(--hair)}
+.modal-body li{display:flex;gap:12px;padding:11px 2px;border-bottom:1px solid var(--hair-soft);font-size:13.5px;line-height:1.6;color:var(--ink-2)}
+.modal-body li::before{content:"—";font-family:var(--fm);color:var(--red);flex-shrink:0}
+.modal-foot{display:flex;gap:10px;padding:0 24px 24px;flex-wrap:wrap}
+.cell .no{font-family:var(--fm);font-size:9.5px;letter-spacing:.16em;color:var(--ink-4)}
+.cell h4{margin-top:8px;font-size:15.5px;font-weight:750;letter-spacing:-.01em}
+.cell p{margin-top:6px;font-size:12px;color:var(--ink-3);line-height:1.6}
+.cell.hot .no{color:var(--red)}
+
+/* ── 特性拼版 ── */
+.feature-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:0;border-top:2px solid var(--ink)}
+.feat{padding:34px 28px 34px 4px;border-bottom:1px solid var(--hair);display:flex;gap:18px}
+.feat:nth-child(odd){border-right:1px solid var(--hair);padding-left:4px}
+.feat:nth-child(even){padding-left:28px;padding-right:4px}
+.feat .glyph{width:44px;height:44px;border:1.5px solid var(--ink);display:grid;place-items:center;flex-shrink:0}
+.feat h3{font-size:17px;font-weight:750;letter-spacing:-.02em}
+.feat p{margin-top:6px;font-size:13.5px;color:var(--ink-2);line-height:1.7}
+.feat .tagline{margin-top:8px;font-family:var(--fm);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-4)}
+
+/* ── 財務小樣 ── */
+.mini-table{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--white)}
+.mini-table th{font-family:var(--fm);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);text-align:left;padding:9px 12px;border-top:2px solid var(--ink);border-bottom:1px solid var(--hair)}
+.mini-table td{padding:9px 12px;border-bottom:1px solid var(--hair-soft)}
+.mini-table td.num{font-family:var(--fm);text-align:right;font-weight:600}
+.mini-table tr.total td{border-top:2px solid var(--ink);font-weight:750}
+
+/* ── 拓撲小樣 ── */
+.topo{background:var(--white);border:1px solid var(--ink);padding:26px 20px;box-shadow:12px 12px 0 rgba(20,20,20,.08)}
+
+/* ── CTA ── */
+.cta{padding:110px 0 100px;text-align:left}
+.cta h2{font-size:clamp(40px,6vw,84px);letter-spacing:-.05em;line-height:1.02;font-weight:800;max-width:16ch}
+.cta h2 .hollow{color:transparent;-webkit-text-stroke:2px var(--ink)}
+.cta .sub{margin-top:22px;font-size:16px;color:var(--ink-2);max-width:48ch;line-height:1.75}
+.cta .ctas{margin-top:44px;display:flex;gap:12px;flex-wrap:wrap}
+
+/* ── 頁腳 ── */
+footer{border-top:2px solid var(--ink);padding:26px 0 40px}
+footer .wrap{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:center}
+
+/* ── 進場動效(僅在 html.js 時隱藏,無 JS 內容照常可讀) ── */
+.js .reveal{opacity:0;transform:translateY(18px);transition:opacity .6s cubic-bezier(.22,.9,.25,1),transform .6s cubic-bezier(.22,.9,.25,1)}
+.js .reveal.on{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .js .reveal{opacity:1;transform:none;transition:none}
+}
+
+@media (max-width:960px){
+  .statband .wrap{grid-template-columns:repeat(2,1fr)}
+  .stat:nth-child(2){border-right:0}
+  .demo{grid-template-columns:1fr;gap:30px}
+  .matrix{grid-template-columns:repeat(2,1fr)}
+  .feature-grid{grid-template-columns:1fr}
+  .feat:nth-child(odd){border-right:0}
+  .feat:nth-child(even){padding-left:4px}
+  .mnav a:not(.btn){display:none}
+}
+@media (max-width:430px){
+  .hero h1{font-size:clamp(34px,10.7vw,44px)}
+}
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <div class="wrap">
+    <a class="wordmark" href="#top">
+      <img src="../brand/bonfire-platform-mark.png" width="24" height="24" alt=""/>
+      WAREHOUSE OS 2.0
+    </a>
+    <nav class="mnav">
+      <a href="#secretary">AI 秘书</a>
+      <a href="#modules">模块</a>
+      <a href="#finance">财务</a>
+      <a href="#trust">审计与安全</a>
+      <a class="btn sm primary" href="https://bonfirework.org/" target="_blank" rel="noopener" style="margin-left:10px">进入系统 ↗</a>
+    </nav>
+  </div>
+</header>
+
+<!-- HERO -->
+<section class="hero gridpaper" id="top">
+  <div class="wrap">
+    <div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:40px">
+      <div class="hero-platform">
+        <img src="../brand/bonfire-platform-seal.png" alt="Bonfire Workshop"/>
+        <div class="hero-platform-copy">
+          <span class="label">WAREHOUSE OS 2.0 · SWISS EDITION</span>
+          <span class="label dim">A BONFIRE WORKSHOP PLATFORM</span>
+        </div>
+      </div>
+      <span class="label dim">SPEAK · EXECUTE · AUDIT</span>
+    </div>
+    <div class="red-block"></div>
+    <h1>会<span class="hollow">说话</span>的<br/>仓储与经营系统。</h1>
+    <p class="sub">「出库 2 双绝缘手套给检修一班。」——说完,AI 秘书核对库存、开单、记账、留痕,一气呵成。你负责决定,秘书负责执行;页面只读,<strong style="color:var(--ink)">每一步都有审计可回放</strong>。</p>
+    <div class="ctas">
+      <a class="btn lg primary" href="https://bonfirework.org/" target="_blank" rel="noopener">进入 WAREHOUSE OS 2.0 ↗</a>
+      <a class="btn lg" href="#secretary">看它怎么工作 ↓</a>
+    </div>
+    <div class="hero-meta">
+      <span class="label dim">15 模块 · 一个秘书</span>
+      <span class="label dim">繁 / 简 / EN 三语</span>
+      <span class="label dim">多公司租户隔离</span>
+      <span class="label dim">复式记账内核</span>
+    </div>
+  </div>
+</section>
+
+<!-- 數字帶 -->
+<div class="statband">
+  <div class="wrap">
+    <div class="stat reveal"><b data-n="15">15</b><span>业务模块,从库存到法务一站式</span></div>
+    <div class="stat reveal"><b data-n="1">1</b><span>个 AI 秘书,贯穿全部操作入口</span></div>
+    <div class="stat red reveal"><b data-n="100">100<i>%</i></b><span>写操作留痕,可回放;可逆操作可冲正</span></div>
+    <div class="stat reveal"><b data-n="3">3</b><span>种语言,按时区自动切换</span></div>
+  </div>
+</div>
+
+<!-- AI 秘書 -->
+<section class="section" id="secretary">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="label red">01 — SECRETARY</span>
+      <h2>不填表单。<br/>吩咐一句,它来执行。</h2>
+      <p>传统 ERP 把人训练成录入员。这里反过来:所有业务页面都是只读驾驶舱,改动一律交给 AI 秘书——它按你的权限真实调用系统指令,先核对、再执行、后留痕,拿不准的会追问你。</p>
+    </div>
+    <div class="demo">
+      <div class="chat reveal">
+        <div class="chat-head">
+          <span class="label">SECRETARY</span><span class="chat-dot"></span>
+          <span style="font-size:12.5px;font-weight:700">公司秘书</span>
+          <span class="label dim" style="margin-left:auto">AUDIT ON</span>
+        </div>
+        <div class="chat-body">
+          <div class="bu">出库 2 双绝缘手套给检修一班</div>
+          <div class="step"><b>✓</b> 核对库存 · 中心库 A-03-2 · 可用 12 双</div>
+          <div class="step"><b>✓</b> 该分类需借用归还 · 建立借用单</div>
+          <div class="step"><b>✓</b> 出库单 OUT-0709-01 · 领用主体:检修一班</div>
+          <div class="step"><b>✓</b> 记账 · 归还提醒已设 · 审计留痕</div>
+          <div class="ba"><strong>已办妥。</strong>绝缘手套现余 <strong>10 双</strong>,低于安全库存 40 双——要我顺手生成补货申请吗?</div>
+        </div>
+      </div>
+      <div class="pill-list reveal">
+        <div class="pill-item"><span class="no">A</span><div><h3>权限内真执行</h3><p>秘书的每个动作都走与界面同一套指令集,按账号权限过滤——它做不了你本人做不了的事。</p></div></div>
+        <div class="pill-item"><span class="no">B</span><div><h3>先核对,再动手</h3><p>库存够不够、要不要借还、挂哪个预算——先查清楚给结论,缺信息会追问,不猜。</p></div></div>
+        <div class="pill-item"><span class="no">C</span><div><h3>事后可反悔</h3><p>每次执行生成完整步骤记录,可逆操作自动配好冲正指令,一句话回滚;高风险动作自动通知有复核权的人。</p></div></div>
+        <div class="pill-item"><span class="no">D</span><div><h3>富文本对话</h3><p>回复支持表格、加粗、文件链接甚至数学公式;在经典版对话里上传收据照片,它识别后自己建单记账。</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 模塊矩陣 -->
+<section class="section" id="modules">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="label red">02 — MODULES</span>
+      <h2>15 个模块,一种秩序。</h2>
+      <p>从一件工具的借还,到一家公司的资产负债表——同一套设计语言,同一个秘书,同一份数据。</p>
+    </div>
+    <div class="matrix reveal" id="matrix">
+      <div class="cell" data-m="dashboard" role="button" tabindex="0"><span class="no">01</span><h4>总览</h4><p>KPI 巨数带 + 需要关注分拣</p></div>
+      <div class="cell" data-m="inventory" role="button" tabindex="0"><span class="no">02</span><h4>库存</h4><p>安全线追踪 · 趋势 · 借还</p></div>
+      <div class="cell" data-m="inbound" role="button" tabindex="0"><span class="no">03</span><h4>入库</h4><p>到货 · 退库 · 批次单据</p></div>
+      <div class="cell" data-m="outbound" role="button" tabindex="0"><span class="no">04</span><h4>出库</h4><p>领用 · 借用归还 · 抢修通道</p></div>
+      <div class="cell" data-m="alerts" role="button" tabindex="0"><span class="no">05</span><h4>智能预警</h4><p>AI 扫描分级,人来拍板</p></div>
+      <div class="cell" data-m="stocktake" role="button" tabindex="0"><span class="no">06</span><h4>盘点</h4><p>计划 · 差异分析 · 账实核对</p></div>
+      <div class="cell hot" data-m="erp" role="button" tabindex="0"><span class="no">07</span><h4>ERP 中枢</h4><p>预算树 · 采购申请 · 业财一体</p></div>
+      <div class="cell hot" data-m="finance" role="button" tabindex="0"><span class="no">08</span><h4>财务</h4><p>复式总账 · 三大报表 · AA 记账</p></div>
+      <div class="cell hot" data-m="assets" role="button" tabindex="0"><span class="no">09</span><h4>资产</h4><p>金融组合 + 数字资产托管与市场</p></div>
+      <div class="cell hot" data-m="procurement" role="button" tabindex="0"><span class="no">10</span><h4>采购招标</h4><p>可交互工作流拓扑图</p></div>
+      <div class="cell" data-m="gis" role="button" tabindex="0"><span class="no">11</span><h4>仓库地图</h4><p>内置 GIS · 定位 · 容量热度</p></div>
+      <div class="cell" data-m="reports" role="button" tabindex="0"><span class="no">12</span><h4>报表</h4><p>出入库走势 · 储值分布</p></div>
+      <div class="cell" data-m="perms" role="button" tabindex="0"><span class="no">13</span><h4>权限</h4><p>注册审批 · 角色分级</p></div>
+      <div class="cell" data-m="logs" role="button" tabindex="0"><span class="no">14</span><h4>审计</h4><p>全量留痕 + 秘书对话档案</p></div>
+      <div class="cell" data-m="settings" role="button" tabindex="0"><span class="no">15</span><h4>设置</h4><p>AI 密钥 · 语音 · 提示词</p></div>
+    </div>
+    <p class="label dim" style="margin-top:14px">点击任意模块查看详情</p>
+  </div>
+</section>
+
+<!-- 財務 -->
+<section class="section" id="finance">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="label red">03 — FINANCE</span>
+      <h2>业务动一下,<br/>账就平一次。</h2>
+      <p>不是记流水,是真正的复式记账:入库、出库、采购、分润,每一笔业务自动生成借贷平衡的凭证;利润表、资产负债表、现金流量表从总账即时推算。预算划拨走平衡凭证,「挪来挪去挪乱了」从机制上不可能。</p>
+    </div>
+    <div class="demo">
+      <div class="reveal">
+        <table class="mini-table">
+          <thead><tr><th>凭证 · JV-0709-002</th><th style="text-align:right">借方</th><th style="text-align:right">贷方</th></tr></thead>
+          <tbody>
+            <tr><td>库存商品 · 绝缘手套</td><td class="num">1,720.00</td><td class="num">—</td></tr>
+            <tr><td>应付账款 · 华安电力</td><td class="num">—</td><td class="num">1,720.00</td></tr>
+            <tr class="total"><td>借贷平衡 · 由后端强制保证</td><td class="num">1,720.00</td><td class="num">1,720.00</td></tr>
+          </tbody>
+        </table>
+        <p style="margin-top:14px;font-size:12.5px;color:var(--ink-3)">↑ 一次采购入库自动生成的凭证。手工乱账进不了总账:不平衡的分录会被后端直接拒绝。</p>
+      </div>
+      <div class="pill-list reveal">
+        <div class="pill-item"><span class="no">A</span><div><h3>三大报表即时出</h3><p>利润 · 资产负债 · 现金流,按月 / 季 / 年切换,数字可下钻到每一笔凭证。</p></div></div>
+        <div class="pill-item"><span class="no">B</span><div><h3>预算不再失控</h3><p>成本中心 × 科目 × 期间的预算树,占用、支出、划拨全走平衡凭证。</p></div></div>
+        <div class="pill-item"><span class="no">C</span><div><h3>AA 记账不扯皮</h3><p>一个真人一个账号一个主体,分摊由秘书按主体精确入账。</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 特性拼版 -->
+<section class="section" id="more">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="label red">04 — AND MORE</span>
+      <h2>细节里都是主张。</h2>
+    </div>
+    <div class="feature-grid">
+      <div class="feat reveal"><div class="glyph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="1.6"><path d="M3 3v18h18"/><path d="M7 15v-4M12 15V7M17 15v-6"/></svg></div>
+        <div><h3>采购工作流拓扑图</h3><p>流程走到哪一步、卡在谁手里,一张图看清;轮到你的节点亮红可点,点击即交秘书办理。</p><div class="tagline">CLICKABLE TOPOLOGY</div></div></div>
+      <div class="feat reveal"><div class="glyph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="1.6"><circle cx="12" cy="10" r="3"/><path d="M12 21s7-6.5 7-11a7 7 0 1 0-14 0c0 4.5 7 11 7 11Z"/></svg></div>
+        <div><h3>内置仓库地图</h3><p>真实 GIS 地图压成纸墨色调,仓库容量一眼看穿;点图取坐标,定位交秘书保存。</p><div class="tagline">BUILT-IN GIS</div></div></div>
+      <div class="feat reveal"><div class="glyph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/></svg></div>
+        <div><h3>数字资产托管 + 市场</h3><p>企业数字资产从接入、托管、AI 评估到挂牌交易全生命周期;托管站点与程序独立运行时隔离。</p><div class="tagline">DIGITAL ASSET MARKET</div></div></div>
+      <div class="feat reveal"><div class="glyph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="1.6"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V5l-8-3Z"/></svg></div>
+        <div><h3>纵深安全</h3><p>源码防篡改哨兵、AI 值守自愈、每日一致性备份;SSH 纯密钥,审计不可绕过。</p><div class="tagline">DEFENSE IN DEPTH</div></div></div>
+      <div class="feat reveal"><div class="glyph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="1.6"><rect x="4" y="3" width="16" height="18"/><path d="M9 8h1M14 8h1M9 12h1M14 12h1M9 16h1M14 16h1"/></svg></div>
+        <div><h3>多公司,一个平台</h3><p>每家公司独立数据库、独立权限、独立秘书记忆;顶栏一键切换,数据绝不串门。</p><div class="tagline">MULTI-TENANT</div></div></div>
+      <div class="feat reveal"><div class="glyph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="1.6"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></div>
+        <div><h3>语音与拍照</h3><p>对秘书说话即可操作;拍一张收据,识别、建单、入账一条龙——语音与拍照入口现由经典版对话提供,同一后端同一个秘书。</p><div class="tagline">VOICE + VISION</div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 審計 -->
+<section class="section gridpaper" id="trust">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="label red">05 — TRUST</span>
+      <h2>敢自动,<br/>因为全都记得住。</h2>
+      <p>AI 可以替你执行,前提是每一步都可考据。这套系统的信任模型很简单:<strong style="color:var(--ink)">页面只读 + 秘书执行 + 全量审计</strong>。谁在什么时候做了什么、AI 替谁做了什么、每一步的依据是什么——审计页全量回放,连你和秘书的历史对话都按天归档、自动分类。</p>
+    </div>
+    <div style="display:flex;gap:26px;flex-wrap:wrap">
+      <span class="label dim">操作留痕 · 可逆操作可冲正</span>
+      <span class="label dim">高风险动作 · 自动通知复核</span>
+      <span class="label dim">对话档案 · 按天归组</span>
+      <span class="label dim">源码哨兵 · 每分钟校验</span>
+      <span class="label dim">数据库 · 每日一致性备份</span>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta gridpaper">
+  <div class="wrap">
+    <div class="red-block"></div>
+    <h2>把仓库,<br/>交给<span class="hollow">秩序</span>。</h2>
+    <p class="sub">2.0 全新 Swiss 界面已上线;经典版并行运行,同一后端同一份数据,随时互切,零迁移成本。</p>
+    <div class="ctas">
+      <a class="btn lg primary" href="https://bonfirework.org/" target="_blank" rel="noopener">进入 WAREHOUSE OS 2.0 ↗</a>
+      <a class="btn lg" href="https://bonfirework.org/#/apply" target="_blank" rel="noopener">申请开通公司 ↗</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span class="wordmark" style="font-size:14px"><img src="../brand/bonfire-platform-mark.png" width="22" height="22" alt=""/>WAREHOUSE OS 2.0</span>
+    <span class="label dim">SAME BACKEND · SAME DATA · ZERO LOSS</span>
+    <a class="label dim" href="https://ncsyaikg.com/" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">CLASSIC → NCSYAIKG.COM</a>
+    <span class="label dim">BONFIRE WORKSHOP · BONFIREWORK.ORG</span>
+  </div>
+</footer>
+
+<!-- 模塊詳情浮窗 -->
+<div class="overlay" id="mOverlay" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <div class="modal-head">
+      <span class="m-no" id="mNo">01</span>
+      <div><h3 id="mTitle">总览</h3><div class="m-en" id="mEn">OVERVIEW</div></div>
+      <button class="modal-close" id="mClose" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="m-desc" id="mDesc"></p>
+      <ul id="mList"></ul>
+    </div>
+    <div class="modal-foot">
+      <a class="btn primary" id="mGo" href="https://bonfirework.org/" target="_blank" rel="noopener">在 2.0 中打开此模块 ↗</a>
+      <button class="btn" id="mClose2">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 模塊詳情數據 ──
+const MODULES = {
+  dashboard: { no:"01", zh:"总览", en:"OVERVIEW",
+    d:"打开系统先回答三件事:现在怎么样、要我做什么、东西在哪。编辑风问候语直接告诉你今天有几件事等你拍板。",
+    f:["KPI 巨数带:在库 SKU / 低于安全线 / 零库存 / 活跃预警,一眼知全局","库存健康量表 + 分类构成堆叠条,结构即装饰","「需要关注」分拣带:告急物资按缺口严重度自动浮上来,一键交秘书全部补齐"] },
+  inventory: { no:"02", zh:"库存", en:"INVENTORY",
+    d:"只读驾驶舱:找东西、看趋势、判断缺不缺,全在一屏;改动一律交秘书执行。",
+    f:["按 / 直接搜索,分类筛选,紧急度 / 库存量 / 名称三种排序","行内 7 期库存趋势线 + 安全线进度条,低于安全线整行红色语态","每行三个秘书动作:出库、补货、问一问;详情抽屉四宫格办理","借还类物资自动带借用单与归还提醒"] },
+  inbound: { no:"03", zh:"入库", en:"INBOUND",
+    d:"采购到货、检修退库、调拨入库,批次与单据一条不落;登记到货只需对秘书说一句。",
+    f:["入库单清单:单号 / 类型 / 来源 / 批次 / 经办 / 状态,点行看逐条明细","按类型构成堆叠条 + 来源单位 Top 榜","行内「追查 · 补正」直接交秘书处理异常单据"] },
+  outbound: { no:"04", zh:"出库", en:"OUTBOUND",
+    d:"领用出库、借用归还、抢修绿色通道。谁借了什么、该不该还了,系统替你盯着。",
+    f:["出库流水按用途筛选,抢修单红色语态优先呈现","借用未还清单按到期日排序,逾期自动标红","逐笔催还 / 登记归还 / 一键全部催还,全交秘书办理"] },
+  alerts: { no:"05", zh:"智能预警", en:"ALERTS",
+    d:"AI 持续扫描库存与经营风险,按高危 / 重要 / 留意 / 提示分级;AI 负责发现,你负责拍板。",
+    f:["每条预警带成因与处置建议","逐条交秘书处置,或一键全量分析按风险排序","处置动作经你确认才执行,全程留痕"] },
+  stocktake: { no:"06", zh:"盘点", en:"STOCKTAKE",
+    d:"盘点计划、执行进度、差异分析、账实核对,一页闭环。",
+    f:["盘点任务按 进行中 > 未开始 > 已完成 排序,进度条直观","差异明细盘亏标红、待处理优先,每行带完整上下文交秘书处理","发起盘点一句话:「帮 A 区安排一次例行盘点」"] },
+  erp: { no:"07", zh:"ERP 中枢", en:"ERP",
+    d:"预算、成本中心、采购申请、业财一体化。预算 = 成本中心 × 科目 × 期间,年 / 季 / 月分层,划拨走借贷平衡凭证——挪乱从机制上不可能。",
+    f:["可用预算 / 使用率 / 未挂预算单据 / 活跃预警四格巨数","预算清单带使用率条与 AI 状态标签","未闭环单据逐张交秘书关联预算、补齐财务归属"] },
+  finance: { no:"08", zh:"财务", en:"FINANCE",
+    d:"事件驱动的复式总账:采购、销售、收付款自动记账,借贷不平衡的分录后端直接拒绝。业务动一下,账就平一次。",
+    f:["利润表 / 资产负债表 / 现金流量表,按月 / 季 / 年即时从总账推算","应收应付账龄、凭证流水,数字可下钻到每一笔分录","AA 记账:一个真人一个账号一个主体,分摊由秘书精确入账","补录流水 / 收客户款 / 付供应商款,全部对话完成"] },
+  assets: { no:"09", zh:"资产", en:"ASSETS",
+    d:"三层资产视图:金融资产组合、已托管的数字资产、数字资产市场。从接入、托管、AI 评估到挂牌交易的全生命周期。",
+    f:["金融组合:持仓 / 浮动盈亏 / 资产配置堆叠条,点行看六格指标","数字资产托管:生命周期阶段、托管工作区运行状态、站点直达外链、AI 估值与合规","市场:上架 / 成交 / 分润,AI 评估等级 A/B/C/D 徽章"] },
+  procurement: { no:"10", zh:"采购招标", en:"PROCUREMENT",
+    d:"流程不再是黑盒:纯 SVG 可交互工作流拓扑图,流程走到哪、卡在谁手里,一张图看清。",
+    f:["轮到你权限的节点亮红可点,点击即交秘书办理(通过 / 驳回建议)","已完成节点墨底打勾,当前节点红色描边","我的待办按逾期高亮;流程模板拓扑随时可查"] },
+  gis: { no:"11", zh:"仓库地图", en:"MAP / GIS",
+    d:"内置真实 GIS 地图,压成与系统一致的纸墨色调——不是截图,是可缩放、可点击、可定位的活地图。",
+    f:["仓库方角墨牌标记,容量 ≥90% 自动红底告警","点标记开详情抽屉:库存构成 + 秘书动作","定位模式:点图取经纬度,交秘书一句话保存"] },
+  reports: { no:"12", zh:"报表", en:"REPORTS",
+    d:"经营数字的 Swiss 呈现:出入库月度走势、库存储值分布,一眼看清节奏与结构。",
+    f:["矩形分组柱状图:墨色入库 / 灰色出库,近 6 月与全周期切换","储值分布堆叠条 + 图例占比","生成与导出交秘书:「把本季度出入库报表导出来」"] },
+  perms: { no:"13", zh:"权限", en:"ACCESS",
+    d:"注册审批、角色分级、权限拓扑。谁能看什么、谁能做什么,清清楚楚。",
+    f:["注册申请与加入申请合并待审视图,一键交秘书审批","成员清单带角色 / 职级 / 状态,点行看详情","秘书的权限与本人完全一致——它替你做事,但做不了越权的事"] },
+  logs: { no:"14", zh:"审计", en:"AUDIT",
+    d:"敢让 AI 自动执行,是因为全都记得住:全量操作留痕回放,连你和秘书的每一段对话都按天归档。",
+    f:["操作流水 mono 时间戳编号行,按操作人 / 类型筛选","高危 CLI 执行专列呈现","秘书对话档案:按天归组、来源 + 主题自动分类、AI 标题、全文富文本回放","可疑条目一键交秘书追查"] },
+  settings: { no:"15", zh:"设置", en:"SETTINGS",
+    d:"系统配置一页尽览。AI 密钥支持手动填写与验证——新公司零配置起步,填一把钥匙,秘书立刻上岗。",
+    f:["智能引擎 / 图片识别 / 语音三张连接面板,状态实时,密钥永远脱敏","物资分类 / 仓库 / 导航 / 提示词各一节,只读呈现 + 交秘书修改","繁 / 简 / EN 三语,按时区自动,手选持久"] },
+};
+
+// ── 浮窗交互 ──
+const ovl = document.getElementById("mOverlay");
+let lastFocus = null;
+const openModal = (key) => {
+  const m = MODULES[key]; if (!m) return;
+  lastFocus = document.activeElement;
+  document.getElementById("mNo").textContent = m.no;
+  document.getElementById("mTitle").textContent = m.zh;
+  document.getElementById("mEn").textContent = m.en;
+  document.getElementById("mDesc").textContent = m.d;
+  document.getElementById("mList").innerHTML = m.f.map(x => "<li>" + x + "</li>").join("");
+  document.getElementById("mGo").href = "https://bonfirework.org/#/" + key;
+  ovl.classList.add("on"); ovl.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  document.getElementById("mClose").focus();
+};
+const closeModal = () => {
+  ovl.classList.remove("on"); ovl.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
+  if (lastFocus) lastFocus.focus();
+};
+document.querySelectorAll(".cell[data-m]").forEach(c => {
+  c.addEventListener("click", () => openModal(c.dataset.m));
+  c.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(c.dataset.m); } });
+});
+document.getElementById("mClose").addEventListener("click", closeModal);
+document.getElementById("mClose2").addEventListener("click", closeModal);
+ovl.addEventListener("click", (e) => { if (e.target === ovl) closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && ovl.classList.contains("on")) closeModal(); });
+
+// 進場動效
+const io = new IntersectionObserver((es) => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add("on"); io.unobserve(e.target); } }), { threshold: .15 });
+document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+// 數字滾動(reduced-motion 時保留標記中的最終值,不動畫)
+if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const io2 = new IntersectionObserver((es) => es.forEach(e => {
+    if (!e.isIntersecting) return; io2.unobserve(e.target);
+    const el = e.target, n = +el.dataset.n;
+    const t0 = performance.now(), dur = 900;
+    const tick = (t) => {
+      const p = Math.min(1, (t - t0) / dur), v = Math.round(n * (1 - Math.pow(1 - p, 3)));
+      el.childNodes[0].nodeValue = v;
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    el.childNodes[0].nodeValue = "0";
+    requestAnimationFrame(tick);
+  }), { threshold: .5 });
+  document.querySelectorAll(".stat b[data-n]").forEach(el => io2.observe(el));
+}
+</script>
+</body>
+</html>

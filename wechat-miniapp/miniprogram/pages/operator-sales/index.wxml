@@ -1,0 +1,234 @@
+<theme-provider>
+<view class="page sales-page">
+  <view class="sales-masthead">
+    <view class="masthead-copy"><view class="eyebrow light">E — SALES SYSTEM</view><view class="sales-title">销售<br/>管理</view><view class="sales-deck">CATALOGUE · CHECKOUT · SHARED RECEIPT</view></view>
+    <image class="masthead-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+  </view>
+
+  <view wx:if="{{companies.length}}" class="context-switch sales-context">
+    <view class="context-switch-index mono">CO</view>
+    <picker class="context-switch-picker" range="{{companyNames}}" value="{{companyIndex}}" bindchange="onCompanyChange">
+      <view class="context-switch-body"><view><view class="context-switch-label">CURRENT BUSINESS</view><view class="context-switch-name">{{companyNames[companyIndex]}}</view></view><view class="context-switch-command">选择公司</view></view>
+    </picker>
+  </view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">同步目录、客户与收据</view></view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+
+  <block wx:if="{{dashboard && !loading}}">
+    <view class="sales-stats">
+      <view class="stat stat-lead"><text class="stat-index">01</text><label>{{dashboard.stats.active_item_count}}</label><text>在售项目</text></view>
+      <view class="stat"><text class="stat-index">02</text><label>{{dashboard.stats.customer_count}}</label><text>可结账客户</text></view>
+      <view class="stat"><text class="stat-index">03</text><label>{{dashboard.stats.receipt_count}}</label><text>消费收据</text></view>
+      <view class="stat stat-money"><text class="stat-index">GROSS / CNY</text><label>¥{{dashboard.stats.grossText}}</label><text>累计消费</text></view>
+    </view>
+
+    <view id="salesWorkspace" class="sales-workspace-nav">
+      <button hover-class="none" class="sales-workspace-tab {{activeSection === 'checkout' ? 'active' : ''}}" data-section="checkout" bindtap="switchSection"><text>01</text><text class="sales-workspace-label">开单</text><view wx:if="{{cartLines.length}}" class="sales-tab-badge mono">{{cartLines.length}}</view></button>
+      <button hover-class="none" class="sales-workspace-tab {{activeSection === 'customers' ? 'active' : ''}}" data-section="customers" bindtap="switchSection"><text>02</text><text class="sales-workspace-label">客户</text></button>
+      <button hover-class="none" class="sales-workspace-tab {{activeSection === 'catalog' ? 'active' : ''}}" data-section="catalog" bindtap="switchSection"><text>03</text><text class="sales-workspace-label">商品服务</text></button>
+      <button hover-class="none" class="sales-workspace-tab {{activeSection === 'receipts' ? 'active' : ''}}" data-section="receipts" bindtap="switchSection"><text>04</text><text class="sales-workspace-label">消费记录</text></button>
+    </view>
+
+    <view wx:if="{{activeSection === 'checkout'}}" class="sales-workspace-panel">
+      <view class="section-head sales-section-head"><text class="section-index">A</text><text class="section-title">快速开单</text></view>
+      <view id="checkoutFlow" class="checkout-panel">
+        <view class="checkout-kicker">DIRECT WALLET / 即时双边入账</view>
+        <view class="checkout-title">一张清楚的消费单</view>
+        <view class="checkout-note">按步骤选择客户和消费内容。每一步只显示当前需要的信息，最后再统一核对并扣款。</view>
+
+        <view class="checkout-stage-nav">
+          <button hover-class="none" class="checkout-stage {{checkoutStep === 'customer' ? 'active' : ''}} {{memberNo ? 'done' : ''}}" data-step="customer" bindtap="switchCheckoutStep"><text>01</text><text class="checkout-stage-label">客户</text></button>
+          <button hover-class="none" class="checkout-stage {{checkoutStep === 'items' ? 'active' : ''}} {{cartLines.length ? 'done' : ''}}" data-step="items" bindtap="switchCheckoutStep"><text>02</text><text class="checkout-stage-label">内容</text></button>
+          <button hover-class="none" class="checkout-stage {{checkoutStep === 'confirm' ? 'active' : ''}}" data-step="confirm" bindtap="switchCheckoutStep"><text>03</text><text class="checkout-stage-label">确认</text></button>
+        </view>
+
+        <view wx:if="{{checkoutStep === 'customer'}}" class="checkout-stage-panel">
+          <view class="stage-heading"><text>01 / CUSTOMER</text><label>从客户数据库选择</label></view>
+          <input class="member-input" value="{{customerSearch}}" bindinput="onCustomerSearch" maxlength="80" placeholder="搜索姓名、昵称、手机号或会员编号"/>
+          <view wx:if="{{selectedCustomer}}" class="selected-customer"><view><text>SELECTED CUSTOMER / {{selectedCustomer.identityText}}</text><label>{{selectedCustomerName}}</label><text wx:if="{{selectedCustomer.nickname && selectedCustomer.nickname !== selectedCustomerName}}">昵称 · {{selectedCustomer.nickname}}</text><text>{{selectedCustomer.phone || '未登记手机'}}</text><text class="mono">{{memberNo}}</text></view><view class="selected-customer-actions"><button wx:if="{{canRechargeCustomers}}" bindtap="openRechargeEditor">直接充值</button><button wx:if="{{canManageCustomers}}" bindtap="openCustomerEditor">编辑资料</button><button wx:if="{{canManageCustomers && selectedCustomer.identity_status === 'unclaimed'}}" data-member="{{memberNo}}" bindtap="issueCustomerClaim">生成认领码</button><button bindtap="clearCustomer">重新选择</button></view></view>
+          <view wx:if="{{showCustomerEditor}}" class="customer-editor">
+            <view class="customer-editor-head"><view><text>MEMBER PROFILE</text><label>编辑会员资料</label></view><button bindtap="closeCustomerEditor">关闭</button></view>
+            <view class="editor-grid">
+              <view><view class="field-label">姓名</view><input class="editor-input" value="{{customerForm.displayName}}" data-field="displayName" bindinput="onCustomerFormInput" maxlength="80" placeholder="例如：陈小明"/></view>
+              <view><view class="field-label">昵称</view><input class="editor-input" value="{{customerForm.nickname}}" data-field="nickname" bindinput="onCustomerFormInput" maxlength="80" placeholder="例如：小明"/></view>
+            </view>
+            <view class="field-label">手机号</view><input class="editor-input mono" value="{{customerForm.phone}}" data-field="phone" bindinput="onCustomerFormInput" maxlength="32" placeholder="支持国家／地区代码"/>
+            <view class="customer-editor-code mono">MEMBER / {{memberNo}}</view>
+            <button class="customer-save" loading="{{savingCustomer}}" disabled="{{savingCustomer}}" bindtap="saveCustomerProfile">保存会员资料</button>
+          </view>
+          <view wx:if="{{showRechargeEditor}}" class="customer-recharge-editor">
+            <view class="customer-editor-head"><view><text>OFFLINE RECHARGE</text><label>为 {{selectedCustomerName}} 充值</label></view><button bindtap="closeRechargeEditor">关闭</button></view>
+            <view class="field-label">充值金额 / CNY</view><view class="recharge-amount"><text>¥</text><input class="mono" type="digit" value="{{rechargeForm.amount}}" data-field="amount" bindinput="onRechargeFormInput" placeholder="0.00"/></view>
+            <view class="field-label">入账备注</view><input class="editor-input" value="{{rechargeForm.note}}" data-field="note" bindinput="onRechargeFormInput" maxlength="300" placeholder="例如：现金、转账或活动充值"/>
+            <view class="recharge-rule"><text>SERVER EVENT</text><label>确认后直接增加该公司会员余额，并同步生成充值事件、流水与双边交易卡。</label></view>
+            <button class="customer-save" loading="{{rechargingCustomer}}" disabled="{{rechargingCustomer}}" bindtap="rechargeSelectedCustomer">核对收款并充值</button>
+          </view>
+          <scroll-view wx:if="{{customers.length}}" class="customer-strip" scroll-x="true" enhanced="true" show-scrollbar="false">
+            <view class="customer-strip-inner">
+              <button wx:for="{{visibleCustomers}}" wx:key="member_no" class="customer-chip {{memberNo === item.member_no ? 'selected' : ''}}" data-member="{{item.member_no}}" bindtap="selectCustomer"><text class="customer-name">{{item.nameText}}</text><text wx:if="{{item.nickname && item.nickname !== item.nameText}}" class="customer-meta">{{item.nickname}}</text><text class="customer-meta">{{item.phone || '未登记手机'}}</text><text class="customer-identity">{{item.identityText}}</text><text class="customer-no mono">{{item.member_no}}</text><text class="customer-balance mono">BAL ¥{{item.balanceText}}</text></button>
+            </view>
+          </scroll-view>
+          <view wx:if="{{!customers.length}}" class="checkout-empty">当前公司还没有可结账客户。</view>
+          <button class="stage-next" disabled="{{!memberNo}}" data-step="items" bindtap="switchCheckoutStep">下一步 · 选择消费内容</button>
+        </view>
+
+        <view wx:elif="{{checkoutStep === 'items'}}" class="checkout-stage-panel">
+          <view class="stage-heading stage-heading-row"><view><text>02 / ITEMS</text><label>选择服务、产品或自定义项目</label></view><button data-step="customer" bindtap="switchCheckoutStep">更换客户</button></view>
+          <view class="stage-party"><text>CUSTOMER</text><label>{{selectedCustomerName || memberNo}}</label><text class="mono">{{memberNo}}</text></view>
+          <view class="item-strip-caption"><text>CATALOGUE / 横向浏览</text><label>{{catalog.length}} 个项目</label></view>
+          <scroll-view wx:if="{{catalog.length}}" class="checkout-catalog" scroll-x="true" enhanced="true" show-scrollbar="false">
+            <view class="checkout-catalog-track">
+              <view wx:for="{{catalog}}" wx:key="item_code" wx:if="{{item.active}}" class="sale-choice {{item.quantity ? 'chosen' : ''}}">
+                <view class="choice-main"><text class="choice-type">{{item.typeText}}</text><label>{{item.item_name}}</label><text class="choice-price mono">¥{{item.priceText}} / {{item.unit_name}}</text></view>
+                <view class="quantity-control"><button data-code="{{item.item_code}}" data-delta="-1" bindtap="adjustQuantity">−</button><text class="mono">{{item.quantity}}</text><button data-code="{{item.item_code}}" data-delta="1" bindtap="adjustQuantity">＋</button></view>
+              </view>
+            </view>
+          </scroll-view>
+          <view wx:if="{{!catalog.length}}" class="checkout-empty">尚未建立服务或产品目录。</view>
+          <button wx:if="{{!catalog.length}}" class="catalog-jump" data-section="catalog" bindtap="switchSection">前往商品服务页建立目录</button>
+          <button class="custom-entry" bindtap="openCustomEditor"><text>＋ CUSTOM LINE</text><label>添加一次性的自定义消费内容</label></button>
+          <view wx:if="{{showCustomEditor}}" class="custom-editor">
+            <view class="custom-editor-head"><view><text>CUSTOM / 本次消费</text><label>自定义项目</label></view><button bindtap="closeCustomEditor">关闭</button></view>
+            <view class="editor-grid">
+              <view><view class="field-label">消费内容</view><input class="editor-input" value="{{customForm.name}}" data-field="name" bindinput="onCustomInput" maxlength="120" placeholder="例如：临时加购或特别服务"/></view>
+              <view><view class="field-label">单价 / CNY</view><input class="editor-input mono" type="digit" value="{{customForm.price}}" data-field="price" bindinput="onCustomInput" placeholder="0.00"/></view>
+              <view><view class="field-label">单位</view><input class="editor-input" value="{{customForm.unitName}}" data-field="unitName" bindinput="onCustomInput" maxlength="20" placeholder="项 / 件 / 次"/></view>
+              <view><view class="field-label">数量</view><input class="editor-input mono" type="number" value="{{customForm.quantity}}" data-field="quantity" bindinput="onCustomInput" placeholder="1"/></view>
+            </view>
+            <button class="custom-add" bindtap="addCustomLine">加入本次消费</button>
+          </view>
+          <view class="cart-summary compact-cart">
+            <view wx:for="{{cartLines}}" wx:key="key" class="cart-line"><text>{{item.item_name}} × {{item.quantity}}<label wx:if="{{item.kind === 'custom'}}">CUSTOM</label></text><view><label class="mono">¥{{item.lineTotalText}}</label><button wx:if="{{item.kind === 'custom'}}" data-key="{{item.key}}" bindtap="removeCustomLine">移除</button></view></view>
+            <view class="cart-total"><text>TOTAL / 合计</text><label class="mono">¥{{cartTotalText}}</label></view>
+          </view>
+          <view class="stage-actions"><button class="stage-back" data-step="customer" bindtap="switchCheckoutStep">上一步</button><button class="stage-next" disabled="{{!cartLines.length}}" data-step="confirm" bindtap="switchCheckoutStep">下一步 · 核对结账</button></view>
+        </view>
+
+        <view wx:else class="checkout-stage-panel">
+          <view class="stage-heading stage-heading-row"><view><text>03 / CONFIRM</text><label>核对双方消费卡片</label></view><button data-step="items" bindtap="switchCheckoutStep">修改内容</button></view>
+          <view class="checkout-confirm-hero"><view><text>CONSUMER</text><label>{{selectedCustomerName || memberNo}}</label><text class="mono">{{memberNo}}</text></view><view><text>TOTAL / CNY</text><label class="mono">¥{{cartTotalText}}</label></view></view>
+          <view class="cart-summary confirm-cart">
+            <view wx:for="{{cartLines}}" wx:key="key" class="cart-line"><text>{{item.item_name}} × {{item.quantity}}<label wx:if="{{item.kind === 'custom'}}">CUSTOM</label></text><view><label class="mono">¥{{item.lineTotalText}}</label></view></view>
+            <view class="cart-total"><text>TOTAL / 合计</text><label class="mono">¥{{cartTotalText}}</label></view>
+          </view>
+          <view class="field-label">收据备注</view>
+          <input class="note-input" value="{{saleNote}}" data-field="saleNote" bindinput="onSaleInput" maxlength="240" placeholder="可填写项目说明、桌号或服务备注"/>
+          <view class="field-label">结账方式</view>
+          <picker range="{{checkoutModeLabels}}" value="{{checkoutModeIndex}}" bindchange="onCheckoutModeChange"><view class="checkout-mode"><view><text>{{checkoutModeIndex === 0 ? 'DIRECT / 立即' : 'CONFIRM / 待客户确认'}}</text><label>{{checkoutModeLabels[checkoutModeIndex]}}</label></view><text>切换方式</text></view></picker>
+          <button class="checkout-submit" loading="{{checkoutBusy}}" disabled="{{checkoutBusy || !cartLines.length || !memberNo}}" bindtap="checkout">{{checkoutModeIndex === 0 ? '确认扣款 · 生成双边收据' : '发送逐项扣费确认卡'}}</button>
+          <button class="confirm-back" data-step="items" bindtap="switchCheckoutStep">返回修改消费内容</button>
+        </view>
+      </view>
+    </view>
+
+    <view wx:elif="{{activeSection === 'customers'}}" class="sales-workspace-panel">
+      <view class="section-head sales-section-head"><text class="section-index">B</text><text class="section-title">客户资料</text></view>
+      <view class="customer-management-intro"><text>IDENTITY BRIDGE</text><label>先由商家建立客户与余额；本人之后扫描一次性二维码，原位接管同一份资料和全部历史。</label></view>
+      <view class="customer-management-tools">
+        <input value="{{customerSearch}}" bindinput="onCustomerSearch" maxlength="80" placeholder="搜索姓名、昵称、手机号或会员编号"/>
+        <button wx:if="{{canManageCustomers}}" bindtap="openCustomerCreator">＋ 手动添加客户</button>
+      </view>
+
+      <view wx:if="{{showCustomerCreator}}" class="customer-create-poster">
+        <view class="customer-create-index mono">NEW<br/>CLIENT</view>
+        <view class="customer-create-form">
+          <view class="customer-editor-head"><view><text>UNCLAIMED PROFILE</text><label>建立待本人认领客户</label></view><button bindtap="closeCustomerCreator">关闭</button></view>
+          <view class="editor-grid">
+            <view><view class="field-label">姓名</view><input class="editor-input" value="{{customerCreateForm.displayName}}" data-field="displayName" bindinput="onCustomerCreateInput" maxlength="80" placeholder="例如：陈小明"/></view>
+            <view><view class="field-label">昵称</view><input class="editor-input" value="{{customerCreateForm.nickname}}" data-field="nickname" bindinput="onCustomerCreateInput" maxlength="80" placeholder="例如：小明"/></view>
+          </view>
+          <view class="field-label">手机号</view><input class="editor-input mono" value="{{customerCreateForm.phone}}" data-field="phone" bindinput="onCustomerCreateInput" maxlength="32" placeholder="方便开单时搜索，可稍后补充"/>
+          <view class="create-rule"><text>NO DUPLICATE WALLET</text><label>建立后即可充值和消费；扫码认领只改变身份映射，不复制余额或交易记录。</label></view>
+          <button class="customer-save" loading="{{creatingCustomer}}" disabled="{{creatingCustomer}}" bindtap="createCustomer">建立客户资料</button>
+        </view>
+      </view>
+
+      <view class="managed-customer-list">
+        <view wx:for="{{visibleCustomers}}" wx:key="member_no" class="managed-customer {{item.identity_status}}" data-member="{{item.member_no}}" bindtap="manageCustomer">
+          <view class="managed-customer-no mono">{{index + 1 < 10 ? '0' : ''}}{{index + 1}}</view>
+          <view class="managed-customer-main"><text>{{item.identityText}}</text><label>{{item.nameText}}</label><view>{{item.phone || '未登记手机'}} · {{item.member_no}}</view></view>
+          <view class="managed-customer-value"><label class="mono">¥{{item.balanceText}}</label><text>{{item.points_balance}} PTS</text></view>
+        </view>
+      </view>
+      <view wx:if="{{!visibleCustomers.length}}" class="checkout-empty">没有匹配的客户资料。</view>
+
+      <view wx:if="{{selectedCustomer}}" class="customer-management-actions">
+        <view><text>SELECTED / {{selectedCustomer.identityText}}</text><label>{{selectedCustomer.nameText}}</label><view class="mono">{{selectedCustomer.member_no}}</view></view>
+        <view><button wx:if="{{canManageCustomers}}" bindtap="openCustomerEditor">编辑资料</button><button wx:if="{{canRechargeCustomers}}" bindtap="openRechargeEditor">直接充值</button><button wx:if="{{canManageCustomers && selectedCustomer.identity_status === 'unclaimed'}}" data-member="{{selectedCustomer.member_no}}" loading="{{issuingClaim}}" disabled="{{issuingClaim}}" bindtap="issueCustomerClaim">生成本人认领二维码</button></view>
+      </view>
+      <view wx:if="{{showCustomerEditor}}" class="customer-editor management-editor">
+        <view class="customer-editor-head"><view><text>MEMBER PROFILE</text><label>编辑 {{selectedCustomerName}}</label></view><button bindtap="closeCustomerEditor">关闭</button></view>
+        <view class="editor-grid"><view><view class="field-label">姓名</view><input class="editor-input" value="{{customerForm.displayName}}" data-field="displayName" bindinput="onCustomerFormInput" maxlength="80"/></view><view><view class="field-label">昵称</view><input class="editor-input" value="{{customerForm.nickname}}" data-field="nickname" bindinput="onCustomerFormInput" maxlength="80"/></view></view>
+        <view class="field-label">手机号</view><input class="editor-input mono" value="{{customerForm.phone}}" data-field="phone" bindinput="onCustomerFormInput" maxlength="32"/>
+        <button class="customer-save" loading="{{savingCustomer}}" disabled="{{savingCustomer}}" bindtap="saveCustomerProfile">保存会员资料</button>
+      </view>
+      <view wx:if="{{showRechargeEditor}}" class="customer-recharge-editor management-editor">
+        <view class="customer-editor-head"><view><text>OFFLINE RECHARGE</text><label>为 {{selectedCustomerName}} 充值</label></view><button bindtap="closeRechargeEditor">关闭</button></view>
+        <view class="field-label">充值金额 / CNY</view><view class="recharge-amount"><text>¥</text><input class="mono" type="digit" value="{{rechargeForm.amount}}" data-field="amount" bindinput="onRechargeFormInput" placeholder="0.00"/></view>
+        <view class="field-label">入账备注</view><input class="editor-input" value="{{rechargeForm.note}}" data-field="note" bindinput="onRechargeFormInput" maxlength="300"/>
+        <button class="customer-save" loading="{{rechargingCustomer}}" disabled="{{rechargingCustomer}}" bindtap="rechargeSelectedCustomer">核对收款并充值</button>
+      </view>
+
+      <view wx:if="{{issuedClaim}}" id="customerClaimCard" class="customer-claim-card">
+        <view class="customer-claim-head"><image src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/><view><text>BONFIREWORK / IDENTITY</text><label>{{issuedClaim.customerName}}</label></view><button bindtap="closeCustomerClaim">关闭</button></view>
+        <view class="customer-claim-grid"><view><text>EXISTING VALUE</text><label class="mono">¥{{issuedClaim.balanceText}}</label><text>{{issuedClaim.customer.points_balance}} PTS</text></view><view class="customer-claim-qr"><canvas type="2d" id="customerClaimQr"></canvas><view></view></view></view>
+        <view class="customer-claim-note">请客户在自己的小程序「我的」页面扫描。认领后，当前余额、积分、消费卡片与预约记录保持在原档案中。</view>
+        <view class="customer-claim-foot"><text class="mono">VALID UNTIL {{issuedClaim.expiresText}}</text><button bindtap="copyCustomerClaim">复制认领码</button></view>
+      </view>
+    </view>
+
+    <view wx:elif="{{activeSection === 'catalog'}}" class="sales-workspace-panel">
+      <view class="section-head sales-section-head"><text class="section-index">C</text><text class="section-title">商品与服务</text></view>
+      <view class="catalog-intro"><text>CATALOGUE</text><label>建立一次，之后开单直接选择并自动计价。</label></view>
+      <view class="catalog-tools">
+        <button wx:if="{{canManageCatalog}}" class="catalog-tool primary" bindtap="startAdd">＋ 添加服务或产品</button>
+        <button wx:if="{{canManageCatalog && dashboard.booking_import_candidates.length}}" class="catalog-tool" loading="{{importing}}" disabled="{{importing}}" bindtap="importBookingServices">导入 {{dashboard.booking_import_candidates.length}} 个预约服务</button>
+        <view wx:if="{{!canManageCatalog}}" class="role-note">收银员可以开单，但只有所有者或经理可以改价。</view>
+      </view>
+      <view wx:if="{{showEditor}}" class="catalog-editor">
+        <view class="editor-head"><view><text>CATALOGUE ENTRY</text><label>{{form.itemName ? '编辑销售项目' : '建立销售项目'}}</label></view><button bindtap="closeEditor">关闭</button></view>
+        <view class="editor-grid">
+          <view><view class="field-label">类型</view><picker range="{{itemTypeLabels}}" value="{{form.itemTypeIndex}}" bindchange="onTypeChange"><view class="editor-picker">{{itemTypeLabels[form.itemTypeIndex]}}</view></picker></view>
+          <view><view class="field-label">名称</view><input class="editor-input" value="{{form.itemName}}" data-field="itemName" bindinput="onFormInput" maxlength="120" placeholder="例如：剪发 / 咖啡豆"/></view>
+          <view><view class="field-label">价格 / CNY</view><input class="editor-input mono" type="digit" value="{{form.price}}" data-field="price" bindinput="onFormInput" placeholder="0.00"/></view>
+          <view><view class="field-label">计价单位</view><input class="editor-input" value="{{form.unitName}}" data-field="unitName" bindinput="onFormInput" maxlength="20" placeholder="次 / 件 / 杯"/></view>
+        </view>
+        <view class="field-label">介绍</view><textarea class="editor-textarea" value="{{form.description}}" data-field="description" bindinput="onFormInput" maxlength="1000" placeholder="给经营团队看的服务或产品说明"/>
+        <view class="editor-status"><view><text>ACTIVE / 在售</text><label>停用后不能加入新消费，但旧收据仍完整保留。</label></view><switch checked="{{form.active}}" color="var(--swiss-accent, #E0261C)" bindchange="onActiveChange"/></view>
+        <view class="editor-code mono">SYSTEM CODE / {{form.itemCode}}</view>
+        <button class="editor-save" loading="{{savingItem}}" disabled="{{savingItem}}" bindtap="saveItem">保存销售项目</button>
+      </view>
+      <view id="catalogList" class="catalog-list">
+        <view wx:for="{{visibleCatalog}}" wx:key="item_code" class="catalog-card {{item.active ? '' : 'inactive'}}" data-code="{{item.item_code}}" bindtap="editItem">
+          <view class="catalog-card-index mono">{{index + 1 < 10 ? '0' : ''}}{{index + 1}}</view>
+          <view class="catalog-card-main"><text>{{item.typeText}}</text><label>{{item.item_name}}</label><view wx:if="{{item.description}}">{{item.description}}</view><text class="catalog-code mono">{{item.item_code}} · V{{item.version}}</text></view>
+          <view class="catalog-price"><label class="mono">¥{{item.priceText}}</label><text>/ {{item.unit_name}}</text><text class="catalog-state">{{item.active ? 'ACTIVE' : 'PAUSED'}}</text></view>
+        </view>
+      </view>
+      <view wx:if="{{catalogPageCount > 1}}" class="sales-pager"><button disabled="{{catalogPage === 0}}" data-delta="-1" bindtap="changeCatalogPage">上一页</button><text class="mono">{{catalogPageText}}</text><button disabled="{{catalogPage + 1 >= catalogPageCount}}" data-delta="1" bindtap="changeCatalogPage">下一页</button></view>
+    </view>
+
+    <view wx:else class="sales-workspace-panel">
+      <view class="section-head sales-section-head"><text class="section-index">D</text><text class="section-title">消费记录</text></view>
+      <view id="receiptList" class="catalog-intro receipt-intro"><text>SHARED RECEIPTS</text><label>商家与客户看到同一编号、同一明细和同一金额。</label></view>
+      <view wx:if="{{featuredReceipt}}" id="issuedReceipt" class="receipt featured-receipt">
+        <view class="receipt-brand"><image src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/><view><text>BONFIREWORK</text><label>SHARED CONSUMPTION RECEIPT</label></view><text class="receipt-state {{featuredReceipt.status === 'completed' ? '' : 'pending'}}">{{featuredReceipt.stateText}}</text></view>
+        <view class="receipt-hero"><view><text>CONSUMER</text><label>{{featuredReceipt.member_name || featuredReceipt.member_no}}</label></view><view class="receipt-amount mono">¥{{featuredReceipt.amountText}}</view></view>
+        <view class="receipt-lines"><view wx:for="{{featuredReceipt.lines}}" wx:key="line_no" class="receipt-line"><view><text>{{item.typeText}} / {{item.item_name}}</text><label class="mono">{{item.quantity}} × ¥{{item.unitPriceText}}</label></view><text class="mono">¥{{item.lineTotalText}}</text></view></view>
+        <view class="receipt-foot"><text class="mono">{{featuredReceipt.card_no}}</text><text class="mono">{{featuredReceipt.createdText}}</text></view>
+        <view class="receipt-seal">{{featuredReceipt.stateNote}}</view>
+      </view>
+      <view wx:if="{{!recentReceipts.length}}" class="receipt-empty">尚未产生消费收据</view>
+      <view wx:for="{{visibleReceipts}}" wx:key="card_no" class="receipt compact-receipt">
+        <view class="compact-head"><view><text>PAID / {{item.member_name || item.member_no}}</text><label>{{item.description || '消费结账'}}</label></view><text class="mono">¥{{item.amountText}}</text></view>
+        <view class="compact-lines"><text wx:for="{{item.lines}}" wx:key="line_no">{{item.item_name}} × {{item.quantity}}</text></view>
+        <view class="receipt-foot"><text class="mono">{{item.card_no}}</text><text class="mono">{{item.createdText}}</text></view>
+      </view>
+      <view wx:if="{{receiptPageCount > 1}}" class="sales-pager"><button disabled="{{receiptPage === 0}}" data-delta="-1" bindtap="changeReceiptPage">上一页</button><text class="mono">{{receiptPageText}}</text><button disabled="{{receiptPage + 1 >= receiptPageCount}}" data-delta="1" bindtap="changeReceiptPage">下一页</button></view>
+    </view>
+  </block>
+
+  <view wx:if="{{!loading && !companies.length}}" class="empty-panel"><view class="empty-title">还没有经营空间</view><view class="muted">请先注册经营者或绑定已有公司，再建立销售目录。</view></view>
+</view>
+</theme-provider>

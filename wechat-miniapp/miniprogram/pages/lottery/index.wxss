@@ -1,0 +1,25 @@
+.empty { margin-top: 28rpx; padding: 34rpx; display: flex; gap: 22rpx; align-items: center; }
+.empty-mark { color: var(--swiss-accent, #E0261C); font-size: 44rpx; }
+.campaign-card { display: flex; justify-content: space-between; gap: 20rpx; padding: 24rpx 0; border-top: 2rpx solid #111; }
+.campaign-card.active { padding-left: 18rpx; border-left: 8rpx solid var(--swiss-accent, #E0261C); }
+.campaign-name { font-size: 30rpx; font-weight: 800; }
+.campaign-code, .campaign-meta { color: #85806f; font-size: 21rpx; }
+.campaign-meta { text-align: right; }
+.draw-panel { margin-top: 26rpx; }
+.draw-grid { display: grid; grid-template-columns: repeat(2, 1fr); border: 2rpx solid #111; }
+.draw-cell { min-height: 92rpx; padding: 16rpx; display: flex; gap: 12rpx; align-items: center; border-right: 1rpx solid #c8c2b5; border-bottom: 1rpx solid #c8c2b5; }
+.prize-index { color: var(--swiss-accent, #E0261C); }
+.prize-name { font-size: 23rpx; font-weight: 700; }
+.draw-grid.running { opacity: .55; }
+.draw-button { margin-top: 18rpx; }
+.result { margin-top: 26rpx; padding: 30rpx; border-top: 8rpx solid var(--swiss-accent, #E0261C); }
+.result-label { color: var(--swiss-accent, #E0261C); font-size: 20rpx; letter-spacing: 3rpx; }
+.result-name { margin-top: 12rpx; font-size: 44rpx; font-weight: 800; }
+.result-detail { margin-top: 10rpx; }
+.reward-code { margin-top: 18rpx; padding: 16rpx; background: #111; color: #f5f2eb; letter-spacing: 2rpx; }
+.result-no, .reward-no, .reward-time { margin-top: 10rpx; color: #85806f; font-size: 20rpx; }
+.reward-row { display: flex; justify-content: space-between; gap: 20rpx; padding: 22rpx 0; border-top: 1rpx solid #c8c2b5; }
+.reward-name { font-weight: 800; }
+.reward-status { align-self: flex-start; padding: 8rpx 12rpx; border: 2rpx solid #111; font-size: 20rpx; }
+.reward-status.issued { border-color: var(--swiss-accent, #E0261C); color: var(--swiss-accent, #E0261C); }
+.reward-status.redeemed { border-color: #25853a; color: #25853a; }

@@ -1,0 +1,48 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">06 — MEMBER LEVEL</view><view class="title">等级与权益</view><view class="rule"></view>
+  <view wx:if="{{companyName}}" class="company-context">
+    <view class="context-label">LEVEL OWNER / 等级所属公司</view>
+    <view class="context-name">{{companyName}}</view>
+    <view class="context-mode">{{companyMode}}</view>
+  </view>
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view></view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+
+  <view wx:if="{{program && current}}" class="level-card swiss-card">
+    <view class="rank mono">L{{current.rank}}</view>
+    <view class="level-name">{{current.name}}</view>
+    <view class="level-code mono">{{current.code}}</view>
+    <view class="level-rate">每消费 ¥1 累计 {{current.pointsPerYuan}} 积分</view>
+  </view>
+  <view wx:if="{{program}}" class="metrics">
+    <view class="metric"><view class="metric-label">累计消费</view><view class="metric-value mono">¥{{spent}}</view></view>
+    <view class="metric"><view class="metric-label">积分余额</view><view class="metric-value mono">{{program.points_balance}}</view></view>
+  </view>
+
+  <block wx:if="{{program && current}}">
+    <view wx:if="{{next}}" class="progress-card swiss-card">
+      <view class="section-head"><text class="section-index">A</text><text class="section-title">下一等级 · {{next.name}}</text></view>
+      <view class="progress-track"><view class="progress-value" style="width: {{progressPercent}}%"></view></view>
+      <view class="progress-copy">还差 ¥{{remaining}} · {{progressPercent}}%</view>
+    </view>
+    <view wx:else class="top-level">已达到当前公司的最高会员等级</view>
+  </block>
+
+  <view wx:if="{{current && current.benefitRows.length}}" class="section">
+    <view class="section-head"><text class="section-index">B</text><text class="section-title">当前权益</text></view>
+    <view wx:for="{{current.benefitRows}}" wx:key="key" class="benefit-row">
+      <text class="benefit-key mono">{{item.key}}</text><text class="benefit-value">{{item.value}}</text>
+    </view>
+  </view>
+
+  <view wx:if="{{levels.length}}" class="section">
+    <view class="section-head"><text class="section-index">C</text><text class="section-title">等级拓扑</text></view>
+    <view wx:for="{{levels}}" wx:key="code" class="level-row {{current && item.code === current.code ? 'active' : ''}}">
+      <view><text class="mono">L{{item.rank}}</text><text class="row-name">{{item.name}}</text></view>
+      <view class="row-threshold mono">¥{{item.threshold}}</view>
+    </view>
+    <view class="copy">等级、积分与消费数据只属于当前公司，不与其他公司共享。</view>
+  </view>
+</view>
+</theme-provider>

@@ -1,0 +1,20 @@
+.level-card { margin-top: 28rpx; padding: 30rpx; border-top: 8rpx solid #111; }
+.rank { color: var(--swiss-accent, #E0261C); font-size: 26rpx; }
+.level-name { margin-top: 18rpx; font-size: 52rpx; font-weight: 800; }
+.level-code, .level-rate { margin-top: 10rpx; color: #85806f; }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; border: 2rpx solid #111; border-top: 0; }
+.metric { padding: 24rpx; }
+.metric + .metric { border-left: 2rpx solid #111; }
+.metric-label { color: #85806f; font-size: 22rpx; }
+.metric-value { margin-top: 8rpx; font-size: 34rpx; font-weight: 800; }
+.progress-card { margin-top: 26rpx; padding: 24rpx; }
+.progress-track { height: 14rpx; margin-top: 22rpx; background: #d8d3c7; overflow: hidden; }
+.progress-value { height: 100%; background: var(--swiss-accent, #E0261C); }
+.progress-copy, .top-level { margin-top: 14rpx; color: #5f5a4e; }
+.top-level { padding: 20rpx 0; border-bottom: 2rpx solid #111; }
+.benefit-row, .level-row { display: flex; justify-content: space-between; gap: 20rpx; padding: 20rpx 0; border-bottom: 1rpx solid #c8c2b5; }
+.benefit-key { color: var(--swiss-accent, #E0261C); }
+.benefit-value { text-align: right; }
+.level-row.active { padding-left: 16rpx; border-left: 8rpx solid var(--swiss-accent, #E0261C); }
+.row-name { margin-left: 18rpx; font-weight: 700; }
+.row-threshold { color: #5f5a4e; }

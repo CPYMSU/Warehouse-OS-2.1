@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WAREHOUSE OS 2.0</title>
+<link rel="icon" type="image/png" href="v2/brand/bonfire-platform-mark.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css"/>
+<style>
+/* —— 原型頁專用少量增補(正式版可併入 styles.css)—— */
+.inv2-row:hover { background: var(--surface-2); }
+.inv2-row { transition: background .15s ease; }
+.inv2-th-sort { cursor: pointer; user-select: none; }
+.inv2-th-sort:hover { color: var(--blue); }
+.inv2-attn::-webkit-scrollbar { height: 8px; }
+.inv2-drawer { animation: inv2slide .32s cubic-bezier(.2,.7,.3,1) both; }
+@keyframes inv2slide { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.inv2-dock { animation: inv2pop .3s cubic-bezier(.2,.7,.3,1) both; }
+@keyframes inv2pop { from { transform: translateY(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+.inv2-bubble { animation: fadeUp .25s ease both; }
+.inv2-kbd { font-family: var(--font-num); font-size: 10.5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 5px; color: var(--ink-3); background: var(--surface); }
+</style>
+</head>
+<body>
+<div class="app-bg"></div>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="components.jsx"></script>
+
+<script type="text/babel">
+const { useState, useMemo, useRef, useEffect } = React;
+
+/* ============ 模擬數據(演示用;正式版接 window.INVENTORY) ============ */
+const CATS = [
+  { id: "tools",  name: "工具",   ret: true  },
+  { id: "safety", name: "安全裝備", ret: true  },
+  { id: "spare",  name: "備品備件", ret: false },
+  { id: "consum", name: "消耗品",  ret: false },
+];
+const ITEMS = [
+  { id: 1,  name: "絕緣手套 35kV",  code: "WZ-1024", model: "YS101-91-02", cat: "safety", stock: 12,  safe: 40, unit: "雙", loc: "A-03-2", wh: "中心庫", critical: true,  alerts: 2, trend: [46,40,38,30,24,18,12] },
+  { id: 2,  name: "接地線成套",      code: "WZ-1031", model: "JDX-35",     cat: "safety", stock: 8,   safe: 20, unit: "組", loc: "A-05-1", wh: "搶修庫", critical: true,  alerts: 1, trend: [22,20,18,16,12,10,8] },
+  { id: 3,  name: "電纜終端頭 10kV", code: "WZ-1102", model: "NLS-10/3.2", cat: "spare",  stock: 86,  safe: 30, unit: "套", loc: "B-11-4", wh: "中心庫", critical: false, alerts: 0, trend: [60,66,72,70,78,82,86] },
+  { id: 4,  name: "SF6 氣體鋼瓶",   code: "WZ-1210", model: "40L",        cat: "consum", stock: 5,   safe: 12, unit: "瓶", loc: "危-01-1", wh: "危化品庫", critical: true, alerts: 1, trend: [14,12,11,9,8,6,5] },
+  { id: 5,  name: "複合絕緣子",      code: "WZ-1305", model: "FXBW-35/70", cat: "spare",  stock: 140, safe: 50, unit: "支", loc: "C-02-6", wh: "中心庫", critical: false, alerts: 0, trend: [120,118,124,130,128,136,140] },
+  { id: 6,  name: "衝擊電鑽",        code: "WZ-1402", model: "GSB 13 RE",  cat: "tools",  stock: 9,   safe: 6,  unit: "台", loc: "D-01-3", wh: "工具庫", critical: false, alerts: 0, trend: [6,7,7,8,9,9,9] },
+  { id: 7,  name: "液壓壓接鉗",      code: "WZ-1418", model: "YQK-300",    cat: "tools",  stock: 4,   safe: 4,  unit: "把", loc: "D-02-1", wh: "工具庫", critical: false, alerts: 0, trend: [4,3,4,4,5,4,4] },
+  { id: 8,  name: "安全帽(白)",     code: "WZ-1509", model: "ABS-V",      cat: "safety", stock: 65,  safe: 30, unit: "頂", loc: "A-01-1", wh: "中心庫", critical: false, alerts: 0, trend: [40,44,50,56,58,62,65] },
+  { id: 9,  name: "電力金具組合包",   code: "WZ-1610", model: "JJB-220",    cat: "spare",  stock: 0,   safe: 10, unit: "包", loc: "B-07-2", wh: "中心庫", critical: false, alerts: 1, trend: [8,6,5,4,2,1,0] },
+  { id: 10, name: "防墜落安全帶",     code: "WZ-1701", model: "GB6095",     cat: "safety", stock: 18,  safe: 15, unit: "條", loc: "A-02-4", wh: "搶修庫", critical: false, alerts: 0, trend: [15,14,16,17,18,18,18] },
+  { id: 11, name: "絕緣膠帶",        code: "WZ-1820", model: "J-20",       cat: "consum", stock: 320, safe: 100,unit: "卷", loc: "E-04-1", wh: "中心庫", critical: false, alerts: 0, trend: [260,280,300,290,310,315,320] },
+  { id: 12, name: "對講機",          code: "WZ-1903", model: "GP328D+",    cat: "tools",  stock: 14,  safe: 10, unit: "台", loc: "D-03-2", wh: "工具庫", critical: false, alerts: 0, trend: [10,11,12,12,13,14,14] },
+  { id: 13, name: "驅鳥器",          code: "WZ-2015", model: "QN-12",      cat: "spare",  stock: 46,  safe: 20, unit: "個", loc: "C-06-3", wh: "分庫",   critical: false, alerts: 0, trend: [30,34,36,40,42,44,46] },
+  { id: 14, name: "手持測距儀",      code: "WZ-2110", model: "PD-E",       cat: "tools",  stock: 3,   safe: 5,  unit: "台", loc: "D-05-1", wh: "工具庫", critical: false, alerts: 1, trend: [6,6,5,5,4,3,3] },
+];
+const catName = (id) => (CATS.find(c => c.id === id) || {}).name || id;
+const catRet  = (id) => !!(CATS.find(c => c.id === id) || {}).ret;
+const health  = (it) => it.stock <= 0 ? "zero" : it.stock < it.safe ? "low" : "ok";
+
+/* ============ 秘書塢:對話式操作(2.0 核心——操作不留在頁面,交給秘書) ============ */
+const SecretaryDock = ({ intent, onDone, onClose }) => {
+  const [phase, setPhase] = useState("thinking");   // thinking → confirm → done
+  useEffect(() => {
+    setPhase("thinking");
+    const t = setTimeout(() => setPhase("confirm"), 900);
+    return () => clearTimeout(t);
+  }, [intent && intent.key]);
+  if (!intent) return null;
+  return (
+    <div className="inv2-dock glass" style={{ position: "fixed", right: 24, bottom: 24, width: 380, borderRadius: "var(--r-lg)", zIndex: 80, overflow: "hidden" }}>
+      <div className="row spread" style={{ padding: "13px 16px", borderBottom: "1px solid var(--line-soft)" }}>
+        <div className="row gap-8" style={{ alignItems: "center" }}>
+          <div style={{ width: 28, height: 28, borderRadius: 9, background: "var(--grad)", display: "grid", placeItems: "center" }}><Icon name="sparkle" size={15} color="#fff"/></div>
+          <span style={{ fontSize: 13.5, fontWeight: 800 }}>倉儲秘書</span>
+          <span className="badge badge-ok" style={{ height: 20, fontSize: 10.5 }}><span className="dot"/>在線</span>
+        </div>
+        <button className="btn btn-sm" onClick={onClose} style={{ height: 26, padding: "0 8px" }}><Icon name="x" size={14}/></button>
+      </div>
+      <div className="col gap-10" style={{ padding: 16, maxHeight: 320, overflowY: "auto" }}>
+        <div className="inv2-bubble" style={{ alignSelf: "flex-end", maxWidth: "88%", background: "var(--grad)", color: "#fff", borderRadius: "14px 14px 4px 14px", padding: "9px 13px", fontSize: 13, lineHeight: 1.55 }}>{intent.ask}</div>
+        {phase === "thinking" && (
+          <div className="inv2-bubble muted" style={{ fontSize: 12.5, padding: "4px 2px" }}>秘書正在核對庫存與流程…</div>
+        )}
+        {phase !== "thinking" && (
+          <div className="inv2-bubble" style={{ alignSelf: "flex-start", maxWidth: "92%", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "14px 14px 14px 4px", padding: "11px 13px", fontSize: 13, lineHeight: 1.6 }}>
+            {intent.reply}
+            {phase === "confirm" ? (
+              <div className="row gap-8" style={{ marginTop: 10 }}>
+                <button className="btn btn-primary btn-sm" onClick={() => { setPhase("done"); onDone && onDone(intent); }}><Icon name="check" size={13}/>確認執行</button>
+                <button className="btn btn-sm" onClick={onClose}>先不用</button>
+              </div>
+            ) : (
+              <div className="row gap-6" style={{ marginTop: 10, color: "var(--ok)", fontWeight: 700, fontSize: 12.5, alignItems: "center" }}>
+                <Icon name="checkCircle" size={15}/>{intent.doneMsg} <span className="muted" style={{ fontWeight: 400 }}>· 全程已記審計</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <div style={{ padding: "10px 16px 14px", borderTop: "1px solid var(--line-soft)" }}>
+        <div className="row gap-8" style={{ alignItems: "center", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-pill)", padding: "7px 12px" }}>
+          <Icon name="mic" size={15} color="var(--ink-4)"/>
+          <span className="muted" style={{ fontSize: 12.5 }}>繼續吩咐秘書,例如「順便盤點 A 區」…</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ============ KPI 駕駛艙 ============ */
+const KpiRow = ({ items }) => {
+  const low = items.filter(i => health(i) === "low").length;
+  const zero = items.filter(i => health(i) === "zero").length;
+  const alerts = items.reduce((s, i) => s + i.alerts, 0);
+  const avail = items.filter(i => i.stock > 0).length;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+      <StatCard idx={0} icon="layers"  label="在庫物資 (SKU)" value={avail} unit="種" delta={`共 ${items.length} 種在管`} deltaUp accent="var(--blue)" spark={[11,12,12,13,13,14,14]}/>
+      <StatCard idx={1} icon="inbound" label="本週入庫"       value={18}    unit="批" delta="環比 +12%" deltaUp accent="var(--teal)" spark={[2,3,2,4,3,2,4]} sparkColor="var(--teal)"/>
+      <StatCard idx={2} icon="alert"   label="低於安全庫存"    value={low}   unit="種" delta={`零庫存 ${zero} 種`} danger spark={[3,3,4,4,5,5,5]} sparkColor="#EF4444"/>
+      <StatCard idx={3} icon="bell"    label="活躍預警"        value={alerts} unit="條" delta="秘書已在跟進 3 條" deltaUp accent="#8B5CF6" spark={[8,7,7,6,6,6,6]} sparkColor="#8B5CF6"/>
+    </div>
+  );
+};
+
+/* ============ 總覽卡:健康 Ring + 分類 Donut ============ */
+const OverviewCard = ({ items }) => {
+  const okPct = Math.round(items.filter(i => health(i) === "ok").length / items.length * 100);
+  const donut = CATS.map((c, i) => ({
+    value: items.filter(it => it.cat === c.id).length,
+    color: ["var(--blue)", "var(--teal)", "#8B5CF6", "#F59E0B"][i % 4],
+    label: c.name,
+  }));
+  return (
+    <div className="card fade-up" style={{ padding: 20, display: "flex", gap: 26, alignItems: "center", flexWrap: "wrap" }}>
+      <div className="row gap-16" style={{ alignItems: "center" }}>
+        <Ring value={okPct} size={110} stroke={11} sub="庫存健康度"/>
+        <div className="col gap-6" style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.6, maxWidth: 170 }}>
+          <span style={{ fontWeight: 800, fontSize: 13, color: "var(--ink)" }}>整體良好</span>
+          {items.filter(i => health(i) !== "ok").length} 種物資需要補充,秘書已生成補貨建議,見下方「需要關注」。
+        </div>
+      </div>
+      <div style={{ width: 1, alignSelf: "stretch", background: "var(--line)" }}/>
+      <div className="row gap-16" style={{ alignItems: "center" }}>
+        <Donut data={donut} size={110} stroke={13}/>
+        <div className="col gap-6">
+          {donut.map(d => (
+            <div key={d.label} className="row gap-8" style={{ fontSize: 12.5, color: "var(--ink-2)", alignItems: "center" }}>
+              <span style={{ width: 9, height: 9, borderRadius: 3, background: d.color }}/>{d.label}
+              <span className="num muted">{d.value} 種</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ============ 需要關注(智能分揀帶) ============ */
+const AttentionStrip = ({ items, onAsk, onOpen }) => {
+  const attn = items.filter(i => health(i) !== "ok" || i.alerts > 0)
+    .sort((a, b) => (a.stock / (a.safe || 1)) - (b.stock / (b.safe || 1)));
+  if (!attn.length) return null;
+  return (
+    <div className="card fade-up" style={{ padding: 18, animationDelay: ".06s" }}>
+      <SecHead title="需要關注" sub={`${attn.length} 種物資低庫存或有預警 · 按緊急度排序`}
+        right={<button className="btn btn-sm" onClick={() => onAsk({
+          key: "batch", ask: `幫我把 ${attn.length} 種告急物資一次性生成補貨計劃`,
+          reply: <>已核對 <b>{attn.length} 種</b>告急物資的安全庫存缺口與在途訂單,擬生成 1 張合併補貨計劃(缺口共 <b className="num">{attn.reduce((s,i)=>s+Math.max(0,i.safe-i.stock),0)}</b> 件),按倉庫拆 3 張入庫單。</>,
+          doneMsg: "補貨計劃已提交審批"
+        })}><Icon name="sparkle" size={14}/>一鍵全部補齊</button>}/>
+      <div className="inv2-attn row gap-12" style={{ overflowX: "auto", paddingBottom: 6 }}>
+        {attn.map(it => {
+          const pct = Math.min(100, Math.round(it.stock / (it.safe || 1) * 100));
+          const zero = it.stock <= 0;
+          const need = Math.max(0, it.safe - it.stock + Math.ceil(it.safe * 0.3));
+          return (
+            <div key={it.id} className="col gap-8" style={{ minWidth: 230, padding: 14, borderRadius: 14, border: `1px solid ${zero ? "var(--line)" : "rgba(239,68,68,0.25)"}`, background: zero ? "var(--surface-2)" : "var(--danger-soft)", cursor: "pointer", flexShrink: 0 }} onClick={() => onOpen(it)}>
+              <div className="row spread" style={{ alignItems: "center" }}>
+                <span className="row gap-6" style={{ fontWeight: 700, fontSize: 13, alignItems: "center" }}>
+                  {it.critical && <Icon name="flame" size={13} color="var(--danger)"/>}{it.name}
+                </span>
+                {zero ? <span className="badge badge-gray" style={{ height: 20 }}><span className="dot"/>零庫存</span> : <StatusBadge s={it.stock < it.safe ? "warn" : "ok"}/>}
+              </div>
+              <div className="row gap-6" style={{ alignItems: "baseline" }}>
+                <span className="num" style={{ fontSize: 22, fontWeight: 700, color: zero ? "var(--ink-3)" : "var(--danger)" }}>{it.stock}</span>
+                <span className="num muted" style={{ fontSize: 12 }}>/ 安全 {it.safe} {it.unit}</span>
+              </div>
+              <div style={{ height: 5, borderRadius: 3, background: "rgba(14,26,43,0.08)", overflow: "hidden" }}>
+                <div style={{ height: "100%", width: pct + "%", background: zero ? "var(--ink-4)" : "var(--danger)" }}/>
+              </div>
+              <button className="btn btn-primary btn-sm" style={{ width: "100%" }} onClick={(e) => { e.stopPropagation(); onAsk({
+                key: "rep-" + it.id, ask: `幫「${it.name}」補貨到安全線以上`,
+                reply: <>「{it.name}」當前 <b className="num">{it.stock}</b>{it.unit}、安全庫存 {it.safe}{it.unit}。建議補 <b className="num">{need} {it.unit}</b>(含 30% 緩衝);常用供應商上次單價 ¥86,{it.wh}有貨位。要我提交補貨申請嗎?</>,
+                doneMsg: "補貨申請已生成,單號 RP-20260710-0" + it.id
+              }); }}><Icon name="sparkle" size={13}/>讓秘書補貨</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+/* ============ 主列表 ============ */
+const SORTS = { urgency: "緊急優先", stock: "庫存量", name: "名稱" };
+const InvTable = ({ items, sel, onSel, onAsk }) => {
+  const [sort, setSort] = useState("urgency");
+  const [dir, setDir] = useState(1);
+  const sorted = useMemo(() => {
+    const arr = [...items];
+    if (sort === "urgency") arr.sort((a, b) => (a.stock / (a.safe || 1)) - (b.stock / (b.safe || 1)));
+    if (sort === "stock") arr.sort((a, b) => dir * (a.stock - b.stock));
+    if (sort === "name") arr.sort((a, b) => dir * a.name.localeCompare(b.name, "zh"));
+    return arr;
+  }, [items, sort, dir]);
+  const th = (key, label) => (
+    <th className="inv2-th-sort" onClick={() => { if (sort === key) setDir(-dir); else { setSort(key); setDir(1); } }}
+        style={sort === key ? { color: "var(--blue)" } : undefined}>
+      {label}{sort === key ? (dir > 0 ? " ↑" : " ↓") : ""}
+    </th>
+  );
+  return (
+    <div className="card fade-up" style={{ padding: 0, overflow: "hidden", animationDelay: ".1s" }}>
+      <table className="tbl">
+        <thead><tr>
+          {th("name", "物資")}<th>編碼 / 型號</th><th>分類</th>{th("stock", "庫存 / 安全")}<th>7 日趨勢</th><th>庫位</th>{th("urgency", "狀態")}<th style={{ width: 120 }}>交給秘書</th>
+        </tr></thead>
+        <tbody>
+          {sorted.map(it => {
+            const h = health(it);
+            const pct = Math.min(100, it.safe ? it.stock / it.safe * 100 : 0);
+            return (
+              <tr key={it.id} className="inv2-row" onClick={() => onSel(it)} style={{ cursor: "pointer", background: sel && sel.id === it.id ? "var(--blue-soft)" : undefined }}>
+                <td>
+                  <div className="row gap-10">
+                    <div style={{ width: 32, height: 32, borderRadius: 9, background: it.critical ? "var(--danger-soft)" : "var(--grad-soft)", color: it.critical ? "var(--danger)" : "var(--blue)", display: "grid", placeItems: "center", flexShrink: 0 }}>
+                      <Icon name={it.critical ? "flame" : "pkg"} size={15}/>
+                    </div>
+                    <div className="col gap-2">
+                      <span style={{ fontWeight: 600 }}>{it.name}</span>
+                      <span className="row gap-6" style={{ alignItems: "center" }}>
+                        {it.critical && <span style={{ fontSize: 10.5, color: "var(--danger)", fontWeight: 700 }}>搶修必備</span>}
+                        {it.alerts > 0 && <span className="badge badge-warn" style={{ height: 17, fontSize: 10 }}><Icon name="alert" size={10}/>{it.alerts} 條預警</span>}
+                      </span>
+                    </div>
+                  </div>
+                </td>
+                <td><div className="col gap-2"><span className="num" style={{ fontWeight: 600 }}>{it.code}</span><span className="num muted" style={{ fontSize: 11.5 }}>{it.model}</span></div></td>
+                <td className="muted"><span className="row gap-6" style={{ alignItems: "center" }}>{catName(it.cat)}{catRet(it.cat) && <span className="badge badge-info" style={{ height: 18, fontSize: 10 }}>借還</span>}</span></td>
+                <td>
+                  <span className="num" style={{ fontWeight: 700, color: h === "ok" ? "var(--ink)" : "var(--danger)" }}>{it.stock}</span>
+                  <span className="num muted"> / {it.safe} {it.unit}</span>
+                  <div style={{ width: 86, height: 5, borderRadius: 3, background: "#EEF2F7", marginTop: 5, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: pct + "%", background: h === "ok" ? "var(--ok)" : h === "low" ? "var(--danger)" : "var(--ink-4)" }}/>
+                  </div>
+                </td>
+                <td><Spark points={it.trend} w={92} h={28} color={h === "ok" ? "var(--blue)" : "var(--danger)"} fill={false}/></td>
+                <td><span className="num badge badge-gray" style={{ height: 21 }}>{it.loc}</span></td>
+                <td>{h === "zero" ? <span className="badge badge-gray"><span className="dot"/>零庫存</span> : <StatusBadge s={h === "low" ? "warn" : "ok"}/>}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  <div className="row gap-4">
+                    <button className="btn btn-sm" title="讓秘書出庫" style={{ height: 27, padding: "0 8px" }} onClick={() => onAsk({
+                      key: "out-" + it.id, ask: `出庫 2 ${it.unit}「${it.name}」給檢修一班`,
+                      reply: <>已核對「{it.name}」在 {it.wh} {it.loc} 有 <b className="num">{it.stock}</b> {it.unit} 可用{catRet(it.cat) ? ",該分類需借用歸還,將建立借用單並設歸還提醒" : ""}。領用主體記「檢修一班」,確認出庫 2 {it.unit}?</>,
+                      doneMsg: "出庫單已生成並記賬"
+                    })}><Icon name="outbound" size={13}/></button>
+                    <button className="btn btn-sm" title="讓秘書補貨" style={{ height: 27, padding: "0 8px" }} onClick={() => onAsk({
+                      key: "rep2-" + it.id, ask: `檢查「${it.name}」要不要補貨`,
+                      reply: h === "ok" ? <>「{it.name}」庫存 <b className="num">{it.stock}</b> {it.unit},高於安全線 {it.safe},近 7 日走勢平穩,<b>暫不需要補貨</b>。已設好低庫存自動提醒。</> : <>「{it.name}」低於安全線,建議補 <b className="num">{Math.max(0, it.safe - it.stock + Math.ceil(it.safe * 0.3))} {it.unit}</b>。要我提交補貨申請嗎?</>,
+                      doneMsg: h === "ok" ? "已記錄" : "補貨申請已生成"
+                    })}><Icon name="inbound" size={13}/></button>
+                    <button className="btn btn-sm" title="問秘書這個物資的任何事" style={{ height: 27, padding: "0 8px" }} onClick={() => onAsk({
+                      key: "ask-" + it.id, ask: `「${it.name}」最近的領用情況怎麼樣?`,
+                      reply: <>近 30 天「{it.name}」出庫 <b className="num">6</b> 次共 <b className="num">14</b> {it.unit},主要領用人:檢修一班(9)、運維二班(5);趨勢{health(it) === "ok" ? "平穩" : "下行,建議關注"}。要看完整流水可以說「打開它的台賬」。</>,
+                      doneMsg: "已展開完整分析"
+                    })}><Icon name="sparkle" size={13}/></button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {!sorted.length && <div className="center muted" style={{ padding: 30, fontSize: 13 }}>當前篩選下沒有物資——換個關鍵詞,或直接問秘書「幫我找…」</div>}
+    </div>
+  );
+};
+
+/* ============ 詳情抽屜(只讀 + 秘書操作) ============ */
+const Drawer = ({ item, onClose, onAsk }) => {
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  }, []);
+  if (!item) return null;
+  const h = health(item);
+  const need = Math.max(0, item.safe - item.stock + Math.ceil(item.safe * 0.3));
+  const acts = [
+    { icon: "outbound", label: "出庫領用", key: "d-out",  ask: `出庫「${item.name}」`, reply: <>好的,出多少、給哪個班組?我已鎖定 {item.wh} {item.loc} 的 <b className="num">{item.stock}</b> {item.unit} 可用量。</>, doneMsg: "出庫單已生成" },
+    { icon: "inbound",  label: "入庫上架", key: "d-in",   ask: `「${item.name}」到貨了,幫我入庫`, reply: <>收到。到貨多少 {item.unit}?我會按 {item.wh} 現有貨位 {item.loc} 上架並更新台賬。</>, doneMsg: "入庫單已生成" },
+    { icon: "swap",     label: "調撥/借用", key: "d-mv",  ask: `把「${item.name}」調 2 ${item.unit} 到搶修庫`, reply: <>搶修庫該物資貨位空餘充足,調撥後中心庫剩 <b className="num">{Math.max(0, item.stock - 2)}</b> {item.unit},不破安全線。確認調撥?</>, doneMsg: "調撥單已生成" },
+    { icon: "clipboard", label: "發起盤點", key: "d-chk", ask: `幫「${item.name}」安排一次盤點`, reply: <>建議納入本週五 A 區例行盤點(已有 12 項)。單獨盤也可以,指派給誰?</>, doneMsg: "盤點任務已建立" },
+  ];
+  return (
+    <div className="card inv2-drawer" style={{ width: 360, flexShrink: 0, padding: 0, alignSelf: "flex-start", position: "sticky", top: 20, overflow: "hidden" }}>
+      <div style={{ padding: 20, background: item.critical ? "linear-gradient(135deg,#FFF1F1,#FFF8F2)" : "var(--grad-soft)", borderBottom: "1px solid var(--line)" }}>
+        <div className="row spread" style={{ marginBottom: 12 }}>
+          {h === "zero" ? <span className="badge badge-gray"><span className="dot"/>零庫存</span> : <StatusBadge s={h === "low" ? "warn" : "ok"}/>}
+          <button onClick={onClose} title="Esc 關閉" style={{ width: 30, height: 30, borderRadius: 9, display: "grid", placeItems: "center", background: "rgba(255,255,255,0.7)", border: "none", cursor: "pointer" }}><Icon name="x" size={16} color="var(--ink-3)"/></button>
+        </div>
+        <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3 }}>{item.name}</div>
+        <div className="num muted" style={{ fontSize: 12.5, marginTop: 6 }}>{item.code} · {item.model}</div>
+        {item.critical && <div className="row gap-6" style={{ marginTop: 10, fontSize: 12, color: "var(--danger)", fontWeight: 700 }}><Icon name="flame" size={14}/>搶修必備物資</div>}
+      </div>
+      <div style={{ padding: 20, maxHeight: "calc(100vh - 260px)", overflowY: "auto" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+          {[["當前庫存", `${item.stock} ${item.unit}`], ["安全庫存", `${item.safe} ${item.unit}`], ["庫位", `${item.wh} · ${item.loc}`], ["分類", catName(item.cat) + (catRet(item.cat) ? "(借還)" : "")]].map(([k, v], i) => (
+            <div key={i} className="col gap-2"><span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>{k}</span><span className="num" style={{ fontSize: 13.5, fontWeight: 600 }}>{v}</span></div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--ink-4)", fontWeight: 700, letterSpacing: ".04em", marginBottom: 8 }}>近 7 期庫存趨勢</div>
+        <div style={{ padding: 14, borderRadius: 12, background: "var(--surface-2)", marginBottom: 18 }}>
+          <Spark points={item.trend} w={288} h={54} color={h === "ok" ? "var(--blue)" : "var(--danger)"}/>
+        </div>
+        {h !== "ok" && (
+          <div style={{ padding: 14, borderRadius: 12, background: "var(--blue-soft)", border: "1px solid rgba(27,107,255,0.16)", marginBottom: 18 }}>
+            <div className="row gap-8" style={{ marginBottom: 6 }}><Icon name="sparkle" size={15} color="var(--blue)"/><span style={{ fontSize: 13, fontWeight: 700, color: "var(--blue)" }}>秘書建議</span></div>
+            <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.6 }}>低於安全庫存,建議補貨 <b className="num">{need} {item.unit}</b>(含 30% 緩衝)。</div>
+          </div>
+        )}
+        <div style={{ fontSize: 11.5, color: "var(--ink-4)", fontWeight: 700, letterSpacing: ".04em", marginBottom: 8 }}>對這個物資,直接吩咐秘書</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          {acts.map(a => (
+            <button key={a.key} className="btn" style={{ height: 40, justifyContent: "flex-start", gap: 8, border: "1px solid var(--line)", borderRadius: 10, fontSize: 12.5, fontWeight: 700, padding: "0 12px", display: "flex", alignItems: "center" }}
+              onClick={() => onAsk({ key: a.key + item.id, ask: a.ask, reply: a.reply, doneMsg: a.doneMsg })}>
+              <Icon name={a.icon} size={15} color="var(--blue)"/>{a.label}
+            </button>
+          ))}
+        </div>
+        <div className="muted" style={{ fontSize: 11.5, marginTop: 12, lineHeight: 1.6 }}>2.0 約定:頁面只讀,一切改動經秘書確認執行、全程留痕。</div>
+      </div>
+    </div>
+  );
+};
+
+/* ============ 頁面 ============ */
+const PageInventory2 = () => {
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("all");
+  const [scope, setScope] = useState("avail");
+  const [sel, setSel] = useState(null);
+  const [intent, setIntent] = useState(null);
+  const searchRef = useRef(null);
+  useEffect(() => {
+    const h = (e) => { if (e.key === "/" && document.activeElement !== searchRef.current) { e.preventDefault(); searchRef.current && searchRef.current.focus(); } };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  let list = ITEMS;
+  if (scope === "avail") list = list.filter(i => i.stock > 0);
+  if (scope === "zero") list = list.filter(i => i.stock <= 0);
+  if (cat !== "all") list = list.filter(i => i.cat === cat);
+  if (q) list = list.filter(i => (i.name + i.code + i.model).toLowerCase().includes(q.toLowerCase()));
+
+  const chip = (active, grad) => ({
+    height: 30, cursor: "pointer", fontWeight: 700, border: active ? "none" : "1px solid var(--line)",
+    color: active ? "#fff" : "var(--ink-3)", background: active ? (grad ? "var(--grad)" : "var(--ink)") : "var(--surface)",
+  });
+
+  return (
+    <div style={{ maxWidth: 1380, margin: "0 auto", padding: "26px 28px 80px", position: "relative", zIndex: 1 }}>
+      <PageHead title={<span>庫存管理 <span className="grad-text">2.0</span></span>} sub="只讀駕駛艙 · 操作交給秘書 · 全程留痕"
+        actions={<>
+          <span className="row gap-6 muted" style={{ fontSize: 12, alignItems: "center", marginRight: 4 }}>按 <span className="inv2-kbd">/</span> 搜索</span>
+          <button className="btn btn-primary btn-sm" onClick={() => setIntent({
+            key: "free", ask: "看看今天庫存有什麼要處理的?",
+            reply: <>今天需要處理 3 件事:① 絕緣手套、接地線、SF6 低於安全線(建議合併補貨);② 電力金具組合包已零庫存且有在途需求;③ 週五 A 區例行盤點還差 2 人確認。從哪個開始?</>,
+            doneMsg: "已按優先級展開任務"
+          })}><Icon name="sparkle" size={14}/>吩咐秘書</button>
+        </>}/>
+
+      <div className="col" style={{ gap: 16 }}>
+        <KpiRow items={ITEMS}/>
+        <OverviewCard items={ITEMS}/>
+        <AttentionStrip items={ITEMS} onAsk={setIntent} onOpen={setSel}/>
+
+        {/* 搜索 + 篩選 */}
+        <div className="card fade-up" style={{ padding: 16, animationDelay: ".08s" }}>
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <Icon name="search" size={17} color="var(--ink-4)" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)" }}/>
+            <input ref={searchRef} className="input" value={q} onChange={e => setQ(e.target.value)} placeholder="搜索名稱、編碼、型號…(支持直接問秘書:庫存最緊張的是什麼?)" style={{ paddingLeft: 42, background: "var(--surface-2)" }}/>
+          </div>
+          <div className="row gap-8" style={{ flexWrap: "wrap" }}>
+            {[["avail", "有庫存"], ["zero", "零庫存"], ["all", "全部"]].map(([id, label]) => (
+              <button key={id} className="badge" style={chip(scope === id, false)} onClick={() => setScope(id)}>{label} <span className="num">{id === "avail" ? ITEMS.filter(i=>i.stock>0).length : id === "zero" ? ITEMS.filter(i=>i.stock<=0).length : ITEMS.length}</span></button>
+            ))}
+            <span style={{ width: 1, background: "var(--line)", alignSelf: "stretch", margin: "0 4px" }}/>
+            <button className="badge" style={chip(cat === "all", true)} onClick={() => setCat("all")}>全部分類</button>
+            {CATS.map(c => (
+              <button key={c.id} className="badge row gap-4" style={{ ...chip(cat === c.id, true), alignItems: "center" }} onClick={() => setCat(c.id)}>
+                {c.name}{c.ret && <Icon name="swap" size={12}/>}<span className="num">{ITEMS.filter(i => i.cat === c.id).length}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 18, alignItems: "flex-start" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <InvTable items={list} sel={sel} onSel={setSel} onAsk={setIntent}/>
+          </div>
+          {sel && <Drawer item={sel} onClose={() => setSel(null)} onAsk={setIntent}/>}
+        </div>
+      </div>
+
+      {intent && <SecretaryDock intent={intent} onClose={() => setIntent(null)} onDone={() => {}}/>}
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<PageInventory2/>);
+</script>
+</body>
+</html>

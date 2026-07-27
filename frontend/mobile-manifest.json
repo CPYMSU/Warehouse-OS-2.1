@@ -1,0 +1,19 @@
+{
+  "name": "WAREHOUSE OS 2.0",
+  "short_name": "WAREHOUSE OS",
+  "description": "WAREHOUSE OS 2.0 多公司智能倉儲與經營工作台",
+  "start_url": "/mobile-platform.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F5F2EB",
+  "theme_color": "#E0261C",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/v2/brand/bonfire-platform-mark.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

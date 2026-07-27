@@ -1,0 +1,59 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">03 — BILATERAL TRANSACTIONS</view><view class="title">双边交易卡</view><view class="rule"></view>
+  <view wx:if="{{contextLoading}}" class="state"><view class="state-mark">···</view><view class="state-text">正在核对收款公司</view></view>
+  <view wx:if="{{companyCode}}" class="payee swiss-card">
+    <view class="payee-label">MEMBERSHIP PAYEE / 会员收款方</view>
+    <view class="payee-name">{{companyName}}</view>
+    <view class="payee-meta mono">{{companyCode}} · {{companyCurrency}}</view>
+    <view class="payee-mode">{{companyMode}}</view>
+  </view>
+  <view class="amount-grid">
+    <view wx:for="{{presets}}" wx:key="*this" class="amount {{selected === item ? 'active' : ''}}" data-value="{{item}}" bindtap="choose"><text class="currency">¥</text><text class="mono">{{item}}</text></view>
+  </view>
+  <view class="section-head section"><text class="section-index">A</text><text class="section-title">自定义金额</text></view>
+  <view class="custom"><text>¥</text><input type="digit" value="{{custom}}" placeholder="0.00" bindinput="input" /></view>
+  <view class="process swiss-card">
+    <view class="process-label">END-TO-END / 不调用微信商户 API</view>
+    <view class="process-row"><text>01</text><view><label>用户提出</label><text>建立金额明确的充值卡，余额不变。</text></view></view>
+    <view class="process-row"><text>02</text><view><label>商家核对</label><text>商家在线下确认实际收款后，服务端才写入余额。</text></view></view>
+    <view class="process-row"><text>03</text><view><label>用户核对归档</label><text>这里只核对商家已经入账的结果，不会新增余额，也不能修改金额。</text></view></view>
+  </view>
+  <view class="recharge-lock"><text>SERVER LOCK / 资金规则</text><label>用户输入的金额只是申请。商家未确认实际收款前，数据库余额永远不会增加。</label></view>
+  <view class="notice">APP 不经手或代收真实资金。可使用现金、银行转账或双方约定的方式；充值只进入当前公司的会员账户。</view>
+  <button class="gift-entry" bindtap="openGiftClaim">
+    <text class="gift-entry-index">GIFT / SCAN</text>
+    <view><text class="gift-entry-title">扫描或领取礼品卡</text><text class="gift-entry-note">验证一次性 Swiss 卡片并写入当前公司会员钱包</text></view>
+    <text class="gift-entry-command">SCAN</text>
+  </button>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <button class="btn btn-red submit" loading="{{busy}}" disabled="{{busy || contextLoading || !companyCode}}" bindtap="submit">向「{{companyName}}」发送充值卡</button>
+
+  <view class="section-head section"><text class="section-index">B</text><text class="section-title">交易卡记录</text></view>
+  <view wx:if="{{!cards.length}}" class="empty-card">还没有充值卡</view>
+  <view wx:for="{{cards}}" wx:key="card_no" class="transaction-card status-{{item.status}}">
+    <view class="card-head">
+      <view><view class="card-type">{{item.typeText}} / {{item.currency}}</view><view class="card-status">{{item.statusText}}</view></view>
+      <view class="card-amount mono">¥{{item.amountText}}</view>
+    </view>
+    <view class="card-meta mono">{{item.card_no}} · {{item.createdText}}</view>
+    <view wx:if="{{item.description}}" class="operator-note">交易用途：{{item.description}}</view>
+    <view wx:if="{{item.operator_note}}" class="operator-note">商家说明：{{item.operator_note}}</view>
+    <view wx:if="{{item.lines.length}}" class="receipt-lines">
+      <view wx:for="{{item.lines}}" wx:key="line_no" class="receipt-line"><view><text>{{item.typeText}} / {{item.item_name}}</text><label class="mono">{{item.quantity}} × ¥{{item.unitPriceText}}</label></view><text class="mono">¥{{item.lineTotalText}}</text></view>
+    </view>
+    <view class="event-list">
+      <view wx:for="{{item.events}}" wx:key="event_id" wx:for-item="eventRow" class="event-row">
+        <text class="event-dot"></text>
+        <view><label>{{eventRow.label}}</label><text>{{eventRow.timeText}}</text></view>
+      </view>
+    </view>
+    <view class="card-actions">
+      <button wx:if="{{item.canAcknowledge}}" class="card-btn confirm" data-no="{{item.card_no}}" bindtap="acknowledge">核对结果并归档</button>
+      <button wx:if="{{item.canCancel}}" class="card-btn" data-no="{{item.card_no}}" bindtap="cancelCard">取消充值卡</button>
+      <button wx:if="{{item.canDeclineCharge}}" class="card-btn" data-no="{{item.card_no}}" bindtap="declineCharge">拒绝扣费</button>
+      <button wx:if="{{item.canConfirmCharge}}" class="card-btn confirm" data-no="{{item.card_no}}" bindtap="confirmCharge">确认商家扣费</button>
+    </view>
+  </view>
+</view>
+</theme-provider>

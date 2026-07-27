@@ -1,0 +1,126 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">B — BUSINESS</view>
+  <view class="title">经营中心</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{companies.length}}" class="context-switch">
+    <view class="context-switch-index mono">CO</view>
+    <picker class="context-switch-picker" range="{{companyNames}}" value="{{companyIndex}}" bindchange="onCompanyChange">
+      <view class="context-switch-body"><view><view class="context-switch-label">CURRENT BUSINESS</view><view class="context-switch-name">{{companyNames[companyIndex]}}</view></view><view class="context-switch-command">选择公司</view></view>
+    </picker>
+  </view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">同步经营身份与预约</view></view>
+
+  <block wx:elif="{{dashboard}}">
+    <view wx:if="{{error}}" class="error workspace-error">{{error}}</view>
+    <view id="operatorWorkspace" class="workspace-nav">
+      <button hover-class="none" class="workspace-tab {{activeSection === 'overview' ? 'active' : ''}}" data-section="overview" bindtap="switchSection"><text>01</text><text class="workspace-tab-label">总览</text></button>
+      <button hover-class="none" class="workspace-tab {{activeSection === 'transactions' ? 'active' : ''}}" data-section="transactions" bindtap="switchSection"><text>02</text><text class="workspace-tab-label">交易</text><view wx:if="{{transactionCards.length}}" class="workspace-badge mono">{{transactionCards.length}}</view></button>
+      <button hover-class="none" class="workspace-tab {{activeSection === 'gifts' ? 'active' : ''}}" data-section="gifts" bindtap="switchSection"><text>03</text><text class="workspace-tab-label">礼卡</text></button>
+      <button hover-class="none" class="workspace-tab {{activeSection === 'system' ? 'active' : ''}}" data-section="system" bindtap="switchSection"><text>04</text><text class="workspace-tab-label">系统</text></button>
+    </view>
+
+    <view wx:if="{{activeSection === 'overview'}}" class="workspace-panel">
+      <view class="workspace-heading"><view><text>01 / OVERVIEW</text><label>今日经营总览</label></view><text class="workspace-heading-note">常用入口集中呈现</text></view>
+      <view class="business-card">
+        <view class="business-mode">{{dashboard.company.warehouse_linked ? 'WAREHOUSE LINKED' : 'STANDALONE BUSINESS'}}</view>
+        <view class="business-name">{{dashboard.company.name}}</view>
+        <view class="business-role">APP ROLE / {{dashboard.company.operator_role}}</view>
+        <view class="business-grid">
+          <view><text>{{dashboard.upcoming_appointments.length}}</text><label>待处理预约</label></view>
+          <view><text>{{dashboard.services.length}}</text><label>服务</label></view>
+          <view><text>{{dashboard.staff.length}}</text><label>员工</label></view>
+        </view>
+      </view>
+      <view class="business-menu-grid">
+        <button class="business-action red compact" bindtap="openAppointments"><text class="business-action-index">01</text><view><text class="business-action-title">预约管理</text><text class="business-action-note">确认、完成、取消与未到店</text></view><text class="business-action-command">管理</text></button>
+        <button class="business-action black compact" bindtap="openSetup"><text class="business-action-index">02</text><view><text class="business-action-title">营业与排班</text><text class="business-action-note">工作室、员工与开放时间</text></view><text class="business-action-command">设置</text></button>
+        <button class="business-action red compact" bindtap="openSales"><text class="business-action-index">03</text><view><text class="business-action-title">销售管理</text><text class="business-action-note">数据库选客并自动计价开单</text></view><text class="business-action-command">开单</text></button>
+        <button class="business-action compact" bindtap="openFinance"><text class="business-action-index">04</text><view><text class="business-action-title">财务系统</text><text class="business-action-note">自动交易、经营流水与手工记账</text></view><text class="business-action-command">记账</text></button>
+      </view>
+    </view>
+
+    <view wx:elif="{{activeSection === 'transactions'}}" class="workspace-panel transaction-section">
+      <view class="workspace-heading"><view><text>02 / TRANSACTIONS</text><label>双边充值与扣费</label></view><text class="workspace-heading-count mono">{{transactionCards.length}}</text></view>
+      <button class="scan-payment" bindtap="scanPaymentCode">
+        <text class="scan-payment-index">SCAN / 01</text>
+        <view><text class="scan-payment-title">扫描用户付款 QR</text><text class="scan-payment-note">按用户预先授权金额一次性扣费</text></view>
+        <text class="scan-payment-command">SCAN</text>
+      </button>
+      <view class="charge-form swiss-card sales-entry-card">
+        <view class="charge-form-title">数据库选客 · 目录开单</view>
+        <view class="charge-form-note">从数据库选择客户、服务与产品，系统自动计算总额；可立即扣款，也可发送逐项确认卡。</view>
+        <button class="charge-submit" bindtap="openSales">进入 Swiss 销售工作台</button>
+      </view>
+      <view id="transactionList" class="list-caption"><text>RECENT CARDS</text><label>充值、扣费与礼卡事件</label></view>
+      <view wx:if="{{!transactionCards.length}}" class="transaction-empty">暂无交易卡</view>
+      <view wx:for="{{visibleTransactionCards}}" wx:key="card_no" class="operator-card status-{{item.status}}">
+        <view class="operator-card-head">
+          <view><view class="operator-card-type">{{item.typeText}}</view><view class="member-ref">{{item.member_name || item.member_no}}</view><view class="operator-card-status">{{item.statusText}}</view></view>
+          <view class="operator-card-amount mono">¥{{item.amountText}}</view>
+        </view>
+        <view class="operator-card-meta mono">{{item.card_no}} · {{item.createdText}}</view>
+        <view wx:if="{{item.description}}" class="operator-card-description">{{item.description}}</view>
+        <view wx:if="{{item.lines.length}}" class="operator-receipt-lines">
+          <view wx:for="{{item.lines}}" wx:key="line_no" class="operator-receipt-line"><view><text>{{item.item_name}}</text><label class="mono">{{item.quantity}} × ¥{{item.unitPriceText}}</label></view><text class="mono">¥{{item.lineTotalText}}</text></view>
+        </view>
+        <view wx:if="{{item.actionable}}" class="operator-card-actions">
+          <button class="operator-card-btn decline" data-no="{{item.card_no}}" bindtap="declineRecharge">未收到款</button>
+          <button class="operator-card-btn confirm" data-no="{{item.card_no}}" bindtap="confirmRecharge">确认收款并入账</button>
+        </view>
+      </view>
+      <view wx:if="{{transactionPageCount > 1}}" class="swiss-pager">
+        <button disabled="{{transactionPage === 0}}" data-delta="-1" bindtap="changeTransactionPage">上一页</button>
+        <text class="mono">{{transactionPageText}}</text>
+        <button disabled="{{transactionPage + 1 >= transactionPageCount}}" data-delta="1" bindtap="changeTransactionPage">下一页</button>
+      </view>
+    </view>
+
+    <view wx:elif="{{activeSection === 'gifts'}}" class="workspace-panel">
+      <view class="workspace-heading"><view><text>03 / VALUE CARDS</text><label>发行 Swiss 礼品卡</label></view><text class="workspace-heading-note">一次领取 · 双边留痕</text></view>
+      <view class="gift-form swiss-card">
+        <view class="gift-form-kicker">BONFIREWORK / SWISS GIFT</view>
+        <view class="gift-form-title">发行礼品卡</view>
+        <view class="gift-form-note">销售型请先核对线下收款；赠送型会进入用户奖励余额。每张卡只能被一个会员领取一次。</view>
+        <view class="gift-grid">
+          <view><view class="charge-label">类型</view><picker range="{{giftFundingLabels}}" value="{{giftFundingIndex}}" bindchange="onGiftFundingChange"><view class="gift-picker"><text>{{giftFundingLabels[giftFundingIndex]}}</text><text class="gift-picker-command">选择</text></view></picker></view>
+          <view><view class="charge-label">面额 / CNY</view><input class="charge-input" type="digit" value="{{giftAmount}}" data-field="giftAmount" bindinput="onGiftInput" placeholder="0.00"/></view>
+        </view>
+        <view class="gift-grid">
+          <view><view class="charge-label">有效天数</view><input class="charge-input mono" type="number" value="{{giftExpiresDays}}" data-field="giftExpiresDays" bindinput="onGiftInput" placeholder="365"/></view>
+          <view><view class="charge-label">说明</view><input class="charge-input" value="{{giftNote}}" data-field="giftNote" bindinput="onGiftInput" maxlength="120" placeholder="节日、商品或赠礼说明"/></view>
+        </view>
+        <button class="gift-submit" loading="{{creatingGift}}" disabled="{{creatingGift}}" bindtap="createGiftCard">生成一次性礼品卡</button>
+      </view>
+      <view wx:if="{{issuedGift}}" id="issuedGift" class="issued-gift swiss-card">
+        <view class="issued-gift-head"><image class="issued-gift-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/><view><view class="issued-gift-brand">BONFIREWORK / VALUE CARD</view><view class="issued-gift-type">{{issuedGift.fundingText}}</view></view></view>
+        <view class="issued-gift-body"><view class="issued-gift-value"><text>VALUE</text><label class="mono">¥{{issuedGift.amountText}}</label></view><view class="gift-qr-frame"><canvas type="2d" id="giftQr" class="gift-qr"></canvas><view class="gift-scan-line"></view></view></view>
+        <view class="issued-gift-no mono">{{issuedGift.gift_no}}</view>
+        <view class="issued-gift-expiry mono">VALID UNTIL {{issuedGift.expiresText}}</view>
+        <view class="gift-actions"><button class="gift-action" bindtap="copyGiftToken">复制领取码</button><button class="gift-action share" open-type="share">分享给用户</button></view>
+      </view>
+    </view>
+
+    <view wx:else class="workspace-panel">
+      <view class="workspace-heading"><view><text>04 / SYSTEM</text><label>经营空间与连接</label></view><text class="workspace-heading-note">身份、公司与 Warehouse</text></view>
+      <view class="warehouse-card">
+        <view class="warehouse-title">Warehouse 2.0</view>
+        <view class="muted">{{dashboard.company.warehouse_linked ? '资金数据将生成财务草稿，等待财务主管确认。' : '独立模式完整可用，不依赖超级系统。'}}</view>
+        <button wx:if="{{!warehouse.linked}}" class="link-btn" bindtap="openWarehouseLink">绑定已有账号</button>
+        <view wx:for="{{warehouse.errors}}" wx:key="*this" class="warehouse-warning">{{item}}</view>
+      </view>
+      <button class="add-company" bindtap="openRegister">＋ 新建另一个独立经营空间</button>
+    </view>
+  </block>
+
+  <view wx:elif="{{error}}" class="error">{{error}}</view>
+  <view wx:else class="empty-panel">
+    <view class="empty-title">还没有经营空间</view>
+    <view class="muted">你可以直接注册独立经营者，也可以绑定已有 Warehouse 公司账号。</view>
+    <button class="btn btn-red full-btn" bindtap="openRegister">注册独立经营者</button>
+    <button class="btn full-btn" bindtap="openWarehouseLink">绑定 Warehouse 账号</button>
+  </view>
+</view>
+</theme-provider>

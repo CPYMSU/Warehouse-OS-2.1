@@ -1,0 +1,40 @@
+<theme-provider>
+<view class="page companies-page">
+  <view class="companies-masthead">
+    <view><view class="eyebrow">05 — COMPANY INDEX</view><view class="title">我的公司</view></view>
+    <view class="company-total mono">{{companies.length}}</view>
+  </view>
+  <view class="companies-intro">每家公司拥有独立余额、预约、交易事件与会员规则。</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">正在读取公司目录</view></view>
+  <view wx:if="{{!loading && !companies.length}}" class="company-empty">MEMBERSHIP / 00 · 尚未加入公司</view>
+  <view wx:for="{{companies}}" wx:key="code" class="company {{selected === item.code ? 'selected' : ''}}" data-code="{{item.code}}" bindtap="select">
+    <view class="company-index mono">{{index < 9 ? '0' + (index + 1) : index + 1}}</view>
+    <view class="company-main"><view class="company-name">{{item.name}}</view><view class="company-meta">{{item.levelName}} · ¥{{item.balance}}</view><view class="company-link">{{item.modeLabel}}</view></view>
+    <view class="company-mode">{{selected === item.code ? '当前' : '选择'}}</view>
+  </view>
+
+  <view class="section join-section">
+    <view class="section-head"><text class="section-index">A</text><text class="section-title">加入公司</text></view>
+    <view class="join-instruction"><text class="mono">CODE / ACCESS</text><label>输入经营者提供的公司代码，先核对收款主体与正式规则。</label></view>
+    <input class="code-input mono" placeholder="输入公司代码" value="{{joinCode}}" bindinput="inputCode" />
+    <button class="btn lookup" loading="{{previewing}}" disabled="{{previewing || !joinCode}}" bindtap="previewFromInput">查询收款公司</button>
+    <view wx:if="{{joinPreview}}" class="join-preview swiss-card">
+      <view class="preview-label">MEMBERSHIP PAYEE / 会员收款方</view>
+      <view class="preview-name">{{joinPreview.name}}</view>
+      <view class="preview-meta mono">{{joinPreview.code}} · {{joinPreview.currency}}</view>
+      <view class="preview-mode">{{joinPreview.modeLabel}}</view>
+      <view wx:if="{{joinPreview.consentText}}" class="consent-copy">
+        <view class="consent-version mono">RULES {{joinPreview.consentVersion}}</view>
+        <view>{{joinPreview.consentText}}</view>
+      </view>
+      <view wx:else class="consent-unavailable">该公司尚未发布可验证的正式会员服务与隐私规则，当前不能加入。</view>
+    </view>
+    <view class="rules-link {{!joinPreview ? 'disabled-link' : ''}}" bindtap="showRules">查看当前公司的会员服务与隐私规则</view>
+    <checkbox-group bindchange="toggleConsent" class="consent"><label><checkbox value="agree" checked="{{consented}}" disabled="{{!joinPreview || !joinPreview.consentText || !joinPreview.consentVersion}}" color="var(--swiss-ink, #141414)" />我已核对收款公司并明确同意上述正式规则</label></checkbox-group>
+    <button class="btn btn-primary" disabled="{{!consented || !joinPreview || !joinPreview.consentText || !joinPreview.consentVersion}}" bindtap="join">{{joinButtonLabel}}</button>
+  </view>
+</view>
+</theme-provider>

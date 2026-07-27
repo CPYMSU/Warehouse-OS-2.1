@@ -1,0 +1,46 @@
+{
+  "pages": [
+    "pages/home/index",
+    "pages/booking/index",
+    "pages/appointments/index",
+    "pages/operator/index",
+    "pages/operator-finance/index",
+    "pages/operator-sales/index",
+    "pages/operator-register/index",
+    "pages/operator-setup/index",
+    "pages/operator-appointments/index",
+    "pages/warehouse-link/index",
+    "pages/companies/index",
+    "pages/recharge/index",
+    "pages/gift-claim/index",
+    "pages/pay-code/index",
+    "pages/ledger/index",
+    "pages/level/index",
+    "pages/lottery/index",
+    "pages/profile/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "MEMBER",
+    "navigationBarBackgroundColor": "#141414",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#F1EEE5",
+    "backgroundTextStyle": "dark"
+  },
+  "tabBar": {
+    "color": "#A49E90",
+    "selectedColor": "#FFFFFF",
+    "backgroundColor": "#141414",
+    "borderStyle": "black",
+    "list": [
+      {"pagePath": "pages/home/index", "text": "首页"},
+      {"pagePath": "pages/booking/index", "text": "预约"},
+      {"pagePath": "pages/appointments/index", "text": "我的预约"},
+      {"pagePath": "pages/profile/index", "text": "我的"}
+    ]
+  },
+  "style": "v2",
+  "usingComponents": {
+    "theme-provider": "/components/theme-provider/index"
+  },
+  "sitemapLocation": "sitemap.json"
+}

@@ -1,0 +1,105 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">B02 — AVAILABILITY</view>
+  <view class="title">营业与排班</view>
+  <view class="subtitle">{{companyName}}</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-text">读取营业设置</view></view>
+  <block wx:else>
+    <view class="setup-section swiss-card">
+      <view class="section-no">01 / 工作室</view>
+      <input class="input strong" value="{{location.name}}" data-field="name" bindinput="onLocationInput" placeholder="工作室名称"/>
+      <input class="input" value="{{location.address}}" data-field="address" bindinput="onLocationInput" placeholder="地址（可选）"/>
+      <picker range="{{timezoneNames}}" value="{{timezoneIndex}}" bindchange="onTimezoneChange">
+        <view class="timezone-field"><text class="field-small">公司时区</text><text class="timezone-value">{{timezoneNames[timezoneIndex]}}</text><text class="timezone-command">选择</text></view>
+      </picker>
+      <view class="opening-head"><view><text>OPENING HOURS</text><label>工作室开放时段</label></view><button bindtap="addOpeningPeriod">＋ 添加时段</button></view>
+      <view wx:for="{{openingPeriods}}" wx:key="key" class="opening-period">
+        <view class="opening-period-head"><text class="mono">TIME / {{index + 1 < 10 ? '0' : ''}}{{index + 1}}</text><button wx:if="{{openingPeriods.length > 1}}" data-index="{{index}}" bindtap="removeOpeningPeriod">移除</button></view>
+        <view class="inline-fields opening-time-fields">
+          <picker mode="time" value="{{item.start}}" data-index="{{index}}" bindchange="onOpeningStartChange"><view class="time-field"><text class="field-small">开放开始</text><text class="time-value mono">{{item.start}}</text></view></picker>
+          <picker mode="time" value="{{item.end}}" data-index="{{index}}" bindchange="onOpeningEndChange"><view class="time-field"><text class="field-small">开放结束</text><text class="time-value mono">{{item.end}}</text></view></picker>
+        </view>
+        <checkbox-group class="weekday-row" data-index="{{index}}" bindchange="onOpeningWeekdays">
+          <label wx:for="{{item.weekdays}}" wx:for-item="day" wx:key="value" class="weekday">
+            <checkbox value="{{day.value}}" checked="{{day.checked}}" color="var(--swiss-accent, #E0261C)"/>
+            <text>{{day.label}}</text>
+          </label>
+        </checkbox-group>
+      </view>
+      <view class="inline-fields">
+        <view class="number-field" data-contract="booking-start-interval"><text class="field-small">预约开始间隔/分钟</text><input type="number" value="{{location.interval}}" data-field="interval" bindinput="onLocationInput"/></view>
+        <view class="number-field"><text class="field-small">至少提前/分钟</text><input type="number" value="{{location.notice}}" data-field="notice" bindinput="onLocationInput"/></view>
+      </view>
+    </view>
+
+    <view class="section-heading"><text class="section-heading-index">02</text><text class="section-heading-title">服务项目</text><button bindtap="addService">＋ 添加</button></view>
+    <view wx:for="{{services}}" wx:key="code" class="setup-section service-card">
+      <view class="card-head"><text>服务 {{index + 1}}</text><button data-index="{{index}}" bindtap="removeService">移除</button></view>
+      <input class="input strong" value="{{item.name}}" data-index="{{index}}" data-field="name" bindinput="onServiceInput" placeholder="服务名称"/>
+      <input class="input mono" value="{{item.code}}" data-index="{{index}}" data-field="code" bindinput="onServiceInput" placeholder="服务代码"/>
+      <view class="triple-fields">
+        <view data-contract="booking-occupancy-duration"><text class="field-small">单次预约占用/分钟</text><input type="number" value="{{item.duration}}" data-index="{{index}}" data-field="duration" bindinput="onServiceInput"/></view>
+        <view><text class="field-small">价格/元</text><input type="digit" value="{{item.price}}" data-index="{{index}}" data-field="price" bindinput="onServiceInput"/></view>
+        <view><text class="field-small">订金/元</text><input type="digit" value="{{item.deposit}}" data-index="{{index}}" data-field="deposit" bindinput="onServiceInput"/></view>
+      </view>
+      <view class="hint">“预约开始间隔”决定 11:00、11:30 等开始时间；“单次预约占用”决定每次预约持续多久，并且必须在开放时间内完整结束。</view>
+      <view class="service-schedule-switch">
+        <view><text class="staff-switch-title">单独设置服务时间</text><text class="staff-switch-note">{{item.customSchedule ? '工作室 × 服务时间自动取交集' : '沿用工作室全部开放时段'}}</text></view>
+        <switch checked="{{item.customSchedule}}" data-index="{{index}}" bindchange="onServiceScheduleToggle" color="var(--swiss-accent, #E0261C)"/>
+      </view>
+      <block wx:if="{{item.customSchedule}}">
+        <view class="service-period-title"><view><text>SERVICE HOURS</text><label>可预约星期与时间</label></view><button data-index="{{index}}" bindtap="addServicePeriod">＋ 添加时段</button></view>
+        <view wx:for="{{item.periods}}" wx:for-item="period" wx:for-index="periodIndex" wx:key="key" class="service-period">
+          <view class="opening-period-head"><text class="mono">SERVICE / {{periodIndex + 1 < 10 ? '0' : ''}}{{periodIndex + 1}}</text><button wx:if="{{item.periods.length > 1}}" data-service-index="{{index}}" data-period-index="{{periodIndex}}" bindtap="removeServicePeriod">移除</button></view>
+          <view class="inline-fields opening-time-fields">
+            <picker mode="time" value="{{period.start}}" data-service-index="{{index}}" data-period-index="{{periodIndex}}" bindchange="onServiceStartChange"><view class="time-field"><text class="field-small">服务开始</text><text class="time-value mono">{{period.start}}</text></view></picker>
+            <picker mode="time" value="{{period.end}}" data-service-index="{{index}}" data-period-index="{{periodIndex}}" bindchange="onServiceEndChange"><view class="time-field"><text class="field-small">服务结束</text><text class="time-value mono">{{period.end}}</text></view></picker>
+          </view>
+          <checkbox-group class="weekday-row" data-service-index="{{index}}" data-period-index="{{periodIndex}}" bindchange="onServiceWeekdays">
+            <label wx:for="{{period.weekdays}}" wx:for-item="day" wx:for-index="dayIndex" wx:key="value" class="weekday">
+              <checkbox value="{{day.value}}" checked="{{day.checked}}" color="var(--swiss-accent, #E0261C)"/>
+              <text>{{day.label}}</text>
+            </label>
+          </checkbox-group>
+        </view>
+        <view class="service-binding-note"><text>BOUND / 联动规则</text><label>星期一至星期日均可选择；该日只要工作室有开放时段，就会自动生成两者交集内的预约时间。</label></view>
+      </block>
+    </view>
+
+    <view class="section-heading"><text class="section-heading-index">03</text><text class="section-heading-title">工作人员</text><button bindtap="addStaff">＋ 添加</button></view>
+    <view wx:if="{{!staff.length}}" class="empty-staff">不添加员工时，预约将以工作室容量安排。</view>
+    <view wx:for="{{staff}}" wx:key="code" class="setup-section staff-card">
+      <view class="card-head"><text>员工 {{index + 1}}</text><button data-index="{{index}}" bindtap="removeStaff">移除</button></view>
+      <input class="input strong" value="{{item.name}}" data-index="{{index}}" data-field="name" bindinput="onStaffInput" placeholder="姓名"/>
+      <input class="input mono" value="{{item.code}}" data-index="{{index}}" data-field="code" bindinput="onStaffInput" placeholder="员工代码"/>
+      <input class="input" value="{{item.title}}" data-index="{{index}}" data-field="title" bindinput="onStaffInput" placeholder="职位（可选）"/>
+      <view class="staff-schedule-switch">
+        <view><text class="staff-switch-title">单独设置空闲时间</text><text class="staff-switch-note">{{item.customSchedule ? '只开放下方选择的时段' : '沿用工作室营业时间'}}</text></view>
+        <switch checked="{{item.customSchedule}}" data-index="{{index}}" bindchange="onStaffScheduleToggle" color="var(--swiss-accent, #E0261C)"/>
+      </view>
+      <block wx:if="{{item.customSchedule}}">
+        <view class="service-period-title"><view><text>STAFF HOURS</text><label>员工可预约星期与时间</label></view><button data-index="{{index}}" bindtap="addStaffPeriod">＋ 添加时段</button></view>
+        <view wx:for="{{item.periods}}" wx:for-item="period" wx:for-index="staffPeriodIndex" wx:key="key" class="service-period">
+          <view class="opening-period-head"><text class="mono">STAFF / {{staffPeriodIndex + 1 < 10 ? '0' : ''}}{{staffPeriodIndex + 1}}</text><button wx:if="{{item.periods.length > 1}}" data-staff-index="{{index}}" data-period-index="{{staffPeriodIndex}}" bindtap="removeStaffPeriod">移除</button></view>
+          <view class="inline-fields opening-time-fields">
+            <picker mode="time" value="{{period.start}}" data-staff-index="{{index}}" data-period-index="{{staffPeriodIndex}}" bindchange="onStaffStartChange"><view class="time-field"><text class="field-small">空闲开始</text><text class="time-value mono">{{period.start}}</text></view></picker>
+            <picker mode="time" value="{{period.end}}" data-staff-index="{{index}}" data-period-index="{{staffPeriodIndex}}" bindchange="onStaffEndChange"><view class="time-field"><text class="field-small">空闲结束</text><text class="time-value mono">{{period.end}}</text></view></picker>
+          </view>
+          <checkbox-group class="weekday-row" data-staff-index="{{index}}" data-period-index="{{staffPeriodIndex}}" bindchange="onStaffWeekdays">
+            <label wx:for="{{period.weekdays}}" wx:for-item="day" wx:for-index="dayIndex" wx:key="value" class="weekday">
+              <checkbox value="{{day.value}}" checked="{{day.checked}}" color="var(--swiss-accent, #E0261C)"/>
+              <text>{{day.label}}</text>
+            </label>
+          </checkbox-group>
+        </view>
+      </block>
+      <view class="hint">该员工默认可提供全部已列服务；保存前会验证工作室、服务与员工三层排班在每个开放日都有真实可约时段。</view>
+    </view>
+
+    <view wx:if="{{error}}" class="error">{{error}}</view>
+    <button class="btn btn-red save-btn" loading="{{saving}}" disabled="{{saving}}" bindtap="save">保存营业与排班</button>
+  </block>
+</view>
+</theme-provider>

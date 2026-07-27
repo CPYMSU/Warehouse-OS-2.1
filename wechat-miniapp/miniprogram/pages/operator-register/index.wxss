@@ -1,0 +1,11 @@
+.lead { margin-top: 18rpx; color: #85806F; font-size: 24rpx; line-height: 1.6; }
+.form-card { padding: 28rpx; }
+.field-label { color: var(--swiss-accent, #E0261C); font-size: 19rpx; font-weight: 800; letter-spacing: 3rpx; }
+.gap { margin-top: 30rpx; }
+.input { height: 86rpx; margin-top: 10rpx; border-bottom: 2rpx solid var(--swiss-ink, #141414); font-size: 29rpx; font-weight: 700; }
+.hint { margin-top: 10rpx; color: #85806F; font-size: 20rpx; line-height: 1.5; }
+.consent-card { margin-top: 28rpx; padding: 24rpx; border: 2rpx solid var(--swiss-ink, #141414); background: #FAF8F2; }
+.consent-title { font-size: 27rpx; font-weight: 800; }
+.consent-text { height: 150rpx; margin-top: 16rpx; color: #5F5A4D; font-size: 21rpx; line-height: 1.6; }
+.agree-line { display: flex; margin-top: 20rpx; align-items: center; gap: 10rpx; font-size: 22rpx; font-weight: 700; }
+.submit { width: 100%; margin-top: 28rpx; }

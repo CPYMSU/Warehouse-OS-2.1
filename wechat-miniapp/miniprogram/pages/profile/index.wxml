@@ -1,0 +1,99 @@
+<theme-provider id="themeProvider">
+<view class="page profile-page">
+  <view class="profile-masthead">
+    <view>
+      <view class="eyebrow">04 — IDENTITY</view>
+      <view class="title">我的</view>
+    </view>
+    <image class="profile-mark poster-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+  </view>
+  <view class="profile-intro">一个微信会话，两种身份入口；系统按已验证权限分配消费者端与经营端。</view>
+  <view class="rule"></view>
+
+  <view class="section theme-section">
+    <view class="section-head"><text class="section-index">A</text><text class="section-title">Swiss 配色</text><text class="theme-current">{{themeName}}</text></view>
+    <view class="theme-note">自由替换界面中的主色与墨色。系统会自动选择黑色或白色文字，保持按钮和海报信息清楚可读。</view>
+    <view class="theme-preview" style="{{themePreviewStyle}}">
+      <view class="theme-preview-accent"><text>ACCENT</text><label>{{themeDraftAccent}}</label></view>
+      <view class="theme-preview-ink"><text>INK</text><label>{{themeDraftInk}}</label></view>
+      <view class="theme-preview-title">SWISS<br/>SYSTEM</view>
+      <view class="theme-preview-rule"></view>
+    </view>
+    <view class="theme-subhead"><text>01 / PRESETS</text><label>经典 Swiss 方案</label></view>
+    <view class="theme-presets">
+      <button wx:for="{{themePresets}}" wx:key="id" hover-class="none" class="theme-preset {{item.selected ? 'selected' : ''}}" data-id="{{item.id}}" bindtap="selectThemePreset">
+        <view class="theme-swatches"><text style="background-color: {{item.accent}}"></text><text style="background-color: {{item.ink}}"></text></view>
+        <label>{{item.name}}</label><text class="mono">{{item.accent}} / {{item.ink}}</text>
+      </button>
+    </view>
+    <view class="theme-subhead manual"><text>02 / MANUAL</text><label>HEX 手动配色</label></view>
+    <view class="theme-manual-grid">
+      <view><label>主色 / 原红色</label><input class="theme-hex mono" value="{{themeDraftAccent}}" data-field="themeDraftAccent" bindinput="onThemeInput" maxlength="7" placeholder="#RRGGBB"/></view>
+      <view><label>墨色 / 原黑色</label><input class="theme-hex mono" value="{{themeDraftInk}}" data-field="themeDraftInk" bindinput="onThemeInput" maxlength="7" placeholder="#RRGGBB"/></view>
+    </view>
+    <view wx:if="{{themeError}}" class="theme-error">{{themeError}}</view>
+    <view class="theme-actions"><button class="theme-reset" bindtap="resetTheme">恢复经典</button><button class="theme-save" bindtap="saveCustomTheme">应用手动配色</button></view>
+  </view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">正在读取身份</view></view>
+  <view wx:elif="{{error}}" class="error">{{error}}</view>
+
+  <block wx:else>
+    <view wx:if="{{warehouse.linked}}" class="identity identity-linked swiss-card" bindtap="openWarehouseLink">
+      <view class="identity-head"><text class="identity-label">WAREHOUSE / VERIFIED</text><text class="identity-state">已验证</text></view>
+      <view class="identity-name">{{warehouseAccountName}}</view>
+      <view class="identity-username mono">{{warehouseUsername ? '@' + warehouseUsername : 'TRUSTED ACCOUNT'}}</view>
+      <view class="identity-grid">
+        <view><text class="mono">{{operatorCompanies.length}}</text><label>经营空间</label></view>
+        <view><text class="mono">{{companies.length}}</text><label>会员公司</label></view>
+        <view><text>{{portal === 'operator' ? '经营' : '消费'}}</text><label>当前入口</label></view>
+      </view>
+      <view class="identity-command">身份管理</view>
+    </view>
+
+    <view wx:else class="identity identity-consumer swiss-card">
+      <view class="identity-head"><text class="identity-label">WECHAT / CONSUMER</text><text class="identity-state">安全会话</text></view>
+      <view class="identity-name">微信会员身份</view>
+      <view class="identity-id mono">{{consumer ? consumer.id : 'SESSION READY'}}</view>
+      <view class="identity-note">消费者资料独立于公司员工账号；验证 Warehouse 账号后可自动开放经营端。</view>
+      <button class="identity-login" bindtap="openWarehouseLink">公司管理层登入 / 注册经营者</button>
+    </view>
+
+    <view class="section claim-section">
+      <view class="section-head"><text class="section-index">B</text><text class="section-title">认领客户资料</text><text class="section-count mono">QR</text></view>
+      <view class="claim-profile-poster">
+        <view><text>IDENTITY MATCH</text><label>商家曾经手工为你建档？</label><view>扫描商家生成的一次性二维码，把原有余额、积分、消费与预约记录安全连接到当前微信身份。</view></view>
+        <image src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+      </view>
+      <button class="claim-profile-button" loading="{{claimBusy}}" disabled="{{claimBusy}}" bindtap="scanCustomerClaim">扫描本人客户认领码</button>
+    </view>
+
+    <view class="section">
+      <view class="section-head"><text class="section-index">C</text><text class="section-title">会员公司</text><text class="section-count mono">{{companies.length}}</text></view>
+      <view wx:if="{{!companies.length}}" class="profile-empty">尚未加入任何会员公司。</view>
+      <view wx:for="{{companies}}" wx:key="code" class="profile-company {{selectedCompany === item.code ? 'profile-company-current' : ''}}" data-code="{{item.code}}" bindtap="selectCompany">
+        <view class="company-index mono">{{index < 9 ? '0' + (index + 1) : index + 1}}</view>
+        <view class="company-copy"><view class="company-name">{{item.name}}</view><view class="company-mode">{{item.modeLabel}}</view></view>
+        <view class="company-value"><text class="mono">¥{{item.balance}}</text><label>{{selectedCompany === item.code ? '当前' : '选择'}}</label></view>
+      </view>
+      <button class="btn btn-primary full" bindtap="companies">加入或管理公司</button>
+    </view>
+
+    <view wx:if="{{operatorCompanies.length}}" class="section">
+      <view class="section-head"><text class="section-index">D</text><text class="section-title">经营空间</text><text class="section-count mono">{{operatorCompanies.length}}</text></view>
+      <view wx:for="{{operatorCompanies}}" wx:key="code" class="operator-company" data-code="{{item.code}}" bindtap="openOperator">
+        <view><view class="operator-company-role mono">{{item.role}} / {{item.linked ? 'LINKED' : 'APP'}}</view><view class="operator-company-name">{{item.name}}</view></view>
+        <view class="poster-command">进入经营端</view>
+      </view>
+    </view>
+
+    <view class="section session-section">
+      <view class="section-head"><text class="section-index">E</text><text class="section-title">会话与安全</text></view>
+      <view class="session-note">撤销会话不会删除会员余额、预约或交易事件；本机会立即通过微信建立新会话。</view>
+      <button class="btn full logout" loading="{{sessionBusy}}" disabled="{{sessionBusy}}" bindtap="logoutDevice">重建本设备登录会话</button>
+      <button class="btn full logout-all" disabled="{{sessionBusy}}" bindtap="logoutAll">退出所有设备并重建本机登录</button>
+    </view>
+  </block>
+
+</view>
+</theme-provider>

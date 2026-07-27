@@ -1,0 +1,12 @@
+{
+  "name": "warehouse-wechat-member-miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node tests/frontend_contract_test.js",
+    "upload": "node scripts/upload.js"
+  },
+  "devDependencies": {
+    "miniprogram-ci": "2.1.31"
+  }
+}

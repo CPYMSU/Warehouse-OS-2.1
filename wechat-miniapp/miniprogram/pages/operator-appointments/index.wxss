@@ -1,0 +1,38 @@
+.list { display: flex; gap: 22rpx; flex-direction: column; }
+.policy { margin-bottom: 24rpx; padding: 20rpx; border-left: 8rpx solid var(--swiss-accent, #E0261C); background: #FAF8F2; }
+.policy-title { font-size: 22rpx; font-weight: 800; }
+.policy-note { margin-top: 7rpx; color: #85806F; font-size: 18rpx; line-height: 1.55; }
+.appointment { position: relative; padding: 26rpx; overflow: hidden; }
+.appointment::before, .appointment::after { position: absolute; top: 126rpx; width: 28rpx; height: 28rpx; border: 2rpx solid var(--swiss-ink, #141414); border-radius: 50%; background: #F1EEE5; content: ""; }
+.appointment::before { left: -17rpx; }
+.appointment::after { right: -17rpx; }
+.ticket-brand { display: flex; padding-bottom: 17rpx; align-items: center; gap: 12rpx; border-bottom: 2rpx dashed var(--swiss-ink, #141414); }
+.ticket-brand image { width: 44rpx; height: 44rpx; }
+.ticket-brand view { flex: 1; }
+.ticket-brand text, .ticket-brand label { display: block; }
+.ticket-brand text { color: var(--swiss-accent, #E0261C); font-size: 12rpx; font-weight: 900; letter-spacing: 2rpx; }
+.ticket-brand label { margin-top: 4rpx; color: #85806F; font-family: monospace; font-size: 11rpx; font-weight: 900; }
+.head { display: flex; margin-top: 18rpx; align-items: center; justify-content: space-between; }
+.status { padding: 7rpx 12rpx; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); font-size: 19rpx; font-weight: 800; }
+.status-pending { background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); }
+.status-completed { background: #167A55; }
+.status-cancelled, .status-no_show { background: #85806F; }
+.no { color: #85806F; font-size: 18rpx; }
+.service { margin-top: 26rpx; font-size: 36rpx; font-weight: 800; }
+.customer { margin-top: 8rpx; color: #85806F; font-size: 22rpx; }
+.time { margin-top: 18rpx; color: var(--swiss-accent, #E0261C); font-size: 29rpx; font-weight: 800; }
+.meta { display: flex; gap: 10rpx; margin-top: 18rpx; }
+.meta text { padding: 7rpx 10rpx; border: 2rpx solid var(--swiss-ink, #141414); font-size: 18rpx; }
+.incident { margin-top: 20rpx; padding: 17rpx; border-left: 8rpx solid #85806F; background: #F0ECE2; }
+.incident.merchant { border-left-color: var(--swiss-accent, #E0261C); }
+.incident-title { font-size: 21rpx; font-weight: 800; }
+.incident-line { margin-top: 7rpx; color: #85806F; font-size: 18rpx; line-height: 1.45; }
+.incident-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 10rpx; margin-top: 18rpx; }
+.incident-actions button { margin: 0; border-radius: 0; font-size: 19rpx; font-weight: 800; }
+.incident-actions .reject { border: 2rpx solid var(--swiss-accent, #E0261C); background: transparent; color: var(--swiss-accent, #E0261C); }
+.incident-actions .confirm { border: 0; background: #167A55; color: #fff; }
+.actions { display: flex; gap: 10rpx; margin-top: 24rpx; flex-wrap: wrap; }
+.actions button { flex: 1; min-width: 130rpx; margin: 0; border: 2rpx solid var(--swiss-ink, #141414); border-radius: 0; background: transparent; font-size: 21rpx; font-weight: 800; }
+.actions .primary { background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); }
+.actions .danger { border-color: var(--swiss-accent, #E0261C); color: var(--swiss-accent, #E0261C); }
+.empty { padding: 50rpx 0; border-top: 4rpx solid var(--swiss-ink, #141414); color: #85806F; }

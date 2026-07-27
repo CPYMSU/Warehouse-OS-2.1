@@ -1,0 +1,34 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">B01 — NEW BUSINESS</view>
+  <view class="title">注册经营者</view>
+  <view class="lead">没有 Warehouse 公司也可以使用完整的预约、会员、预存款与消费功能。</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-text">读取注册规则</view></view>
+  <block wx:else>
+    <view class="form-card swiss-card">
+      <view class="field-label">经营名称</view>
+      <input class="input" value="{{companyName}}" data-field="companyName" bindinput="onInput" maxlength="120" placeholder="例如：Bonfire Studio"/>
+
+      <view class="field-label gap">公司代码</view>
+      <input class="input mono" value="{{publicCode}}" data-field="publicCode" bindinput="onInput" maxlength="48" placeholder="例如：bonfire-studio"/>
+      <view class="hint">只允许小写字母、数字和连字符；客户可用此代码查找公司。</view>
+
+      <view class="field-label gap">经营者显示名称</view>
+      <input class="input" value="{{displayName}}" data-field="displayName" bindinput="onInput" maxlength="80" placeholder="可选"/>
+    </view>
+
+    <view wx:if="{{consent}}" class="consent-card">
+      <view class="consent-title">会员服务与隐私规则</view>
+      <scroll-view scroll-y class="consent-text">{{consent.text}}</scroll-view>
+      <checkbox-group bindchange="onAgree">
+        <label class="agree-line"><checkbox value="agree" color="var(--swiss-accent, #E0261C)"/>我已阅读并同意当前规则</label>
+      </checkbox-group>
+    </view>
+
+    <view wx:if="{{error}}" class="error">{{error}}</view>
+    <button class="btn btn-red submit" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submit">建立独立经营空间</button>
+  </block>
+</view>
+</theme-provider>

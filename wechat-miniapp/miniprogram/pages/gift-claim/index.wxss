@@ -1,0 +1,42 @@
+.gift-page { overflow: hidden; }
+.gift-card { position: relative; overflow: hidden; padding: 28rpx; border-top-color: var(--swiss-accent, #E0261C); }
+.gift-card::after { position: absolute; right: -110rpx; bottom: -140rpx; width: 330rpx; height: 330rpx; border: 46rpx solid rgba(var(--swiss-accent-rgb, 224, 38, 28),.08); border-radius: 50%; content: ""; }
+.gift-card.status-claimed, .gift-card.status-expired, .gift-card.status-revoked { filter: grayscale(.75); }
+.gift-card-accent { position: absolute; top: 0; bottom: 0; left: 0; width: 12rpx; background: var(--swiss-accent, #E0261C); }
+.gift-brand { position: relative; z-index: 1; display: flex; align-items: center; gap: 18rpx; }
+.gift-mark { width: 66rpx; height: 66rpx; }
+.gift-brand-name { font-size: 24rpx; font-weight: 900; letter-spacing: 4rpx; }
+.gift-brand-note { margin-top: 4rpx; color: var(--swiss-accent, #E0261C); font-size: 14rpx; font-weight: 800; letter-spacing: 2rpx; }
+.gift-company { position: relative; z-index: 1; margin-top: 42rpx; font-size: 38rpx; font-weight: 800; }
+.gift-mode { position: relative; z-index: 1; margin-top: 6rpx; color: #85806F; font-size: 18rpx; }
+.gift-value-label { position: relative; z-index: 1; margin-top: 48rpx; color: #85806F; font-size: 16rpx; font-weight: 800; letter-spacing: 3rpx; }
+.gift-value { position: relative; z-index: 1; margin-top: 6rpx; font-size: 78rpx; font-weight: 800; line-height: 1; }
+.gift-grid { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 18rpx; margin-top: 42rpx; padding-top: 20rpx; border-top: 2rpx solid var(--swiss-ink, #141414); }
+.gift-grid text, .gift-grid label { display: block; }
+.gift-grid text { color: var(--swiss-accent, #E0261C); font-size: 14rpx; font-weight: 800; letter-spacing: 2rpx; }
+.gift-grid label { margin-top: 8rpx; color: #85806F; font-size: 15rpx; word-break: break-all; }
+.gift-note { position: relative; z-index: 1; margin-top: 24rpx; padding: 18rpx; background: rgba(var(--swiss-ink-rgb, 20, 20, 20),.06); font-size: 21rpx; line-height: 1.5; }
+.gift-status { position: relative; z-index: 1; margin-top: 28rpx; padding: 15rpx; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); font-family: monospace; font-size: 16rpx; font-weight: 800; letter-spacing: 2rpx; text-align: center; }
+.consent-panel { margin-top: 22rpx; padding: 24rpx; }
+.consent-title { font-size: 28rpx; font-weight: 800; }
+.consent-note { margin-top: 10rpx; color: #85806F; font-size: 20rpx; line-height: 1.6; }
+.rules-link { margin-top: 22rpx; color: var(--swiss-accent, #E0261C); font-size: 20rpx; font-weight: 800; }
+.consent-check { margin-top: 22rpx; font-size: 20rpx; line-height: 1.5; }
+.claim-btn { width: 100%; margin-top: 22rpx; border: 0; border-radius: 0; background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); font-size: 24rpx; font-weight: 800; }
+.result-card { margin-top: 24rpx; padding: 28rpx; border-top-color: #167A55; }
+.result-kicker { color: #167A55; font-size: 16rpx; font-weight: 800; letter-spacing: 3rpx; }
+.result-title { margin-top: 10rpx; font-size: 32rpx; font-weight: 800; }
+.result-balance { margin-top: 28rpx; font-size: 66rpx; font-weight: 800; }
+.result-grid { display: grid; grid-template-columns: 1fr 1fr; margin-top: 24rpx; border-top: 2rpx solid var(--swiss-ink, #141414); }
+.result-grid view { padding-top: 18rpx; }
+.result-grid text, .result-grid label { display: block; }
+.result-grid text { color: #85806F; font-size: 17rpx; }
+.result-grid label { margin-top: 5rpx; font-size: 24rpx; font-weight: 800; }
+.result-card-no { margin-top: 22rpx; color: #85806F; font-size: 15rpx; word-break: break-all; }
+.result-action { width: 100%; margin-top: 22rpx; border: 2rpx solid var(--swiss-ink, #141414); border-radius: 0; background: transparent; font-size: 20rpx; font-weight: 800; }
+.scan-panel { padding: 40rpx 28rpx; text-align: center; }
+.scan-mark { width: 90rpx; height: 90rpx; }
+.scan-title { margin-top: 24rpx; font-size: 34rpx; font-weight: 800; }
+.scan-note { margin-top: 12rpx; color: #85806F; font-size: 21rpx; line-height: 1.6; }
+.scan-btn { width: 100%; margin-top: 30rpx; border: 0; border-radius: 0; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); font-size: 23rpx; font-weight: 800; }
+.scan-another { width: 100%; margin-top: 24rpx; border: 2rpx dashed #85806F; border-radius: 0; background: transparent; color: #85806F; font-size: 20rpx; }

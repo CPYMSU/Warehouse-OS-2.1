@@ -1,0 +1,159 @@
+<theme-provider>
+<view class="page home-page">
+  <view class="poster-masthead">
+    <view class="masthead-copy">
+      <view class="eyebrow">01 — BONFIREWORK</view>
+      <view class="title">{{portal === 'operator' ? '经营工作台' : '会员生活'}}</view>
+    </view>
+    <image class="home-mark poster-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+  </view>
+  <view class="edition-line">
+    <text class="mono">UNIFIED MEMBER APP / 2026</text>
+    <button wx:if="{{canSwitchPortal}}" class="portal-switch" bindtap="switchPortal">
+      {{portal === 'operator' ? '消费者端' : '经营端'}}
+    </button>
+  </view>
+  <view class="rule"></view>
+
+  <view wx:if="{{loading}}" class="state">
+    <view class="state-mark">···</view><view class="state-text">正在分配登录身份</view>
+  </view>
+  <view wx:elif="{{error}}" class="error">{{error}}</view>
+
+  <block wx:else>
+    <view class="identity-strip {{warehouse.linked ? 'identity-linked' : ''}}" bindtap="openWarehouseLink">
+      <view class="identity-number mono">00</view>
+      <view class="identity-content">
+        <view class="identity-strip-label">IDENTITY / ACCESS</view>
+        <view class="identity-strip-title">
+          {{warehouse.linked ? warehouseAccountName : '公司管理层登入或注册经营者'}}
+        </view>
+        <view class="identity-strip-meta">
+          {{warehouse.linked ? (warehouseAccountMeta || 'Warehouse 身份已可信验证') : '当前为微信消费者安全会话'}}
+        </view>
+      </view>
+      <view class="identity-strip-action poster-command">{{warehouse.linked ? '身份管理' : '登入 / 注册'}}</view>
+    </view>
+
+    <block wx:if="{{portal === 'operator'}}">
+      <block wx:if="{{operatorCompany}}">
+        <view class="context-switch">
+          <view class="context-switch-index mono">CO</view>
+          <picker class="context-switch-picker" range="{{operatorCompanyNames}}" value="{{operatorCompanyIndex}}" bindchange="onOperatorCompanyChange">
+            <view class="context-switch-body">
+              <view>
+                <view class="context-switch-label">CURRENT BUSINESS</view>
+                <view class="context-switch-name">{{operatorCompany.company_name}}</view>
+              </view>
+              <view class="context-switch-command">选择公司</view>
+            </view>
+          </picker>
+        </view>
+
+        <view class="operator-hero swiss-card">
+          <view class="operator-hero-head">
+            <view class="operator-kicker">BUSINESS / {{operatorCompany.operator_role}}</view>
+            <view class="operator-seal mono">{{operatorCompany.mode === 'warehouse_linked' ? 'LINK' : 'APP'}}</view>
+          </view>
+          <view class="operator-name">{{operatorCompany.company_name}}</view>
+          <view class="operator-mode">
+            {{operatorCompany.mode === 'warehouse_linked' ? 'Warehouse 已绑定 · 财务草稿联动' : '独立经营模式 · APP 功能完整可用'}}
+          </view>
+          <view class="operator-metrics">
+            <view><text>{{operatorDashboard ? operatorDashboard.upcoming_appointments.length : 0}}</text><label>待处理预约</label></view>
+            <view><text>{{operatorDashboard ? operatorDashboard.services.length : 0}}</text><label>服务项目</label></view>
+            <view><text>{{operatorDashboard ? operatorDashboard.staff.length : 0}}</text><label>工作人员</label></view>
+          </view>
+        </view>
+
+        <view class="action-grid operator-actions">
+          <button class="action action-lead action-red" bindtap="openOperatorAppointments">
+            <text class="action-index">A / TODAY</text><text class="action-name">预约管理</text><text class="action-command">管理</text>
+          </button>
+          <button class="action action-black" bindtap="openOperatorSetup">
+            <text class="action-index">B</text><text class="action-name">营业与排班</text><text class="action-command">设置</text>
+          </button>
+          <button class="action" bindtap="openOperator">
+            <text class="action-index">C</text><text class="action-name">经营中心</text><text class="action-command">进入</text>
+          </button>
+          <button class="action" bindtap="openBooking">
+            <text class="action-index">D</text><text class="action-name">查看客户端</text><text class="action-command">预览</text>
+          </button>
+          <button class="action action-red" bindtap="openOperatorSales">
+            <text class="action-index">E / SALES</text><text class="action-name">销售管理</text><text class="action-command">开单</text>
+          </button>
+        </view>
+
+        <view class="link-status">
+          <view>
+            <view class="link-title">Warehouse 2.0</view>
+            <view class="muted">
+              {{warehouse.linked ? '身份已可信绑定；财务事件只生成待确认草稿' : '未绑定，不影响 APP 独立经营'}}
+            </view>
+          </view>
+          <button wx:if="{{!warehouse.linked}}" class="mini-btn" bindtap="openWarehouseLink">绑定</button>
+        </view>
+      </block>
+
+      <view wx:else class="empty-panel">
+        <view class="empty-no">BUSINESS 00</view>
+        <view class="empty-title">建立你的经营空间</view>
+        <view class="muted">没有 Warehouse 公司也可以注册，预约、会员、预存款与消费功能完全可用。</view>
+        <button class="btn btn-red full-btn" bindtap="openOperatorRegister">注册成为经营者</button>
+        <button class="btn full-btn" bindtap="openWarehouseLink">我已有 Warehouse 账号</button>
+      </view>
+    </block>
+
+    <block wx:else>
+      <block wx:if="{{account}}">
+        <view class="context-switch">
+          <view class="context-switch-index mono">CO</view>
+          <picker class="context-switch-picker" range="{{consumerCompanyNames}}" value="{{consumerCompanyIndex}}" bindchange="onConsumerCompanyChange">
+            <view class="context-switch-body">
+              <view>
+                <view class="context-switch-label">CURRENT COMPANY</view>
+                <view class="context-switch-name">{{account.company.name}}</view>
+              </view>
+              <view class="context-switch-command">选择公司</view>
+            </view>
+          </picker>
+        </view>
+
+        <view class="member-card swiss-card">
+          <view class="member-top">
+            <text class="member-no mono">{{account.member_no}}</text>
+            <text class="member-level">{{account.level_name || '普通会员'}}</text>
+          </view>
+          <view class="balance-label">AVAILABLE BALANCE / CNY</view>
+          <view class="balance mono"><text class="currency">¥</text>{{balance}}</view>
+          <view class="balance-split mono">本金 ¥{{principal}} · 赠送 ¥{{bonus}}</view>
+          <view class="member-company">{{account.company.name}}</view>
+        </view>
+
+        <view class="action-grid">
+          <button class="action action-lead action-red" bindtap="openBooking"><text class="action-index">A / NEXT</text><text class="action-name">快速预约</text><text class="action-command">开始</text></button>
+          <button class="action action-black" bindtap="openAppointments"><text class="action-index">B</text><text class="action-name">我的预约</text><text class="action-command">查看</text></button>
+          <button class="action" bindtap="openRecharge"><text class="action-index">C</text><text class="action-name">充值与交易卡</text><text class="action-command">处理</text></button>
+          <button class="action" bindtap="openPayCode"><text class="action-index">D</text><text class="action-name">付款码</text><text class="action-command">出示</text></button>
+          <button class="action" bindtap="openLedger"><text class="action-index">E</text><text class="action-name">消费记录</text><text class="action-command">查看</text></button>
+          <button class="action" bindtap="openLottery"><text class="action-index">F</text><text class="action-name">会员活动</text><text class="action-command">参与</text></button>
+        </view>
+
+        <view class="company-manage" bindtap="openCompanies">
+          <view><view class="company-manage-label">MEMBERSHIP DIRECTORY</view><view class="company-manage-title">加入或管理其他公司</view><view class="muted">{{companyMode}}</view></view>
+          <view class="poster-command">管理</view>
+        </view>
+      </block>
+
+      <view wx:else class="empty-panel">
+        <view class="empty-no">MEMBER 00</view>
+        <view class="empty-title">还没有加入会员公司</view>
+        <view class="muted">输入公司代码加入消费空间，或直接建立自己的经营空间。</view>
+        <button class="btn btn-red full-btn" bindtap="openCompanies">输入公司代码</button>
+        <button class="btn full-btn" bindtap="openOperatorRegister">注册成为经营者</button>
+        <button class="btn full-btn" bindtap="openWarehouseLink">公司管理层登入</button>
+      </view>
+    </block>
+  </block>
+</view>
+</theme-provider>

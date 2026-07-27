@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WAREHOUSE OS 2.0</title>
+<link rel="icon" type="image/png" href="v2/brand/bonfire-platform-mark.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css?v=20260621shield21"/>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+<script defer src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+</head>
+<body>
+<div class="app-bg"></div>
+<div id="root"></div>
+
+<!-- React 生產版(production):比 development 版更小更快,去除運行時警告/檢查開銷 -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<!-- API 端點:本機開發(127.0.0.1/localhost)指向後端 8090;部署到服務器後同源,
+     base 留空,前端 fetch("/api/...") 由 Nginx 反代到內網 8090。改地址只需改這一處。 -->
+<script>
+  window.WAREHOUSE_API_BASE =
+    (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+      ? "http://127.0.0.1:8090"
+      : "";
+</script>
+
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="i18n.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="ai-history.jsx"></script>
+<script type="text/babel" src="agent-assistant.jsx?v=20260718memory1"></script>
+<script type="text/babel" src="shell.jsx?v=20260610asset-mgmt"></script>
+<script type="text/babel" src="page-erp.jsx?v=20260718chain1"></script>
+<script type="text/babel" src="page-finance.jsx?v=20260718chain1"></script>
+<script type="text/babel" src="page-assets.jsx?v=20260611cross-tenant"></script>
+<script type="text/babel" src="page-overview.jsx"></script>
+<script type="text/babel" src="page-inventory.jsx"></script>
+<script type="text/babel" src="page-inbound.jsx?v=20260718chain1"></script>
+<script type="text/babel" src="page-outbound.jsx?v=20260712fin1"></script>
+<script type="text/babel" src="page-alerts.jsx"></script>
+<script type="text/babel" src="page-procurement.jsx?v=20260720passkeyredirect1"></script>
+<script type="text/babel" src="page-legal.jsx?v=20260610seal-chain2"></script>
+<script type="text/babel" src="page-stocktake.jsx"></script>
+<script type="text/babel" src="page-map.jsx"></script>
+<script type="text/babel" src="page-warehouse-gis.jsx"></script>
+<script type="text/babel" src="page-ai.jsx?v=20260628kernel-unify"></script>
+<script type="text/babel" src="page-collab.jsx"></script>
+<script type="text/babel" src="page-ledgers.jsx?v=20260628kernel-unify"></script>
+<script type="text/babel" src="page-perms.jsx"></script>
+<script type="text/babel" src="page-reports.jsx"></script>
+<script type="text/babel" src="page-logs.jsx"></script>
+<script type="text/babel" src="page-settings.jsx?v=20260609changekey"></script>
+<script type="text/babel" src="page-shield.jsx?v=20260621shield22"></script>
+<script type="text/babel" src="page-terminal.jsx?v=20260715finconfirm1"></script>
+<script type="text/babel" src="page-companies.jsx"></script>
+<script type="text/babel" src="page-custom-module.jsx"></script>
+<script type="text/babel" src="page-datahub.jsx"></script>
+<script type="text/babel" src="app.jsx?v=20260718chain1"></script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+<theme-provider>
+<view class="page booking-page">
+  <view class="booking-masthead">
+    <view>
+      <view class="eyebrow">02 — BOOKING</view>
+      <view class="title">快速预约</view>
+    </view>
+    <view class="booking-date-stamp mono">{{selectedDate}}</view>
+  </view>
+  <view class="booking-intro">选择服务、工作人员与日期；系统只展示真实可用时间。</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{companyName}}" class="context-switch">
+    <view class="context-switch-index mono">CO</view>
+    <picker class="context-switch-picker" range="{{companyNames}}" value="{{companyIndex}}" bindchange="onCompanyChange">
+      <view class="context-switch-body">
+        <view>
+          <view class="context-switch-label">CURRENT COMPANY</view>
+          <view class="context-switch-name">{{companyName}}</view>
+        </view>
+        <view class="context-switch-command">选择公司</view>
+      </view>
+    </picker>
+  </view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">读取服务与时间</view></view>
+  <view wx:elif="{{error && !services.length}}" class="error">{{error}}</view>
+
+  <block wx:elif="{{services.length}}">
+    <view class="booking-card swiss-card">
+      <view class="booking-field">
+        <view class="field-index mono">01</view>
+        <view class="field-body">
+          <view class="field-label">SERVICE / 服务项目</view>
+          <picker range="{{serviceNames}}" value="{{serviceIndex}}" bindchange="onServiceChange">
+            <view class="picker-line">
+              <view>
+                <view class="picker-main">{{selectedService.name}}</view>
+                <view class="picker-meta">{{selectedService.duration_minutes}} 分钟 · ¥{{selectedService.priceText}}</view>
+              </view>
+              <text class="picker-command">选择</text>
+            </view>
+          </picker>
+        </view>
+      </view>
+
+      <view class="booking-field">
+        <view class="field-index mono">02</view>
+        <view class="field-body">
+          <view class="field-label">STAFF / 工作人员</view>
+          <picker range="{{staffNames}}" value="{{staffIndex}}" bindchange="onStaffChange">
+            <view class="picker-line"><view class="picker-main">{{staffNames[staffIndex]}}</view><text class="picker-command">选择</text></view>
+          </picker>
+        </view>
+      </view>
+
+      <view class="booking-field booking-field-date">
+        <view class="field-index mono">03</view>
+        <view class="field-body">
+          <view class="field-label">DATE / 预约日期</view>
+          <picker mode="date" value="{{selectedDate}}" start="{{minDate}}" bindchange="onDateChange">
+            <view class="date-line"><text class="date-value mono">{{selectedDate}}</text><text class="picker-command">更改日期</text></view>
+          </picker>
+        </view>
+      </view>
+    </view>
+
+    <view class="section time-section">
+      <view class="section-head"><text class="section-index">04</text><text class="section-title">可预约时间</text><text class="slot-count mono">{{slots.length}}</text></view>
+      <view wx:if="{{slotNotice}}" class="slot-notice"><text class="mono">NEXT / FOUND</text><label>{{slotNotice}}</label></view>
+      <view wx:if="{{availabilityDiagnostics.length}}" class="availability-diagnostics">
+        <view class="diagnostics-title mono">WHY / 排班诊断</view>
+        <view wx:for="{{availabilityDiagnostics}}" wx:key="*this" class="diagnostic-row"><text class="diagnostic-mark">{{index + 1}}</text><text>{{item}}</text></view>
+      </view>
+      <view wx:if="{{loadingSlots}}" class="state small-state"><view class="state-text">正在计算空闲时段</view></view>
+      <view wx:elif="{{error}}" class="error">{{error}}</view>
+      <view wx:elif="{{!slots.length}}" class="empty-slots">
+        <text class="empty-slots-code mono">NO SLOT</text>
+        <text>{{emptySlotsText}}</text>
+        <button bindtap="findNearestSlots">寻找最近可约日期</button>
+      </view>
+      <view wx:else class="slot-grid">
+        <button wx:for="{{slots}}" wx:key="slotKey" class="slot {{index === 0 ? 'slot-lead' : ''}}" data-index="{{index}}" bindtap="book">
+          <text class="slot-index mono">{{index < 9 ? '0' + (index + 1) : index + 1}}</text>
+          <text class="slot-time mono">{{item.local_start}}</text>
+          <text class="slot-end">至 {{item.local_end}}</text>
+          <text class="slot-staff">{{item.staff ? item.staff.name : '工作室可用'}}</text>
+          <text class="slot-command">预约</text>
+        </button>
+      </view>
+    </view>
+  </block>
+
+  <view wx:else class="empty-panel">
+    <view class="empty-code mono">BOOKING / 00</view>
+    <view class="empty-title">经营者尚未配置预约服务</view>
+    <view class="muted">你可以切换其他公司，或联系经营者设置营业时间。</view>
+    <button class="btn btn-red full-btn" bindtap="openCompanies">管理与切换公司</button>
+  </view>
+</view>
+</theme-provider>

@@ -1,0 +1,45 @@
+.booking-masthead { display: flex; align-items: flex-end; justify-content: space-between; gap: 20rpx; }
+.booking-date-stamp { padding-bottom: 7rpx; border-bottom: 3rpx solid var(--swiss-accent, #E0261C); color: var(--swiss-accent, #E0261C); font-size: 17rpx; font-weight: 900; }
+.booking-intro { max-width: 540rpx; margin-top: 22rpx; color: #585448; font-size: 21rpx; font-weight: 700; line-height: 1.5; }
+
+.booking-card { padding: 0; }
+.booking-field { display: grid; grid-template-columns: 70rpx minmax(0, 1fr); border-bottom: 3rpx solid var(--swiss-ink, #141414); }
+.booking-field:last-child { border-bottom: 0; }
+.field-index { display: flex; align-items: flex-start; justify-content: center; padding-top: 25rpx; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); font-size: 18rpx; font-weight: 900; }
+.booking-field-date .field-index { background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); }
+.field-body { min-width: 0; padding: 22rpx; }
+.field-label { margin-bottom: 10rpx; color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 900; letter-spacing: 3rpx; }
+.picker-line, .date-line { display: flex; min-height: 78rpx; align-items: center; justify-content: space-between; gap: 16rpx; }
+.picker-main { max-width: 410rpx; overflow: hidden; font-size: 30rpx; font-weight: 900; letter-spacing: -1rpx; text-overflow: ellipsis; white-space: nowrap; }
+.picker-meta { margin-top: 8rpx; color: #85806F; font-size: 19rpx; }
+.picker-command { display: inline-flex; min-height: 40rpx; padding: 0 10rpx; align-items: center; border: 2rpx solid var(--swiss-accent, #E0261C); color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 900; letter-spacing: 2rpx; white-space: nowrap; }
+.date-value { font-size: 34rpx; font-weight: 900; letter-spacing: -1rpx; }
+
+.time-section { margin-top: 48rpx; }
+.slot-count { display: flex; min-width: 62rpx; align-items: center; justify-content: flex-end; font-size: 23rpx; font-weight: 900; }
+.slot-grid { display: grid; grid-template-columns: 1fr 1fr; border-top: 3rpx solid var(--swiss-ink, #141414); border-left: 3rpx solid var(--swiss-ink, #141414); }
+.slot { position: relative; display: flex; min-height: 184rpx; margin: 0; padding: 18rpx; border: 0; border-right: 3rpx solid var(--swiss-ink, #141414); border-bottom: 3rpx solid var(--swiss-ink, #141414); border-radius: 0; background: #FAF8F2; color: var(--swiss-ink, #141414); line-height: 1; text-align: left; flex-direction: column; }
+.slot-lead { grid-column: span 2; min-height: 198rpx; background: var(--swiss-accent, #E0261C); color: var(--swiss-on-accent, #fff); }
+.slot-index { font-size: 15rpx; font-weight: 900; }
+.slot-time { margin-top: 18rpx; font-size: 43rpx; font-weight: 900; letter-spacing: -2rpx; }
+.slot-lead .slot-time { font-size: 58rpx; }
+.slot-end { margin-top: 7rpx; color: #85806F; font-size: 17rpx; }
+.slot-lead .slot-end { color: rgba(255,255,255,.72); }
+.slot-staff { margin-top: auto; padding-top: 20rpx; font-size: 18rpx; font-weight: 900; }
+.slot-command { position: absolute; right: 16rpx; bottom: 16rpx; padding-top: 6rpx; border-top: 2rpx solid currentColor; font-size: 14rpx; font-weight: 900; letter-spacing: 2rpx; }
+.small-state { padding: 32rpx; }
+.slot-notice { display: flex; margin-top: 14rpx; padding: 16rpx; align-items: center; justify-content: space-between; gap: 18rpx; border-left: 9rpx solid #167A55; background: #E2EEE7; }
+.slot-notice text { color: #167A55; font-size: 13rpx; font-weight: 900; letter-spacing: 2rpx; }
+.slot-notice label { font-size: 19rpx; font-weight: 900; text-align: right; }
+.empty-slots { display: flex; min-height: 150rpx; padding: 24rpx 0; justify-content: center; border-top: 8rpx solid var(--swiss-ink, #141414); border-bottom: 3rpx solid var(--swiss-ink, #141414); color: #585448; font-size: 21rpx; line-height: 1.55; flex-direction: column; }
+.empty-slots-code { margin-bottom: 12rpx; color: var(--swiss-accent, #E0261C); font-size: 18rpx; font-weight: 900; letter-spacing: 3rpx; }
+.empty-slots button { width: auto; min-height: 62rpx; margin: 20rpx 0 0; padding: 0 18rpx; align-self: flex-start; border: 2rpx solid var(--swiss-accent, #E0261C); border-radius: 0; background: transparent; color: var(--swiss-accent, #E0261C); font-size: 18rpx; font-weight: 900; line-height: 58rpx; }
+.availability-diagnostics { margin-top: 20rpx; padding: 18rpx; border-left: 8rpx solid var(--swiss-accent, #E0261C); background: rgba(var(--swiss-accent-rgb, 224, 38, 28),.07); }
+.diagnostics-title { margin-bottom: 10rpx; color: var(--swiss-accent, #E0261C); font-size: 14rpx; font-weight: 900; letter-spacing: 2rpx; }
+.diagnostic-row { display: grid; grid-template-columns: 34rpx minmax(0, 1fr); gap: 8rpx; padding: 6rpx 0; color: var(--swiss-ink, #141414); font-size: 18rpx; font-weight: 700; line-height: 1.45; }
+.diagnostic-mark { color: var(--swiss-accent, #E0261C); font-family: monospace; font-weight: 900; }
+.empty-panel { padding: 34rpx; border: 3rpx solid var(--swiss-ink, #141414); border-top-width: 12rpx; background: #FAF8F2; }
+.empty-code { color: var(--swiss-accent, #E0261C); font-size: 17rpx; font-weight: 900; letter-spacing: 3rpx; }
+.empty-title { margin: 28rpx 0 14rpx; font-size: 40rpx; font-weight: 900; letter-spacing: -2rpx; line-height: 1.08; }
+.empty-panel .muted { font-size: 21rpx; line-height: 1.5; }
+.full-btn { width: 100%; margin-top: 24rpx; }

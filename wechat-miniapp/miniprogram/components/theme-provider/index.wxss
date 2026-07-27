@@ -1,0 +1,7 @@
+.theme-provider {
+  min-height: 100vh;
+  background-color: #F1EEE5;
+  background-image: linear-gradient(90deg, rgba(var(--swiss-ink-rgb, 20, 20, 20), .035) 2rpx, transparent 2rpx);
+  background-size: 96rpx 100%;
+  color: var(--swiss-ink, #141414);
+}

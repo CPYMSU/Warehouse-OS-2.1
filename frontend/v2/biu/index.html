@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f2efe7">
+  <meta name="description" content="BIU CASEWORK 是一個多人法律倫理案件遊戲與學術協作空間。選擇席位、閱讀卷宗、建立論證，讓程序在可追溯的協作中完成。">
+  <title>BIU CASEWORK · 選擇席位，完成程序</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳至主要內容</a>
+  <header class="site-header">
+    <a class="wordmark" href="#home" data-route="home" aria-label="BIU CASEWORK 首頁">
+      <span class="wordmark-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>BIU <b>CASEWORK</b></span>
+    </a>
+    <button class="menu-button" type="button" aria-expanded="false" aria-controls="site-nav">
+      <span>MENU</span><i aria-hidden="true"></i>
+    </button>
+    <nav class="site-nav" id="site-nav" aria-label="主要導覽">
+      <a href="#guide" data-route="guide">新手引導</a>
+      <a href="#visitor" data-route="visitor">訪客入席</a>
+      <a href="#roles" data-route="roles">職位</a>
+      <a href="#lobby" data-route="lobby">案件大廳</a>
+      <a href="#messages" data-route="messages">消息</a>
+      <a href="#court" data-route="court">庭審場</a>
+      <a href="#archive" data-route="archive">歸檔與履歷</a>
+    </nav>
+    <div class="header-identity" id="header-identity"><span id="header-identity-name">訪客</span><button type="button" id="header-auth-button">呈交身份</button></div>
+    <a class="platform-link" href="/#/dashboard">WAREHOUSE 2.0 <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <div class="connection-bar" role="status" aria-live="polite">
+    <span class="connection-light" id="connection-light"></span>
+    <span id="connection-text">正在確認 BIU 目錄</span>
+    <span class="connection-route">TENANT / BIU</span>
+  </div>
+
+  <main id="main" tabindex="-1">
+    <section class="view home-view is-active" data-view="home" aria-labelledby="home-title">
+      <div class="hero-grid swiss-grid">
+        <div class="hero-main">
+          <div class="edition-row">
+            <span class="eyebrow red">EDITION 01 · LEGAL ETHICS</span>
+            <span class="eyebrow">ASIA / ONLINE</span>
+          </div>
+          <div class="signal-block" aria-hidden="true"></div>
+          <h1 id="home-title">選擇席位。<br>閱讀卷宗。<br><em>建立論證。</em></h1>
+          <p class="hero-copy">BIU CASEWORK 是一個多人法律倫理案件遊戲與學術協作空間。你不只觀看一個案件，而是以清楚的職責進入程序，與其他參與者共同留下可追溯的判斷。</p>
+          <div class="hero-actions">
+            <a class="button primary ceremonial" href="#guide" data-route="guide">
+              <span class="button-index">01</span>
+              <span>讓 BIU 為我引路</span>
+              <span aria-hidden="true">→</span>
+            </a>
+            <a class="button" href="#visitor" data-route="visitor">先以訪客席位入場</a>
+            <a class="button quiet" href="#roles" data-route="roles">已經知道職位 · 查看完整目錄</a>
+          </div>
+          <p class="qualification-note">BIU 內部學術職位與遊戲成就，不構成現實職業資格、法律意見或法律授權。</p>
+        </div>
+
+        <aside class="hero-docket" aria-label="BIU 程序簡介">
+          <div class="docket-head">
+            <span class="eyebrow">YOUR DOCKET</span>
+            <span class="docket-number">BIU / 01</span>
+          </div>
+          <ol class="docket-steps">
+            <li class="active"><span>01</span><div><b>認識自己</b><small>用情境選擇找到工作傾向</small></div></li>
+            <li><span>02</span><div><b>選定席位</b><small>可訪客入席或建立身份</small></div></li>
+            <li><span>03</span><div><b>體驗案件</b><small>公開、無狀態的程序選擇</small></div></li>
+            <li><span>04</span><div><b>完成程序</b><small>庭審、評議、完整性審查</small></div></li>
+            <li><span>05</span><div><b>留下卷宗</b><small>程序完成後進入檔案</small></div></li>
+          </ol>
+          <div class="docket-foot">
+            <span id="home-catalog-count">—</span>
+            <small>WAREHOUSE 2.0 實時職位目錄</small>
+          </div>
+        </aside>
+      </div>
+
+      <section class="manifesto section-pad" aria-labelledby="manifesto-title">
+        <div class="section-kicker"><span>01</span><span>THE IDEA</span></div>
+        <div class="manifesto-grid">
+          <h2 id="manifesto-title">好的法律遊戲，<br>不只問誰贏。</h2>
+          <div class="manifesto-copy">
+            <p>它也問：材料從哪裡來？程序是否完整？雙方是否被公平理解？結論能否被另一個人沿著卷宗重新檢查？</p>
+            <p>每一項工作都對應 BIU 內部職位、權限與審計記錄。程序走完即歸檔；不延伸至現實強制或現實個案處理。</p>
+          </div>
+        </div>
+        <div class="principle-grid">
+          <article><span>01</span><h3>ROLE BEFORE ACTION</h3><p>先確認席位，再取得對應工作。權限跟隨職位，而不是跟隨頁面。</p></article>
+          <article><span>02</span><h3>EVIDENCE BEFORE CLAIM</h3><p>每項主張都能引用卷宗材料，來源資格與匿名狀態清楚可見。</p></article>
+          <article><span>03</span><h3>PROCEDURE BEFORE SCORE</h3><p>程序完整度、倫理與協作品質，比單一勝負更重要。</p></article>
+          <article><span>04</span><h3>ARCHIVE AFTER REVIEW</h3><p>完整性審查完成後歸檔，形成可回看的案件履歷。</p></article>
+        </div>
+      </section>
+
+      <section class="process section-pad" aria-labelledby="process-title">
+        <div class="section-kicker"><span>02</span><span>ONE COMPLETE PROCEDURE</span></div>
+        <h2 id="process-title">從材料到卷宗，<br>每一步都有位置。</h2>
+        <ol class="process-rail">
+          <li><span>01</span><b>案件收錄</b><small>來源資格與匿名檢查</small></li>
+          <li><span>02</span><b>組建團隊</b><small>職位、責任與利益衝突</small></li>
+          <li><span>03</span><b>材料分析</b><small>爭點、證據與法律倫理</small></li>
+          <li><span>04</span><b>庭審程序</b><small>陳述、提問、回應與記錄</small></li>
+          <li><span>05</span><b>評議意見</b><small>形成可追溯的理由</small></li>
+          <li><span>06</span><b>完整性審查</b><small>確認程序與卷宗齊備</small></li>
+          <li><span>07</span><b>歸檔</b><small>程序完成，保留學術履歷</small></li>
+        </ol>
+      </section>
+
+      <section class="invitation section-pad swiss-grid" aria-labelledby="invitation-title">
+        <div>
+          <span class="eyebrow red">AN INVITATION TO TAKE A POSITION</span>
+          <h2 id="invitation-title">卷宗已經放在桌上。<br>現在，留下你的席位。</h2>
+        </div>
+        <a class="invitation-seal" href="#guide" data-route="guide" aria-label="接受 BIU 邀請並開始新手引導">
+          <span>ACCEPT</span><b>BIU</b><span>INVITATION</span><i aria-hidden="true">→</i>
+        </a>
+      </section>
+    </section>
+
+    <section class="view workspace-view guide-view" data-view="guide" aria-labelledby="guide-title">
+      <header class="workspace-head guide-head swiss-grid">
+        <div>
+          <span class="eyebrow red">POSITION COMPASS · 00</span>
+          <h1 id="guide-title">先找到你的<br>工作方式。</h1>
+          <p>不用先理解所有機構與職位。回答一組法律倫理情境題，BIU 會依你的選擇，從 Warehouse 2.0 實時目錄中推薦三個適合的席位。</p>
+        </div>
+        <div class="guide-spectrum" aria-hidden="true">
+          <div class="guide-spectrum-meta"><span>01—06</span><b>WORK MODES</b></div>
+          <div class="guide-spectrum-bars">
+            <i></i><i></i><i></i><i></i><i></i><i></i>
+          </div>
+          <small>POSITION / SPECTRUM</small>
+        </div>
+      </header>
+
+      <div class="guide-shell">
+        <section class="guide-intro is-current" id="guide-intro" aria-labelledby="guide-intro-title">
+          <div class="guide-intro-copy">
+            <span class="eyebrow red">A SHORT ORIENTATION</span>
+            <h2 id="guide-intro-title" tabindex="-1">沒有標準答案，<br>只有你更自然的選擇。</h2>
+            <p>你會看到 8–10 個二選一情境。請選擇較接近你的反應；結果只在本次頁面記憶體中使用，不建立帳號、不保存個人檔案，也不影響任何正式資格。</p>
+            <div class="guide-facts" aria-label="引導說明">
+              <span><b>01</b> 無需帳號</span>
+              <span><b>02</b> 不保存結果</span>
+              <span><b>03</b> 可隨時重做</span>
+            </div>
+            <div class="guide-actions">
+              <button class="button primary ceremonial" type="button" id="guide-start"><span class="button-index">00</span><span>打開職位羅盤</span><span aria-hidden="true">→</span></button>
+              <a class="button" href="#roles" data-route="roles">直接查看完整職位目錄</a>
+            </div>
+          </div>
+          <aside class="guide-index" aria-label="引導流程">
+            <span class="eyebrow">THIS VISIT ONLY</span>
+            <ol>
+              <li><span>01</span><div><b>選擇</b><small>法律倫理工作情境</small></div></li>
+              <li><span>02</span><div><b>傾向</b><small>由服務端計算，不在前端猜測</small></div></li>
+              <li><span>03</span><div><b>推薦</b><small>對照實時職位目錄</small></div></li>
+              <li><span>04</span><div><b>準備</b><small>必要時進行入席準備評估</small></div></li>
+            </ol>
+          </aside>
+        </section>
+
+        <section class="guide-quiz" id="guide-quiz" hidden aria-labelledby="guide-question-title">
+          <header class="guide-progress-head">
+            <div><span class="eyebrow red">POSITION COMPASS</span><b id="guide-progress-label">問題 — / —</b></div>
+            <div class="guide-progress-actions"><button class="text-button" type="button" id="guide-previous" disabled>← 上一題</button><button class="text-button" type="button" id="guide-exit">結束並返回</button></div>
+          </header>
+          <div class="guide-progress" id="guide-progress" role="progressbar" aria-label="職位引導進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+          <div class="guide-question-stage" id="guide-question-stage" aria-live="polite" aria-atomic="true">
+            <div class="catalog-skeleton"><span></span><span></span></div>
+          </div>
+          <p class="guide-keyboard-note"><kbd>1</kbd> / <kbd>2</kbd> 可快速選擇；也可使用 Tab 與 Enter。</p>
+        </section>
+
+        <section class="guide-results" id="guide-results" hidden aria-labelledby="guide-results-title">
+          <header class="guide-results-head">
+            <div><span class="eyebrow red">YOUR THREE POSITIONS</span><h2 id="guide-results-title" tabindex="-1">三個值得你先坐下來的位置。</h2><p id="guide-result-summary">推薦正在由 BIU 目錄確認。</p></div>
+            <button class="button" type="button" id="guide-redo">重新回答</button>
+          </header>
+          <div class="guide-recommendations" id="guide-recommendations" aria-live="polite"></div>
+          <div class="guide-next"><p>推薦只是一張方向圖，不會替你建立身份或授予職位。你仍可查看全部席位，再決定下一步。</p><a class="button" href="#roles" data-route="roles">查看完整職位目錄 →</a></div>
+        </section>
+
+        <section class="guide-exam" id="guide-exam" hidden aria-labelledby="guide-exam-title">
+          <header class="guide-exam-head">
+            <div><span class="eyebrow red">PREPARATORY ASSESSMENT</span><h2 id="guide-exam-title">入席準備評估</h2><p id="guide-exam-position">正在確認職位。</p></div>
+            <button class="text-button" type="button" id="guide-exam-close">返回推薦</button>
+          </header>
+          <div class="assessment-notice"><b>這是準備性評估，不是正式資格。</b><p>答題結果不會授予、替代或承諾 BIU 職位；正式職位仍依 Warehouse 2.0 中該席位的考試與審核程序決定。評估答案與結果不在瀏覽器中永久保存。</p></div>
+          <div class="guide-exam-progress" id="guide-exam-progress" hidden>
+            <div class="guide-progress-head"><div><span class="eyebrow">QUESTION</span><b id="guide-exam-progress-label">— / —</b></div><button class="text-button" type="button" id="guide-exam-restart">重新開始此評估</button></div>
+            <div class="guide-progress" id="guide-exam-progressbar" role="progressbar" aria-label="準備評估進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+          </div>
+          <div class="guide-exam-stage" id="guide-exam-stage" aria-live="polite" aria-atomic="true"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view workspace-view visitor-view" data-view="visitor" aria-labelledby="visitor-title">
+      <header class="workspace-head swiss-grid">
+        <div>
+          <span class="eyebrow red">GUEST ADMISSION · 00</span>
+          <h1 id="visitor-title">先坐下來，<br>再決定你是誰。</h1>
+          <p>訪客席位不需要帳號。可選席位與可閱讀內容完全由 Warehouse 2.0 公開目錄決定；不會讀取正式案件、私人消息或 BIU 成員資料。</p>
+        </div>
+        <div class="guest-boundary" aria-label="訪客體驗邊界">
+          <span>PUBLIC CASES</span><b>✓</b><span>STATELESS HEARING</span><b>✓</b><span>PRIVATE DATA</span><b>—</b><span>MESSAGES</span><b>—</b>
+        </div>
+      </header>
+      <section class="guest-seat-stage" id="guest-seat-stage" aria-labelledby="guest-seat-title">
+        <div class="panel-head"><div><span class="eyebrow">FIRST RITUAL</span><h2 id="guest-seat-title">請領取一個訪客席位</h2></div><span class="guest-ephemeral">不保存 · 不建立身份</span></div>
+        <div id="guest-seat-catalog" class="guest-seat-catalog" aria-live="polite"><div class="catalog-skeleton"><span></span><span></span><span></span></div></div>
+      </section>
+      <div class="guest-experience" id="guest-experience" hidden>
+        <div class="guest-session-band" role="status" aria-live="polite"><span class="connection-light ok"></span><b id="guest-session-position">訪客席位</b><span>PUBLIC READ ONLY · MEMORY ONLY</span><button class="text-button" type="button" id="guest-change-seat">更換席位</button></div>
+        <section class="guest-case-stage">
+          <div class="panel-head"><div><span class="eyebrow">PUBLIC CASE FILES</span><h2>挑選一份公開案件</h2></div><span class="guest-ephemeral">由後端內置材料提供</span></div>
+          <div id="guest-case-list" class="case-grid" aria-live="polite"></div>
+        </section>
+        <section class="guest-hearing-stage" id="guest-hearing-stage" hidden aria-labelledby="guest-hearing-title">
+          <header id="guest-hearing-head"><span class="eyebrow red">STATELESS HEARING</span><h2 id="guest-hearing-title">訪客庭審</h2><p>選擇公開案件後開始。</p></header>
+          <div class="guest-hearing-grid">
+            <article id="guest-case-file" class="guest-case-file"></article>
+            <div id="guest-step-panel" class="guest-step-panel" aria-live="polite"></div>
+          </div>
+        </section>
+        <section class="guest-upgrade">
+          <div><span class="eyebrow red">WHEN YOU ARE READY</span><h2>喜歡這個席位？<br>再把身份留下來。</h2><p>完成此席位所列的加入方式並取得正式 BIU 身份後，才能加入團隊工作間、發送消息及存入自己的案件履歷。</p></div>
+          <div><button class="button primary" type="button" id="guest-create-identity">查看正式入席方式</button><button class="button" type="button" data-open-login>已有身份 · 在此登入</button></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view workspace-view" data-view="roles" aria-labelledby="roles-title">
+      <header class="workspace-head swiss-grid">
+        <div>
+          <span class="eyebrow red">THE APPOINTMENT BOOK · 01</span>
+          <h1 id="roles-title">請選擇你在本案中的席位。</h1>
+          <p>職位、機構與權限均來自 Warehouse 2.0 的 BIU 目錄；本頁不另建角色，也不在瀏覽器中產生權限。</p>
+        </div>
+        <div class="system-map" aria-label="權限映射路徑">
+          <span>BIU WEBSITE</span><i>→</i><span>POSITION CODE</span><i>→</i><span>ROLE</span><i>→</i><span>PERMISSION</span>
+        </div>
+      </header>
+      <div class="workspace-tools">
+        <label class="search-field"><span class="sr-only">搜尋職位</span><input id="role-search" type="search" placeholder="搜尋法官、律師、案件收錄或證據職位"><i aria-hidden="true">⌕</i></label>
+        <div class="segmented" id="role-filters" role="group" aria-label="職位加入方式">
+          <button class="active" type="button" data-entry="all" aria-pressed="true">全部</button>
+          <button type="button" data-entry="direct" aria-pressed="false">直接選擇</button>
+          <button type="button" data-entry="application" aria-pressed="false">申請加入</button>
+          <button type="button" data-entry="exam" aria-pressed="false">需要考試</button>
+          <button type="button" data-entry="appointment" aria-pressed="false">內部任命</button>
+        </div>
+      </div>
+      <div id="role-catalog" class="role-catalog" aria-live="polite">
+        <div class="catalog-skeleton" aria-label="正在從 Warehouse 2.0 讀取職位">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="view workspace-view" data-view="lobby" aria-labelledby="lobby-title">
+      <header class="workspace-head swiss-grid">
+        <div><span class="eyebrow red">CASE HALL · 02</span><h1 id="lobby-title">案件大廳</h1><p>選擇一個櫃檯，方塊會沿直線抵達。每位 AI 秘書共用 Warehouse 2.0 的同一套身份、權限、案件與審計。</p></div>
+        <div class="identity-card" id="lobby-identity"><span class="eyebrow">IDENTITY</span><strong>等待 Warehouse 2.0 身份</strong><small>尚未載入</small></div>
+      </header>
+      <div class="lobby-shell" id="lobby-shell">
+        <section class="lobby-stage" aria-labelledby="lobby-floor-title">
+          <header class="lobby-stage-head">
+            <div><span class="eyebrow red">FLOOR / BIU–01</span><h2 id="lobby-floor-title">選擇櫃檯</h2></div>
+            <p><span class="lobby-key" aria-hidden="true"></span> YOU　<span class="lobby-key ai" aria-hidden="true"></span> AI SECRETARY</p>
+          </header>
+          <div class="lobby-floor-wrap">
+            <div class="lobby-floor" id="lobby-floor" aria-describedby="lobby-floor-help">
+              <p class="sr-only" id="lobby-floor-help">使用 Tab 選擇櫃檯，再按 Enter 與該櫃檯的 AI 秘書互動。</p>
+              <span class="lobby-axis axis-x" aria-hidden="true"></span>
+              <span class="lobby-axis axis-y" aria-hidden="true"></span>
+              <span class="lobby-route lobby-route-x" id="lobby-route-x" aria-hidden="true"></span>
+              <span class="lobby-route lobby-route-y" id="lobby-route-y" aria-hidden="true"></span>
+
+              <button class="lobby-desk" type="button" data-lobby-desk="filing" data-x="15" data-y="17" aria-pressed="false">
+                <span class="lobby-desk-no">01</span><span class="lobby-desk-name">接案</span><span class="lobby-agent" aria-hidden="true"></span><small>FILING</small>
+              </button>
+              <button class="lobby-desk" type="button" data-lobby-desk="docket" data-x="50" data-y="17" aria-pressed="false">
+                <span class="lobby-desk-no">02</span><span class="lobby-desk-name">卷宗</span><span class="lobby-agent" aria-hidden="true"></span><small>DOCKET</small>
+              </button>
+              <button class="lobby-desk" type="button" data-lobby-desk="position" data-x="85" data-y="17" aria-pressed="false">
+                <span class="lobby-desk-no">03</span><span class="lobby-desk-name">席位</span><span class="lobby-agent" aria-hidden="true"></span><small>POSITION</small>
+              </button>
+              <button class="lobby-desk" type="button" data-lobby-desk="research" data-x="15" data-y="50" aria-pressed="false">
+                <span class="lobby-desk-no">08</span><span class="lobby-desk-name">研究</span><span class="lobby-agent" aria-hidden="true"></span><small>RESEARCH</small>
+              </button>
+              <button class="lobby-desk central" type="button" data-lobby-desk="information" data-x="50" data-y="48" aria-pressed="false">
+                <span class="lobby-desk-no">00</span><span class="lobby-desk-name">中央服務台</span><span class="lobby-agent" aria-hidden="true"></span><small>INFORMATION</small>
+              </button>
+              <button class="lobby-desk" type="button" data-lobby-desk="procedure" data-x="85" data-y="50" aria-pressed="false">
+                <span class="lobby-desk-no">04</span><span class="lobby-desk-name">程序</span><span class="lobby-agent" aria-hidden="true"></span><small>PROCEDURE</small>
+              </button>
+              <button class="lobby-desk" type="button" data-lobby-desk="collaboration" data-x="15" data-y="83" aria-pressed="false">
+                <span class="lobby-desk-no">05</span><span class="lobby-desk-name">協作</span><span class="lobby-agent" aria-hidden="true"></span><small>COLLABORATION</small>
+              </button>
+              <button class="lobby-desk" type="button" data-lobby-desk="ethics" data-x="50" data-y="83" aria-pressed="false">
+                <span class="lobby-desk-no">06</span><span class="lobby-desk-name">倫理</span><span class="lobby-agent" aria-hidden="true"></span><small>ETHICS</small>
+              </button>
+              <button class="lobby-desk" type="button" data-lobby-desk="archive" data-x="85" data-y="83" aria-pressed="false">
+                <span class="lobby-desk-no">07</span><span class="lobby-desk-name">歸檔</span><span class="lobby-agent" aria-hidden="true"></span><small>ARCHIVE</small>
+              </button>
+
+              <div class="lobby-player" id="lobby-player" aria-label="你的方塊，目前在大廳中央">
+                <span aria-hidden="true"></span><b>YOU</b>
+              </div>
+            </div>
+          </div>
+          <div class="lobby-status" id="lobby-status" role="status" aria-live="polite">選擇任一櫃檯開始移動</div>
+        </section>
+
+        <aside class="lobby-desk-panel" id="lobby-desk-panel" aria-labelledby="lobby-desk-title" tabindex="-1" hidden>
+          <header>
+            <div><span class="eyebrow red" id="lobby-desk-code">DESK / 00</span><h2 id="lobby-desk-title">中央服務台</h2></div>
+            <button class="dialog-close" id="lobby-desk-close" type="button" aria-label="關閉櫃檯面板">×</button>
+          </header>
+          <div class="lobby-desk-summary">
+            <span class="lobby-panel-agent" aria-hidden="true"></span>
+            <div>
+              <strong id="lobby-secretary-name">安可</strong>
+              <span class="lobby-secretary-role" id="lobby-secretary-role">導覽秘書 · DESK 00</span>
+              <p id="lobby-desk-description">協助認識大廳、職位與下一個適合前往的櫃檯。</p>
+              <small class="lobby-secretary-manner" id="lobby-secretary-manner">溫暖、直接，擅長把複雜程序說成下一個清楚的小步驟。</small>
+            </div>
+          </div>
+          <div class="lobby-capability" id="lobby-capability">訪客模式 · 可參觀，不讀取私人資料</div>
+          <div class="lobby-case-context auth-content" hidden>
+            <label for="lobby-case-context-select"><span class="eyebrow">CURRENT CASE / OPTIONAL</span><select id="lobby-case-context-select"><option value="">不指定案件</option></select></label>
+          </div>
+          <div class="lobby-quick-actions" id="lobby-quick-actions" aria-label="櫃檯快捷操作"></div>
+
+          <section class="lobby-auth-note" data-auth-gate>
+            <span class="lobby-auth-square" aria-hidden="true"></span>
+            <div><strong>先參觀，再建立身份</strong><p>登入後可與 AI 秘書對話，並依你的 Warehouse 2.0 權限讀取或操作 BIU 資料。</p><button class="button primary" type="button" data-open-login>呈交 BIU 身份</button></div>
+          </section>
+
+          <section class="lobby-secretary auth-content" hidden aria-labelledby="lobby-secretary-heading">
+            <div class="lobby-transcript-head"><span class="eyebrow" id="lobby-secretary-heading">SECRETARY / LIVE</span><span id="lobby-secretary-state">READY</span></div>
+            <div class="lobby-transcript" id="lobby-transcript" role="log" aria-live="polite" aria-relevant="additions text"></div>
+            <form id="lobby-secretary-form" class="lobby-secretary-form">
+              <label class="sr-only" for="lobby-secretary-input">傳送給櫃檯秘書</label>
+              <textarea id="lobby-secretary-input" rows="3" maxlength="3000" placeholder="例如：我應該先準備哪些案件材料？"></textarea>
+              <div><small>可辦理能力由本櫃檯 × 你的服務端職位即時決定；草稿會保留到成功送達。</small><span class="lobby-composer-actions"><button class="button" id="lobby-secretary-cancel" type="button" hidden>停止</button><button class="button primary" type="submit">傳送 →</button></span></div>
+            </form>
+          </section>
+
+          <section class="lobby-case-create" id="lobby-case-create" hidden>
+            <div class="panel-head"><div><span class="eyebrow red">STRUCTURED FILING</span><h3>建立案件</h3></div><button class="text-button" type="button" id="lobby-case-create-close">收起</button></div>
+            <form id="lobby-case-create-form">
+              <label><span>案件類型</span><select id="lobby-case-type" required><option value="">正在讀取類型…</option></select></label>
+              <label><span>標題</span><input id="lobby-case-title" maxlength="200" required></label>
+              <label><span>摘要</span><textarea id="lobby-case-description" rows="4" maxlength="20000"></textarea></label>
+              <label><span>重要程度</span><select id="lobby-case-severity"><option value="low">LOW</option><option value="medium" selected>MEDIUM</option><option value="high">HIGH</option><option value="critical">CRITICAL</option></select></label>
+              <div class="lobby-case-fields" id="lobby-case-fields"></div>
+              <label class="lobby-case-confirm"><input type="checkbox" id="lobby-case-confirm" required><span>我確認這是法律倫理學術工作；提交會依我的權限寫入 BIU 的 Warehouse 2.0 案件庫。</span></label>
+              <p class="form-status" id="lobby-case-create-status" aria-live="polite"></p>
+              <button class="button primary" type="submit">確認建立案件</button>
+            </form>
+          </section>
+
+          <section class="lobby-live-data" id="lobby-case-drawer" hidden>
+            <div class="panel-head"><div><span class="eyebrow">OPEN CASES</span><h3>你可閱讀的案件</h3></div><button class="text-button" type="button" data-refresh="cases">重新整理 ↻</button></div>
+            <div id="case-list" class="case-grid"></div>
+          </section>
+          <section class="lobby-live-data" id="lobby-space-drawer" hidden>
+            <div class="panel-head"><div><span class="eyebrow">COLLABORATION</span><h3>正在招募的工作間</h3></div><button class="text-button" type="button" data-refresh="spaces">重新整理 ↻</button></div>
+            <div id="space-list" class="space-list"></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <section class="view workspace-view" data-view="messages" aria-labelledby="messages-title">
+      <header class="workspace-head compact swiss-grid">
+        <div><span class="eyebrow red">COUNSEL TABLE · 03</span><h1 id="messages-title">互動消息</h1><p>消息直接進入 Warehouse 2.0 任務協作工作間，並受該工作間能力限制。</p></div>
+        <button class="button" type="button" data-route-button="lobby">選擇工作間</button>
+      </header>
+      <div class="auth-gate" data-auth-gate><span class="gate-mark">BIU</span><div><h2>身份尚未建立</h2><p>登入後才可讀取或發送 BIU 內部消息。</p></div><div class="gate-actions"><button class="button primary" type="button" data-open-login>在此呈交身份</button><a href="/#/dashboard">前往 Warehouse 2.0 ↗</a></div></div>
+      <div class="message-layout auth-content" hidden>
+        <aside class="conversation-list" aria-label="協作工作間">
+          <div class="panel-head"><div><span class="eyebrow">WORKSPACES</span><h2>工作間</h2></div></div>
+          <div id="message-spaces"></div>
+        </aside>
+        <section class="conversation" aria-label="消息內容">
+          <header id="conversation-head"><span class="eyebrow">NO WORKSPACE SELECTED</span><h2>請先從案件大廳選擇工作間</h2></header>
+          <div id="message-log" class="message-log" role="log" aria-live="polite" aria-relevant="additions text">
+            <div class="empty-state"><span>03</span><p>選擇一個有權讀取的工作間後，消息會在這裡顯示。</p></div>
+          </div>
+          <form id="message-form" class="composer">
+            <label class="sr-only" for="message-input">輸入消息</label>
+            <textarea id="message-input" rows="2" maxlength="5000" placeholder="寫下協作消息；可在正文中引用卷宗編號……" disabled></textarea>
+            <div><span id="message-capability">等待工作間權限</span><button class="button primary" type="submit" disabled>發送至工作間</button></div>
+          </form>
+        </section>
+      </div>
+    </section>
+
+    <section class="view workspace-view court-view" data-view="court" aria-labelledby="court-title">
+      <header class="workspace-head compact swiss-grid">
+        <div><span class="eyebrow red">HEARING ROOM · 04</span><h1 id="court-title">庭審場</h1><p>正式程序動作寫入案件時間線。可用動作由 Warehouse 2.0 按身份、席位與案件狀態返回。</p></div>
+        <label class="case-selector"><span class="eyebrow">ACTIVE CASE</span><select id="court-case-select" disabled><option value="">選擇案件</option></select></label>
+      </header>
+      <div class="auth-gate" data-auth-gate><span class="gate-mark">BIU</span><div><h2>庭審場等待身份</h2><p>登入後才會顯示你有權閱讀的案件和程序動作。</p></div><div class="gate-actions"><button class="button primary" type="button" data-open-login>在此呈交身份</button><a href="/#/dashboard">前往 Warehouse 2.0 ↗</a></div></div>
+      <div class="court-layout auth-content" hidden>
+        <aside class="court-parties">
+          <div class="panel-head"><div><span class="eyebrow">PARTICIPANTS</span><h2>席位與責任</h2></div></div>
+          <div id="court-participants" class="court-list"><div class="empty-state small"><p>選擇案件後載入</p></div></div>
+        </aside>
+        <section class="hearing-floor">
+          <header id="hearing-head"><span class="case-no">NO CASE</span><h2>請選擇一項案件</h2><p>案件標題與程序狀態將從 Warehouse 2.0 載入。</p></header>
+          <ol id="hearing-timeline" class="hearing-timeline"><li class="placeholder"><span>—</span><p>尚無可顯示的程序記錄</p></li></ol>
+          <form id="court-action-form" class="court-action">
+            <div class="court-action-head"><span class="eyebrow red">FORMAL PROCEDURE NOTE</span><span id="court-lock">LOCK / —</span></div>
+            <label><span>程序動作</span><select id="court-action-select" disabled><option value="">由案件權限載入</option></select></label>
+            <div id="court-action-extra"></div>
+            <label><span>正式記錄</span><textarea id="court-note" rows="3" maxlength="4000" placeholder="輸入將寫入案件時間線的程序記錄……" disabled></textarea></label>
+            <div class="action-confirm"><p>提交後由 Warehouse 2.0 驗證權限與版本鎖。本頁不會在本地偽造程序狀態。</p><button class="button primary" type="submit" disabled>提交程序記錄</button></div>
+          </form>
+        </section>
+        <aside class="evidence-desk">
+          <div class="panel-head"><div><span class="eyebrow">RECORD</span><h2>卷宗與材料</h2></div></div>
+          <div id="evidence-list"><div class="empty-state small"><p>選擇案件後顯示已登記附件與材料欄位</p></div></div>
+          <a class="warehouse-deep-link" id="case-deep-link" href="/#/cases">在 Warehouse 2.0 查看完整卷宗 ↗</a>
+        </aside>
+      </div>
+    </section>
+
+    <section class="view workspace-view" data-view="archive" aria-labelledby="archive-title">
+      <header class="workspace-head swiss-grid">
+        <div><span class="eyebrow red">ARCHIVE &amp; PRACTICE · 05</span><h1 id="archive-title">歸檔與案件履歷</h1><p>只顯示 BIU 資料庫內、你有權閱讀的檔案與案件進度。沒有瀏覽器本地履歷。</p></div>
+        <div class="archive-stamp"><span>PROCEDURE</span><b>COMPLETE</b><span>ARCHIVE</span></div>
+      </header>
+      <div class="auth-gate" data-auth-gate><span class="gate-mark">BIU</span><div><h2>履歷等待身份</h2><p>登入後從 BIU 檔案與案件權限讀取。</p></div><div class="gate-actions"><button class="button primary" type="button" data-open-login>在此呈交身份</button><a href="/#/dashboard">前往 Warehouse 2.0 ↗</a></div></div>
+      <div class="archive-content auth-content" hidden>
+        <section class="practice-card" id="practice-card">
+          <div><span class="eyebrow">BIU PRACTICE RECORD</span><h2>你的 BIU 案件履歷</h2></div>
+          <dl><div><dt>身份</dt><dd id="practice-name">—</dd></div><div><dt>部門</dt><dd id="practice-department">—</dd></div><div><dt>權限來源</dt><dd>Warehouse 2.0 / BIU</dd></div></dl>
+        </section>
+        <section class="archive-ledger">
+          <div class="panel-head"><div><span class="eyebrow">CASE RECORDS</span><h2>程序卷宗與檔案</h2></div><button class="text-button" type="button" data-refresh="records">重新整理 ↻</button></div>
+          <div id="archive-list" class="archive-list"></div>
+        </section>
+        <section class="record-console" id="record-console" hidden aria-labelledby="record-console-title">
+          <header id="record-console-head"><span class="eyebrow red">MASTER DOSSIER</span><h2 id="record-console-title">檔案程序台</h2><p>選擇一份檔案後載入服務端程序。</p></header>
+          <div class="record-console-grid">
+            <div><span class="eyebrow">SERVER TIMELINE</span><ol id="record-event-list" class="record-event-list"></ol></div>
+            <form id="record-action-form" class="record-action-form">
+              <span class="eyebrow">AVAILABLE ACTIONS</span>
+              <label><span>程序動作</span><select id="record-action-select" disabled><option value="">由檔案權限載入</option></select></label>
+              <label><span>程序記錄</span><textarea id="record-action-message" rows="4" maxlength="4000" placeholder="寫入本次檔案程序的理由或說明……" disabled></textarea></label>
+              <p id="record-action-status" role="status" aria-live="polite"></p>
+              <button class="button primary" type="submit" disabled>提交檔案程序</button>
+            </form>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div><b>BIU CASEWORK</b><span>LEGAL ETHICS · ACADEMIC COLLABORATION</span></div>
+    <p>所有身份、職位、案件、消息、程序與檔案均由 Warehouse 2.0 的 BIU 租戶授權與保存。</p>
+    <a href="/#/dashboard">WAREHOUSE 2.0 ↗</a>
+  </footer>
+
+  <dialog id="role-dialog" class="role-dialog" aria-labelledby="role-dialog-title">
+    <form method="dialog" class="dialog-card" id="role-join-form">
+      <header>
+        <div><span class="eyebrow red">APPOINTMENT CARD</span><h2 id="role-dialog-title">確認你的席位</h2></div>
+        <button class="dialog-close" type="button" aria-label="關閉">×</button>
+      </header>
+      <div class="selected-role-summary" id="selected-role-summary"></div>
+      <div class="join-explainer" id="join-explainer"></div>
+      <div class="join-fields" id="join-fields">
+        <label><span>顯示名稱</span><input name="display_name" autocomplete="name" maxlength="80" required></label>
+        <label><span>登入帳號</span><input name="username" autocomplete="username" maxlength="120" required></label>
+        <label><span>密碼</span><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+        <label><span>再次輸入密碼</span><input name="password_confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+        <label><span>聯絡方式（選填）</span><input name="contact" autocomplete="email" maxlength="200"></label>
+        <label class="wide"><span>為什麼選擇這個席位？</span><textarea name="reason" rows="3" maxlength="1000"></textarea></label>
+      </div>
+      <p class="form-status" id="role-form-status" role="status" aria-live="polite"></p>
+      <footer>
+        <button class="button" type="button" data-dialog-cancel>暫不落座</button>
+        <button class="button" type="button" id="role-guest-seat" hidden>先以訪客入席</button>
+        <button class="button" type="button" id="role-exam-assessment" hidden>進行入席準備評估</button>
+        <button class="button primary" type="submit" id="role-submit">提交 BIU 身份申請</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="login-dialog" class="role-dialog login-dialog" aria-labelledby="login-dialog-title">
+    <form method="dialog" class="dialog-card" id="login-form">
+      <header>
+        <div><span class="eyebrow red">IDENTITY CEREMONY</span><h2 id="login-dialog-title">呈交你的 BIU 身份</h2></div>
+        <button class="dialog-close" type="button" aria-label="關閉">×</button>
+      </header>
+      <div class="login-intro"><b>同一帳號，同一權限。</b><p>身份由 Warehouse 2.0 驗證；登入後本網站只以 <code>X-Tenant-Slug: biu</code> 讀取 BIU 資料。</p></div>
+      <div class="join-fields">
+        <label><span>Warehouse 2.0 帳號</span><input name="username" autocomplete="username" required></label>
+        <label><span>密碼</span><input name="password" type="password" autocomplete="current-password" required></label>
+      </div>
+      <p class="form-status" id="login-form-status" role="status" aria-live="polite"></p>
+      <footer>
+        <button class="button" type="button" data-login-to-roles>尚無身份？選擇席位 →</button>
+        <button class="button primary" type="submit" id="login-submit">驗證並進入 BIU</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

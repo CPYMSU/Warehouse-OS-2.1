@@ -1,0 +1,44 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">B03 — OPERATIONS</view>
+  <view class="title">预约管理</view>
+  <view class="rule"></view>
+  <view class="policy">
+    <view class="policy-title">强制爽约积分规则</view>
+    <view class="policy-note">用户未到：经营端确认即自动扣分，无需用户确认。商家未履约：用户先报告，经营端确认后自动按其上次消费积分补偿。</view>
+  </view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-text">读取全部预约</view></view>
+  <view wx:elif="{{error}}" class="error">{{error}}</view>
+  <view wx:elif="{{!appointments.length}}" class="empty">暂时没有预约。</view>
+  <view wx:else class="list">
+    <view wx:for="{{appointments}}" wx:key="appointment_no" class="appointment swiss-card">
+      <view class="ticket-brand"><image src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/><view><text>BONFIREWORK / BOOKING TICKET</text><label>MERCHANT COPY</label></view></view>
+      <view class="head"><text class="status status-{{item.status}}">{{item.statusText}}</text><text class="mono no">{{item.appointment_no}}</text></view>
+      <view class="service">{{item.service_name_snapshot}}</view>
+      <view class="customer">{{item.display_name || item.member_no}} · {{item.staff_name_snapshot || '未指定员工'}}</view>
+      <view class="time mono">{{item.timeText}}</view>
+      <view class="meta"><text>{{item.location_name}}</text><text>¥{{item.priceText}}</text></view>
+      <view wx:if="{{item.merchantIncident}}" class="incident merchant">
+        <view class="incident-title">用户报告商家爽约 · {{item.merchantIncident.status}}</view>
+        <view class="incident-line">上次消费积分基数 {{item.merchantIncident.points_basis}} · 已补 {{item.merchantIncident.points_applied}}</view>
+        <view wx:if="{{item.merchantIncident.reason}}" class="incident-line">{{item.merchantIncident.reason}}</view>
+        <view wx:if="{{item.merchantIncident.status === 'pending_confirmation'}}" class="incident-actions">
+          <button class="reject" data-no="{{item.appointment_no}}" data-decision="reject" bindtap="resolveMerchantNoShow">不确认</button>
+          <button class="confirm" data-no="{{item.appointment_no}}" data-decision="confirm" bindtap="resolveMerchantNoShow">确认爽约并补分</button>
+        </view>
+      </view>
+      <view wx:if="{{item.consumerIncident}}" class="incident consumer">
+        <view class="incident-title">用户爽约规则已执行</view>
+        <view class="incident-line">积分基数 {{item.consumerIncident.points_basis}} · 实际扣除 {{item.consumerIncident.points_applied}}</view>
+      </view>
+      <view class="actions">
+        <button wx:if="{{item.canConfirm}}" data-no="{{item.appointment_no}}" data-status="confirmed" bindtap="act">确认</button>
+        <button wx:if="{{item.canFinish}}" class="primary" data-no="{{item.appointment_no}}" data-status="completed" bindtap="act">完成</button>
+        <button wx:if="{{item.canConsumerNoShow}}" data-no="{{item.appointment_no}}" data-status="consumer_no_show" bindtap="act">用户爽约 · 自动扣分</button>
+        <button wx:if="{{item.canCancel}}" class="danger" data-no="{{item.appointment_no}}" data-status="cancelled" bindtap="act">取消</button>
+      </view>
+    </view>
+  </view>
+</view>
+</theme-provider>

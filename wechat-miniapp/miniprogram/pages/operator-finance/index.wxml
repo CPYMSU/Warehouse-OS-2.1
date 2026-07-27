@@ -1,0 +1,77 @@
+<theme-provider>
+<view class="page finance-page">
+  <view class="finance-masthead">
+    <view><view class="eyebrow light">F — FINANCE SYSTEM</view><view class="finance-title">财务<br/>系统</view><view class="finance-deck">LOCAL LEDGER · WAREHOUSE DRAFT</view></view>
+    <image class="finance-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+  </view>
+
+  <view wx:if="{{companies.length}}" class="context-switch finance-context">
+    <view class="context-switch-index mono">CO</view>
+    <picker class="context-switch-picker" range="{{companyNames}}" value="{{companyIndex}}" bindchange="onCompanyChange">
+      <view class="context-switch-body"><view><view class="context-switch-label">CURRENT BUSINESS</view><view class="context-switch-name">{{companyNames[companyIndex]}}</view></view><view class="context-switch-command">选择公司</view></view>
+    </picker>
+  </view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">正在核对经营事件</view></view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+
+  <block wx:if="{{dashboard && !loading}}">
+    <view class="finance-policy {{dashboard.company.warehouse_linked ? 'linked' : ''}}">
+      <text>{{dashboard.company.warehouse_linked ? 'WAREHOUSE LINKED' : 'APP LEDGER'}}</text>
+      <label>{{dashboard.company.warehouse_linked ? '每笔事件自动生成 Warehouse 财务草稿，等待财务主管确认。' : '独立经营账本完整可用，不依赖 Warehouse。'}}</label>
+    </view>
+
+    <view id="financeWorkspace" class="finance-nav">
+      <button hover-class="none" class="finance-tab {{activeSection === 'overview' ? 'active' : ''}}" data-section="overview" bindtap="switchSection"><text>01</text><label>总览</label></button>
+      <button hover-class="none" class="finance-tab {{activeSection === 'records' ? 'active' : ''}}" data-section="records" bindtap="switchSection"><text>02</text><label>流水</label><view class="tab-count mono">{{dashboard.stats.record_count}}</view></button>
+      <button hover-class="none" class="finance-tab {{activeSection === 'entry' ? 'active' : ''}}" data-section="entry" bindtap="switchSection"><text>03</text><label>记账</label></button>
+    </view>
+
+    <view wx:if="{{activeSection === 'overview'}}" class="finance-panel">
+      <view class="finance-stats">
+        <view class="finance-stat red"><text>01 / CASH IN</text><label class="mono">¥{{dashboard.stats.cashInText}}</label><view>储值、售卡与手工流入</view></view>
+        <view class="finance-stat ink"><text>02 / CASH OUT</text><label class="mono">¥{{dashboard.stats.cashOutText}}</label><view>经营支出</view></view>
+        <view class="finance-stat paper"><text>03 / NET CASH</text><label class="mono">{{dashboard.stats.netCashPrefix}}{{dashboard.stats.netCashText}}</label><view>当前记录净流量</view></view>
+        <view class="finance-stat paper"><text>04 / REVENUE</text><label class="mono">¥{{dashboard.stats.revenueText}}</label><view>会员与非会员消费</view></view>
+      </view>
+      <view class="accounting-note"><text>ACCOUNTING RULE</text><label>储值充值属于现金流入和预收款，不重复算作消费收入；会员实际扣费时才显示收入确认。</label></view>
+      <button class="overview-command" data-section="records" bindtap="switchSection">查看全部经营流水</button>
+      <button wx:if="{{canWrite}}" class="overview-command inverse" data-section="entry" bindtap="switchSection">录入非会员消费或其他流水</button>
+    </view>
+
+    <view wx:elif="{{activeSection === 'records'}}" id="financeRecords" class="finance-panel">
+      <view class="panel-heading"><text>02 / EVENT CARDS</text><label>自动交易与手工记账使用同一事件时间线</label></view>
+      <view wx:if="{{!records.length}}" class="finance-empty">还没有财务事件</view>
+      <view wx:for="{{visibleRecords}}" wx:key="event_id" class="finance-card {{item.direction}}">
+        <view class="finance-card-head"><view><text>{{item.directionText}} / {{item.category}}</text><label>{{item.title}}</label></view><view class="finance-amount mono">{{item.direction === 'outflow' ? '−' : ''}}¥{{item.amountText}}</view></view>
+        <view class="finance-description">{{item.description}}</view>
+        <view class="finance-party"><text>交易对象</text><label>{{item.counterpartyText}}</label></view>
+        <view class="finance-card-foot"><text class="mono">{{item.occurred_on}} · {{item.entry_no}}</text><label class="sync-{{item.sync_status}}">{{item.syncText}}</label></view>
+        <view wx:if="{{item.sync_error}}" class="sync-error">{{item.sync_error}}</view>
+      </view>
+      <view wx:if="{{recordPageCount > 1}}" class="finance-pager"><button disabled="{{recordPage === 0}}" data-delta="-1" bindtap="changeRecordPage">上一页</button><text class="mono">{{recordPageText}}</text><button disabled="{{recordPage + 1 >= recordPageCount}}" data-delta="1" bindtap="changeRecordPage">下一页</button></view>
+    </view>
+
+    <view wx:else class="finance-panel">
+      <view class="panel-heading"><text>03 / MANUAL ENTRY</text><label>非会员消费、其他收入与经营支出</label></view>
+      <view class="entry-poster">
+        <view class="entry-number mono">NEW<br/>ENTRY</view>
+        <view class="entry-form">
+          <view class="field-label">记账类型</view><picker range="{{entryTypeLabels}}" value="{{entryTypeIndex}}" bindchange="onEntryTypeChange"><view class="entry-picker"><label>{{entryTypeLabels[entryTypeIndex]}}</label><text>选择类型</text></view></picker>
+          <view class="entry-grid">
+            <view><view class="field-label">金额 / CNY</view><view class="amount-input"><text>¥</text><input class="mono" type="digit" value="{{form.amount}}" data-field="amount" bindinput="onFormInput" placeholder="0.00"/></view></view>
+            <view><view class="field-label">业务日期</view><picker mode="date" value="{{form.occurredOn}}" bindchange="onDateChange"><view class="date-picker mono">{{form.occurredOn}}</view></picker></view>
+          </view>
+          <view class="field-label">分类</view><picker range="{{categoryLabels}}" value="{{categoryIndex}}" bindchange="onCategoryChange"><view class="entry-picker"><label>{{categoryLabels[categoryIndex]}}</label><text>选择分类</text></view></picker>
+          <view class="field-label">交易对象</view><input class="entry-input" value="{{form.counterparty}}" data-field="counterparty" bindinput="onFormInput" maxlength="120" placeholder="顾客、供应商或相关对象，可不填"/>
+          <view class="field-label">具体内容</view><textarea class="entry-textarea" value="{{form.description}}" data-field="description" bindinput="onFormInput" maxlength="300" placeholder="例如：非会员剪发服务、购买工作室耗材"/>
+          <button class="entry-submit" loading="{{saving}}" disabled="{{saving}}" bindtap="saveEntry">确认并形成财务事件</button>
+        </view>
+      </view>
+      <view class="entry-rule"><text>IMMUTABLE</text><label>保存后不能改写原记录；发现错误时应新增一笔相反方向的更正记录，保留完整审计链。</label></view>
+    </view>
+  </block>
+
+  <view wx:if="{{!loading && !companies.length}}" class="empty-panel"><view class="empty-title">还没有经营空间</view><view class="muted">请先注册经营者或绑定已有公司。</view></view>
+</view>
+</theme-provider>

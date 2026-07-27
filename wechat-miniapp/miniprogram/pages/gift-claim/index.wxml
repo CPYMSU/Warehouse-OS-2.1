@@ -1,0 +1,77 @@
+<theme-provider>
+<view class="page gift-page">
+  <view class="eyebrow">05 — SWISS VALUE TRANSFER</view>
+  <view class="title">领取礼品卡</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{loading}}" class="state">
+    <view class="state-mark">···</view>
+    <view class="state-text">正在向服务端验证礼品卡</view>
+  </view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+
+  <view wx:if="{{gift}}" class="gift-card swiss-card status-{{gift.status}}">
+    <view class="gift-card-accent"></view>
+    <view class="gift-brand">
+      <image class="gift-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+      <view>
+        <view class="gift-brand-name">BONFIREWORK</view>
+        <view class="gift-brand-note">MEMBER VALUE CARD / {{fundingText}}</view>
+      </view>
+    </view>
+    <view class="gift-company">{{companyName}}</view>
+    <view class="gift-mode">{{companyMode}}</view>
+    <view class="gift-value-label">TRANSFER VALUE / CNY</view>
+    <view class="gift-value mono">¥{{amountText}}</view>
+    <view class="gift-grid">
+      <view><text>GIFT NO.</text><label class="mono">{{gift.gift_no}}</label></view>
+      <view><text>VALID UNTIL</text><label class="mono">{{expiresText}}</label></view>
+    </view>
+    <view wx:if="{{gift.note}}" class="gift-note">{{gift.note}}</view>
+    <view class="gift-status">
+      {{gift.status === 'active' ? 'SERVER VERIFIED · READY TO CLAIM' : gift.status === 'claimed' ? 'ALREADY CLAIMED' : gift.status === 'expired' ? 'EXPIRED' : 'NOT AVAILABLE'}}
+    </view>
+  </view>
+
+  <view wx:if="{{gift && gift.status === 'active' && !joined}}" class="consent-panel swiss-card">
+    <view class="consent-title">加入「{{companyName}}」会员空间</view>
+    <view class="consent-note">礼品卡余额只会进入该公司的独立会员钱包。领取前需要明确同意该公司的会员服务与隐私规则。</view>
+    <view class="rules-link" bindtap="showRules">查看正式规则 · {{consentVersion}}</view>
+    <checkbox-group bindchange="toggleConsent" class="consent-check">
+      <label>
+        <checkbox value="agree" checked="{{consented}}" disabled="{{!consentText || !consentVersion}}" color="var(--swiss-ink, #141414)"/>
+        我已核对公司并同意上述规则
+      </label>
+    </checkbox-group>
+  </view>
+
+  <button
+    wx:if="{{gift && gift.status === 'active'}}"
+    class="claim-btn"
+    loading="{{claiming}}"
+    disabled="{{claiming || (!joined && !consented)}}"
+    bindtap="claimGift"
+  >确认领取并写入会员余额</button>
+
+  <view wx:if="{{result}}" class="result-card swiss-card">
+    <view class="result-kicker">END-TO-END COMPLETED</view>
+    <view class="result-title">礼品卡已安全入账</view>
+    <view class="result-balance mono">¥{{result.balanceText}}</view>
+    <view class="result-grid">
+      <view><text>本金</text><label class="mono">¥{{result.principalText}}</label></view>
+      <view><text>奖励</text><label class="mono">¥{{result.bonusText}}</label></view>
+    </view>
+    <view class="result-card-no mono">{{result.cardNo}}</view>
+    <button class="result-action" bindtap="openTransactions">查看交易卡与不可变事件</button>
+  </view>
+
+  <view wx:if="{{!gift && !loading}}" class="scan-panel swiss-card">
+    <image class="scan-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+    <view class="scan-title">扫描 Swiss 礼品卡</view>
+    <view class="scan-note">扫描不会自动入账。服务端验证公司、面额、有效期和一次性状态后，仍需由你确认领取。</view>
+    <button class="scan-btn" loading="{{scanning}}" disabled="{{scanning}}" bindtap="scanGift">打开相机扫描 QR</button>
+  </view>
+
+  <button wx:if="{{gift}}" class="scan-another" loading="{{scanning}}" disabled="{{scanning}}" bindtap="scanGift">扫描另一张礼品卡</button>
+</view>
+</theme-provider>

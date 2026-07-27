@@ -1,0 +1,55 @@
+.subtitle { margin-top: 12rpx; color: #85806F; font-size: 24rpx; }
+.setup-section { margin-bottom: 24rpx; padding: 26rpx; border: 2rpx solid var(--swiss-ink, #141414); background: #FAF8F2; }
+.section-no { color: var(--swiss-accent, #E0261C); font-size: 19rpx; font-weight: 800; letter-spacing: 3rpx; }
+.input { height: 78rpx; border-bottom: 2rpx solid rgba(var(--swiss-ink-rgb, 20, 20, 20),.28); font-size: 26rpx; }
+.input.strong { margin-top: 16rpx; border-color: var(--swiss-ink, #141414); font-size: 31rpx; font-weight: 800; }
+.timezone-field { display: flex; align-items: center; gap: 12rpx; margin-top: 20rpx; padding: 16rpx; border: 2rpx solid var(--swiss-ink, #141414); }
+.field-small { display: block; color: #85806F; font-size: 18rpx; }
+.timezone-value { flex: 1; font-size: 23rpx; font-weight: 800; }
+.timezone-command { color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 900; letter-spacing: 2rpx; }
+.opening-head { display: flex; margin-top: 24rpx; padding: 18rpx 0 12rpx; align-items: flex-end; justify-content: space-between; gap: 16rpx; border-top: 4rpx solid var(--swiss-ink, #141414); }
+.opening-head view { min-width: 0; flex: 1; }
+.opening-head view text, .opening-head view label { display: block; }
+.opening-head view text { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 14rpx; font-weight: 900; letter-spacing: 2rpx; }
+.opening-head view label { margin-top: 6rpx; font-size: 25rpx; font-weight: 900; }
+.opening-head button { margin: 0; padding: 0 10rpx; border: 2rpx solid var(--swiss-accent, #E0261C); border-radius: 0; background: transparent; color: var(--swiss-accent, #E0261C); font-size: 16rpx; font-weight: 900; line-height: 52rpx; }
+.opening-period { margin-top: 14rpx; padding: 16rpx; border: 2rpx solid var(--swiss-ink, #141414); background: #F1EEE5; }
+.opening-period-head { display: flex; align-items: center; justify-content: space-between; }
+.opening-period-head > text { color: var(--swiss-accent, #E0261C); font-size: 14rpx; font-weight: 900; letter-spacing: 2rpx; }
+.opening-period-head button { margin: 0; padding: 0 8rpx; border: 0; border-bottom: 2rpx solid var(--swiss-accent, #E0261C); border-radius: 0; background: transparent; color: var(--swiss-accent, #E0261C); font-size: 14rpx; line-height: 42rpx; }
+.opening-time-fields { margin-top: 12rpx; }
+.inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16rpx; margin-top: 24rpx; }
+.time-field, .number-field { padding: 16rpx; border: 2rpx solid var(--swiss-ink, #141414); }
+.time-value { display: block; margin-top: 8rpx; font-size: 30rpx; font-weight: 800; }
+.number-field input { height: 46rpx; margin-top: 8rpx; font-size: 28rpx; font-weight: 800; }
+.weekday-row { display: grid; grid-template-columns: repeat(7, 1fr); margin-top: 22rpx; }
+.weekday { display: flex; align-items: center; gap: 2rpx; flex-direction: column; font-size: 20rpx; }
+.weekday checkbox { transform: scale(.72); }
+.section-heading { display: flex; margin: 38rpx 0 16rpx; align-items: center; gap: 14rpx; border-bottom: 4rpx solid var(--swiss-ink, #141414); padding-bottom: 12rpx; }
+.section-heading-index { color: var(--swiss-accent, #E0261C); font-family: monospace; font-weight: 800; }
+.section-heading-title { flex: 1; font-size: 30rpx; font-weight: 800; }
+.section-heading button, .card-head button { margin: 0; padding: 0 12rpx; border: 0; border-radius: 0; background: transparent; color: var(--swiss-accent, #E0261C); font-size: 20rpx; font-weight: 800; line-height: 48rpx; }
+.card-head { display: flex; align-items: center; justify-content: space-between; color: #85806F; font-size: 19rpx; font-weight: 800; }
+.triple-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10rpx; margin-top: 20rpx; }
+.triple-fields view { padding: 12rpx; border: 2rpx solid var(--swiss-ink, #141414); }
+.triple-fields input { height: 46rpx; margin-top: 6rpx; font-size: 24rpx; font-weight: 800; }
+.hint, .empty-staff { color: #85806F; font-size: 20rpx; line-height: 1.5; }
+.hint { margin-top: 16rpx; }
+.staff-schedule-switch, .service-schedule-switch { display: flex; align-items: center; margin-top: 20rpx; padding: 16rpx 0; border-bottom: 2rpx solid rgba(var(--swiss-ink-rgb, 20, 20, 20),.2); }
+.staff-schedule-switch view, .service-schedule-switch view { min-width: 0; flex: 1; }
+.staff-switch-title, .staff-switch-note { display: block; }
+.staff-switch-title { font-size: 23rpx; font-weight: 800; }
+.staff-switch-note { margin-top: 6rpx; color: #85806F; font-size: 18rpx; }
+.service-period-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 12rpx; margin-top: 20rpx; }
+.service-period-title view { min-width: 0; flex: 1; }
+.service-period-title text, .service-period-title label { display: block; }
+.service-period-title text { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 13rpx; font-weight: 900; letter-spacing: 2rpx; }
+.service-period-title label { margin-top: 5rpx; font-size: 22rpx; font-weight: 900; }
+.service-period-title button { margin: 0; padding: 0 9rpx; border: 2rpx solid var(--swiss-accent, #E0261C); border-radius: 0; background: transparent; color: var(--swiss-accent, #E0261C); font-size: 15rpx; font-weight: 900; line-height: 48rpx; }
+.service-period { margin-top: 12rpx; padding: 15rpx; border: 2rpx solid var(--swiss-ink, #141414); background: #F1EEE5; }
+.service-binding-note { margin-top: 14rpx; padding: 14rpx; border-left: 8rpx solid var(--swiss-accent, #E0261C); background: rgba(var(--swiss-accent-rgb, 224, 38, 28),.07); }
+.service-binding-note text, .service-binding-note label { display: block; }
+.service-binding-note text { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 13rpx; font-weight: 900; letter-spacing: 1rpx; }
+.service-binding-note label { margin-top: 7rpx; font-size: 18rpx; line-height: 1.5; }
+.empty-staff { margin-bottom: 24rpx; padding: 24rpx; border: 2rpx dashed #85806F; }
+.save-btn { width: 100%; margin-top: 30rpx; }

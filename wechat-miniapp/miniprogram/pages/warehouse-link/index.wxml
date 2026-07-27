@@ -1,0 +1,50 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">IDENTITY — SIGN IN / REGISTER</view>
+  <view class="title">登入与注册</view>
+  <view class="lead">微信负责 APP 会话；公司管理层可在这里验证 Warehouse 账号，系统会自动分配消费者端或经营端。</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-text">正在读取身份状态</view></view>
+
+  <view wx:else class="identity-state {{warehouse.linked ? 'identity-linked' : ''}}">
+    <view>
+      <view class="identity-kicker">{{warehouse.linked ? 'WAREHOUSE LINKED' : 'WECHAT SESSION READY'}}</view>
+      <view class="identity-title">
+        {{warehouse.linked ? (warehouse.global_user.display_name || warehouse.global_user.username || '身份已联动') : '当前已用微信安全登入'}}
+      </view>
+      <view class="identity-copy">
+        {{operatorCount ? '已开放经营端，可在首页自动进入管理工作台。' : '验证公司账号，或注册一个独立经营空间。'}}
+      </view>
+    </view>
+    <view class="identity-count mono">{{operatorCount}}</view>
+  </view>
+
+  <view class="security-note">
+    <text>01</text>
+    <view><text class="security-title">公司管理层登入</text><text class="security-copy">验证成功后自动识别公司负责人、L4+ 管理角色、部门主管与管理岗位。</text></view>
+  </view>
+  <view class="security-note">
+    <text>02</text>
+    <view><text class="security-title">没有 Warehouse 也能注册</text><text class="security-copy">独立经营者仍可完整使用预约、会员、预存款和消费功能。</text></view>
+  </view>
+
+  <view class="form-card swiss-card">
+    <view class="field-label">Warehouse 账号</view>
+    <input class="input" value="{{username}}" data-field="username" bindinput="onInput" maxlength="80" placeholder="用户名"/>
+    <view class="field-label gap">密码</view>
+    <input class="input" value="{{password}}" data-field="password" bindinput="onInput" password maxlength="128" placeholder="仅用于本次验证"/>
+  </view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <button class="btn btn-red submit" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submit">
+    验证并进入经营端
+  </button>
+
+  <view class="register-card">
+    <view class="register-index">B02 — INDEPENDENT BUSINESS</view>
+    <view class="register-title">没有公司账号？</view>
+    <view class="register-copy">直接使用当前微信身份注册经营者，并建立独立公司空间。</view>
+    <button class="btn register-button" bindtap="openRegister">注册新经营者</button>
+  </view>
+</view>
+</theme-provider>

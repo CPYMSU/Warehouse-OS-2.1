@@ -1,0 +1,47 @@
+<theme-provider>
+<view class="page">
+  <view class="eyebrow">07 — LUCKY GRID</view><view class="title">会员抽奖</view><view class="rule"></view>
+  <view wx:if="{{companyName}}" class="company-context">
+    <view class="context-label">DRAW HOST / 活动公司</view>
+    <view class="context-name">{{companyName}}</view>
+    <view class="context-mode">{{companyMode}}</view>
+  </view>
+  <view wx:if="{{contextLoading}}" class="state"><view class="state-mark">···</view></view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+
+  <view wx:if="{{!contextLoading && !campaigns.length}}" class="empty swiss-card">
+    <view class="empty-mark mono">00</view><view>当前公司暂无开放中的抽奖活动</view>
+  </view>
+  <view wx:if="{{!contextLoading && campaigns.length}}" class="section">
+    <view class="section-head"><text class="section-index">A</text><text class="section-title">开放活动</text></view>
+    <view wx:for="{{campaigns}}" wx:key="campaign_code" data-code="{{item.campaign_code}}" bindtap="chooseCampaign" class="campaign-card {{item.campaign_code === selectedCampaignCode ? 'active' : ''}}">
+      <view><view class="campaign-name">{{item.campaign_name}}</view><view class="campaign-code mono">{{item.campaign_code}}</view></view>
+      <view class="campaign-meta"><view class="mono">{{item.remainingLabel}} 次</view><view>{{item.endsLocal}} 截止</view></view>
+    </view>
+  </view>
+
+  <view wx:if="{{!contextLoading && selectedCampaign}}" class="draw-panel">
+    <view class="draw-grid {{busy ? 'running' : ''}}">
+      <view wx:for="{{selectedCampaign.prizes}}" wx:key="code" class="draw-cell"><text class="prize-index mono">{{index + 1}}</text><text class="prize-name">{{item.name}}</text></view>
+    </view>
+    <button class="btn btn-red draw-button" loading="{{busy}}" disabled="{{busy || contextLoading || !selectedCampaign.available}}" bindtap="draw">{{selectedCampaign.buttonLabel}}</button>
+  </view>
+
+  <view wx:if="{{!contextLoading && result}}" class="result swiss-card">
+    <view class="result-label">DRAW RESULT</view><view class="result-name">{{result.prize.name}}</view>
+    <view wx:if="{{result.prize.points_awarded}}" class="result-detail">+ {{result.prize.points_awarded}} 积分</view>
+    <view wx:if="{{result.prize.reward_no}}" class="reward-code mono">{{result.prize.reward_no}}</view>
+    <view class="result-no mono">{{result.draw_no}}</view>
+  </view>
+
+  <view wx:if="{{!contextLoading}}" class="section">
+    <view class="section-head"><text class="section-index">B</text><text class="section-title">我的奖品</text></view>
+    <view wx:if="{{!rewards.length}}" class="copy">暂无待核销的实物或优惠券奖品。</view>
+    <view wx:for="{{rewards}}" wx:key="reward_no" class="reward-row">
+      <view><view class="reward-name">{{item.name}}</view><view class="mono reward-no">{{item.reward_no}}</view><view class="reward-time">{{item.issuedLocal}}</view></view>
+      <view class="reward-status {{item.status}}">{{item.statusLabel}}</view>
+    </view>
+  </view>
+  <view class="notice">活动、库存、次数、积分与奖品均由当前公司服务器原子记录；网络不确定时会复用同一次请求，不会重复开奖。</view>
+</view>
+</theme-provider>

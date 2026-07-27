@@ -1,0 +1,23 @@
+.lead { margin-top: 18rpx; color: #85806F; font-size: 24rpx; line-height: 1.6; }
+.identity-state { display: flex; align-items: center; justify-content: space-between; gap: 24rpx; padding: 28rpx; border: 2rpx solid var(--swiss-ink, #141414); border-top-width: 8rpx; background: var(--swiss-ink, #141414); color: var(--swiss-on-ink, #F5F2EB); }
+.identity-linked { border-top-color: var(--swiss-accent, #E0261C); }
+.identity-kicker { color: var(--swiss-accent, #E0261C); font-size: 18rpx; font-weight: 800; letter-spacing: 3rpx; }
+.identity-title { margin-top: 14rpx; font-size: 30rpx; font-weight: 800; }
+.identity-copy { margin-top: 8rpx; color: #B8B29F; font-size: 21rpx; line-height: 1.5; }
+.identity-count { min-width: 72rpx; color: var(--swiss-accent, #E0261C); font-size: 58rpx; font-weight: 800; text-align: right; }
+.security-note { display: flex; gap: 18rpx; padding: 22rpx 0; border-bottom: 2rpx solid var(--swiss-ink, #141414); }
+.security-note > text { color: var(--swiss-accent, #E0261C); font-family: monospace; font-size: 20rpx; font-weight: 800; }
+.security-note view { flex: 1; }
+.security-title, .security-copy { display: block; }
+.security-title { font-size: 27rpx; font-weight: 800; }
+.security-copy { margin-top: 8rpx; color: #85806F; font-size: 20rpx; line-height: 1.5; }
+.form-card { margin-top: 32rpx; padding: 28rpx; }
+.field-label { color: var(--swiss-accent, #E0261C); font-size: 19rpx; font-weight: 800; letter-spacing: 3rpx; }
+.gap { margin-top: 30rpx; }
+.input { height: 86rpx; margin-top: 10rpx; border-bottom: 2rpx solid var(--swiss-ink, #141414); font-size: 29rpx; font-weight: 700; }
+.submit { width: 100%; margin-top: 28rpx; }
+.register-card { margin-top: 40rpx; padding: 30rpx; border: 2rpx solid var(--swiss-ink, #141414); background: #FAF8F2; }
+.register-index { color: var(--swiss-accent, #E0261C); font-size: 18rpx; font-weight: 800; letter-spacing: 3rpx; }
+.register-title { margin-top: 18rpx; font-size: 36rpx; font-weight: 800; }
+.register-copy { margin-top: 10rpx; color: #85806F; font-size: 22rpx; line-height: 1.55; }
+.register-button { width: 100%; margin-top: 22rpx; }

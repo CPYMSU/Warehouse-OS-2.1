@@ -1,0 +1,78 @@
+<theme-provider>
+<view class="page appointments-page">
+  <view class="appointments-masthead">
+    <view>
+      <view class="eyebrow">03 — APPOINTMENTS</view>
+      <view class="title">我的预约</view>
+    </view>
+    <view class="appointment-total mono">{{appointments.length}}</view>
+  </view>
+  <view class="appointments-intro">个人预约、状态变化与爽约补偿都保存在同一条事件链中。</view>
+  <view class="rule"></view>
+
+  <view wx:if="{{companyName}}" class="context-switch">
+    <view class="context-switch-index mono">CO</view>
+    <picker class="context-switch-picker" range="{{companyNames}}" value="{{companyIndex}}" bindchange="onCompanyChange">
+      <view class="context-switch-body">
+        <view>
+          <view class="context-switch-label">CURRENT COMPANY</view>
+          <view class="context-switch-name">{{companyName}}</view>
+        </view>
+        <view class="context-switch-command">选择公司</view>
+      </view>
+    </picker>
+  </view>
+
+  <view class="appointment-summary">
+    <view class="summary-lead"><text class="summary-kicker">APPOINTMENT INDEX</text><text class="summary-value mono">{{appointments.length}}</text><text class="summary-label">全部记录</text></view>
+    <view><text class="summary-value mono">{{activeCount}}</text><text class="summary-label">进行中</text></view>
+    <view><text class="summary-value mono">{{completedCount}}</text><text class="summary-label">已完成</text></view>
+  </view>
+
+  <view class="policy-card">
+    <view class="policy-index mono">RULE / 01</view>
+    <view><view class="policy-kicker">IMMUTABLE NO-SHOW RULE</view><view class="policy-text">用户爽约由商家标记后扣除上一次消费所得积分；商家爽约由用户报告、商家确认后补回同一积分基数。</view></view>
+  </view>
+
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view><view class="state-text">正在读取预约</view></view>
+  <view wx:elif="{{error}}" class="error">{{error}}</view>
+  <view wx:elif="{{!appointments.length}}" class="empty-panel">
+    <view class="empty-index mono">APPOINTMENT / 00</view>
+    <view class="empty-title">还没有预约记录</view>
+    <view class="muted">选择服务和工作人员，系统会自动计算真实可用时间。</view>
+    <button class="btn btn-red full-btn" bindtap="openBooking">立即预约</button>
+    <button class="btn full-btn" bindtap="openCompanies">管理公司会员空间</button>
+  </view>
+
+  <view wx:else class="appointment-list">
+    <view wx:for="{{appointments}}" wx:key="appointment_no" class="appointment swiss-card">
+      <view class="appointment-rail">
+        <text class="appointment-index mono">{{index < 9 ? '0' + (index + 1) : index + 1}}</text>
+        <text class="appointment-status status-{{item.status}}">{{item.statusText}}</text>
+      </view>
+      <view class="appointment-body">
+        <view class="appointment-brand"><image src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/><view><text>BONFIREWORK / APPOINTMENT</text><label>SHARED BOOKING TICKET</label></view></view>
+        <view class="appointment-no mono">{{item.appointment_no}}</view>
+        <view class="appointment-service">{{item.service_name_snapshot}}</view>
+        <view class="appointment-time mono">{{item.timeText}}</view>
+        <view class="appointment-data">
+          <view><text>LOCATION</text><label>{{item.location_name}}</label></view>
+          <view><text>STAFF</text><label>{{item.staff_name_snapshot || '由工作室安排'}}</label></view>
+          <view><text>VALUE</text><label class="mono">¥{{item.priceText}}</label></view>
+        </view>
+        <view wx:if="{{item.merchantIncident}}" class="incident merchant">
+          <view class="incident-title">商家爽约报告 · {{item.merchantIncident.status}}</view>
+          <view class="incident-detail">积分基数 {{item.merchantIncident.points_basis}} · 已补 {{item.merchantIncident.points_applied}}</view>
+          <view wx:if="{{item.merchantIncident.resolution_note}}" class="incident-note">{{item.merchantIncident.resolution_note}}</view>
+        </view>
+        <view wx:if="{{item.consumerIncident}}" class="incident consumer">
+          <view class="incident-title">用户爽约强规则已执行</view>
+          <view class="incident-detail">上次消费积分 {{item.consumerIncident.points_basis}} · 实际扣除 {{item.consumerIncident.points_applied}}</view>
+        </view>
+        <button wx:if="{{item.canReportMerchantNoShow}}" class="report-btn" data-no="{{item.appointment_no}}" bindtap="reportMerchantNoShow">商家未履约 · 提交确认报告</button>
+        <button wx:if="{{item.cancellable}}" class="cancel-btn" data-no="{{item.appointment_no}}" bindtap="cancel">取消本次预约</button>
+      </view>
+    </view>
+  </view>
+</view>
+</theme-provider>

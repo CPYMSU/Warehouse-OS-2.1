@@ -1,0 +1,15 @@
+{
+  "description": "Warehouse multi-company membership mini program",
+  "miniprogramRoot": "miniprogram/",
+  "compileType": "miniprogram",
+  "appid": "wx02b87916a165148a",
+  "projectname": "warehouse-member",
+  "setting": {
+    "useCompilerPlugins": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "urlCheck": true
+  }
+}

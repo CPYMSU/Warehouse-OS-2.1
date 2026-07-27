@@ -1,0 +1,35 @@
+<theme-provider>
+<scroll-view class="pay-scroll" scroll-y="true" enhanced="true" enable-back-to-top="true" show-scrollbar="true">
+<view class="page pay-page">
+  <view class="eyebrow">04 — DYNAMIC CODE</view><view class="title">出示付款码</view><view class="rule"></view>
+  <view wx:if="{{contextLoading}}" class="state"><view class="state-mark">···</view><view class="state-text">正在核对会员账户</view></view>
+  <view wx:if="{{companyCode}}" class="payee swiss-card">
+    <view class="payee-label">MEMBERSHIP PAYEE / 本次消费公司</view>
+    <view class="payee-name">{{companyName}}</view>
+    <view class="payee-meta">{{companyMode}}</view>
+    <view class="payee-balance mono">可用余额 ¥{{balance}}</view>
+  </view>
+  <view class="amount-entry"><text class="currency">¥</text><input type="digit" value="{{amountInput}}" placeholder="输入本次消费金额" bindinput="inputAmount" /></view>
+  <view wx:if="{{loading}}" class="state"><view class="state-mark">···</view></view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view wx:if="{{paymentCode}}" class="code-card swiss-card">
+    <view class="code-brand">
+      <image class="brand-mark" src="/assets/brand/bonfire-platform-mark.png" mode="aspectFit"/>
+      <view><view class="code-label">BONFIREWORK / ONE-TIME QR</view><view class="code-brand-note">SWISS MEMBER AUTHORIZATION</view></view>
+    </view>
+    <view class="code-security"><text>SINGLE USE</text><text>SERVER VERIFIED</text></view>
+    <view class="qr-frame">
+      <canvas type="2d" id="paymentQr" class="qr-canvas"></canvas>
+      <view class="scan-line"></view>
+      <view class="corner corner-a"></view><view class="corner corner-b"></view>
+      <view class="corner corner-c"></view><view class="corner corner-d"></view>
+    </view>
+    <view class="code mono" bindtap="copy">{{displayCode}}</view>
+    <view class="authorized mono">仅授权本次扣款 ¥{{authorizedAmount}}</view>
+    <view class="expiry mono">有效至 {{expiresAt}}（本机时间）</view>
+  </view>
+  <view class="guide">金额会与一次性 QR 绑定。商家使用经营端扫码后，服务器按已授权金额直接核销；跨公司、重复核销或过期截图都会被拒绝。</view>
+  <button class="btn refresh" loading="{{loading}}" disabled="{{loading || contextLoading || !companyCode}}" bindtap="refresh">生成 / 刷新授权码</button>
+</view>
+</scroll-view>
+</theme-provider>
