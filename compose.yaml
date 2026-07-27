@@ -9,7 +9,10 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # PostgreSQL 18 stores clusters in a versioned subdirectory below this
+      # mount. Mounting the pre-18 /var/lib/postgresql/data path prevents the
+      # container from completing initialization.
+      - postgres-data:/var/lib/postgresql
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U warehouse_os -d warehouse_os"]
