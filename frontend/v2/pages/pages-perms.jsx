@@ -933,14 +933,14 @@ const OrgEntityForm = ({ mode, entity, seedParentId, units, memberships, roles, 
   }, [mode, entity && entity.id, seedParentId]);
   const set = (key, value) => { setForm({ ...form, [key]: value }); setFormError(""); };
   const departmentUnits = (units || []).filter(u => {
-    const id = Number(u && u.id);
+    const id = String((u && u.id) || "").trim();
     const active = !(u && (u.active === false || u.active === 0 || u.active === "0" || String(u.active).toLowerCase() === "false"));
     const isCompany = String((u && u.unit_type) || "").toLowerCase() === "company";
     // Only a department editor must exclude its own unit. A position-create form
     // receives the selected department as `entity`, so excluding entity.id here
     // removed exactly the department that should have been preselected.
     const isSelf = isDepartment && !isCreate && entity && String(u.id) === String(entity.id);
-    return Number.isInteger(id) && id > 0 && active && !isCompany && !isSelf;
+    return !!id && active && !isCompany && !isSelf;
   });
   const departmentIds = new Set(departmentUnits.map(u => String(u.id)));
   const managerChoices = isCreate || !entity ? [] : (memberships || []).filter(m => String(m.org_unit_id) === String(entity.id));
@@ -950,15 +950,15 @@ const OrgEntityForm = ({ mode, entity, seedParentId, units, memberships, roles, 
     if (!name) { setFormError(t(isDepartment ? "請填寫部門名稱。" : "請填寫崗位名稱。")); return; }
     if (isDepartment) {
       path = isCreate ? "/api/org/departments" : "/api/org/departments/" + entity.id;
-      body = { unit_name: name, unit_type: form.type, parent_id: Number(form.parent_id || 0), description: form.description };
+      body = { unit_name: name, unit_type: form.type, parent_id: form.parent_id || null, description: form.description };
       if (isCreate && form.code.trim()) body.unit_code = form.code.trim();
-      if (!isCreate) body.manager_user_id = form.manager_user_id ? Number(form.manager_user_id) : null;
+      if (!isCreate) body.manager_user_id = form.manager_user_id || null;
     } else {
       const level = Number(form.level);
       if (!departmentIds.has(String(form.org_unit_id))) { setFormError(t("請選擇有效的所屬部門。")); return; }
       if (!Number.isInteger(level) || level < 1 || level > 10) { setFormError(t("職級必須是 1 至 10 的整數。")); return; }
       path = isCreate ? "/api/org/positions" : "/api/org/positions/" + entity.id;
-      body = { position_name: name, org_unit_id: Number(form.org_unit_id), role_id: form.role_id ? Number(form.role_id) : null, level, is_manager: !!form.is_manager, description: form.description };
+      body = { position_name: name, org_unit_id: form.org_unit_id, role_id: form.role_id || null, level, is_manager: !!form.is_manager, description: form.description };
       if (isCreate && form.code.trim()) body.position_code = form.code.trim();
     }
     const ok = await onSubmit(path, body); if (ok) onCancel();
@@ -1029,7 +1029,12 @@ const makeOrgTree = (data, topology, biu = false) => {
     return { key: "department:" + id, kind: "department", label: u.unit_name || u.unit_code || "—", code: u.unit_code || "", meta: directPeople + " " + t("人") + " · " + ceiling.length + " PERM · " + departmentNav.length + " NAV", entity: u, count: directPeople, children: nested.concat(posNodes) };
   };
   const top = departments.filter(u => String(u.parent_id) === String(company.id) || !unitById.has(String(u.parent_id)));
-  const rootChildren = top.map(u => buildDepartment(u, new Set())).filter(Boolean);
+  // The tenant root can legitimately own executive and system-administrator
+  // positions directly.  Those positions used to be indexed in `posByUnit`
+  // but never attached to a visible node, making real L10 members disappear
+  // from the topology even though `/api/org/structure` returned them.
+  const rootPositions = (posByUnit.get(String(company.id)) || []).map(positionNode);
+  const rootChildren = rootPositions.concat(top.map(u => buildDepartment(u, new Set())).filter(Boolean));
   const assignedIds = new Set(memberships.map(m => String(m.user_id)));
   const unassigned = users.filter(u => !assignedIds.has(String(u.id)));
   if (unassigned.length) rootChildren.push({ key: "group:unassigned", kind: "group", label: t("未分配"), code: "UNASSIGNED", meta: t("未分配成員"), virtual: true, entity: {}, count: unassigned.length, children: unassigned.map((u, i) => personNode({ user_id: u.id, username: u.username, display_name: u.display_name }, "unassigned-" + i)) });
@@ -1361,6 +1366,7 @@ const Page = ({ boot, reload, templateKey = "" }) => {
   const memList = (members && Array.isArray(members.requests)) ? members.requests : [];
   const regList = (regs && Array.isArray(regs.requests)) ? regs.requests : [];
   const pendingTotal = num(members ? members.pending_count : 0) + num(regs ? regs.pending_count : 0);
+  const approvalUnavailable = !!((members && members.available === false) || (regs && regs.available === false));
   const delsRaw = (topo && Array.isArray(topo.delegations)) ? topo.delegations : [];
   const dels = biu ? delsRaw.filter(row => BIU_PERMISSION_KEYS.has(String(row && row.permission_key || ""))) : delsRaw;
   const delCount = biu ? dels.length : ((topo && topo.summary && topo.summary.delegations != null) ? num(topo.summary.delegations) : dels.length);
@@ -1447,7 +1453,9 @@ const Page = ({ boot, reload, templateKey = "" }) => {
         <Kpi label={permsText(biu, "成員帳號")} value={rowsAll.length} unit={t("人")} delay={0}
           foot={<><span className="muted" style={{ fontSize: 11.5 }}>{t("啟用 {a} · 停用 {b}", { a: onCount, b: rowsAll.length - onCount })}</span><T tone="plain">{managed ? "MANAGED" : "ROSTER"}</T></>}/>
         <Kpi label={permsText(biu, "待審批申請")} value={pendingTotal} unit={t("筆")} red={pendingTotal > 0} delay={.05}
-          foot={pendingTotal
+          foot={approvalUnavailable
+            ? <T tone="plain">{t("審批流程待遷移")}</T>
+            : pendingTotal
             ? <button className="tag redinv" style={{ cursor: "pointer" }} onClick={() => ask(t("把待審批的註冊與加入申請逐條給我,建議每條的角色分配,經我確認後執行審批"))}>{t("讓秘書逐條審批 →")}</button>
             : <T tone="ok" dot>{t("全部處理完畢")}</T>}/>
         <Kpi label={permsText(biu, "角色")} value={roles.length} unit={t("個")} delay={.1}
@@ -1468,14 +1476,15 @@ const Page = ({ boot, reload, templateKey = "" }) => {
           ))}
         </div>}>
         {regLoading && <div className="muted" style={{ fontSize: 12.5, padding: "14px 4px" }}>{t("載入中…")}</div>}
-        {!regLoading && regStatus === "pending" && (memList.length || regList.length ? (
+        {!regLoading && approvalUnavailable && <div className="org-notice" role="status">{t("註冊與加入審批工作流尚未移植到新資料庫；此處不會把「沒有資料」誤顯示為「全部處理完畢」。目前可由系統管理員直接建立或調整既有帳號。")}</div>}
+        {!regLoading && !approvalUnavailable && regStatus === "pending" && (memList.length || regList.length ? (
           <div style={{ borderTop: "2px solid var(--rule)" }}>
             {memList.map((m, i) => pendRow(m, i, "mem"))}
             {regList.map((r, i) => pendRow(r, memList.length + i, "reg"))}
           </div>
         ) : <EM icon="clipboard" title={t(REG_EMPTY.pending)} sub={t("新申請會第一時間出現在這裡;也可以讓秘書代發邀請。")}
               action={<B size="sm" icon="sparkle" onClick={() => ask(t("我要新增或批量導入成員帳號,請追問名單(姓名、帳號、部門、崗位)後按崗位預設建立"))}>{t("新增成員")}</B>}/>)}
-        {!regLoading && regStatus !== "pending" && (regList.length ? (
+        {!regLoading && !approvalUnavailable && regStatus !== "pending" && (regList.length ? (
           <div style={{ borderTop: "2px solid var(--rule)" }}>{regList.map(doneRow)}</div>
         ) : <EM icon="doc" title={t(REG_EMPTY[regStatus] || REG_EMPTY.pending)}/>)}
       </Band>

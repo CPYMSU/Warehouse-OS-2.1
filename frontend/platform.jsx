@@ -650,7 +650,7 @@ const PlatformChangePwModal = ({ onClose }) => {
 };
 
 /* ---------- 公司管理詳情(統計 + 編輯 + 成員 + 重置)---------- */
-const TEMPLATES_FALLBACK = [{ key: "generic_warehouse", name: "通用倉儲" }, { key: "power_grid_uhv", name: "超高壓電網" }];
+const TEMPLATES_FALLBACK = [{ key: "generic_warehouse", name: "通用倉儲" }, { key: "power_system", name: "電力系統" }];
 const CompanyManageModal = ({ slug, onClose, onChanged }) => {
   const [data, setData] = useState(null);
   const [templates, setTemplates] = useState(TEMPLATES_FALLBACK);
