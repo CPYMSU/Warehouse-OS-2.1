@@ -9,28 +9,31 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      # PostgreSQL 18 stores clusters in a versioned subdirectory below this
-      # mount. Mounting the pre-18 /var/lib/postgresql/data path prevents the
-      # container from completing initialization.
       - postgres-data:/var/lib/postgresql
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U warehouse_os -d warehouse_os"]
+      test: ["CMD-SHELL", "pg_isready -U warehouse_admin -d warehouse_os"]
       interval: 5s
       timeout: 3s
       retries: 20
 
   api:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     env_file:
       - ./backend/.env
     environment:
-      # The running API never needs migration credentials.
-      WAREHOUSE_MIGRATION_DATABASE_URL: ""
+      WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@postgres:5432/warehouse_os
+      WAREHOUSE_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:local-only-migration-change-me@postgres:5432/warehouse_os
+      WAREHOUSE_CORS_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
     depends_on:
       postgres:
         condition: service_healthy
+    command:
+      - /bin/sh
+      - -c
+      - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers
     ports:
       - "127.0.0.1:8080:8080"
 
