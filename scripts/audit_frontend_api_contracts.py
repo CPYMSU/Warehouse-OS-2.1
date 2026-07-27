@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Audit retained frontend API calls against the FastAPI OpenAPI contract.
-
-The repository contains several retained clients (V2 web, classic web, React
-Native and the WeChat mini program).  This script scans their source files for
-literal and simple concatenated `/api/...` calls, infers the HTTP method from
-common request helpers, and compares the resulting contract with the backend's
-published OpenAPI document.
-
-It deliberately checks connectivity only.  It does not enforce authorization
-policy or business semantics; those concerns belong to separate validation.
-"""
+"""Audit retained frontend API calls against the FastAPI OpenAPI contract."""
 
 from __future__ import annotations
 
@@ -30,14 +20,20 @@ CLIENT_ROOTS = (
 )
 EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".html"}
 SKIP_PARTS = {"vendor", "dist", "node_modules", "miniprogram_npm"}
-HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
 
 CALL_PATTERNS = (
     (re.compile(r"\bW2\.json\s*\(\s*(?P<expr>[^,\n]+)"), "GET"),
     (re.compile(r"\bW2\.post\s*\(\s*(?P<expr>[^,\n]+)"), "POST"),
     (re.compile(r"\bpublicPost\s*\(\s*(?P<expr>[^,\n]+)"), "POST"),
     (re.compile(r"\bverificationPost\s*\(\s*(?P<expr>[^,\n]+)"), "POST"),
-    (re.compile(r"\b(?:api|client|http|request)\.(?P<method>get|post|put|patch|delete)\s*\(\s*(?P<expr>[^,\n]+)", re.I), None),
+    (
+        re.compile(
+            r"\b(?:api|client|http|request)\.(?P<method>get|post|put|patch|delete)"
+            r"\s*\(\s*(?P<expr>[^,\n]+)",
+            re.I,
+        ),
+        None,
+    ),
     (re.compile(r"\bfetch\s*\(\s*(?P<expr>[^,\n]+)"), "FETCH"),
 )
 
@@ -82,8 +78,7 @@ def simple_js_expression(expr: str) -> str | None:
         piece = piece.strip().strip("()")
         match = QUOTED_PART.match(piece)
         if match:
-            body = TEMPLATE_EXPR.sub("{param}", match.group("body"))
-            output.append(body)
+            output.append(TEMPLATE_EXPR.sub("{param}", match.group("body")))
             continue
         if re.fullmatch(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", piece):
             output.append("{param}")
@@ -97,22 +92,30 @@ def simple_js_expression(expr: str) -> str | None:
     value = value.split("#", 1)[0].split("?", 1)[0]
     value = re.sub(r"/+", "/", value)
     value = re.sub(r"\{param\}(?=\{param\})", "{param}", value)
+    # A variable appended directly to the end of a complete path is the common
+    # `?query`/cursor suffix pattern. Dynamic path IDs are preceded by `/` and
+    # therefore remain as `{param}`.
+    value = re.sub(r"(?<=[A-Za-z0-9_-])\{param\}$", "", value)
     return value.rstrip("/") or "/api"
 
 
 def fetch_method(snippet: str) -> str:
-    match = re.search(r"\bmethod\s*:\s*[\"'](GET|POST|PUT|PATCH|DELETE)[\"']", snippet, re.I)
+    match = re.search(
+        r"\bmethod\s*:\s*[\"'](GET|POST|PUT|PATCH|DELETE)[\"']",
+        snippet,
+        re.I,
+    )
     return match.group(1).upper() if match else "GET"
 
 
 def scan_file(path: Path) -> list[Contract]:
     try:
-        text = path.read_text(encoding="utf-8")
+        text_value = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return []
     relative = path.relative_to(ROOT).as_posix()
     contracts: set[Contract] = set()
-    lines = text.splitlines()
+    lines = text_value.splitlines()
     for number, line in enumerate(lines, start=1):
         if "/api" not in line:
             continue
@@ -137,7 +140,10 @@ def scan_file(path: Path) -> list[Contract]:
 
 
 def path_shape(path: str) -> tuple[str, ...]:
-    return tuple("{}" if PATH_PARAM.fullmatch(segment) else segment for segment in path.strip("/").split("/"))
+    return tuple(
+        "{}" if PATH_PARAM.fullmatch(segment) else segment
+        for segment in path.strip("/").split("/")
+    )
 
 
 def paths_compatible(frontend_path: str, backend_path: str) -> bool:
@@ -155,11 +161,12 @@ def main() -> int:
     args = parser.parse_args()
 
     sys.path.insert(0, str(ROOT / "backend"))
-    from app.main import app  # noqa: PLC0415
+    from app.main import app
 
     openapi_paths: dict[str, dict[str, object]] = app.openapi().get("paths", {})
     discovered: list[Contract] = []
-    for path in iter_sources():
+    source_paths = list(iter_sources())
+    for path in source_paths:
         discovered.extend(scan_file(path))
 
     unique: dict[tuple[str, str], list[Contract]] = {}
@@ -183,7 +190,7 @@ def main() -> int:
         (connected if matches else missing).append(row)
 
     report = {
-        "scanned_files": sum(1 for _ in iter_sources()),
+        "scanned_files": len(source_paths),
         "discovered_contracts": len(unique),
         "connected_contracts": len(connected),
         "missing_contracts": len(missing),
@@ -191,12 +198,27 @@ def main() -> int:
         "connected": connected,
     }
     report_path = ROOT / args.report
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
-    print(json.dumps({key: report[key] for key in ("scanned_files", "discovered_contracts", "connected_contracts", "missing_contracts")}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                key: report[key]
+                for key in (
+                    "scanned_files",
+                    "discovered_contracts",
+                    "connected_contracts",
+                    "missing_contracts",
+                )
+            },
+            ensure_ascii=False,
+        )
+    )
     for row in missing:
         print(f"MISSING {row['method']} {row['path']} <- {', '.join(row['sources'])}")
-
     return 1 if args.fail_on_missing and missing else 0
 
 
