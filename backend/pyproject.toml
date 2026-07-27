@@ -14,6 +14,7 @@ dependencies = [
   "pwdlib[argon2]>=0.2,<1",
   "pydantic-settings>=2.6,<3",
   "PyJWT>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
   "SQLAlchemy>=2.0,<3",
   "uvicorn[standard]>=0.32,<1",
 ]
@@ -39,6 +40,8 @@ select = ["E", "F", "I", "UP"]
 [tool.ruff.lint.per-file-ignores]
 "alembic/versions/*.py" = ["E501"]
 "app/api/compat.py" = ["E501"]
+"app/api/full_stack_identity.py" = ["E501"]
+"app/api/full_stack_business.py" = ["E501"]
 "app/templates/industry_blueprints.py" = ["E501", "I001", "UP035", "UP045"]
 "app/terminal/legacy_catalog.py" = ["E501", "I001", "UP031", "UP035", "UP045"]
 
