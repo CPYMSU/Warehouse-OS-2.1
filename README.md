@@ -46,3 +46,29 @@ permissions, RLS, audit, and write-confirmation controls are ready.
 
 Local runtime and Cloudflare Tunnel instructions are in
 [`infra/LOCAL_RUNTIME.md`](infra/LOCAL_RUNTIME.md).
+
+## Run the connected local stack
+
+Do **not** start `frontend/v2` with a static file server on port 8080. A static
+server makes every `/api/...` request return 404 and turns POST requests into
+405 responses. Start the frontend, FastAPI routes, migrations, and PostgreSQL
+through the governed entry point instead:
+
+```sh
+bash scripts/start_local.sh
+```
+
+The launcher creates the backend virtual environment, starts the local
+PostgreSQL container when Docker is available, applies every Alembic migration,
+and serves `frontend/v2` from the FastAPI process at `http://127.0.0.1:8080`.
+Every response from the correct process includes:
+
+```text
+X-Warehouse-Backend: fastapi-postgresql
+```
+
+The retained frontend contract now has a PostgreSQL compatibility projection.
+Modules with final 2.1 tables (IAM, tasks, workflows, audit, secretary, and
+warehouse operations) read those tables directly. Other retained read models
+use tenant-isolated `compatibility.documents`; absent data returns an explicit
+`available: false` state and never demonstration data or a silent success.
