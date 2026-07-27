@@ -56,8 +56,11 @@ EXPECTED_CONTRACTS = {
 }
 
 
-def _supports(method: str, path: str) -> bool:
+def _supports_specific_contract(method: str, path: str) -> bool:
+    """Require a real contract route, not the generic /api catch-all."""
     for route in app.routes:
+        if getattr(route, "path", None) == "/api/{path:path}":
+            continue
         methods = getattr(route, "methods", set())
         path_regex = getattr(route, "path_regex", None)
         if method in methods and path_regex is not None and path_regex.fullmatch(path):
@@ -69,7 +72,7 @@ def test_error_log_contracts_are_registered_before_static_mount() -> None:
     missing = sorted(
         f"{method} {path}"
         for method, path in EXPECTED_CONTRACTS
-        if not _supports(method, path)
+        if not _supports_specific_contract(method, path)
     )
 
     assert missing == []
