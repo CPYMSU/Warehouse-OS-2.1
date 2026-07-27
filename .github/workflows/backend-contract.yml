@@ -116,5 +116,8 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Test MapLibre teardown guard
+        run: node scripts/test_maplibre_abort_guard.cjs
+
       - name: Verify precompiled frontend
         run: node scripts/build_v2_frontend.cjs --check
