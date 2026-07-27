@@ -80,6 +80,23 @@ def test_error_log_contracts_are_published_in_openapi() -> None:
     assert missing == [], {"missing": missing, "published": published}
 
 
+def test_error_log_contracts_hit_the_authenticated_api_not_a_static_fallback() -> None:
+    client = TestClient(app)
+    failures: dict[str, dict[str, object]] = {}
+
+    for method, path in sorted(EXPECTED_CONTRACTS):
+        response = client.request(method, path, json={} if method == "POST" else None)
+        if response.status_code != 401:
+            failures[f"{method} {path}"] = {
+                "status": response.status_code,
+                "content_type": response.headers.get("content-type"),
+                "body": response.text[:300],
+            }
+        assert response.headers["X-Warehouse-Backend"] == "fastapi-postgresql"
+
+    assert failures == {}
+
+
 def test_unknown_api_never_falls_through_to_static_file_server() -> None:
     response = TestClient(app).post("/api/not-yet-migrated")
 
