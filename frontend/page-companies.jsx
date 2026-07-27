@@ -9,7 +9,7 @@ const coJson = async (path, options) => {
   return { ok: res.ok, status: res.status, data };
 };
 
-const CO_TEMPLATES_FALLBACK = [{ key: "generic_warehouse", name: "通用倉儲" }, { key: "power_grid_uhv", name: "超高壓電網" }];
+const CO_TEMPLATES_FALLBACK = [{ key: "generic_warehouse", name: "通用倉儲" }, { key: "power_system", name: "電力系統" }];
 const SIGNUP_BADGE_CO = { pending: "badge-warn", approved: "badge-ok", rejected: "badge-danger" };
 const SIGNUP_LABEL_CO = { pending: "待審批", approved: "已開通", rejected: "已駁回" };
 

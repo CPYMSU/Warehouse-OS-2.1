@@ -6,7 +6,7 @@ const W2 = {};
 window.W2 = W2;
 
 /* ── API 層 ── */
-W2.API_BASE = (location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "http://127.0.0.1:8090" : "";
+W2.API_BASE = (location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "http://127.0.0.1:8080" : "";
 // 經典版(1.0)所在域名:V2 走獨立域名 bonfirework.org 後,回 1.0 的鏈接必須絕對
 W2.CLASSIC_URL = (location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "../" : "https://ncsyaikg.com/";
 W2.TOKEN_KEY = "warehouse_auth_token";

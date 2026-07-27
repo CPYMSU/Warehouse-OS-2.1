@@ -6,3 +6,15 @@ node_modules/
 .expo/
 coverage/
 *.log
+.venv/
+backend/.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.cloudflared/
+postgres-data/
+
+# Local credentials and captured terminal output must never be committed.
+GITHUB KEY.txt
+Vultr Key.rtf
+Terminal Saved Output.txt

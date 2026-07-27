@@ -3100,7 +3100,7 @@ const App2 = () => {
     });
   }, []);
 
-  const switchTenant = (slug) => {
+  const switchTenant = async (slug) => {
     const previousTenant = W2.tenant();
     const previousToken = W2.token();
     const previousUser = user;
@@ -3124,14 +3124,23 @@ const App2 = () => {
     if (W2.clearBusinessContext) W2.clearBusinessContext();
     setNotice("");
     const cached = cachedRuntimePreferences(slug, user);
-    W2.setTenant(slug); setTenant(slug); setRuntimePrefs(cached); setPhase("checking");
+    setPhase("checking");
     window.W2_RUNTIME_PREFS = cached;
     applyRuntimeAppearance(cached);
-    check(false, snapshot).catch(error => {
+    try {
+      const response = await W2.post("/api/auth/switch-tenant", { tenant: slug });
+      if (!response || !response.token || response.tenant !== slug) {
+        throw new Error(t("公司切換回應無效"));
+      }
+      W2.setToken(response.token);
+      W2.setTenant(slug); setTenant(slug); setRuntimePrefs(cached);
+      await check(false, snapshot);
+    } catch (error) {
+      restoreTenantSwitch(snapshot, { sequence: checkRequestSeq.current, targetTenant: W2.tenant(), token: W2.token() }, error && error.message);
       /* Non-401 switch failures are handled by check() and restored in place.
          The shared fetch layer has already performed the only valid logout. */
       if (error && error.status === 401) setPhase("login");
-    });
+    }
   };
   const logout = () => {
     W2.fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
