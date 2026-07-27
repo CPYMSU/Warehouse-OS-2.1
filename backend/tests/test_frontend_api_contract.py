@@ -56,16 +56,21 @@ EXPECTED_CONTRACTS = {
 }
 
 
+def _contract_template(path: str) -> str:
+    if path.startswith("/api/integrations/"):
+        return "/api/integrations/{provider}"
+    return path
+
+
 def _supports_specific_contract(method: str, path: str) -> bool:
-    """Require a real contract route, not the generic /api catch-all."""
-    for route in app.routes:
-        if getattr(route, "path", None) == "/api/{path:path}":
-            continue
-        methods = getattr(route, "methods", set())
-        path_regex = getattr(route, "path_regex", None)
-        if method in methods and path_regex is not None and path_regex.fullmatch(path):
-            return True
-    return False
+    """Require a real route template, not the generic /api catch-all."""
+    template = _contract_template(path)
+    return any(
+        getattr(route, "path", None) == template
+        and method in (getattr(route, "methods", None) or set())
+        for route in app.routes
+        if getattr(route, "path", None) != "/api/{path:path}"
+    )
 
 
 def test_error_log_contracts_are_registered_before_static_mount() -> None:
@@ -75,7 +80,14 @@ def test_error_log_contracts_are_registered_before_static_mount() -> None:
         if not _supports_specific_contract(method, path)
     )
 
-    assert missing == []
+    registered = sorted(
+        f"{method} {getattr(route, 'path', '')}"
+        for route in app.routes
+        for method in (getattr(route, "methods", None) or set())
+        if str(getattr(route, "path", "")).startswith("/api/")
+        and getattr(route, "path", None) != "/api/{path:path}"
+    )
+    assert missing == [], {"missing": missing, "registered": registered}
 
 
 def test_unknown_api_never_falls_through_to_static_file_server() -> None:
