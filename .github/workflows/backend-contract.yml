@@ -25,6 +25,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg18
+        env:
+          POSTGRES_DB: warehouse_os
+          POSTGRES_USER: warehouse_admin
+          POSTGRES_PASSWORD: local-only-change-me
+          POSTGRES_INITDB_ARGS: --data-checksums
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U warehouse_admin -d warehouse_os"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
     steps:
       - uses: actions/checkout@v4
 
@@ -37,19 +53,37 @@ jobs:
       - name: Install backend
         run: python -m pip install -e 'backend[dev]'
 
-      - name: Start PostgreSQL 18 with pgvector
-        run: docker compose up -d postgres
-
-      - name: Wait for PostgreSQL
+      - name: Initialize database roles and pgvector
+        env:
+          PGPASSWORD: local-only-change-me
         run: |
-          for attempt in $(seq 1 30); do
-            if docker compose exec -T postgres pg_isready -U warehouse_os -d warehouse_os; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker compose logs postgres
-          exit 1
+          python - <<'PY'
+          import psycopg
+
+          with psycopg.connect(
+              "postgresql://warehouse_admin:local-only-change-me@127.0.0.1:5432/warehouse_os",
+              autocommit=True,
+          ) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                  cursor.execute(
+                      "CREATE ROLE warehouse_migrator LOGIN NOSUPERUSER NOCREATEDB "
+                      "NOCREATEROLE NOINHERIT NOREPLICATION "
+                      "PASSWORD 'local-only-migration-change-me'"
+                  )
+                  cursor.execute(
+                      "CREATE ROLE warehouse_os LOGIN NOSUPERUSER NOCREATEDB "
+                      "NOCREATEROLE NOINHERIT NOREPLICATION "
+                      "PASSWORD 'local-only-change-me'"
+                  )
+                  cursor.execute("REVOKE CREATE ON DATABASE warehouse_os FROM PUBLIC")
+                  cursor.execute(
+                      "GRANT CONNECT, TEMPORARY ON DATABASE warehouse_os "
+                      "TO warehouse_migrator, warehouse_os"
+                  )
+                  cursor.execute("GRANT CREATE ON DATABASE warehouse_os TO warehouse_migrator")
+                  cursor.execute("CREATE SCHEMA app AUTHORIZATION warehouse_migrator")
+          PY
 
       - name: Apply migrations
         working-directory: backend
