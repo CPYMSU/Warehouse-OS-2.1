@@ -4,7 +4,9 @@ on:
   pull_request:
     paths:
       - "backend/**"
-      - "frontend/v2/**"
+      - "frontend/**"
+      - "mobile/**"
+      - "wechat-miniapp/**"
       - "scripts/**"
       - "compose.yaml"
       - ".github/workflows/backend-contract.yml"
@@ -12,7 +14,9 @@ on:
     branches: [main]
     paths:
       - "backend/**"
-      - "frontend/v2/**"
+      - "frontend/**"
+      - "mobile/**"
+      - "wechat-miniapp/**"
       - "scripts/**"
       - "compose.yaml"
       - ".github/workflows/backend-contract.yml"
@@ -96,6 +100,22 @@ jobs:
         working-directory: backend
         run: ruff check app tests alembic/versions
 
+      - name: Audit retained frontend API contracts
+        env:
+          WAREHOUSE_ENVIRONMENT: test
+          WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os
+          WAREHOUSE_JWT_SECRET: test-only-warehouse-secret-32-characters
+        run: python scripts/audit_frontend_api_contracts.py --fail-on-missing
+
+      - name: Upload frontend API contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-api-contract-report
+          path: frontend-api-contract-report.json
+          if-no-files-found: ignore
+          retention-days: 3
+
       - name: Test
         working-directory: backend
         env:
@@ -113,7 +133,7 @@ jobs:
         with:
           name: pytest-diagnostics
           path: backend/pytest.log
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 3
 
       - name: Test MapLibre teardown guard
@@ -121,3 +141,37 @@ jobs:
 
       - name: Verify precompiled frontend
         run: node scripts/build_v2_frontend.cjs --check
+
+  compose-smoke:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare local compose environment
+        run: cp backend/.env.example backend/.env
+
+      - name: Start complete PostgreSQL, API and frontend stack
+        run: docker compose up -d --build
+
+      - name: Verify API and frontend from the container entry point
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS -D headers.txt http://127.0.0.1:8080/api/health -o api-health.json; then
+              break
+            fi
+            sleep 2
+          done
+          grep -qi '^X-Warehouse-Backend: fastapi-postgresql' headers.txt
+          grep -q 'postgresql-18-pgvector' api-health.json
+          curl -fsS http://127.0.0.1:8080/ | grep -q 'WAREHOUSE OS 2.0'
+          docker compose ps
+
+      - name: Show compose diagnostics
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop complete stack
+        if: always()
+        run: docker compose down -v
