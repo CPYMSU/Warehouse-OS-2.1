@@ -63,31 +63,21 @@ def _contract_template(path: str) -> str:
 
 
 def _supports_specific_contract(method: str, path: str) -> bool:
-    """Require a real route template, not the generic /api catch-all."""
-    template = _contract_template(path)
-    return any(
-        getattr(route, "path", None) == template
-        and method in (getattr(route, "methods", None) or set())
-        for route in app.routes
-        if getattr(route, "path", None) != "/api/{path:path}"
-    )
+    """Validate the public OpenAPI contract, excluding the hidden API catch-all."""
+    paths = app.openapi().get("paths", {})
+    operations = paths.get(_contract_template(path), {})
+    return method.lower() in operations
 
 
-def test_error_log_contracts_are_registered_before_static_mount() -> None:
+def test_error_log_contracts_are_published_in_openapi() -> None:
     missing = sorted(
         f"{method} {path}"
         for method, path in EXPECTED_CONTRACTS
         if not _supports_specific_contract(method, path)
     )
 
-    registered = sorted(
-        f"{method} {getattr(route, 'path', '')}"
-        for route in app.routes
-        for method in (getattr(route, "methods", None) or set())
-        if str(getattr(route, "path", "")).startswith("/api/")
-        and getattr(route, "path", None) != "/api/{path:path}"
-    )
-    assert missing == [], {"missing": missing, "registered": registered}
+    published = sorted(app.openapi().get("paths", {}))
+    assert missing == [], {"missing": missing, "published": published}
 
 
 def test_unknown_api_never_falls_through_to_static_file_server() -> None:
