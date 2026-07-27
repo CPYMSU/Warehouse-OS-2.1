@@ -141,3 +141,37 @@ jobs:
 
       - name: Verify precompiled frontend
         run: node scripts/build_v2_frontend.cjs --check
+
+  compose-smoke:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare local compose environment
+        run: cp backend/.env.example backend/.env
+
+      - name: Start complete PostgreSQL, API and frontend stack
+        run: docker compose up -d --build
+
+      - name: Verify API and frontend from the container entry point
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS -D headers.txt http://127.0.0.1:8080/api/health -o api-health.json; then
+              break
+            fi
+            sleep 2
+          done
+          grep -qi '^X-Warehouse-Backend: fastapi-postgresql' headers.txt
+          grep -q 'postgresql-18-pgvector' api-health.json
+          curl -fsS http://127.0.0.1:8080/ | grep -q 'WAREHOUSE OS 2.0'
+          docker compose ps
+
+      - name: Show compose diagnostics
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop complete stack
+        if: always()
+        run: docker compose down -v
