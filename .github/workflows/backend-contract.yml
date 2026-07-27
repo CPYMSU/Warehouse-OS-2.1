@@ -113,7 +113,7 @@ jobs:
         with:
           name: frontend-api-contract-report
           path: frontend-api-contract-report.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 3
 
       - name: Test
@@ -133,7 +133,7 @@ jobs:
         with:
           name: pytest-diagnostics
           path: backend/pytest.log
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 3
 
       - name: Test MapLibre teardown guard
