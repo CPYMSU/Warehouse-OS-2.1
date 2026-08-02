@@ -26,6 +26,7 @@ from app.api.router import router
 from app.api.shield import router as shield_router
 from app.api.task_collaboration import router as task_collaboration_router
 from app.api.workspace_autonomy import router as workspace_autonomy_router
+from app.api.workspace_v1_compat import router as workspace_v1_compat_router
 from app.core.config import get_settings
 
 # The compatibility gateway uses the standard-library detector without forcing
@@ -72,6 +73,7 @@ def liveness() -> JSONResponse:
 # the same URLs and response fields, but close the basic source/runtime/database
 # chain and preserve exact diagnostics when one stage fails.
 app.include_router(hosted_runtime_gateway_router)
+app.include_router(workspace_v1_compat_router)
 app.include_router(workspace_autonomy_router)
 app.include_router(intelligent_hosting_compat_router)
 
