@@ -17,8 +17,26 @@ from app.services.workspace_autonomy import (
 )
 
 
+def _iter_routes(value, seen: set[int] | None = None):
+    observed = seen if seen is not None else set()
+    routes = value if isinstance(value, (list, tuple)) else getattr(value, "routes", ())
+    for route in routes:
+        if id(route) in observed:
+            continue
+        observed.add(id(route))
+        yield route
+        for attribute in ("routes", "router", "original_router", "included_router"):
+            nested = getattr(route, attribute, None)
+            if nested is not None:
+                yield from _iter_routes(nested, observed)
+
+
 def _first_endpoint(path: str):
-    return next(route.endpoint for route in app.routes if getattr(route, "path", None) == path)
+    return next(
+        route.endpoint
+        for route in _iter_routes(app.routes)
+        if getattr(route, "path", None) == path and hasattr(route, "endpoint")
+    )
 
 
 def test_compatibility_routes_precede_retained_routes() -> None:
@@ -26,7 +44,7 @@ def test_compatibility_routes_precede_retained_routes() -> None:
         "app.api.workspace_autonomy"
     )
     assert _first_endpoint("/api/hosting/v2/sessions").__module__ == (
-        "app.api.intelligent_hosting_compat"
+        "app.api.hosting_session_extension_compat"
     )
     assert _first_endpoint("/assets/{tenant_slug}/{workspace_key}/").__module__ == (
         "app.api.hosted_runtime_gateway"
