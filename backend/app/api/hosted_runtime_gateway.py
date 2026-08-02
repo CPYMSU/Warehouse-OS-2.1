@@ -8,13 +8,12 @@ must continue to work under ``/assets/{tenant}/{workspace}/``.
 from __future__ import annotations
 
 import re
-from html import escape
+from mimetypes import guess_type
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse
 
 from app.api import digital_assets as legacy
 from app.core.config import Settings, get_settings
@@ -57,14 +56,10 @@ if(u.startsWith('//'))return u;return P+u;}};
 const originalFetch=window.fetch;if(originalFetch)window.fetch=function(input,init){{
 if(typeof input==='string')input=map(input);else if(input&&input.url&&input.url.startsWith('/'))input=new Request(map(input.url),input);
 return originalFetch.call(this,input,init);}};
-if(window.XMLHttpRequest){{const open=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){{
-arguments[1]=map(u);return open.apply(this,arguments);}};}}
+if(window.XMLHttpRequest){{const open=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){{arguments[1]=map(u);return open.apply(this,arguments);}};}}
 if(window.EventSource){{const Native=window.EventSource;window.EventSource=function(u,c){{return new Native(map(u),c);}};window.EventSource.prototype=Native.prototype;}}
-if(window.WebSocket){{const Native=window.WebSocket;window.WebSocket=function(u,p){{
-if(typeof u==='string'&&u.startsWith('/')){{const scheme=location.protocol==='https:'?'wss:':'ws:';u=scheme+'//'+location.host+map(u);}}
-return p===undefined?new Native(u):new Native(u,p);}};window.WebSocket.prototype=Native.prototype;}}
-for(const method of ['pushState','replaceState']){{const original=history[method];history[method]=function(s,t,u){{
-if(typeof u==='string')u=map(u);return original.call(this,s,t,u);}};}}
+if(window.WebSocket){{const Native=window.WebSocket;window.WebSocket=function(u,p){{if(typeof u==='string'&&u.startsWith('/')){{const scheme=location.protocol==='https:'?'wss:':'ws:';u=scheme+'//'+location.host+map(u);}}return p===undefined?new Native(u):new Native(u,p);}};window.WebSocket.prototype=Native.prototype;}}
+for(const method of ['pushState','replaceState']){{const original=history[method];history[method]=function(s,t,u){{if(typeof u==='string')u=map(u);return original.call(this,s,t,u);}};}}
 window.__WAREHOUSE_WORKSPACE_PREFIX__=P;
 }})();</script>"""
 
@@ -77,7 +72,7 @@ def _rewrite_text(content: bytes, content_type: str, prefix: str) -> bytes:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return content
-    escaped_prefix = prefix.rstrip("/")
+    clean_prefix = prefix.rstrip("/")
     if "text/html" in lowered or "application/xhtml" in lowered:
         pattern = re.compile(
             r"(?P<attr>\b(?:src|href|action|poster)\s*=\s*)(?P<quote>['\"])/(?P<path>(?!/)[^'\"]*)",
@@ -87,13 +82,13 @@ def _rewrite_text(content: bytes, content_type: str, prefix: str) -> bytes:
             lambda match: (
                 match.group("attr")
                 + match.group("quote")
-                + escaped_prefix
+                + clean_prefix
                 + "/"
                 + match.group("path")
             ),
             text,
         )
-        script = _browser_compatibility_script(escaped_prefix)
+        script = _browser_compatibility_script(clean_prefix)
         if re.search(r"<head(?:\s[^>]*)?>", text, re.IGNORECASE):
             text = re.sub(
                 r"(<head(?:\s[^>]*)?>)",
@@ -106,14 +101,14 @@ def _rewrite_text(content: bytes, content_type: str, prefix: str) -> bytes:
             text = script + text
     text = re.sub(
         r"url\(\s*(['\"]?)/(?!/)",
-        lambda match: f"url({match.group(1)}{escaped_prefix}/",
+        lambda match: f"url({match.group(1)}{clean_prefix}/",
         text,
         flags=re.IGNORECASE,
     )
     if "text/css" in lowered:
         text = re.sub(
             r"(@import\s+['\"])/(?!/)",
-            lambda match: match.group(1) + escaped_prefix + "/",
+            lambda match: match.group(1) + clean_prefix + "/",
             text,
             flags=re.IGNORECASE,
         )
@@ -126,7 +121,9 @@ def _rewrite_location(location: str, internal_url: str, prefix: str) -> str:
         suffix = location.removeprefix(internal_url)
         return clean_prefix + (suffix if suffix.startswith("/") else "/" + suffix)
     parsed = urlsplit(location)
-    if not parsed.scheme and location.startswith("/") and not location.startswith(clean_prefix + "/"):
+    if not parsed.scheme and location.startswith("/") and not location.startswith(
+        clean_prefix + "/"
+    ):
         return clean_prefix + location
     return location
 
@@ -142,44 +139,6 @@ def _rewrite_cookie(cookie: str, prefix: str) -> str:
     if not re.search(r"(?i);\s*path=", cookie):
         return cookie + f"; Path={clean_prefix}"
     return cookie
-
-
-def _static_response(route: dict[str, object], runtime_path: str, settings: Settings) -> Response:
-    root = (settings.hosted_runtime_data_root / str(route["runtime_rel_path"])).resolve()
-    try:
-        root.relative_to(settings.hosted_runtime_data_root.resolve())
-    except ValueError:
-        raise HTTPException(status_code=503, detail="Runtime route is unsafe") from None
-    target = (root / runtime_path).resolve() if runtime_path else root / "index.html"
-    try:
-        target.relative_to(root)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Hosted file not found") from None
-    if target.is_dir():
-        target = target / "index.html"
-    if not target.is_file() and not Path(runtime_path).suffix:
-        target = root / "index.html"
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="Hosted file not found")
-    media_type = legacy.mimetypes.guess_type(str(target))[0] if hasattr(legacy, "mimetypes") else None
-    content_type = media_type or "application/octet-stream"
-    if content_type in {"text/html", "text/css"}:
-        content = _rewrite_text(target.read_bytes(), content_type, "")
-        return Response(
-            content=content,
-            media_type=content_type,
-            headers={
-                "X-Warehouse-Deployment": str(route["deployment_id"]),
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-    return FileResponse(
-        target,
-        headers={
-            "X-Warehouse-Deployment": str(route["deployment_id"]),
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
 
 
 async def _proxy_response(
@@ -200,10 +159,11 @@ async def _proxy_response(
     suffix = "/" + runtime_path.lstrip("/")
     if request.url.query:
         suffix += "?" + request.url.query
-    headers: list[tuple[str, str]] = []
-    for key, value in request.headers.multi_items():
-        if key.lower() not in _REQUEST_EXCLUDED:
-            headers.append((key, value))
+    headers = [
+        (key, value)
+        for key, value in request.headers.items()
+        if key.lower() not in _REQUEST_EXCLUDED
+    ]
     forwarded_for = request.headers.get("x-forwarded-for")
     client_ip = request.client.host if request.client else ""
     headers.extend(
@@ -290,8 +250,7 @@ async def runtime_response(
             target = root / "index.html"
         if not target.is_file():
             raise HTTPException(status_code=404, detail="Hosted file not found")
-        content_type = legacy.guess_type(str(target))[0] if hasattr(legacy, "guess_type") else ""
-        content_type = content_type or "application/octet-stream"
+        content_type = guess_type(str(target))[0] or "application/octet-stream"
         content = _rewrite_text(target.read_bytes(), content_type, prefix)
         return Response(
             content=content,
@@ -315,14 +274,10 @@ async def hosted_workspace_entry(
     request: Request,
     settings: Settings = Depends(get_settings),
 ) -> Response:
-    response = await runtime_response(
-        tenant_slug, workspace_key, "", request, settings
-    )
+    response = await runtime_response(tenant_slug, workspace_key, "", request, settings)
     if response is not None:
         return response
-    return await legacy.hosted_workspace_entry(
-        tenant_slug, workspace_key, request, settings
-    )
+    return await legacy.hosted_workspace_entry(tenant_slug, workspace_key, request, settings)
 
 
 @router.api_route(
