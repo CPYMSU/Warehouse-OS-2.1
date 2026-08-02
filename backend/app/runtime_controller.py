@@ -33,19 +33,22 @@ def _node_static_server_source() -> str:
         "'.json':'application/json; charset=utf-8','.svg':'image/svg+xml',"
         "'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp',"
         "'.woff':'font/woff','.woff2':'font/woff2'};"
-        "http.createServer((req,res)=>{"
-        "const u=new URL(req.url,'http://runtime');"
+        "http.createServer((req,res)=>{const u=new URL(req.url,'http://runtime');"
         "if(u.pathname==='/health'||u.pathname==='/healthz'){"
-        "res.writeHead(200,{'content-type':'application/json'});return res.end('{\"status\":\"ok\"}');}"
-        "let decoded;try{decoded=decodeURIComponent(u.pathname)}catch(e){res.writeHead(400);return res.end();}"
+        "res.writeHead(200,{'content-type':'application/json'});"
+        "return res.end('{\"status\":\"ok\"}');}"
+        "let decoded;try{decoded=decodeURIComponent(u.pathname)}"
+        "catch(e){res.writeHead(400);return res.end();}"
         "let target=path.resolve(root,'.'+decoded);"
-        "if(target!==root&&!target.startsWith(root+path.sep)){res.writeHead(403);return res.end();}"
-        "if(fs.existsSync(target)&&fs.statSync(target).isDirectory())target=path.join(target,'index.html');"
+        "if(target!==root&&!target.startsWith(root+path.sep)){"
+        "res.writeHead(403);return res.end();}"
+        "if(fs.existsSync(target)&&fs.statSync(target).isDirectory())"
+        "target=path.join(target,'index.html');"
         "if(!fs.existsSync(target))target=path.join(root,'index.html');"
-        "fs.readFile(target,(error,body)=>{if(error){res.writeHead(404);return res.end('Not found');}"
-        "res.writeHead(200,{'content-type':mime[path.extname(target).toLowerCase()]||'application/octet-stream'});"
-        "res.end(body);});"
-        "}).listen(Number(process.env.PORT),'0.0.0.0');"
+        "fs.readFile(target,(error,body)=>{if(error){res.writeHead(404);"
+        "return res.end('Not found');}res.writeHead(200,{"
+        "'content-type':mime[path.extname(target).toLowerCase()]||'application/octet-stream'});"
+        "res.end(body);});}).listen(Number(process.env.PORT),'0.0.0.0');"
     )
 
 
@@ -53,8 +56,7 @@ def _node_command(snapshot: dict[str, object]) -> str:
     digest = hashlib.sha256(
         f"{snapshot.get('sha256') or snapshot['id']}:{snapshot.get('image_ref') or ''}".encode()
     ).hexdigest()[:24]
-    entrypoint = str(snapshot.get("entrypoint") or "").strip()
-    safe_entrypoint = shlex.quote(entrypoint)
+    entrypoint = shlex.quote(str(snapshot.get("entrypoint") or "").strip())
     server_source = shlex.quote(_node_static_server_source())
     return (
         "set -eu; "
@@ -64,20 +66,24 @@ def _node_command(snapshot: dict[str, object]) -> str:
         "rm -rf \"$RUNTIME_NODE_ROOT\"; mkdir -p \"$SOURCE_ROOT\"; "
         "cp -a /workspace/app/. \"$SOURCE_ROOT/\"; cd \"$SOURCE_ROOT\"; "
         "if [ -f package-lock.json ]; then npm ci; else npm install; fi; "
-        "touch \"$RUNTIME_NODE_ROOT/.deps-ready\"; fi; "
-        "cd \"$SOURCE_ROOT\"; "
-        "if node -e \"const p=require('./package.json');process.exit(p.scripts&&p.scripts.build?0:1)\"; then "
+        "touch \"$RUNTIME_NODE_ROOT/.deps-ready\"; fi; cd \"$SOURCE_ROOT\"; "
+        "if node -e \"const p=require('./package.json');"
+        "process.exit(p.scripts&&p.scripts.build?0:1)\"; then "
         "if [ ! -f \"$RUNTIME_NODE_ROOT/.build-ready\" ]; then npm run build; "
         "touch \"$RUNTIME_NODE_ROOT/.build-ready\"; fi; fi; "
-        "if node -e \"const p=require('./package.json');process.exit(p.scripts&&p.scripts.start?0:1)\"; then "
-        "exec npm start; fi; "
+        "if node -e \"const p=require('./package.json');"
+        "process.exit(p.scripts&&p.scripts.start?0:1)\"; then exec npm start; fi; "
         "for OUTPUT in dist build public; do if [ -f \"$OUTPUT/index.html\" ]; then "
-        f"export WAREHOUSE_STATIC_ROOT=\"$SOURCE_ROOT/$OUTPUT\"; exec node -e {server_source}; fi; done; "
+        f"export WAREHOUSE_STATIC_ROOT=\"$SOURCE_ROOT/$OUTPUT\"; "
+        f"exec node -e {server_source}; fi; done; "
         "MAIN=\"$(node -p \"require('./package.json').main||''\" 2>/dev/null || true)\"; "
         "if [ -n \"$MAIN\" ] && [ -f \"$MAIN\" ]; then exec node \"$MAIN\"; fi; "
-        f"ENTRY={safe_entrypoint}; if [ -n \"$ENTRY\" ] && [ -f \"$ENTRY\" ]; then exec node \"$ENTRY\"; fi; "
-        "for ENTRY in server.js index.js app.js; do if [ -f \"$ENTRY\" ]; then exec node \"$ENTRY\"; fi; done; "
-        "echo 'No runnable Node start script, build output, main field or entrypoint was found' >&2; exit 64"
+        f"ENTRY={entrypoint}; if [ -n \"$ENTRY\" ] && [ -f \"$ENTRY\" ]; "
+        "then exec node \"$ENTRY\"; fi; "
+        "for ENTRY in server.js index.js app.js; do if [ -f \"$ENTRY\" ]; "
+        "then exec node \"$ENTRY\"; fi; done; "
+        "echo 'No runnable Node start script, build output, main field or entrypoint was found' "
+        ">&2; exit 64"
     )
 
 
@@ -85,68 +91,69 @@ def _diagnostic(exc: Exception) -> dict[str, object]:
     message = str(exc).strip()[:1000] or exc.__class__.__name__
     lowered = message.lower()
     if "digest" in lowered or "source object" in lowered or "archive" in lowered:
-        stage, component, code, action = (
+        values = (
             "source.materialize",
             "source",
             "source_materialization_failed",
-            "verify the uploaded archive and upload a new immutable source version",
+            "verify the archive and upload a new immutable source version",
         )
     elif "quota" in lowered or "storage" in lowered:
-        stage, component, code, action = (
+        values = (
             "storage.allocate",
             "storage",
             "workspace_storage_failed",
-            "inspect workspace usage and retry after capacity is available",
+            "inspect usage and retry after capacity is available",
         )
-    elif "npm" in lowered or "pip" in lowered or "build" in lowered or "docker image" in lowered:
-        stage, component, code, action = (
+    elif any(token in lowered for token in ("npm", "pip", "build", "docker image")):
+        values = (
             "runtime.build",
             "build",
             "runtime_build_failed",
-            "open deployment logs, correct dependencies or build commands, then redeploy",
+            "open redacted logs, correct dependencies or build commands, then redeploy",
         )
     elif "database" in lowered or "postgres" in lowered:
-        stage, component, code, action = (
+        values = (
             "database.connect",
             "database",
             "workspace_database_unavailable",
-            "verify the workspace database binding and rerun its connectivity probe",
+            "verify the database binding and rerun its connectivity probe",
         )
     elif "public runtime route" in lowered or "public route" in lowered:
-        stage, component, code, action = (
+        values = (
             "route.verify",
             "public_route",
             "public_route_verification_failed",
-            "inspect proxy and health-path evidence; the previous healthy revision remains active",
+            "inspect proxy and health-path evidence; the previous revision remains active",
         )
     elif "health probe" in lowered or "did not remain running" in lowered:
-        stage, component, code, action = (
+        values = (
             "runtime.health",
             "runtime",
             "runtime_health_failed",
-            "inspect redacted runtime logs and correct PORT, health_path or the start command",
+            "correct PORT, health_path or the start command using the redacted logs",
         )
     elif "docker engine" in lowered or "container" in lowered:
-        stage, component, code, action = (
+        values = (
             "runtime.start",
             "container",
             "runtime_container_failed",
-            "inspect provider capacity and container diagnostics, then retry the deployment",
+            "inspect provider capacity and container diagnostics, then retry",
         )
     else:
-        stage, component, code, action = (
+        values = (
             "runtime.execute",
             "runtime",
             "runtime_execution_failed",
-            "inspect the deployment event stream and redacted logs before retrying",
+            "inspect the event stream and redacted logs before retrying",
         )
+    stage, component, error_code, next_action = values
     return {
         "stage": stage,
         "component": component,
-        "error_code": code,
+        "error_code": error_code,
         "message": message,
         "retryable": True,
-        "next_action": action,
+        "next_action": next_action,
         "raw_reasoning_exposed": False,
     }
 
@@ -161,7 +168,9 @@ class RuntimeController(base.RuntimeController):
     def _container_spec(
         self, snapshot: dict[str, object], host_root: Path, host_data: Path
     ) -> tuple[str, dict[str, object], int, str]:
-        name, spec, port, health_path = super()._container_spec(snapshot, host_root, host_data)
+        name, spec, port, health_path = super()._container_spec(
+            snapshot, host_root, host_data
+        )
         if str(snapshot.get("runtime_family")) == "node":
             spec["Cmd"] = ["sh", "-lc", _node_command(snapshot)]
         return name, spec, port, health_path
@@ -169,14 +178,17 @@ class RuntimeController(base.RuntimeController):
     def _materialize(
         self, snapshot: dict[str, object]
     ) -> tuple[Path, Path, dict[str, object]]:
+        quota_failure: RuntimeError | None = None
         try:
             return super()._materialize(snapshot)
         except RuntimeError as exc:
             if "workspace logical quota" not in str(exc).lower():
                 raise
+            quota_failure = exc
+
         tenant_id = UUID(str(snapshot["tenant_id"]))
         with base.tenant_session(tenant_id) as session:
-            kind = session.execute(
+            key_kind = session.execute(
                 text(
                     "SELECT key_kind FROM digital_asset.api_credentials "
                     "WHERE id=:id AND workspace_id=:workspace_id"
@@ -186,17 +198,20 @@ class RuntimeController(base.RuntimeController):
                     "workspace_id": snapshot["workspace_id"],
                 },
             ).scalar_one_or_none()
-            if kind != "primary":
-                raise
+            if key_kind != "primary":
+                raise quota_failure
             controller_path, _host_path = self._runtime_paths(snapshot)
             runtime_bytes = self._directory_bytes(controller_path / "source")
             usage = session.execute(
                 text(
-                    "SELECT total_billable_bytes,runtime_bytes FROM digital_asset.workspace_usage "
+                    "SELECT total_billable_bytes,runtime_bytes "
+                    "FROM digital_asset.workspace_usage "
                     "WHERE workspace_id=:id FOR UPDATE"
                 ),
                 {"id": snapshot["workspace_id"]},
-            ).mappings().one()
+            ).mappings().one_or_none()
+            if usage is None:
+                raise quota_failure
             required = (
                 int(usage["total_billable_bytes"])
                 - int(usage["runtime_bytes"])
@@ -204,12 +219,13 @@ class RuntimeController(base.RuntimeController):
                 + 8 * 1024 * 1024
             )
             target = allocation_target_bytes(
-                required, current_bytes=int(snapshot["storage_quota_bytes"])
+                required,
+                current_bytes=int(snapshot["storage_quota_bytes"]),
             )
             session.execute(
                 text(
-                    "UPDATE digital_asset.workspaces SET storage_quota_bytes=:target, "
-                    "revision=revision+1 WHERE id=:id"
+                    "UPDATE digital_asset.workspaces "
+                    "SET storage_quota_bytes=:target, revision=revision+1 WHERE id=:id"
                 ),
                 {"target": target, "id": snapshot["workspace_id"]},
             )
@@ -240,7 +256,9 @@ class RuntimeController(base.RuntimeController):
                 ),
                 {
                     "id": deployment_id,
-                    "diagnostic": json.dumps({"diagnostic": diagnostic}, ensure_ascii=False),
+                    "diagnostic": json.dumps(
+                        {"diagnostic": diagnostic}, ensure_ascii=False
+                    ),
                 },
             )
             base._event(
