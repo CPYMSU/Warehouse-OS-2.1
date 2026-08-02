@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mimetypes import guess_type
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api import digital_assets as digital_assets_module
 from app.api.browser_runtime import router as browser_runtime_router
 from app.api.capability_gateway import router as capability_gateway_router
 from app.api.compat import router as compatibility_router
@@ -25,6 +27,10 @@ from app.api.shield import router as shield_router
 from app.api.task_collaboration import router as task_collaboration_router
 from app.api.workspace_autonomy import router as workspace_autonomy_router
 from app.core.config import get_settings
+
+# The compatibility gateway uses the standard-library detector without forcing
+# the retained large digital-assets module to be rewritten.
+digital_assets_module.guess_type = guess_type
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="2.1.0", docs_url="/docs", redoc_url=None)
