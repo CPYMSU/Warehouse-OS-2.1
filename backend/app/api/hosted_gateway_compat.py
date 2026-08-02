@@ -15,5 +15,6 @@ def rewrite_cookie_path(cookie: str, prefix: str) -> str:
     original_path = match.group(2)
     if original_path == clean_prefix or original_path.startswith(clean_prefix + "/"):
         return cookie
-    mapped = clean_prefix + (original_path if original_path.startswith("/") else "/" + original_path)
+    suffix = original_path if original_path.startswith("/") else "/" + original_path
+    mapped = clean_prefix + suffix
     return cookie[: match.start(2)] + mapped + cookie[match.end(2) :]
