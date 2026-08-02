@@ -1,0 +1,88 @@
+name: Hosted workspace end-to-end verification
+
+on:
+  workflow_run:
+    workflows: ["Production deploy"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warehouse-hosting-e2e
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://bonfirework.org
+    env:
+      WAREHOUSE_DEPLOY_HOST: ${{ vars.WAREHOUSE_DEPLOY_HOST }}
+      WAREHOUSE_DEPLOY_USER: ${{ vars.WAREHOUSE_DEPLOY_USER }}
+      WAREHOUSE_REMOTE_DEPLOY_MANAGER: ${{ vars.WAREHOUSE_REMOTE_DEPLOY_MANAGER }}
+      WAREHOUSE_DEPLOY_IDENTITY: ${{ runner.temp }}/warehouse-ssh/id_ed25519
+      WAREHOUSE_HOSTING_MATRIX_LOG: ${{ runner.temp }}/hosting-matrix.log
+
+    steps:
+      - name: Check out the deployed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+
+      - name: Install the restricted deployment identity
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.WAREHOUSE_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.WAREHOUSE_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${WAREHOUSE_DEPLOY_HOST:?production variable is required}"
+          : "${WAREHOUSE_DEPLOY_USER:?production variable is required}"
+          : "${WAREHOUSE_REMOTE_DEPLOY_MANAGER:?production variable is required}"
+          : "${DEPLOY_SSH_KEY:?production secret is required}"
+          : "${DEPLOY_KNOWN_HOSTS:?production secret is required}"
+          install -d -m 0700 "${RUNNER_TEMP}/warehouse-ssh" "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${WAREHOUSE_DEPLOY_IDENTITY}"
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          chmod 0600 "${WAREHOUSE_DEPLOY_IDENTITY}" "${HOME}/.ssh/known_hosts"
+          ssh-keygen -y -f "${WAREHOUSE_DEPLOY_IDENTITY}" >/dev/null
+
+      - name: Verify source upload, Runtime, public web, backend and database
+        id: matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash ops/hosting-smoke-matrix bonfire "${GITHUB_RUN_ID}" \
+            2>&1 | tee "${WAREHOUSE_HOSTING_MATRIX_LOG}"
+
+      - name: Roll back when the user hosting chain fails
+        if: failure() && steps.matrix.outcome == 'failure'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh \
+            -i "${WAREHOUSE_DEPLOY_IDENTITY}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "${WAREHOUSE_DEPLOY_USER}@${WAREHOUSE_DEPLOY_HOST}" \
+            "sudo -n ${WAREHOUSE_REMOTE_DEPLOY_MANAGER} rollback"
+          curl --fail --silent --show-error --max-time 20 \
+            https://bonfirework.org/api/health
+
+      - name: Upload hosting evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosting-e2e-${{ github.run_id }}
+          path: ${{ runner.temp }}/hosting-matrix.log
+          if-no-files-found: ignore
+          retention-days: 30
