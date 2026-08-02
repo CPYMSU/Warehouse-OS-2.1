@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TENANT="${1:-bonfire}"
+TOKEN="${2:-${GITHUB_RUN_ID:-$(date -u +%s)}}"
+TOKEN="$(printf '%s' "${TOKEN}" | tr -cd 'a-zA-Z0-9' | tail -c 18)"
+[[ -n "${TOKEN}" ]] || TOKEN="$(date -u +%s)"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-hosting-matrix.XXXXXX")"
+LOG="${WAREHOUSE_HOSTING_MATRIX_LOG:-${WORK}/matrix.log}"
+cleanup() { rm -rf "${WORK}"; }
+trap cleanup EXIT
+
+need() { command -v "$1" >/dev/null 2>&1 || { printf 'missing command: %s\n' "$1" >&2; exit 2; }; }
+need curl
+need jq
+need python3
+
+run_smoke() {
+  local source_dir="$1" workspace="$2" runtime="$3" component="$4"
+  local entrypoint="$5" marker="$6" name="$7" version="$8"
+  local output result
+  output="$(
+    "${ROOT}/ops/hosting-smoke" \
+      "${source_dir}" "${TENANT}" "${workspace}" "${runtime}" \
+      "${component}" "${entrypoint}" "${marker}" "${name}" "${version}"
+  )"
+  printf '%s\n' "${output}" | tee -a "${LOG}" >&2
+  result="$(printf '%s\n' "${output}" | tail -n 1)"
+  jq -e '.ok == true and .status == "ready" and .health == "healthy"' \
+    <<<"${result}" >/dev/null
+  printf '%s\n' "${result}"
+}
+
+prefix_from_url() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import urlsplit
+value = urlsplit(sys.argv[1])
+print(value.path.rstrip("/"))
+PY
+}
+
+# 1. Plain static site, including a root-relative asset that must be rewritten.
+STATIC_DIR="${WORK}/static"
+mkdir -p "${STATIC_DIR}"
+cat > "${STATIC_DIR}/index.html" <<'HTML'
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/app.css"></head>
+<body><main>WAREHOUSE_STATIC_CHAIN_OK</main></body></html>
+HTML
+printf 'body::after{content:"WAREHOUSE_STATIC_CSS_OK"}\n' > "${STATIC_DIR}/app.css"
+STATIC_RESULT="$(run_smoke \
+  "${STATIC_DIR}" "smoke-static-${TOKEN}" static frontend index.html \
+  WAREHOUSE_STATIC_CHAIN_OK "Hosting Static ${TOKEN}" "static-${TOKEN}")"
+STATIC_URL="$(jq -r '.public_url' <<<"${STATIC_RESULT}")"
+STATIC_PREFIX="$(prefix_from_url "${STATIC_URL}")"
+STATIC_PAGE="$(curl -fsS --max-time 20 "${STATIC_URL}")"
+grep -Fq "${STATIC_PREFIX}/app.css" <<<"${STATIC_PAGE}"
+curl -fsS --max-time 20 "${STATIC_URL}app.css" | grep -Fq WAREHOUSE_STATIC_CSS_OK
+
+# 2. Python API with real DATABASE_URL, request body, app auth, cookies and redirect.
+PYTHON_DIR="${WORK}/python"
+mkdir -p "${PYTHON_DIR}"
+cat > "${PYTHON_DIR}/requirements.txt" <<'REQ'
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
+psycopg[binary]>=3.2,<4
+REQ
+cat > "${PYTHON_DIR}/app.py" <<PY
+import os
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
+import psycopg
+
+app = FastAPI()
+MARKER = "${TOKEN}"
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "marker": MARKER}
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return "<html><head></head><body>WAREHOUSE_PYTHON_CHAIN_OK</body></html>"
+
+@app.get("/db")
+def database_probe():
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS app.hosting_smoke "
+            "(marker text PRIMARY KEY, created_at timestamptz DEFAULT now())"
+        )
+        connection.execute(
+            "INSERT INTO app.hosting_smoke(marker) VALUES (%s) ON CONFLICT DO NOTHING",
+            (MARKER,),
+        )
+        count = connection.execute(
+            "SELECT count(*) FROM app.hosting_smoke WHERE marker=%s", (MARKER,)
+        ).fetchone()[0]
+    return {"database_ok": count == 1, "marker": MARKER}
+
+@app.post("/echo")
+async def echo(request: Request):
+    return {
+        "authorization": request.headers.get("authorization"),
+        "cookie": request.headers.get("cookie"),
+        "body": await request.json(),
+    }
+
+@app.get("/redirect")
+def redirect():
+    return RedirectResponse("/landing", status_code=307)
+
+@app.get("/landing")
+def landing():
+    return {"landing": "WAREHOUSE_REDIRECT_OK"}
+
+@app.get("/cookie")
+def cookie(response: Response):
+    response.set_cookie("smoke_cookie", "works", path="/", httponly=True)
+    return {"set": True}
+
+@app.get("/cookie-check")
+def cookie_check(request: Request):
+    return {"cookie_ok": request.cookies.get("smoke_cookie") == "works"}
+PY
+PYTHON_RESULT="$(run_smoke \
+  "${PYTHON_DIR}" "smoke-python-${TOKEN}" api api app.py \
+  WAREHOUSE_PYTHON_CHAIN_OK "Hosting Python ${TOKEN}" "python-${TOKEN}")"
+PYTHON_URL="$(jq -r '.public_url' <<<"${PYTHON_RESULT}")"
+PYTHON_PREFIX="$(prefix_from_url "${PYTHON_URL}")"
+curl -fsS --max-time 30 "${PYTHON_URL}db" | jq -e '.database_ok == true' >/dev/null
+curl -fsS --max-time 30 -X POST \
+  -H 'Authorization: Bearer user-application-token' \
+  -H 'Cookie: client_cookie=visible' \
+  -H 'Content-Type: application/json' \
+  --data '{"payload":"preserved"}' \
+  "${PYTHON_URL}echo" \
+  | jq -e '.authorization == "Bearer user-application-token" and (.cookie | contains("client_cookie=visible")) and .body.payload == "preserved"' >/dev/null
+REDIRECT_HEADERS="${WORK}/redirect.headers"
+curl -sS --max-time 20 --max-redirs 0 -D "${REDIRECT_HEADERS}" -o /dev/null \
+  "${PYTHON_URL}redirect"
+grep -Eiq "^location: ${PYTHON_PREFIX}/landing\r?$" "${REDIRECT_HEADERS}"
+COOKIE_JAR="${WORK}/cookies.txt"
+curl -fsS --max-time 20 -c "${COOKIE_JAR}" "${PYTHON_URL}cookie" >/dev/null
+awk -v path="${PYTHON_PREFIX}/" \
+  '$3 == path && $6 == "smoke_cookie" && $7 == "works" {found=1} END {exit !found}' \
+  "${COOKIE_JAR}"
+curl -fsS --max-time 20 -b "${COOKIE_JAR}" "${PYTHON_URL}cookie-check" \
+  | jq -e '.cookie_ok == true' >/dev/null
+
+# 3. Build-only Node frontend. It has no start script, so the platform must build
+# in a writable cache and serve the generated output itself.
+NODE_DIR="${WORK}/node"
+mkdir -p "${NODE_DIR}"
+cat > "${NODE_DIR}/package.json" <<'JSON'
+{
+  "name": "warehouse-hosting-smoke",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {"build": "node build.js"}
+}
+JSON
+cat > "${NODE_DIR}/build.js" <<'JS'
+const fs = require('fs');
+fs.mkdirSync('dist', {recursive: true});
+fs.writeFileSync('dist/index.html', '<!doctype html><html><head><link rel="stylesheet" href="/style.css"></head><body>WAREHOUSE_NODE_CHAIN_OK</body></html>');
+fs.writeFileSync('dist/style.css', 'body::after{content:"WAREHOUSE_NODE_CSS_OK"}');
+JS
+NODE_RESULT="$(run_smoke \
+  "${NODE_DIR}" "smoke-node-${TOKEN}" auto frontend index.js \
+  WAREHOUSE_NODE_CHAIN_OK "Hosting Node ${TOKEN}" "node-${TOKEN}")"
+NODE_URL="$(jq -r '.public_url' <<<"${NODE_RESULT}")"
+NODE_PREFIX="$(prefix_from_url "${NODE_URL}")"
+NODE_PAGE="$(curl -fsS --max-time 30 "${NODE_URL}")"
+grep -Fq "${NODE_PREFIX}/style.css" <<<"${NODE_PAGE}"
+curl -fsS --max-time 20 "${NODE_URL}style.css" | grep -Fq WAREHOUSE_NODE_CSS_OK
+
+jq -n \
+  --arg token "${TOKEN}" \
+  --arg static_url "${STATIC_URL}" \
+  --arg python_url "${PYTHON_URL}" \
+  --arg node_url "${NODE_URL}" \
+  '{ok:true, token:$token, static:{url:$static_url,content:true}, python:{url:$python_url,database:true,headers:true,cookies:true,redirects:true}, node:{url:$node_url,build:true,content:true}}' \
+  | tee -a "${LOG}"
