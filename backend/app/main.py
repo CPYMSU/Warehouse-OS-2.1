@@ -13,17 +13,22 @@ from app.api.capability_gateway import router as capability_gateway_router
 from app.api.compat import router as compatibility_router
 from app.api.confirmation_actions import router as confirmation_actions_router
 from app.api.digital_assets import router as digital_asset_router
+from app.api.error_diagnostics import install_error_diagnostics
 from app.api.full_stack import router as full_stack_router
 from app.api.generic_data import router as generic_data_router
+from app.api.hosted_runtime_gateway import router as hosted_runtime_gateway_router
 from app.api.intelligent_hosting import router as intelligent_hosting_router
+from app.api.intelligent_hosting_compat import router as intelligent_hosting_compat_router
 from app.api.research import router as research_router
 from app.api.router import router
 from app.api.shield import router as shield_router
 from app.api.task_collaboration import router as task_collaboration_router
+from app.api.workspace_autonomy import router as workspace_autonomy_router
 from app.core.config import get_settings
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="2.1.0", docs_url="/docs", redoc_url=None)
+install_error_diagnostics(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -45,6 +50,7 @@ app.add_middleware(
 @app.middleware("http")
 async def request_id(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    request.state.request_id = request_id
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Warehouse-Backend"] = "fastapi-postgresql"
@@ -55,6 +61,13 @@ async def request_id(request: Request, call_next):
 def liveness() -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "warehouse-os-api"})
 
+
+# Compatibility-first routes are registered before retained contracts. They use
+# the same URLs and response fields, but close the basic source/runtime/database
+# chain and preserve exact diagnostics when one stage fails.
+app.include_router(hosted_runtime_gateway_router)
+app.include_router(workspace_autonomy_router)
+app.include_router(intelligent_hosting_compat_router)
 
 # Native control planes are registered before the retained full-stack router so
 # a compatibility route can never shadow a security-sensitive implementation.
