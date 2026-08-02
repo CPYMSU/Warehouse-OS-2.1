@@ -5,6 +5,8 @@ from app.main import app
 EXPECTED_CONTRACTS = {
     ("GET", "/api/company/branding"),
     ("GET", "/api/runtime/preferences"),
+    ("GET", "/api/runtime/world"),
+    ("GET", "/api/runtime/skills"),
     ("GET", "/api/voice/status"),
     ("GET", "/api/alerts/watch"),
     ("GET", "/api/assets/portfolio"),
@@ -15,6 +17,8 @@ EXPECTED_CONTRACTS = {
     ("GET", "/api/digital-assets/common-market"),
     ("GET", "/api/digital-assets/trades"),
     ("GET", "/api/digital-assets/revenue"),
+    ("GET", "/api/research/projects"),
+    ("POST", "/api/research/projects"),
     ("GET", "/api/tasks/meta"),
     ("GET", "/api/tasks"),
     ("GET", "/api/alerts/briefing"),
@@ -53,6 +57,11 @@ EXPECTED_CONTRACTS = {
     ("GET", "/api/prompts"),
     ("GET", "/api/permissions"),
     ("GET", "/api/assistant/bootstrap"),
+    ("GET", "/api/browser-runtime/capabilities"),
+    ("GET", "/api/browser-runtime/journeys"),
+    ("POST", "/api/browser-runtime/journeys"),
+    ("GET", "/api/browser-runtime/runs"),
+    ("POST", "/api/browser-runtime/runs"),
 }
 
 

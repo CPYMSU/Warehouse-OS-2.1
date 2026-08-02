@@ -1,6 +1,13 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
+<script>
+  /* WebAuthn uses a domain-bound RP identity. Keep local development on the
+     browser-trusted localhost origin instead of an IP-address origin. */
+  if (location.hostname === "127.0.0.1") {
+    location.replace("http://localhost:" + location.port + location.pathname + location.search + location.hash);
+  }
+</script>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
@@ -31,26 +38,21 @@
       var panel = document.createElement("main");
       panel.setAttribute("role", "alert");
       panel.style.cssText = "position:relative;z-index:5;max-width:560px;margin:18vh auto 0;padding:28px;border:2px solid #141414;background:#FCFBF7;color:#141414;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;box-shadow:10px 10px 0 rgba(20,20,20,.1)";
-      panel.innerHTML = "<div style='display:flex;align-items:center;gap:12px;margin-bottom:16px'><img src='brand/bonfire-platform-mark.png' width='38' height='38' alt=''><div><div style='font-size:11px;letter-spacing:.16em;color:#E0261C'>STARTUP RECOVERY</div><div style='font-size:9px;letter-spacing:.12em;color:#746E58;margin-top:3px'>WAREHOUSE OS 2.0 · BONFIRE WORKSHOP</div></div></div><h1 style='font-size:24px;line-height:1.25;margin:0 0 12px'>页面没有完成载入</h1><p style='font-size:14px;line-height:1.7;margin:0 0 20px;color:#4A4740'>启动资源可能被浏览器缓存或内容拦截器阻止。请重新载入；若仍未恢复，可先进入经典版。</p><div id='w2-recovery-actions' style='display:flex;gap:10px;flex-wrap:wrap'></div>";
+      panel.innerHTML = "<div style='display:flex;align-items:center;gap:12px;margin-bottom:16px'><img src='brand/bonfire-platform-mark.png' width='38' height='38' alt=''><div><div style='font-size:11px;letter-spacing:.16em;color:#E0261C'>STARTUP RECOVERY</div><div style='font-size:9px;letter-spacing:.12em;color:#746E58;margin-top:3px'>WAREHOUSE OS 2.1 · BONFIRE WORKSHOP</div></div></div><h1 style='font-size:24px;line-height:1.25;margin:0 0 12px'>页面没有完成载入</h1><p style='font-size:14px;line-height:1.7;margin:0 0 20px;color:#4A4740'>启动资源可能被浏览器缓存或内容拦截器阻止。请重新载入。</p><div id='w2-recovery-actions' style='display:flex;gap:10px;flex-wrap:wrap'></div>";
       var actions = panel.querySelector("#w2-recovery-actions");
       var retry = document.createElement("button");
       retry.type = "button";
       retry.textContent = "重新载入";
       retry.style.cssText = "height:40px;padding:0 18px;border:1px solid #141414;background:#141414;color:#F5F2EB;font-weight:700";
       retry.addEventListener("click", function () { window.location.reload(); });
-      var classic = document.createElement("a");
-      classic.href = "https://ncsyaikg.com/";
-      classic.textContent = "打开经典版";
-      classic.style.cssText = "height:40px;padding:0 18px;border:1px solid #141414;color:#141414;text-decoration:none;display:inline-flex;align-items:center;font-weight:700";
       actions.appendChild(retry);
-      actions.appendChild(classic);
       root.appendChild(panel);
-      if (window.console && console.error) console.error("WAREHOUSE OS 2.0 boot failed", errors);
+      if (window.console && console.error) console.error("WAREHOUSE OS 2.1 boot failed", errors);
     }, 12000);
   });
 })();
 </script>
-<title>WAREHOUSE OS 2.0</title>
+<title>WAREHOUSE OS 2.1</title>
 <!-- 個人配色只會在 /auth/me 確認使用者身份後套用；不讀取可能跨帳號的 tenant-only 快取。 -->
 <script>
 /* 深色是公司級旗標，可安全預載以避免重載閃白；個人 accent/ink 絕不在此讀取。 */
@@ -67,11 +69,14 @@ try {
 <link rel="apple-touch-icon" href="brand/bonfire-platform-mark.png"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<!-- 2.0 完全獨立前端(Swiss Edition):自己的設計系統/組件/頁面,只復用後端 /api;經典版在舊域名原封不動 -->
-<link rel="stylesheet" href="core.css?v=20260723multimodal1"/>
+<!-- 2.1 完全獨立前端(Swiss Edition):自己的設計系統/組件/頁面,只復用後端 /api;經典版在舊域名原封不動 -->
+<link rel="stylesheet" href="core.css?v=20260802-identity-titles1"/>
 <link rel="stylesheet" href="pages/pages-tasks.css?v=20260721185500"/>
-<link rel="stylesheet" href="pages/pages-shield.css?v=20260721185500"/>
+<link rel="stylesheet" href="pages/pages-shield.css?v=20260802-shield-storage1"/>
+<link rel="stylesheet" href="pages/pages-browser.css?v=20260801-browser1"/>
 <link rel="stylesheet" href="pages/pages-optimizer-topology.css?v=20260723mermaid1"/>
+<link rel="stylesheet" href="pages/pages-research.css?v=20260801-object-topology1"/>
+<link rel="stylesheet" href="pages/pages-assets.css?v=20260802-assets-collection5"/>
 <!-- 秘書塢富文本:marked(GFM Markdown)+ DOMPurify(消毒)+ KaTeX(公式) -->
 <!-- 內置交互地圖(GIS 模塊,與 1.0 同版本) -->
 </head>
@@ -84,14 +89,17 @@ try {
 <!-- 核心启动链必须同源：Safari/内容拦截器阻断第三方 CDN 时仍可渲染。 -->
 <script src="vendor/react.production.min.js?v=20260721185500"></script>
 <script src="vendor/react-dom.production.min.js?v=20260721185500"></script>
+<!-- Word 論文閱讀器：同源 OpenXML 渲染，保留可選文字、圖片、表格與 OMML/MathML 公式。 -->
+<script src="vendor/jszip.min.js?v=3.10.1"></script>
+<script src="vendor/docx-preview.min.js?v=0.3.6"></script>
 <!-- iOS Safari 没有 BarcodeDetector 时使用同源 ZXing；不依赖第三方 CDN。 -->
 <script src="vendor/zxing-browser.min.js?v=20260721185500"></script>
 
 <!-- 預編譯來源清單只供構建／審計使用；template 內容不下載、不執行。 -->
 <template id="w2-precompile-sources">
 <script type="application/x-warehouse-source" src="lang.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="core.jsx?v=20260723multimodal1"></script>
-<script type="application/x-warehouse-source" src="passkey.js?v=20260721185500"></script>
+<script type="application/x-warehouse-source" src="core.jsx?v=20260728-secretary-history2"></script>
+<script type="application/x-warehouse-source" src="passkey.js?v=20260731-rp-scope1"></script>
 <script type="application/x-warehouse-source" src="pages.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-dashboard.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-inbound.jsx?v=20260721185500"></script>
@@ -101,27 +109,30 @@ try {
 <script type="application/x-warehouse-source" src="pages/pages-stocktake.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-erp.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-finance.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="pages/pages-assets.jsx?v=20260721185500"></script>
+<script type="application/x-warehouse-source" src="pages/pages-assets.jsx?v=20260802-assets-collection5"></script>
+<script type="application/x-warehouse-source" src="pages/pages-research.jsx?v=20260801-object-topology1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-procurement.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-gis.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-reports.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="pages/pages-perms.jsx?v=20260721185500"></script>
+<script type="application/x-warehouse-source" src="pages/pages-perms.jsx?v=20260728-org1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-logs.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="pages/pages-settings.jsx?v=20260721185500"></script>
+<script type="application/x-warehouse-source" src="pages/pages-settings.jsx?v=20260728-ai1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-cases.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-tasks.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-records.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-legal.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-companies.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-optimizer.jsx?v=20260723semantic1"></script>
-<script type="application/x-warehouse-source" src="pages/pages-terminal.jsx?v=20260721185500"></script>
+<script type="application/x-warehouse-source" src="pages/pages-terminal.jsx?v=20260728-runtime5"></script>
 <script type="application/x-warehouse-source" src="pages/pages-shield.jsx?v=20260721185500"></script>
+<script type="application/x-warehouse-source" src="pages/pages-browser.jsx?v=20260801-browser1"></script>
+<script type="application/x-warehouse-source" src="action-center.jsx?v=20260731-research-catalog2"></script>
 <script type="application/x-warehouse-source" src="app.jsx?v=20260723semantic1"></script>
 </template>
 <!-- JSX 在 CI／部署前以同源 Babel 工具確定性預編譯；生產瀏覽器只執行普通 JavaScript。 -->
 <!-- Feature 23 語義拓撲是普通 JavaScript；先註冊重試鉤子，再讓主 bundle 註冊原頁面。 -->
 <script src="pages/pages-optimizer-topology.js?v=20260723mermaid1"></script>
-<script src="dist/app.bundle.js?v=20260727-global-login"></script>
+<script src="dist/app.bundle.js?v=20260802-assets-collection5"></script>
 <script>
 /* 非关键增强资源在首屏启动之后异步加载，不阻塞主 bundle 的 DOMContentLoaded。 */
 (function () {

@@ -87,6 +87,31 @@ def _audit(
     )
 
 
+def _task_event(
+    session: Session,
+    actor: ActorContext,
+    task_id: UUID,
+    event_type: str,
+    payload: dict[str, object],
+) -> None:
+    session.execute(
+        text("""
+            INSERT INTO workflow.task_events(
+              tenant_id, task_id, actor_user_id, event_type, payload
+            ) VALUES (
+              :tenant_id, :task_id, :actor_user_id, :event_type, CAST(:payload AS jsonb)
+            )
+        """),
+        {
+            "tenant_id": actor.tenant_id,
+            "task_id": task_id,
+            "actor_user_id": actor.user_id,
+            "event_type": event_type,
+            "payload": json.dumps(payload, ensure_ascii=False, default=str),
+        },
+    )
+
+
 def _member_exists(session: Session, user_id: UUID) -> bool:
     return bool(
         session.execute(
@@ -297,6 +322,70 @@ def list_tasks(actor: ActorContext, scope: str = "mine") -> dict[str, object]:
     }
 
 
+def get_task(actor: ActorContext, task_id: str) -> dict[str, object]:
+    _require(actor, "tasks.read", "tasks.create", "tasks.manage")
+    with tenant_session(actor.tenant_id) as session:
+        task = _task_row(session, _uuid(task_id, label="task id"))
+        if not _can_manage_task(actor, session, task):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+        return _serialize(session, actor, task)
+
+
+def task_history(
+    actor: ActorContext,
+    task_id: str,
+    *,
+    limit: int = 100,
+    before_id: int | None = None,
+) -> dict[str, object]:
+    _require(actor, "tasks.read", "tasks.create", "tasks.manage")
+    safe_limit = min(500, max(1, int(limit)))
+    with tenant_session(actor.tenant_id) as session:
+        task = _task_row(session, _uuid(task_id, label="task id"))
+        if not _can_manage_task(actor, session, task):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+        rows = (
+            session.execute(
+                text("""
+                    SELECT e.id, e.event_type, e.actor_user_id, e.payload, e.created_at,
+                           u.username AS actor_username,
+                           u.display_name AS actor_display_name
+                    FROM workflow.task_events AS e
+                    LEFT JOIN iam.users AS u ON u.id = e.actor_user_id
+                    WHERE e.task_id = :task_id
+                      AND (
+                        CAST(:before_id AS bigint) IS NULL
+                        OR e.id < CAST(:before_id AS bigint)
+                      )
+                    ORDER BY e.id DESC LIMIT :limit
+                """),
+                {
+                    "task_id": task["id"],
+                    "before_id": before_id,
+                    "limit": safe_limit + 1,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        has_more = len(rows) > safe_limit
+        items = [
+            {
+                **dict(row),
+                "id": int(row["id"]),
+                "actor_user_id": str(row["actor_user_id"]) if row["actor_user_id"] else None,
+                "actor_name": row["actor_display_name"] or row["actor_username"],
+            }
+            for row in rows[:safe_limit]
+        ]
+        return {
+            "task_id": str(task["id"]),
+            "items": items,
+            "has_more": has_more,
+            "next_before_id": int(items[-1]["id"]) if has_more and items else None,
+        }
+
+
 def create_task(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
     _require(actor, "tasks.create", "tasks.manage")
     title = _clean(payload.get("title"), maximum=240)
@@ -406,7 +495,136 @@ def create_task(actor: ActorContext, payload: dict[str, object]) -> dict[str, ob
                 "assignees": [str(value) for value in assignees],
             },
         )
+        _task_event(
+            session,
+            actor,
+            task_id,
+            "created",
+            {"kind": kind, "assignees": [str(value) for value in assignees]},
+        )
         return _serialize(session, actor, task)
+
+
+def update_task(actor: ActorContext, task_id: str, payload: dict[str, object]) -> dict[str, object]:
+    _require(actor, "tasks.read", "tasks.create", "tasks.manage")
+    expected_version = payload.get("expected_version")
+    if not isinstance(expected_version, int) or expected_version < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Expected task version is required",
+        )
+    target_id = _uuid(task_id, label="task id")
+    with tenant_session(actor.tenant_id) as session:
+        task = _task_row(session, target_id)
+        if not _can_manage_task(actor, session, task):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Task update permission denied",
+            )
+        values: dict[str, object] = {}
+        aliases = {
+            "start_at": ("start_at", "starts_at"),
+            "end_at": ("end_at", "ends_at"),
+            "due_at": ("due_at",),
+        }
+        for column, keys in aliases.items():
+            supplied = next((key for key in keys if key in payload), None)
+            if supplied is not None:
+                values[column] = _clean(payload.get(supplied), maximum=64)
+        for column, maximum in {
+            "title": 240,
+            "description": 2000,
+            "category": 80,
+            "timezone": 80,
+            "location": 240,
+        }.items():
+            if column in payload:
+                values[column] = _clean(payload.get(column), maximum=maximum)
+        if "title" in values and values["title"] is None:
+            raise HTTPException(status_code=422, detail="Task title is required")
+        if "priority" in payload:
+            values["priority"] = _enum(
+                payload.get("priority"), _PRIORITIES, label="priority", default=""
+            )
+        if "visibility" in payload:
+            values["visibility"] = _enum(
+                payload.get("visibility"), _VISIBILITIES, label="visibility", default=""
+            )
+        if "all_day" in payload:
+            values["all_day"] = bool(payload["all_day"])
+        if "owner_org_unit_id" in payload:
+            unit_id = _optional_uuid(payload.get("owner_org_unit_id"), label="organization unit id")
+            if (
+                unit_id is not None
+                and not session.execute(
+                    text("SELECT 1 FROM iam.organizational_units WHERE id = :id AND active"),
+                    {"id": unit_id},
+                ).scalar_one_or_none()
+            ):
+                raise HTTPException(status_code=422, detail="Organization unit is unavailable")
+            values["owner_org_unit_id"] = unit_id
+        if "plan_id" in payload:
+            plan_id = _optional_uuid(payload.get("plan_id"), label="plan id")
+            if (
+                plan_id is not None
+                and not session.execute(
+                    text("SELECT 1 FROM workflow.tasks WHERE id = :id AND kind = 'plan'"),
+                    {"id": plan_id},
+                ).scalar_one_or_none()
+            ):
+                raise HTTPException(status_code=422, detail="Plan is unavailable")
+            values["plan_id"] = plan_id
+        assignees = None
+        if "assignees" in payload:
+            assignees = _assignees(actor, session, payload.get("assignees"))
+        if not values and assignees is None:
+            return _serialize(session, actor, task)
+        assignments = ", ".join(f"{column} = :{column}" for column in values)
+        if assignments:
+            assignments += ", "
+        result = session.execute(
+            text(
+                f"""
+                UPDATE workflow.tasks
+                SET {assignments}version = version + 1
+                WHERE id = :task_id AND version = :expected_version
+                """
+            ),
+            {**values, "task_id": target_id, "expected_version": expected_version},
+        )
+        if result.rowcount != 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Task changed; refresh before updating",
+            )
+        if assignees is not None:
+            session.execute(
+                text("DELETE FROM workflow.task_assignees WHERE task_id = :task_id"),
+                {"task_id": target_id},
+            )
+            for user_id in assignees:
+                session.execute(
+                    text("""
+                        INSERT INTO workflow.task_assignees(
+                          tenant_id, task_id, user_id, assigned_by
+                        ) VALUES (:tenant_id, :task_id, :user_id, :assigned_by)
+                    """),
+                    {
+                        "tenant_id": actor.tenant_id,
+                        "task_id": target_id,
+                        "user_id": user_id,
+                        "assigned_by": actor.user_id,
+                    },
+                )
+        changed_fields = sorted([*values, *(["assignees"] if assignees is not None else [])])
+        _task_event(session, actor, target_id, "updated", {"fields": changed_fields})
+        _audit(
+            session,
+            actor,
+            "task.updated",
+            {"task_id": task_id, "fields": changed_fields},
+        )
+        return _serialize(session, actor, _task_row(session, target_id))
 
 
 def update_task_status(
@@ -449,6 +667,17 @@ def update_task_status(
             actor,
             "task.status_changed",
             {"task_id": str(task["id"]), "from": task["status"], "to": target_status},
+        )
+        _task_event(
+            session,
+            actor,
+            UUID(str(task["id"])),
+            "status_changed",
+            {
+                "from": task["status"],
+                "to": target_status,
+                "note": _clean(payload.get("note"), maximum=1000),
+            },
         )
         return _serialize(session, actor, updated)
 

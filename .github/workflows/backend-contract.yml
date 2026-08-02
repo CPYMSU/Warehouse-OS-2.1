@@ -165,7 +165,7 @@ jobs:
           done
           grep -qi '^X-Warehouse-Backend: fastapi-postgresql' headers.txt
           grep -q 'postgresql-18-pgvector' api-health.json
-          curl -fsS http://127.0.0.1:8080/ | grep -q 'WAREHOUSE OS 2.0'
+          curl -fsS http://127.0.0.1:8080/ | grep -q 'WAREHOUSE OS 2.1'
           docker compose ps
 
       - name: Show compose diagnostics

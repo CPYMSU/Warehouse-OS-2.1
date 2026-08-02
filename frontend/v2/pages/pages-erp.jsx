@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · ERP 中樞 — Swiss 版式,真後端(/api/erp/overview 駕駛艙子集) */
+/* WAREHOUSE 2.1 · ERP 中樞 — Swiss 版式,真後端(/api/erp/overview 駕駛艙子集) */
 (() => {
 const W2 = window.W2;
 const { t, lang } = window.W2_LANG;

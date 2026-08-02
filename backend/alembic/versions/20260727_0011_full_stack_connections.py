@@ -156,17 +156,9 @@ def upgrade() -> None:
           platform.runtime_states, compatibility.blobs
           TO warehouse_os;
 
-        UPDATE iam.users
-        SET is_platform_owner = true
-        WHERE id = (
-          SELECT u.id
-          FROM iam.users AS u
-          JOIN iam.memberships AS m ON m.user_id = u.id
-          WHERE u.active AND m.active AND m.role_level = 10
-          ORDER BY u.created_at, u.id
-          LIMIT 1
-        )
-        AND NOT EXISTS (SELECT 1 FROM iam.users WHERE is_platform_owner);
+        -- Platform ownership is assigned explicitly after migration.  Never
+        -- infer a platform-wide identity from tenant role level or creation
+        -- order: multiple L10 users may exist and L10 is not itself L11.
         """
     )
 

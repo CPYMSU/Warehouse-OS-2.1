@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 公司 / 平臺 — ADMIN 權力面(僅平臺所有者),真後端
+/* WAREHOUSE 2.1 · 公司 / 平臺 — ADMIN 權力面(僅平臺所有者),真後端
    政策:本頁屬管理面,允許直接調用管理端點(含 POST);
    一切破壞性動作帶 Swiss 確認防呆,後端 error 原文紅字呈現,全程審計。
    端點逐字照抄 scripts/ai_service.py 與 1.0 platform.jsx / page-companies.jsx:

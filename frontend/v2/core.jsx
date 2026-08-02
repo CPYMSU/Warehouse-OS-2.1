@@ -1,14 +1,14 @@
 /* ============================================================
-   WAREHOUSE 2.0 · core — API / 圖標 / Swiss 組件庫 / 秘書塢
+   WAREHOUSE 2.1 · core — API / 圖標 / Swiss 組件庫 / 秘書塢
    ============================================================ */
 (() => {
 const W2 = {};
 window.W2 = W2;
 
 /* ── API 層 ── */
-W2.API_BASE = (location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "http://127.0.0.1:8080" : "";
-// 經典版(1.0)所在域名:V2 走獨立域名 bonfirework.org 後,回 1.0 的鏈接必須絕對
-W2.CLASSIC_URL = (location.hostname === "127.0.0.1" || location.hostname === "localhost") ? "../" : "https://ncsyaikg.com/";
+/* API and WebAuthn must share one origin. Local development is canonicalized
+   to localhost by index.html; production naturally stays on its HTTPS host. */
+W2.API_BASE = "";
 W2.TOKEN_KEY = "warehouse_auth_token";
 W2.TENANT_KEY = "warehouse_current_tenant";
 W2.storageGet = (key) => {
@@ -25,6 +25,20 @@ W2.token = () => W2.storageGet(W2.TOKEN_KEY);
 W2.setToken = (t) => W2.storageSet(W2.TOKEN_KEY, t);
 W2.tenant = () => W2.storageGet(W2.TENANT_KEY);
 W2.setTenant = (s) => W2.storageSet(W2.TENANT_KEY, s);
+W2.hasUsableToken = () => {
+  const token = W2.token();
+  if (!token) return false;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+    const payload = JSON.parse(window.atob(padded));
+    return Number.isFinite(Number(payload.exp)) && Number(payload.exp) > Date.now() / 1000 + 5;
+  } catch (error) {
+    return false;
+  }
+};
 
 const transientGetStatuses = new Set([502, 503, 504]);
 const abortError = () => {
@@ -86,7 +100,7 @@ W2.json = async (path, options) => {
   const res = await W2.fetch(path, options);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const error = new Error(data.error || data.message || res.statusText);
+    const error = new Error(data.error || data.message || data.detail || res.statusText);
     error.status = res.status; error.data = data;
     throw error;
   }
@@ -211,16 +225,23 @@ W2.playAlertTone = AlertTone.play;
 W2.stopAlertTone = AlertTone.stop;
 
 W2.agentStream = async (body, onEvent, options = {}) => {
+  const language = window.W2_LANG && window.W2_LANG.languageContract
+    ? window.W2_LANG.languageContract() : { locale: "zh-Hant", language_mode: "auto" };
+  const requestBody = {
+    ...(body || {}),
+    locale: (body && body.locale) || language.locale,
+    language_mode: (body && body.language_mode) || language.language_mode,
+  };
   const res = await W2.fetch("/api/agent/run/stream", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body), signal: options.signal,
+    body: JSON.stringify(requestBody), signal: options.signal,
   });
   if (!res.ok || !res.body) {
     let msg = res.statusText;
     let payload = null;
     try {
       payload = await res.json();
-      msg = payload.error || payload.message || msg;
+      msg = payload.error || payload.message || payload.detail || msg;
     } catch (e) {}
     const error = new Error(msg);
     error.status = Number(res.status) || undefined;
@@ -699,7 +720,7 @@ const CompanyMark = ({ size = 34, branding }) => {
 W2.CompanyMark = CompanyMark;
 
 /* ── 平台品牌:只用於登入、身份、安全與公共狀態；租戶工作區仍使用 CompanyMark ── */
-W2.PLATFORM_NAME = "WAREHOUSE OS 2.0";
+W2.PLATFORM_NAME = "WAREHOUSE OS 2.1";
 W2.PLATFORM_BRAND = "BONFIRE WORKSHOP";
 W2.PLATFORM_MARK_URL = "brand/bonfire-platform-mark.png";
 W2.PLATFORM_SEAL_URL = "brand/bonfire-platform-seal.png";
@@ -1812,8 +1833,8 @@ const emitRecordConfigRejected = (actionId, status = "rejected", response = null
 /* 通用命令確認卡只信任固定 action 契約與固定路由。action_key 同時是
    去重鍵與路由 id 的唯一來源，避免流事件夾帶任意端點。 */
 const OPERATION_TERMINAL_STATUSES = new Set(["completed", "cancelled", "failed", "expired", "outcome_unknown"]);
-const OPERATION_KNOWN_STATUSES = new Set(["pending", "executing", ...OPERATION_TERMINAL_STATUSES]);
-const OPERATION_EDIT_TYPES = new Set(["text", "textarea", "boolean", "integer", "number"]);
+const OPERATION_KNOWN_STATUSES = new Set(["pending", "authorized", "executing", ...OPERATION_TERMINAL_STATUSES]);
+const OPERATION_EDIT_TYPES = new Set(["text", "textarea", "boolean", "integer", "number", "select"]);
 /* Keep these in lockstep with the server's typed-confirmation compatibility
    path. Strong phrases always enter the no-execution resurface path; weak
    acknowledgements do so only while a pending card is already visible. */
@@ -2096,7 +2117,8 @@ const insertSecretaryItemAtAnchor = (items, item) => {
   items.splice(insertion, 0, item);
 };
 const operationStatusRank = (status) => status === "pending" ? 0
-  : status === "executing" ? 1 : OPERATION_TERMINAL_STATUSES.has(status) ? 2 : -1;
+  : status === "authorized" ? 1
+    : status === "executing" ? 2 : OPERATION_TERMINAL_STATUSES.has(status) ? 3 : -1;
 /* Confirmation state is monotonic.  Transcript cards are proposal-time
    snapshots and may arrive again after the server has already completed the
    action; they must never move a live action backwards. */
@@ -2268,7 +2290,7 @@ const operationCredentialDeliveries = (source, nextAction) => {
   return deliveries;
 };
 const operationStatusLabel = (status, t) => ({
-  pending: t("待確認"), executing: t("執行中"), completed: t("已完成"), cancelled: t("已取消"),
+  pending: t("待確認"), authorized: t("已授權 · AI 接手"), executing: t("AI 執行中"), completed: t("已完成"), cancelled: t("已取消"),
   failed: t("執行失敗"), expired: t("已逾期"), outcome_unknown: t("結果待核對"),
 }[status] || t("狀態異常"));
 
@@ -2307,7 +2329,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
   const presentationFields = Array.isArray(presentation.fields)
     ? presentation.fields.filter(field => field && typeof field === "object" && !Array.isArray(field)) : [];
   const topLevelTimestamps = {};
-  ["created_at", "updated_at", "expires_at", "executing_at", "completed_at", "cancelled_at", "failed_at"].forEach((key) => {
+  ["created_at", "updated_at", "expires_at", "authorized_at", "executing_at", "completed_at", "cancelled_at", "failed_at"].forEach((key) => {
     if (action && action[key] != null && action[key] !== "") topLevelTimestamps[key] = action[key];
   });
   const timestamps = action && action.timestamps && typeof action.timestamps === "object" && !Array.isArray(action.timestamps)
@@ -2380,7 +2402,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
 
   const emitOperationTerminal = (source, next) => {
     const nextStatus = operationProjectedStatus(next);
-    if (!OPERATION_TERMINAL_STATUSES.has(nextStatus)) return;
+    if (nextStatus !== "authorized" && !OPERATION_TERMINAL_STATUSES.has(nextStatus)) return;
     const nextCompletionReceipt = operationCompletionReceipt(next);
     const continuation = source && source.continuation
       ? source.continuation : next && next.continuation ? next.continuation : null;
@@ -2472,7 +2494,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
       && operationCredentialDeliveries(action, action).some(delivery =>
         !credentialFetchDeliveredRef.current.has(delivery.delivery_id)
       );
-    if ((!["pending", "executing"].includes(status) && !unresolvedCredentialDelivery)
+    if ((!["pending", "authorized", "executing"].includes(status) && !unresolvedCredentialDelivery)
         || !actionPath) return undefined;
     let disposed = false;
     let timer = null;
@@ -2480,7 +2502,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
     const schedule = () => {
       if (disposed) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(poll, status === "executing" ? 4000 : 15000);
+      timer = setTimeout(poll, ["authorized", "executing"].includes(status) ? 4000 : 15000);
     };
     const poll = async () => {
       if (disposed || inFlight) return;
@@ -2672,7 +2694,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
     : phase === "passkey-hybrid-switch" ? t("正在切換至手機 Passkey QR…")
     : phase === "passkey-verify" ? t("正在驗證 Passkey…")
     : phase === "passkey" ? t("正在使用 Passkey 完成本人驗證…")
-    : phase === "confirm" ? t("正在確認並執行…")
+    : phase === "confirm" ? t("正在簽署 AI 授權…")
     : phase === "cancel" ? t("正在取消…") : phase === "edit" ? t("正在保存修改…") : "";
   const statusLabel = syncState === "loading" ? t("核對中")
     : syncState === "error" ? t("狀態未核對") : operationStatusLabel(status, t);
@@ -2691,8 +2713,8 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
       `}</style>
       <div className="row spread g8" style={{ alignItems: "flex-start" }}>
         <div style={{ minWidth: 0 }}>
-          <div className="label" style={{ color: "var(--red)" }}>OPERATION · CONFIRMATION</div>
-          <div style={{ fontSize: 15, fontWeight: 850, lineHeight: 1.3, marginTop: 6, overflowWrap: "anywhere" }}>{presentation.title || t("確認執行操作")}</div>
+          <div className="label" style={{ color: "var(--red)" }}>AI · AUTHORIZATION</div>
+          <div style={{ fontSize: 15, fontWeight: 850, lineHeight: 1.3, marginTop: 6, overflowWrap: "anywhere" }}>{presentation.title || t("授權 AI 執行操作")}</div>
         </div>
         <span className="tag" style={{ flexShrink: 0, color: statusColor, borderColor: statusColor }}>{statusLabel}</span>
       </div>
@@ -2712,18 +2734,24 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
             <span style={{ fontWeight: 700 }}>{field.label || field.key}{field.required ? " *" : ""}</span>
             {field.type === "textarea" ? <textarea className="field" rows="3" value={draft[field.key] == null ? "" : draft[field.key]} onChange={event => updateDraft(field, event.target.value)}/>
               : field.type === "boolean" ? <span className="row g6"><input type="checkbox" checked={draft[field.key] === true} onChange={event => updateDraft(field, event.target.checked)}/>{draft[field.key] === true ? t("是") : t("否")}</span>
-                : <input className="field" type={field.type === "integer" || field.type === "number" ? "number" : "text"} step={field.type === "integer" ? "1" : field.type === "number" ? "any" : undefined} value={draft[field.key] == null ? "" : draft[field.key]} onChange={event => updateDraft(field, event.target.value)}/>}
+                : field.type === "select" ? <select className="field" value={draft[field.key] == null ? "" : draft[field.key]} onChange={event => updateDraft(field, event.target.value)}>{(Array.isArray(field.choices) ? field.choices : []).map(choice => <option key={String(choice)} value={String(choice)}>{String(choice).toUpperCase()}</option>)}</select>
+                  : <input className="field" type={field.type === "integer" || field.type === "number" ? "number" : "text"} step={field.type === "integer" ? "1" : field.type === "number" ? "any" : undefined} value={draft[field.key] == null ? "" : draft[field.key]} onChange={event => updateDraft(field, event.target.value)}/>}
           </label>
         ))}</div>
         <button className="btn primary sm" style={{ marginTop: 10 }} disabled={!!phase} onClick={() => mutate("edit")}>{t("保存修改")}</button>
       </div>}
 
       {syncState === "loading" && <div className="step-line" style={{ marginTop: 10 }}><Icon2 name="refresh" size={10}/>{t("正在核對服務端確認狀態…")}</div>}
-      {(phase || status === "executing") && <div className="step-line" style={{ marginTop: 10 }}><Icon2 name="refresh" size={10}/>{phaseLabel || t("操作正在執行，完成後會自動更新")}</div>}
+      {(phase || status === "authorized" || status === "executing") && <div className="step-line" style={{ marginTop: 10 }}><Icon2 name="refresh" size={10}/>{phaseLabel || (status === "authorized" ? t("授權信號已返回，AI Runtime 正在領取 Keychain") : t("AI Runtime 正在執行，完成後會自動更新"))}</div>}
       {phase === "passkey-platform" && <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={switchPasskeyToPhone}>{t("立即改用手機 Passkey（QR）")}</button>}
       {["passkey-options", "passkey", "passkey-platform", "passkey-hybrid-timeout", "passkey-hybrid-switch", "passkey-verify"].includes(phase)
         && <button type="button" className="btn ghost sm" style={{ marginTop: 8, marginLeft: phase === "passkey-platform" ? 6 : 0 }} onClick={cancelPasskeyVerification}>{t("取消驗證")}</button>}
       {(phase === "passkey-hybrid-timeout" || phase === "passkey-hybrid-switch") && <div className="muted" style={{ marginTop: 6, fontSize: 10.5 }}>{t("手機需已有此帳號的 Passkey 才能完成驗證。")}</div>}
+      {status === "authorized" && action.authorization_keychain && <div role="status" style={{ marginTop: 10, padding: 9, border: "1px solid var(--rule)", background: "var(--surface-2)", fontSize: 11, lineHeight: 1.55 }}>
+        <div className="label">AUTHORIZATION · KEYCHAIN</div>
+        <div style={{ marginTop: 5 }}>{t("操作卡只完成授權；業務代碼由 AI Runtime 接手執行。")}</div>
+        <div className="mono muted" style={{ marginTop: 4, overflowWrap: "anywhere" }}>{operationText(action.authorization_keychain.keychain_id)}</div>
+      </div>}
       {status === "completed" && completionReceipt && <div className="operation-confirmation-check" style={{ color: "var(--ok)", fontSize: 12, fontWeight: 800, marginTop: 11 }}>
         <div className="row g8"><Icon2 name="check" size={15} color="var(--ok)"/>{t("操作已完成並保留在對話中")}</div>
         <div className="mono" style={{ fontSize: 9.8, marginTop: 5 }}>{t("完成回執")} · {completionReceipt.receipt_no} · {operationText(completionReceipt.completed_at)}</div>
@@ -2746,7 +2774,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
         <button type="button" className="btn ghost sm" style={{ marginLeft: 8 }} disabled={syncState === "loading"} onClick={() => setSyncNonce(value => value + 1)}>{t("重新核對")}</button>
       </div>}
       {localError && <div role="alert" style={{ color: "var(--danger)", fontSize: 11.2, lineHeight: 1.5, marginTop: 9 }}>{localError}</div>}
-      {terminal && verification && (verification.verified === true || verification.method === "webauthn") && <div style={{ marginTop: 10, padding: 9, border: "1px solid var(--ok)", background: "var(--surface-2)" }}>
+      {status !== "pending" && verification && (verification.verified === true || verification.method === "webauthn") && <div style={{ marginTop: 10, padding: 9, border: "1px solid var(--ok)", background: "var(--surface-2)" }}>
         <div className="label" style={{ color: "var(--ok)" }}>PASSKEY · {t("已驗證")}</div>
         <div className="mono" style={{ fontSize: 9.8, lineHeight: 1.7, marginTop: 5, overflowWrap: "anywhere" }}>
           {verificationOperator && <div>{t("操作者")} · {operationText(verificationOperator)}</div>}
@@ -2764,7 +2792,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
       <div className="row g6 wrap" style={{ marginTop: 12, paddingTop: 10, borderTop: "2px solid var(--rule)" }}>
         <button className="btn ghost sm" disabled={!canMutate || !!phase || editing} onClick={() => mutate("cancel")}>{t("取消")}</button>
         <button className="btn ghost sm" disabled={!canMutate || !!phase || !editableFields.length} onClick={() => { setEditing(current => !current); setLocalError(""); }}>{editing ? t("收起編輯") : t("編輯")}</button>
-        <button className="btn primary sm" disabled={!canMutate || !!phase || editing} onClick={() => mutate("confirm")}>{t("確認")}</button>
+        <button className="btn primary sm" disabled={!canMutate || !!phase || editing} onClick={() => mutate("confirm")}>{t("授權 AI")}</button>
         {status === "pending" && syncState === "ready" && <span className="label dim">PASSKEY REQUIRED</span>}
         {terminal && <span className="label dim" style={{ marginLeft: "auto" }}>TERMINAL · AUDITED</span>}
       </div>
@@ -3292,6 +3320,132 @@ const BusinessDraftCard = ({ draft, onCancel }) => {
   );
 };
 
+const SECRETARY_RUNTIME_TERMINAL_STATUSES = new Set([
+  "succeeded", "failed", "waiting_confirmation", "requires_user_input",
+  "skipped", "stopped",
+]);
+const secretaryRuntimeActivity = (source) => {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const activityId = String(source.activity_id || "").trim().slice(0, 180);
+  if (!activityId) return null;
+  const bounded = (value, limit) => String(value || "").trim().slice(0, limit);
+  const activity = {
+    activity_id: activityId,
+    kind: bounded(source.kind || "runtime", 48),
+    phase: bounded(source.phase, 80),
+    status: bounded(source.status || "running", 48),
+  };
+  ["model", "tool_name", "command", "description", "judgment", "result_status"]
+    .forEach((key) => {
+      const value = bounded(source[key], key === "description" ? 500 : 180);
+      if (value) activity[key] = value;
+    });
+  ["elapsed_ms", "round", "count"].forEach((key) => {
+    const value = Number(source[key]);
+    if (Number.isFinite(value) && value >= 0) activity[key] = Math.floor(value);
+  });
+  if (Array.isArray(source.selected_tool_names)) {
+    activity.selected_tool_names = source.selected_tool_names
+      .map(value => bounded(value, 180)).filter(Boolean).slice(0, 24);
+  }
+  return activity;
+};
+const secretaryRuntimeActivities = source => (
+  Array.isArray(source) ? source.map(secretaryRuntimeActivity).filter(Boolean) : []
+);
+const secretaryRuntimePhaseLabel = (activity, t) => {
+  if (activity.phase === "secure_credential_delivery") {
+    return activity.status === "succeeded"
+      ? t("簽發結果已核對，正在送達安全卡")
+      : t("密鑰已簽發，AI 正在核對並準備安全卡");
+  }
+  if (activity.command) return activity.command;
+  if (activity.tool_name) return activity.tool_name;
+  const labels = {
+    route: "理解目標與選擇路由",
+    select_tools: "蒸餾可用指令集",
+    plan: "形成執行計畫",
+    answer_with_context: "整合公司上下文",
+    reflect: "核對執行結果",
+    capability_selection: "選擇指令集",
+    decision: "判斷是否執行",
+    execute: "執行指令",
+    authorization_keychain: "領取一次性授權 Keychain",
+    secure_credential_delivery: "密鑰已簽發，AI 正在核對並準備安全卡",
+  };
+  if (String(activity.phase || "").startsWith("reflect")) return t("核對執行結果");
+  if (String(activity.phase || "").startsWith("continue_select")) return t("補充選擇指令集");
+  return t(labels[activity.phase] || activity.phase || "運行處理");
+};
+const secretaryRuntimeStatusLabel = (status, t) => ({
+  running: t("運行中"),
+  succeeded: t("已完成"),
+  failed: t("失敗"),
+  waiting_confirmation: t("待確認"),
+  requires_user_input: t("等待補充"),
+  skipped: t("未調用"),
+  stopped: t("已停止"),
+}[status] || t(status || "運行中"));
+const secretaryRuntimeElapsed = (value) => {
+  const elapsed = Number(value);
+  if (!Number.isFinite(elapsed) || elapsed < 0) return "";
+  return elapsed < 1000 ? `${Math.round(elapsed)}ms` : `${(elapsed / 1000).toFixed(elapsed < 10000 ? 1 : 0)}s`;
+};
+const SecretaryRuntimeTrace = ({ trace }) => {
+  const t = window.W2_LANG.t;
+  const activities = secretaryRuntimeActivities(trace && trace.activities);
+  const [expanded, setExpanded] = React.useState(() => !!(trace && trace.running));
+  React.useEffect(() => {
+    if (trace && trace.running) setExpanded(true);
+  }, [trace && trace.running]);
+  if (!activities.length) return null;
+  const running = !!(trace && trace.running)
+    || activities.some(activity => activity.status === "running");
+  const commandCount = activities.filter(activity =>
+    activity.kind === "capability" && activity.phase === "execute"
+  ).length;
+  const failed = activities.some(activity => activity.status === "failed");
+  return (
+    <section className={`secretary-runtime-trace${running ? " is-running" : ""}${failed ? " has-failure" : ""}`}>
+      <button type="button" className="secretary-runtime-head" aria-expanded={expanded}
+        onClick={() => setExpanded(value => !value)}>
+        <span className="secretary-runtime-code">RUN · COMMAND TRACE</span>
+        <span className="secretary-runtime-summary">
+          {commandCount ? `${commandCount} ${t("個指令")}` : t("推理與路由")}
+          <i aria-hidden="true"/>
+          {running ? t("運行中") : failed ? t("有失敗") : t("已完成")}
+        </span>
+        <span className="secretary-runtime-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>
+      </button>
+      {expanded && <div className="secretary-runtime-body" role="status" aria-live="polite">
+        {activities.map((activity) => {
+          const selected = activity.kind === "selection"
+            ? activity.selected_tool_names || [] : [];
+          return <div className={`secretary-runtime-row status-${activity.status}`}
+            key={activity.activity_id}>
+            <span className="secretary-runtime-dot" aria-hidden="true"/>
+            <div className="secretary-runtime-copy">
+              <div className="secretary-runtime-line">
+                <strong>{secretaryRuntimePhaseLabel(activity, t)}</strong>
+                {activity.model && <span className="secretary-runtime-model">{activity.model}</span>}
+              </div>
+              {!!selected.length && <div className="secretary-runtime-tools">
+                {selected.map(toolName => <code key={toolName}>{toolName}</code>)}
+              </div>}
+              {activity.description && <span className="secretary-runtime-description">{activity.description}</span>}
+            </div>
+            <span className="secretary-runtime-state">
+              {secretaryRuntimeStatusLabel(activity.status, t)}
+              {secretaryRuntimeElapsed(activity.elapsed_ms)
+                && <small>{secretaryRuntimeElapsed(activity.elapsed_ms)}</small>}
+            </span>
+          </div>;
+        })}
+      </div>}
+    </section>
+  );
+};
+
 
 const secretaryItemsFromBootstrap = (payload) => {
   const messages = (Array.isArray(payload && payload.messages) ? payload.messages : [])
@@ -3322,6 +3476,16 @@ const secretaryItemsFromBootstrap = (payload) => {
   const transcript = messages.reduce((items, message) => {
     const metadata = message.metadata && typeof message.metadata === "object"
       ? message.metadata : {};
+    const runtimeActivities = message.role === "assistant"
+      ? secretaryRuntimeActivities(metadata.runtime_activities) : [];
+    if (runtimeActivities.length) {
+      items.push({
+        role: "runtime_trace",
+        trace_key: `runtime-trace:${metadata.run_id || message.id}`,
+        activities: runtimeActivities,
+        running: false,
+      });
+    }
     const outcomeUnknown = message.role === "assistant"
       && Array.isArray(metadata.steps)
       && metadata.steps.some(step => step && step.status === "outcome_unknown");
@@ -3391,6 +3555,23 @@ const secretaryHasActiveRecordWorkflow = (payload) => {
     const status = String(action.status || "pending").trim().toLowerCase();
     return !RECORD_ACTION_TERMINAL_STATUSES.has(status);
   });
+};
+
+const secretarySurnameOf = (actor) => {
+  if (!actor || typeof actor !== "object") return "";
+  const explicitSurname = [
+    actor.family_name, actor.surname, actor.last_name,
+  ].find(value => typeof value === "string" && value.trim());
+  if (explicitSurname) return explicitSurname.trim();
+
+  const displayName = String(
+    actor.display_name || actor.name || actor.username || "",
+  ).trim();
+  if (!displayName) return "";
+  const commaSurname = displayName.split(",", 1)[0].trim();
+  if (commaSurname && commaSurname !== displayName) return commaSurname;
+  if (/^[\u3400-\u9fff]/.test(displayName)) return Array.from(displayName)[0];
+  return displayName.split(/\s+/)[0] || displayName;
 };
 
 /* ── 秘書塢 ── */
@@ -3471,6 +3652,14 @@ const SecretaryDock = () => {
       setItems(previous => previous.map(item => (
         item && item.role === "step" && item.running
           ? { ...item, running: false, text: item.text + " · " + t("已由新指令接續") }
+          : item && item.role === "runtime_trace" && item.running
+            ? {
+                ...item,
+                running: false,
+                activities: secretaryRuntimeActivities(item.activities).map(activity =>
+                  activity.status === "running"
+                    ? { ...activity, status: "stopped" } : activity),
+              }
           : item
       )));
     }
@@ -3546,9 +3735,8 @@ const SecretaryDock = () => {
     restoreAbortRef.current = controller;
     const previousConversationId = String(convRef.current || "");
     const requestedConversationId = (
-      (typeof conversationId === "number" || typeof conversationId === "string")
-      && /^\d+$/.test(String(conversationId))
-    ) ? String(conversationId) : "";
+      typeof conversationId === "number" || typeof conversationId === "string"
+    ) ? String(conversationId).trim().slice(0, 128) : "";
     const bootstrapPath = "/api/assistant/bootstrap?message_limit=80"
       + (requestedConversationId ? "&conversation_id=" + encodeURIComponent(requestedConversationId) : "");
     restoreReadyRef.current = false;
@@ -3801,6 +3989,14 @@ const SecretaryDock = () => {
     };
   }, [restoreSecretarySession]);
 
+  useEffect(() => {
+    if (!W2.token()) return undefined;
+    restoreSecretarySession();
+    return () => {
+      if (restoreAbortRef.current) restoreAbortRef.current.abort();
+    };
+  }, [restoreSecretarySession]);
+
   /* 語音:定稿直接發給秘書;部分識別灰字上屏(流式體感) */
   const voice = useVoice(
     (text) => { if (sendRef.current) sendRef.current(text); },
@@ -3914,6 +4110,8 @@ const SecretaryDock = () => {
         || pendingContinuationActionsRef.current.has(actionKey)) return;
     const continuationUserTurnGeneration = explicitUserTurnGenerationRef.current;
     const continuationConversationId = String(continuation.conversation_id || "");
+    const authorizationKeychainId = String(continuation.authorization_keychain_id || "");
+    if (!/^[0-9a-f-]{36}$/i.test(authorizationKeychainId)) return;
     if (continuationConversationId && convRef.current != null
         && continuationConversationId !== String(convRef.current)) return;
     pendingContinuationActionsRef.current.add(actionKey);
@@ -3948,6 +4146,7 @@ const SecretaryDock = () => {
         null,
         {
           resume_confirmation_action_id: continuation.confirmation_action_id,
+          authorization_keychain_id: authorizationKeychainId,
           hidden_user_turn: true,
           terminal_event: true,
         },
@@ -4058,7 +4257,6 @@ const SecretaryDock = () => {
       recordWorkflowRef.current.active = true;
       convRef.current = null;
     }
-    const recordFlowTurn = recordIntent;
     const streamGeneration = ++streamGenerationRef.current;
     const controller = typeof window.AbortController === "function"
       ? new window.AbortController() : null;
@@ -4127,6 +4325,7 @@ const SecretaryDock = () => {
       let assistantDeltaSeen = false;
       let assistantStreamText = "";
       const assistantStreamKey = `assistant-stream:${streamGeneration}`;
+      const runtimeTraceKey = `runtime-trace:${streamGeneration}`;
       let finalEvidence = null;
       let finalNeedsVerify = false;
       // 工具結果帶 downloads 標記(如 dm guide 的接入指南)→ 對話裡出下載按鈕;
@@ -4174,19 +4373,20 @@ const SecretaryDock = () => {
       const agentBody = {
         text: msg,
         conversation_id: convRef.current,
-        reasoning_mode: reasoningModeRef.current,
+        turn_id: (
+          window.crypto && typeof window.crypto.randomUUID === "function"
+            ? window.crypto.randomUUID()
+            : `turn-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+        ),
+        surface: "secretary",
+        context_mode: reasoningModeRef.current,
+        ...(runOptions && runOptions.resume_confirmation_action_id ? {
+          resume_confirmation_action_id: Number(runOptions.resume_confirmation_action_id),
+          authorization_keychain_id: String(runOptions.authorization_keychain_id || ""),
+          hidden_user_turn: true,
+          terminal_event: true,
+        } : {}),
       };
-      if (runOptions && runOptions.resume_confirmation_action_id) {
-        agentBody.resume_confirmation_action_id = runOptions.resume_confirmation_action_id;
-        agentBody.terminal_event = runOptions.terminal_event === true;
-      }
-      if (recordFlowTurn) agentBody.intent = "record_create";
-      const businessContext = secretaryContextOf(suppliedBusinessContext) || businessContextRef.current;
-      if (businessContext) {
-        agentBody.entity_ref = businessContext.entity_ref;
-        if (businessContext.node_key) agentBody.node_key = businessContext.node_key;
-        if (businessContext.tab) agentBody.tab = businessContext.tab;
-      }
       await W2.agentStream(agentBody, (ev) => {
             if (!isCurrentStream()) return;
             addBusinessDrafts(ev);
@@ -4208,6 +4408,34 @@ const SecretaryDock = () => {
             agent: ev.agent || "ai_secretary",
             status: ev.status || "working",
             label: ev.label || t("AI 秘書正在處理"),
+          });
+            }
+            else if (ev.event === "runtime_activity") {
+          const activity = secretaryRuntimeActivity(ev);
+          if (!activity) return;
+          forceTailRef.current = true;
+          setItems(previous => {
+            const traceIndex = previous.findIndex(item =>
+              item && item.role === "runtime_trace" && item.trace_key === runtimeTraceKey
+            );
+            if (traceIndex < 0) {
+              return [...previous, {
+                role: "runtime_trace",
+                trace_key: runtimeTraceKey,
+                activities: [activity],
+                running: true,
+              }];
+            }
+            const next = [...previous];
+            const trace = next[traceIndex];
+            const activities = secretaryRuntimeActivities(trace.activities);
+            const activityIndex = activities.findIndex(candidate =>
+              candidate.activity_id === activity.activity_id
+            );
+            if (activityIndex < 0) activities.push(activity);
+            else activities[activityIndex] = { ...activities[activityIndex], ...activity };
+            next[traceIndex] = { ...trace, activities, running: true };
+            return next;
           });
             }
             else if (ev.event === "assistant_delta") {
@@ -4255,7 +4483,7 @@ const SecretaryDock = () => {
             return n;
           });
             }
-            else if (ev.event === "confirmation_required") { addConfirmation(ev); addRecordConfigConfirmation(ev); addOperationConfirmation(ev); }
+            else if (ev.event === "confirmation_required" || ev.event === "authorization_completed") { addConfirmation(ev); addRecordConfigConfirmation(ev); addOperationConfirmation(ev); }
             else if (ev.event === "final") {
           addCredential(ev.credentials || (ev.credential ? [ev.credential] : []), ev);
           finalText = ev.message || (ev.payload && ev.payload.message) || "";
@@ -4284,7 +4512,15 @@ const SecretaryDock = () => {
       setItems((p) => {
         const stopped = p.map(item => item && item.role === "step" && item.running
           ? { ...item, running: false, text: item.text + " · " + t("本輪已結束，可繼續交辦") }
-          : item).map(item => item && item.stream_key === assistantStreamKey
+          : item && item.role === "runtime_trace" && item.trace_key === runtimeTraceKey
+            ? {
+                ...item,
+                running: false,
+                activities: secretaryRuntimeActivities(item.activities).map(activity =>
+                  activity.status === "running"
+                    ? { ...activity, status: "stopped" } : activity),
+              }
+            : item).map(item => item && item.stream_key === assistantStreamKey
             ? {
                 ...item,
                 text: finalText || assistantStreamText || t("(完成,但沒有返回文字)"),
@@ -4327,6 +4563,9 @@ const SecretaryDock = () => {
       busyRef.current = false;
       setBusy(false);
       const failedConversationId = convRef.current;
+      const resumedActionKey = runOptions && runOptions.resume_confirmation_action_id
+        ? `command:${Number(runOptions.resume_confirmation_action_id)}` : "";
+      if (resumedActionKey) continuedActionsRef.current.delete(resumedActionKey);
       if (runOptions && runOptions.resume_confirmation_action_id
           && e && Number(e.status) === 409) {
         setTimeout(() => {
@@ -4336,6 +4575,13 @@ const SecretaryDock = () => {
         }, 0);
         return;
       }
+      if (resumedActionKey && failedConversationId) {
+        setTimeout(() => {
+          if (isCurrentStream() && !busyRef.current) {
+            restoreSecretarySession(failedConversationId);
+          }
+        }, 800);
+      }
       // Error events can carry the newest persisted draft. W2.agentStream
       // raises them before the regular event callback, so merge them here too.
       addBusinessDrafts(e && e.data);
@@ -4343,6 +4589,14 @@ const SecretaryDock = () => {
       setItems((p) => {
         const stopped = p.map(item => item && item.role === "step" && item.running
           ? { ...item, running: false, text: item.text + " · ⚠ " + t("本步已結束，可繼續交辦") }
+          : item && item.role === "runtime_trace" && item.trace_key === runtimeTraceKey
+            ? {
+                ...item,
+                running: false,
+                activities: secretaryRuntimeActivities(item.activities).map(activity =>
+                  activity.status === "running"
+                    ? { ...activity, status: "failed" } : activity),
+              }
           : item);
         return mergeSecretaryItems(stopped, [
           { role: "a", text: "⚠ " + (e.message || String(e)) },
@@ -4573,8 +4827,9 @@ const SecretaryDock = () => {
   };
 
   const secretaryActor = sessionState && sessionState.actor && typeof sessionState.actor === "object"
-    ? sessionState.actor : {};
-  const secretaryActorName = secretaryActor.display_name || secretaryActor.username || t("目前使用者");
+    ? sessionState.actor : (window.W2_USER || {});
+  const secretaryActorName = secretarySurnameOf(secretaryActor)
+    || secretarySurnameOf(window.W2_USER) || t("使用者");
   const secretaryPendingCount = Array.isArray(sessionState && sessionState.pending_actions)
     ? sessionState.pending_actions.length : 0;
   const secretarySubjects = Array.isArray(sessionState && sessionState.subjects)
@@ -4749,7 +5004,12 @@ const SecretaryDock = () => {
         @keyframes secretary-glyph-wait{0%,42%{opacity:1}43%,100%{opacity:.18}}
         @keyframes secretary-glyph-complete{0%{transform:translateY(-1px) rotate(45deg) scale(0);opacity:0}66%{transform:translateY(-1px) rotate(45deg) scale(1.18);opacity:1}100%{transform:translateY(-1px) rotate(45deg) scale(1);opacity:1}}
         @media(prefers-reduced-motion:reduce){.secretary-brand.is-moving::after,.secretary-brand.is-waiting::after,.secretary-brand.is-settled::after,.secretary-status-glyph.is-moving>i,.secretary-status-glyph.is-waiting>i,.secretary-status-glyph.is-complete::before{animation:none}.secretary-brand.is-moving::after{background-size:100% 100%;background-position:0 0}.secretary-brand.is-settled::after{transform:none}}
-        .btn.secretary-new-conversation{width:32px;height:30px;padding:0;font:750 9px/1 var(--f-mono);letter-spacing:.06em;white-space:nowrap}
+        .btn.secretary-reasoning-toggle,.btn.secretary-new-conversation{width:32px;height:30px;padding:0}
+        .btn.secretary-reasoning-toggle{--moon-surface:var(--white);position:relative;overflow:hidden}
+        .btn.secretary-reasoning-toggle:hover{--moon-surface:var(--ink)}
+        .secretary-mode-moon{position:relative;width:11px;height:11px;display:block;border:1px solid currentColor;border-radius:50%;background:currentColor}
+        .secretary-reasoning-toggle.is-balanced .secretary-mode-moon::after{content:"";position:absolute;width:10px;height:10px;left:3px;top:-2px;border-radius:50%;background:var(--moon-surface)}
+        .btn.secretary-new-conversation{font:750 9px/1 var(--f-mono);letter-spacing:.06em;white-space:nowrap}
         .secretary-new-label{display:none}
         .secretary-evidence-card{display:flex;width:100%;flex-direction:column;gap:7px;padding:11px 12px;border:1px solid var(--rule);background:var(--paper)}
         .secretary-evidence-card.is-attached{align-self:flex-start;max-width:min(520px,94%);border-left:4px solid var(--accent)}
@@ -4759,6 +5019,35 @@ const SecretaryDock = () => {
         .secretary-evidence-sources{display:flex;flex-wrap:wrap;gap:5px}
         .secretary-evidence-sources a{max-width:100%;padding:4px 7px;border:1px solid var(--rule);color:var(--ink-2);font-size:10px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .secretary-evidence-sources a:hover{border-color:var(--accent);color:var(--accent)}
+        .secretary-runtime-trace{align-self:stretch;border:1px solid var(--rule);background:var(--paper);box-shadow:2px 2px 0 color-mix(in srgb,var(--rule) 22%,transparent)}
+        .secretary-runtime-trace.is-running{border-left:3px solid var(--accent)}
+        .secretary-runtime-trace.has-failure:not(.is-running){border-left:3px solid var(--danger)}
+        .secretary-runtime-head{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto 20px;align-items:center;gap:8px;padding:8px 9px;border:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer}
+        .secretary-runtime-head:hover{background:var(--surface-2)}
+        .secretary-runtime-code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:800 8px/1 var(--f-mono);letter-spacing:.15em;color:var(--ink-3)}
+        .secretary-runtime-summary{display:flex;align-items:center;gap:6px;white-space:nowrap;font:700 9px/1 var(--f-mono);color:var(--ink-3)}
+        .secretary-runtime-summary>i{width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.55}
+        .secretary-runtime-chevron{font:800 14px/1 var(--f-mono);text-align:center}
+        .secretary-runtime-body{border-top:1px solid var(--hair)}
+        .secretary-runtime-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:8px;align-items:start;padding:8px 9px;border-top:1px solid var(--hair)}
+        .secretary-runtime-row:first-child{border-top:0}
+        .secretary-runtime-dot{width:6px;height:6px;margin-top:4px;border:1px solid var(--ink-4);background:var(--white)}
+        .secretary-runtime-row.status-running .secretary-runtime-dot{background:var(--accent);border-color:var(--accent);animation:secretary-runtime-pulse 1.1s steps(2,end) infinite}
+        .secretary-runtime-row.status-succeeded .secretary-runtime-dot{background:var(--ok);border-color:var(--ok)}
+        .secretary-runtime-row.status-failed .secretary-runtime-dot{background:var(--danger);border-color:var(--danger)}
+        .secretary-runtime-row.status-waiting_confirmation .secretary-runtime-dot,.secretary-runtime-row.status-requires_user_input .secretary-runtime-dot{background:#d79500;border-color:#d79500}
+        .secretary-runtime-row.status-skipped .secretary-runtime-dot,.secretary-runtime-row.status-stopped .secretary-runtime-dot{background:var(--ink-4);border-color:var(--ink-4)}
+        .secretary-runtime-copy{min-width:0}
+        .secretary-runtime-line{display:flex;align-items:baseline;gap:7px;min-width:0}
+        .secretary-runtime-line>strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:750 10.5px/1.3 var(--f-mono)}
+        .secretary-runtime-model{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 8px/1 var(--f-mono);color:var(--ink-4)}
+        .secretary-runtime-description{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9.5px;line-height:1.35;color:var(--ink-3)}
+        .secretary-runtime-tools{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px}
+        .secretary-runtime-tools>code{padding:2px 4px;border:1px solid var(--hair);background:var(--white);font:650 8.5px/1.2 var(--f-mono);color:var(--ink-2)}
+        .secretary-runtime-state{display:flex;align-items:flex-end;gap:3px;white-space:nowrap;font:750 8.5px/1.2 var(--f-mono);color:var(--ink-3)}
+        .secretary-runtime-state>small{font:600 7.5px/1 var(--f-mono);color:var(--ink-4)}
+        @keyframes secretary-runtime-pulse{0%,48%{opacity:1}49%,100%{opacity:.25}}
+        @media(prefers-reduced-motion:reduce){.secretary-runtime-row.status-running .secretary-runtime-dot{animation:none}}
         .secretary-dock .dock-scroll{height:390px;flex-basis:390px}
         .secretary-dock.big .dock-scroll{height:min(62vh,640px);flex-basis:min(62vh,640px)}
         .secretary-compose-input{font-size:13.5px}
@@ -4785,19 +5074,23 @@ const SecretaryDock = () => {
             </div>
           </div>
           <div className="row g4">
-            <button className={"btn sm " + (
-                reasoningMode === "thinking" ? "primary" : "ghost"
-              )}
-              style={{
-                padding: "0 8px", fontFamily: "var(--f-mono)",
-                fontSize: 9, whiteSpace: "nowrap",
-              }}
-              aria-label={t("切換 AI 推理模式")}
-              title={t("均衡模式快速處理日常工作；Thinking 模式適合深度分析")}
-              onClick={() => setReasoningMode(mode =>
-                mode === "thinking" ? "balanced" : "thinking"
-              )}>
-              {reasoningMode === "thinking" ? "Thinking" : t("均衡模式")}
+            <button className={`btn ghost sm secretary-reasoning-toggle ${
+                reasoningMode === "thinking" ? "is-thinking" : "is-balanced"
+              }`}
+              aria-pressed={reasoningMode === "thinking"}
+              aria-label={reasoningMode === "thinking"
+                ? t("Thinking 深度分析模式；點擊切換為均衡模式")
+                : t("均衡模式；點擊切換為 Thinking 深度分析模式")}
+              title={reasoningMode === "thinking"
+                ? t("滿月 · Thinking 深度分析模式")
+                : t("新月 · 均衡模式")}
+              onClick={() => setReasoningMode(mode => {
+                const nextMode = mode === "thinking" ? "balanced" : "thinking";
+                reasoningModeRef.current = nextMode;
+                setEffectiveMode(nextMode);
+                return nextMode;
+              })}>
+              <span className="secretary-mode-moon" aria-hidden="true"/>
             </button>
             <button className="btn ghost sm secretary-new-conversation" aria-label={t("開啟新對話")}
               title={t("開啟空白對話；目前運行、待確認操作與憑證不會阻止切換，審計記錄仍會保留")}
@@ -4836,6 +5129,7 @@ const SecretaryDock = () => {
         {items.map((m, i) =>
           m.role === "u" ? <div key={i} className="bubble-u">{m.text}</div>
           : m.role === "step" ? <div key={i} className="step-line"><Icon2 name={m.running ? "refresh" : "check"} size={10} color={m.running ? "var(--ink-4)" : "var(--ok)"}/>{m.text}</div>
+          : m.role === "runtime_trace" ? <SecretaryRuntimeTrace key={m.trace_key || i} trace={m}/>
           : m.role === "cred" ? <CredentialBubble key={m.delivery_key || i} credential={m.credential}
               deliveryKey={m.delivery_key} credentialDelivery={m.credential_delivery} onClear={clearCredentialItems}/>
           : m.role === "record_confirmation" ? <RecordCreateConfirmation key={m.confirmation.id || i} confirmation={m.confirmation}/>

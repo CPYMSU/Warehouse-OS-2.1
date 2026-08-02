@@ -1,0 +1,1164 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 027
+
+DEPLOY_ROOT=/opt/warehouse-os
+RELEASES="${DEPLOY_ROOT}/releases"
+CURRENT="${DEPLOY_ROOT}/current"
+SHARED="${DEPLOY_ROOT}/shared"
+STATE="${SHARED}/deploy-state"
+ENV_FILE="${SHARED}/.env.production"
+INCOMING=/var/lib/warehouse-deploy/incoming
+LOCK_FILE=/run/lock/warehouse-deploy.lock
+LOG_FILE=/var/log/warehouse-deployments.jsonl
+UPSTREAM_FILE=/etc/nginx/snippets/warehouse-api-upstream.conf
+DOMAIN=https://bonfirework.org
+DATA_MOUNTPOINT=/mnt/warehouse-data
+HOSTED_DATA_ROOT=${DATA_MOUNTPOINT}/hosted
+HOSTED_ASSET_ROOT=${HOSTED_DATA_ROOT}/digital-assets
+HOSTED_RUNTIME_ROOT=${HOSTED_DATA_ROOT}/runtime-volumes
+HOSTED_ARCHIVE_ROOT=${HOSTED_DATA_ROOT}/archive
+HOSTED_DATABASE_ROOT=${HOSTED_DATA_ROOT}/postgres-data
+HOSTED_DATABASE_OBSERVER_ROOT=${HOSTED_DATA_ROOT}/database-capacity
+HOSTED_DATABASE_CONTAINER=warehouse-os-hosted-postgres
+LEGACY_ASSET_VOLUME=warehouse-os_warehouse-digital-assets
+
+BLUE_PORT=18081
+GREEN_PORT=18082
+
+fail() {
+  printf 'warehouse-deploy: %s\n' "$*" >&2
+  exit 1
+}
+
+valid_release_id() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]]
+}
+
+slot_port() {
+  case "$1" in
+    blue) printf '%s\n' "${BLUE_PORT}" ;;
+    green) printf '%s\n' "${GREEN_PORT}" ;;
+    *) fail "invalid slot: $1" ;;
+  esac
+}
+
+other_slot() {
+  case "$1" in
+    blue) printf 'green\n' ;;
+    green) printf 'blue\n' ;;
+    *) printf 'blue\n' ;;
+  esac
+}
+
+active_slot() {
+  if [[ -f "${STATE}/active-slot" ]]; then
+    tr -d '\r\n' < "${STATE}/active-slot"
+  fi
+}
+
+slot_release() {
+  local slot="$1"
+  if [[ -f "${STATE}/slot-${slot}-release" ]]; then
+    tr -d '\r\n' < "${STATE}/slot-${slot}-release"
+  fi
+}
+
+log_event() {
+  local action="$1" status="$2" release="${3:-}" mode="${4:-}" slot="${5:-}"
+  local duration_seconds="${6:-0}"
+  [[ "${duration_seconds}" =~ ^[0-9]+$ ]] || duration_seconds=0
+  printf '{"time":"%s","action":"%s","status":"%s","release":"%s","mode":"%s","slot":"%s","duration_seconds":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${action}" "${status}" \
+    "${release}" "${mode}" "${slot}" "${duration_seconds}" >> "${LOG_FILE}"
+}
+
+wait_health() {
+  local url="$1" attempts="${2:-45}"
+  local attempt
+  for ((attempt=1; attempt<=attempts; attempt++)); do
+    if curl --fail --silent --show-error --max-time 3 "${url}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+validate_candidate() {
+  local port="$1" mode="$2" container="$3" response_file
+  local base="http://127.0.0.1:${port}"
+  if ! wait_health "${base}/api/health" 60; then
+    printf 'candidate health check failed\n' >&2
+    return 1
+  fi
+  if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_API_CONTRACT:-0}" == 1 ]]; then
+    response_file="$(mktemp)"
+    if ! curl --fail --silent --show-error --max-time 10 \
+      --output "${response_file}" "${base}/openapi.json" \
+      || ! grep -Fq '"/api/auth/passkeys/login/options"' "${response_file}" \
+      || ! grep -Fq '"/api/workspaces/v1/runtime"' "${response_file}" \
+      || ! grep -Fq '"/api/workspaces/v1/storage/probe"' "${response_file}" \
+      || ! grep -Fq '"/api/workspaces/v1/sources/upload"' "${response_file}"; then
+      rm -f "${response_file}"
+      printf 'candidate OpenAPI contract is incomplete\n' >&2
+      return 1
+    fi
+    rm -f "${response_file}"
+  fi
+  if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_AUTH:-0}" == 1 ]]; then
+    response_file="$(mktemp)"
+    if ! curl --fail --silent --show-error --max-time 10 \
+      -H 'Content-Type: application/json' \
+      -d '{}' "${base}/api/auth/passkeys/login/options" \
+      --output "${response_file}" \
+      || ! grep -Fq '"rpId":"bonfirework.org"' "${response_file}"; then
+      rm -f "${response_file}"
+      printf 'candidate WebAuthn RP check failed\n' >&2
+      return 1
+    fi
+    rm -f "${response_file}"
+  fi
+  if ! docker exec "${container}" alembic current | grep -q '(head)'; then
+    printf 'candidate Alembic revision is not at head\n' >&2
+    return 1
+  fi
+  if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_STORAGE:-0}" == 1 ]]; then
+    if ! docker exec "${container}" python -c \
+      'from app.core.config import get_settings; from app.services.object_storage import HDD_PROVIDER_KEY, SSD_PROVIDER_KEY, object_store_for_provider; settings=get_settings(); [object_store_for_provider(settings, provider).probe_writable() for provider in (HDD_PROVIDER_KEY, SSD_PROVIDER_KEY)]'; then
+      printf 'candidate object storage is not writable from the API container\n' >&2
+      return 1
+    fi
+  fi
+
+  if [[ "${mode}" == full ]]; then
+    docker restart "${container}" >/dev/null
+    if ! wait_health "${base}/api/health" 60; then
+      printf 'candidate restart recovery failed\n' >&2
+      return 1
+    fi
+    if ! nginx -t >/dev/null; then
+      printf 'nginx configuration check failed\n' >&2
+      return 1
+    fi
+  fi
+}
+
+switch_upstream() {
+  local port="$1"
+  local temporary
+  temporary="$(mktemp "${UPSTREAM_FILE}.XXXXXX")"
+  printf 'proxy_pass http://127.0.0.1:%s;\n' "${port}" > "${temporary}"
+  chmod 0644 "${temporary}"
+  mv -f "${temporary}" "${UPSTREAM_FILE}"
+  nginx -t >/dev/null
+  systemctl reload nginx
+}
+
+public_smoke() {
+  local response_file
+  wait_health "${DOMAIN}/api/health" 20 || return 1
+  if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_FRONTEND:-0}" == 1 ]]; then
+    response_file="$(mktemp)"
+    if ! curl --fail --silent --show-error --max-time 15 \
+      --output "${response_file}" "${DOMAIN}/"; then
+      rm -f "${response_file}"
+      return 1
+    fi
+    if ! grep -Fq 'WAREHOUSE OS 2.1' "${response_file}"; then
+      rm -f "${response_file}"
+      return 1
+    fi
+    rm -f "${response_file}"
+  fi
+  if [[ "${PLAN_ADAPTIVE:-0}" == 1 && "${PLAN_DOWNLOADS:-0}" == 1 ]]; then
+    curl --fail --silent --show-error --max-time 15 \
+      "${DOMAIN}/api/digital-assets/guide/download" >/dev/null || return 1
+    curl --fail --silent --show-error --max-time 15 \
+      "${DOMAIN}/api/digital-assets/cli" >/dev/null || return 1
+  fi
+}
+
+install_shield_agent() {
+  local release_dir="$1" attempt
+  [[ -f "${release_dir}/ops/server/warehouse-shield-agent.py" ]] \
+    || fail "SHIELD host agent is missing from the release"
+  [[ -f "${release_dir}/infra/systemd/warehouse-shield-agent.service" ]] \
+    || fail "SHIELD systemd unit is missing from the release"
+
+  if ! command -v certbot >/dev/null 2>&1; then
+    apt-get update >/dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      certbot python3-certbot-nginx >/dev/null
+  fi
+
+  install -d -m 0750 /run/warehouse-shield /opt/warehouse-os/shared/shield
+  if ! grep -q '^WAREHOUSE_SHIELD_AGENT_TOKEN=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_SHIELD_AGENT_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_SHIELD_REPAIR_APPLY=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_SHIELD_REPAIR_APPLY=false\n' >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_SHIELD_DATA_MOUNTPOINT=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_SHIELD_DATA_MOUNTPOINT=/mnt/warehouse-data\n' >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_SHIELD_DATA_DEVICE=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_SHIELD_DATA_DEVICE=/dev/vdb1\n' >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_SHIELD_DATA_VOLUME_REQUIRED=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_SHIELD_DATA_VOLUME_REQUIRED=true\n' >> "${ENV_FILE}"
+  fi
+  chmod 0600 "${ENV_FILE}"
+  install -m 0755 "${release_dir}/ops/server/warehouse-shield-agent.py" \
+    /usr/local/sbin/warehouse-shield-agent
+  install -m 0644 "${release_dir}/infra/systemd/warehouse-shield-agent.service" \
+    /etc/systemd/system/warehouse-shield-agent.service
+  systemctl daemon-reload
+  systemctl enable warehouse-shield-agent.service >/dev/null
+  systemctl restart warehouse-shield-agent.service
+  for ((attempt=1; attempt<=20; attempt++)); do
+    [[ -S /run/warehouse-shield/agent.sock ]] && return 0
+    sleep 1
+  done
+  systemctl status warehouse-shield-agent.service --no-pager >&2 || true
+  fail "SHIELD host agent socket did not become ready"
+}
+
+install_backup_service() {
+  local release_dir="$1"
+  [[ -x "${release_dir}/infra/backup/warehouse-postgres-backup.sh" ]] \
+    || fail "PostgreSQL backup script is missing from the release"
+  [[ -f "${release_dir}/infra/systemd/warehouse-postgres-backup.service" ]] \
+    || fail "PostgreSQL backup service is missing from the release"
+  [[ -f "${release_dir}/infra/systemd/warehouse-postgres-backup.timer" ]] \
+    || fail "PostgreSQL backup timer is missing from the release"
+  install -m 0644 \
+    "${release_dir}/infra/systemd/warehouse-postgres-backup.service" \
+    /etc/systemd/system/warehouse-postgres-backup.service
+  install -m 0644 \
+    "${release_dir}/infra/systemd/warehouse-postgres-backup.timer" \
+    /etc/systemd/system/warehouse-postgres-backup.timer
+  systemctl daemon-reload
+  systemctl enable --now warehouse-postgres-backup.timer >/dev/null
+}
+
+install_browser_runtime_config() {
+  if ! grep -q '^WAREHOUSE_PUBLIC_ORIGIN=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_PUBLIC_ORIGIN=https://bonfirework.org\n' >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_BROWSER_WORKER_TOKEN=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_BROWSER_WORKER_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_BROWSER_RUNTIME_ENABLED=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_BROWSER_RUNTIME_ENABLED=true\n' >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_BROWSER_ALLOWED_ORIGINS=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_BROWSER_ALLOWED_ORIGINS=https://bonfirework.org\n' >> "${ENV_FILE}"
+  fi
+  if ! grep -q '^WAREHOUSE_BROWSER_RESOURCE_ORIGINS=' "${ENV_FILE}"; then
+    printf '%s\n' 'WAREHOUSE_BROWSER_RESOURCE_ORIGINS=https://static.cloudflareinsights.com,https://cloudflareinsights.com,https://fonts.googleapis.com,https://fonts.gstatic.com,https://unpkg.com' >> "${ENV_FILE}"
+  fi
+  chmod 0600 "${ENV_FILE}"
+}
+
+install_hosted_database_config() {
+  if ! grep -q '^WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 32)" >> "${ENV_FILE}"
+  fi
+  chmod 0600 "${ENV_FILE}"
+}
+
+ensure_hosted_database() {
+  local attempt state
+  install_hosted_database_config
+  prepare_hosted_storage
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+
+  install -d -m 0700 -o 999 -g 999 "${HOSTED_DATABASE_ROOT}"
+  if ! docker inspect "${HOSTED_DATABASE_CONTAINER}" >/dev/null 2>&1; then
+    docker run -d \
+      --name "${HOSTED_DATABASE_CONTAINER}" \
+      --restart unless-stopped \
+      --network warehouse-os_default \
+      -e POSTGRES_DB=postgres \
+      -e POSTGRES_USER=warehouse_hosted_admin \
+      -e "POSTGRES_PASSWORD=${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+      -e 'POSTGRES_INITDB_ARGS=--data-checksums' \
+      -v "${HOSTED_DATABASE_ROOT}:/var/lib/postgresql" \
+      --health-cmd='pg_isready -U warehouse_hosted_admin -d postgres' \
+      --health-interval=5s \
+      --health-timeout=3s \
+      --health-retries=30 \
+      --health-start-period=15s \
+      pgvector/pgvector:0.8.5-pg18 >/dev/null
+  else
+    docker start "${HOSTED_DATABASE_CONTAINER}" >/dev/null
+  fi
+  for ((attempt=1; attempt<=60; attempt++)); do
+    state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${HOSTED_DATABASE_CONTAINER}" 2>/dev/null || true)"
+    [[ "${state}" == healthy ]] && break
+    [[ "${state}" == exited || "${state}" == dead ]] && {
+      docker logs --tail 120 "${HOSTED_DATABASE_CONTAINER}" >&2 || true
+      fail "hosted HDD PostgreSQL failed to start"
+    }
+    sleep 2
+  done
+  [[ "${state}" == healthy ]] || fail "hosted HDD PostgreSQL did not become healthy"
+  printf 'hosted_database=ready\nmedium=hdd\nroot=%s\n' "${HOSTED_DATABASE_ROOT}"
+}
+
+migrate_hosted_databases() {
+  local slot api_container control_container tenant_id failed=0
+  ensure_hosted_database
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "hosted database migration requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  control_container="$(docker ps --filter label=com.docker.compose.service=postgres --format '{{.Names}}' | head -n 1)"
+  [[ -n "${control_container}" ]] || fail "control PostgreSQL container is unavailable"
+  docker exec "${api_container}" python -c \
+    'from app.services.hosted_database import configured; assert configured()' \
+    || fail "active API slot is not connected to hosted PostgreSQL"
+  while IFS= read -r tenant_id; do
+    [[ -n "${tenant_id}" ]] || continue
+    if ! docker exec "${api_container}" \
+      python -m app.hosted_database_cli migrate-tenant "${tenant_id}"; then
+      failed=1
+    fi
+  done < <(
+    docker exec "${control_container}" psql \
+      --username warehouse_admin --dbname warehouse_os --tuples-only --no-align \
+      --command 'SELECT id FROM iam.tenants ORDER BY id'
+  )
+  [[ "${failed}" == 0 ]] || fail "one or more workspace databases failed HDD migration"
+  log_event hosted_database_migration succeeded "$(slot_release "${slot}")" storage "${slot}"
+  printf 'hosted_database_migration=succeeded\n'
+}
+
+backup_now() {
+  local control_checksum hosted_snapshot
+  ensure_hosted_database
+  systemctl start warehouse-postgres-backup.service
+  [[ "$(systemctl show warehouse-postgres-backup.service --property=Result --value)" == success ]] \
+    || fail "PostgreSQL backup service did not complete successfully"
+
+  control_checksum="$(find /opt/warehouse-os/backups -maxdepth 1 -type f \
+    -name 'warehouse-os-*.dump.sha256' -mmin -15 -print | sort | tail -n 1)"
+  [[ -n "${control_checksum}" ]] || fail "fresh control database backup is missing"
+  (cd "$(dirname "${control_checksum}")" && sha256sum -c "$(basename "${control_checksum}")") \
+    >/dev/null || fail "control database backup checksum failed"
+
+  hosted_snapshot="$(find "${HOSTED_ARCHIVE_ROOT}/database-backups" \
+    -mindepth 1 -maxdepth 1 -type d -name 'warehouse-hosted-*' \
+    -mmin -15 -print | sort | tail -n 1)"
+  [[ -n "${hosted_snapshot}" ]] || fail "fresh hosted database backup is missing"
+  (cd "${hosted_snapshot}" && sha256sum -c SHA256SUMS) >/dev/null \
+    || fail "hosted database backup checksum failed"
+
+  log_event database_backup succeeded "$(slot_release "$(active_slot)")" backup "$(active_slot)"
+  printf 'backup=succeeded\ncontrol=%s\nhosted=%s\n' \
+    "${control_checksum%.sha256}" "${hosted_snapshot}"
+}
+
+quick_guard() {
+  local candidate="$1"
+  [[ -L "${CURRENT}" ]] || fail "quick deploy requires an existing immutable release"
+  [[ -x "${CURRENT}/ops/deploy-plan" ]] \
+    || fail "quick deploy unavailable until a smart-capable release is active"
+  eval "$(
+    "${CURRENT}/ops/deploy-plan" \
+      --root "${CURRENT}" \
+      --base-manifest "${CURRENT}/.warehouse-release/files.sha256" \
+      --candidate-manifest "${candidate}/.warehouse-release/files.sha256" \
+      --format shell
+  )"
+  [[ "${PLAN_DEPLOY_REQUIRED}" == 1 ]] \
+    || fail "quick deploy contains no runtime-impacting changes"
+  [[ "${PLAN_MODE}" == quick ]] \
+    || fail "quick deploy refused: trusted impact plan requires ${PLAN_MODE}"
+}
+
+start_slot() {
+  local slot="$1" release="$2" image="$3"
+  local port container
+  port="$(slot_port "${slot}")"
+  container="warehouse-os-api-${slot}"
+
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+
+  docker rm -f "${container}" >/dev/null 2>&1 || true
+  docker run -d \
+    --name "${container}" \
+    --restart unless-stopped \
+    --network warehouse-os_default \
+    --env-file "${ENV_FILE}" \
+    -e WAREHOUSE_ENVIRONMENT=production \
+    -e "WAREHOUSE_DATABASE_URL=postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    -e "WAREHOUSE_MIGRATION_DATABASE_URL=postgresql+psycopg://warehouse_migrator:${WAREHOUSE_MIGRATOR_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    -e WAREHOUSE_ASSET_STORAGE_ROOT=/data/hdd/digital-assets \
+    -e WAREHOUSE_ASSET_CODE_SSD_ROOT=/data/ssd-code/digital-assets \
+    -e WAREHOUSE_ASSET_LEGACY_STORAGE_ROOT=/data/legacy-assets \
+    -e WAREHOUSE_HOSTED_RUNTIME_DATA_ROOT=/data/hdd/runtime-volumes \
+    -e WAREHOUSE_HOSTED_DATABASE_ROOT=/data/hdd/database-capacity \
+    -e "WAREHOUSE_HOSTED_DATABASE_ADMIN_URL=postgresql+psycopg://warehouse_hosted_admin:${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}@${HOSTED_DATABASE_CONTAINER}:5432/postgres" \
+    -e WAREHOUSE_RESEARCH_REPOSITORY_ROOT=/data/research-repositories \
+    -e WAREHOUSE_RESEARCH_EXECUTION_ROOT=/data/research-executions \
+    -e WAREHOUSE_BROWSER_RUNTIME_ROOT=/data/browser-runtime \
+    -e "WAREHOUSE_RELEASE_ID=${release}" \
+    -p "127.0.0.1:${port}:8080" \
+    -v /run/warehouse-shield:/run/warehouse-shield \
+    -v "${HOSTED_ASSET_ROOT}:/data/hdd/digital-assets" \
+    -v "${HOSTED_RUNTIME_ROOT}:/data/hdd/runtime-volumes" \
+    -v "${HOSTED_DATABASE_OBSERVER_ROOT}:/data/hdd/database-capacity:ro" \
+    -v warehouse-os_warehouse-code-ssd:/data/ssd-code/digital-assets \
+    -v "${LEGACY_ASSET_VOLUME}:/data/legacy-assets:ro" \
+    -v warehouse-os_warehouse-research-repositories:/data/research-repositories \
+    -v warehouse-os_warehouse-research-executions:/data/research-executions \
+    -v warehouse-os_warehouse-browser-runtime:/data/browser-runtime \
+    --health-cmd="python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)\"" \
+    --health-interval=10s \
+    --health-timeout=5s \
+    --health-retries=12 \
+    --health-start-period=30s \
+    "${image}" \
+    /bin/sh -c 'alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"' \
+    >/dev/null
+  printf '%s\n' "${container}"
+}
+
+start_browser_worker() {
+  local slot="$1" release="$2" image="$3" container api_container
+  container="warehouse-os-browser-${slot}"
+  api_container="warehouse-os-api-${slot}"
+
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+
+  docker rm -f "${container}" >/dev/null 2>&1 || true
+  docker run -d \
+    --name "${container}" \
+    --restart unless-stopped \
+    --init \
+    --ipc=host \
+    --network warehouse-os_default \
+    --env-file "${ENV_FILE}" \
+    -e "WAREHOUSE_DATABASE_URL=postgresql://warehouse_os:${WAREHOUSE_API_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    -e "WAREHOUSE_BROWSER_API_BASE=http://${api_container}:8080" \
+    -e WAREHOUSE_BROWSER_RUNTIME_ROOT=/data/browser-runtime \
+    -e WAREHOUSE_BROWSER_ALLOWED_ORIGINS=https://bonfirework.org \
+    -e WAREHOUSE_BROWSER_RESOURCE_ORIGINS=https://static.cloudflareinsights.com,https://cloudflareinsights.com,https://fonts.googleapis.com,https://fonts.gstatic.com,https://unpkg.com \
+    -e "WAREHOUSE_BROWSER_WORKER_ID=${slot}-${release}" \
+    -e "WAREHOUSE_RELEASE_ID=${release}" \
+    -v warehouse-os_warehouse-browser-runtime:/data/browser-runtime \
+    --read-only \
+    --tmpfs /tmp:size=256m,mode=1777 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --pids-limit 256 \
+    --memory 1536m \
+    --cpus 1.0 \
+    --health-cmd='test -f /tmp/browser-worker-ready' \
+    --health-interval=10s \
+    --health-timeout=5s \
+    --health-retries=12 \
+    --health-start-period=30s \
+    "${image}" >/dev/null
+  if ! wait_health_container "${container}" 45; then
+    docker logs --tail 120 "${container}" >&2 || true
+    return 1
+  fi
+  printf '%s\n' "${container}"
+}
+
+start_runtime_controller() {
+  local release="$1" image="$2"
+  local container="warehouse-os-runtime-controller-${release}"
+  local previous
+
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+
+  # Runtime images are platform-governed profiles. Pulling them here keeps
+  # customer deployment requests away from the Docker image-management API.
+  docker image inspect python:3.12-slim >/dev/null 2>&1 \
+    || docker pull python:3.12-slim >/dev/null
+  docker image inspect node:20-alpine >/dev/null 2>&1 \
+    || docker pull node:20-alpine >/dev/null
+  docker rm -f "${container}" >/dev/null 2>&1 || true
+  docker run -d \
+    --name "${container}" \
+    --restart unless-stopped \
+    --label org.bonfirework.role=runtime-controller \
+    --label "org.bonfirework.release=${release}" \
+    --network warehouse-os_default \
+    --env-file "${ENV_FILE}" \
+    -e WAREHOUSE_ENVIRONMENT=production \
+    -e "WAREHOUSE_DATABASE_URL=postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    -e WAREHOUSE_ASSET_STORAGE_ROOT=/data/hdd/digital-assets \
+    -e WAREHOUSE_ASSET_CODE_SSD_ROOT=/data/ssd-code/digital-assets \
+    -e WAREHOUSE_ASSET_LEGACY_STORAGE_ROOT=/data/legacy-assets \
+    -e WAREHOUSE_HOSTED_RUNTIME_DATA_ROOT=/data/hdd/runtime-volumes \
+    -e WAREHOUSE_RUNTIME_HOST_DATA_ROOT="${HOSTED_RUNTIME_ROOT}" \
+    -e WAREHOUSE_RUNTIME_CONTROLLER_ENABLED=true \
+    -e WAREHOUSE_RUNTIME_DOCKER_NETWORK=warehouse-os_default \
+    -e "WAREHOUSE_HOSTED_DATABASE_ADMIN_URL=postgresql+psycopg://warehouse_hosted_admin:${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}@${HOSTED_DATABASE_CONTAINER}:5432/postgres" \
+    -e "WAREHOUSE_RELEASE_ID=${release}" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "${HOSTED_ASSET_ROOT}:/data/hdd/digital-assets" \
+    -v "${HOSTED_RUNTIME_ROOT}:/data/hdd/runtime-volumes" \
+    -v warehouse-os_warehouse-code-ssd:/data/ssd-code/digital-assets \
+    -v "${LEGACY_ASSET_VOLUME}:/data/legacy-assets:ro" \
+    --read-only \
+    --tmpfs /tmp:size=64m,mode=1777 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --pids-limit 128 \
+    --memory 512m \
+    --cpus 0.5 \
+    --health-cmd='find /tmp/runtime-controller-ready -mmin -1 -print | grep -q .' \
+    --health-interval=10s \
+    --health-timeout=5s \
+    --health-retries=12 \
+    --health-start-period=20s \
+    "${image}" python -m app.runtime_controller >/dev/null
+  if ! wait_health_container "${container}" 45; then
+    docker logs --tail 120 "${container}" >&2 || true
+    docker rm -f "${container}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  # Keep the serving controller alive until its replacement is healthy. Queue
+  # leases make the brief overlap safe; only then retire older controllers.
+  while IFS= read -r previous; do
+    [[ -n "${previous}" && "${previous}" != "${container}" ]] || continue
+    docker rm -f "${previous}" >/dev/null 2>&1 || true
+  done < <(
+    docker ps -a \
+      --filter label=org.bonfirework.role=runtime-controller \
+      --format '{{.Names}}'
+  )
+  docker rm -f warehouse-os-runtime-controller >/dev/null 2>&1 || true
+  printf '%s\n' "${container}"
+}
+
+wait_health_container() {
+  local container="$1" attempts="${2:-45}" attempt state
+  for ((attempt=1; attempt<=attempts; attempt++)); do
+    state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container}" 2>/dev/null || true)"
+    [[ "${state}" == healthy ]] && return 0
+    [[ "${state}" == exited || "${state}" == dead ]] && return 1
+    sleep 2
+  done
+  return 1
+}
+
+lane_rank() {
+  case "$1" in
+    quick) printf '1\n' ;;
+    standard) printf '2\n' ;;
+    full) printf '3\n' ;;
+    *) printf '0\n' ;;
+  esac
+}
+
+active_browser_image() {
+  local slot container
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || return 1
+  container="warehouse-os-browser-${slot}"
+  docker inspect --format '{{.Config.Image}}' "${container}" 2>/dev/null
+}
+
+active_api_image() {
+  local slot container
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || return 1
+  container="warehouse-os-api-${slot}"
+  docker inspect --format '{{.Config.Image}}' "${container}" 2>/dev/null
+}
+
+healthy_runtime_controller() {
+  local container state
+  while IFS= read -r container; do
+    [[ -n "${container}" ]] || continue
+    state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container}" 2>/dev/null || true)"
+    if [[ "${state}" == healthy ]]; then
+      printf '%s\n' "${container}"
+      return 0
+    fi
+  done < <(
+    docker ps --filter label=org.bonfirework.role=runtime-controller --format '{{.Names}}'
+  )
+  return 1
+}
+
+install_release() {
+  local release="$1" mode="$2" requested_mode install_started phase_started
+  install_started="${SECONDS}"
+  requested_mode="${mode}"
+  valid_release_id "${release}" || fail "invalid release id"
+  [[ "${mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid deploy mode"
+
+  local archive="${INCOMING}/${release}.tar.gz"
+  local checksum="${archive}.sha256"
+  local staging="${RELEASES}/.${release}.staging"
+  local release_dir="${RELEASES}/${release}"
+  [[ -f "${archive}" && -f "${checksum}" ]] || fail "release upload is incomplete"
+  [[ ! -e "${release_dir}" ]] || fail "release already exists and is immutable"
+
+  local expected actual
+  expected="$(awk 'NR==1 {print $1}' "${checksum}")"
+  actual="$(sha256sum "${archive}" | awk '{print $1}')"
+  [[ "${expected}" =~ ^[a-f0-9]{64}$ && "${expected}" == "${actual}" ]] \
+    || fail "release checksum mismatch"
+
+  if tar -tzf "${archive}" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+    fail "release archive contains an unsafe path"
+  fi
+  rm -rf "${staging}"
+  mkdir -p "${staging}"
+  tar --no-same-owner --no-same-permissions -xzf "${archive}" -C "${staging}"
+  [[ -z "$(find "${staging}" -type l -print -quit)" ]] \
+    || fail "release archive may not contain symbolic links"
+  [[ -f "${staging}/compose.production.yaml" ]] || fail "compose.production.yaml is missing"
+  [[ -f "${staging}/backend/Dockerfile" ]] || fail "backend Dockerfile is missing"
+  [[ -f "${staging}/.warehouse-release/files.sha256" ]] || fail "release manifest is missing"
+  (cd "${staging}" && sha256sum -c .warehouse-release/files.sha256 >/dev/null) \
+    || fail "release file manifest verification failed"
+
+  PLAN_ADAPTIVE=0
+  PLAN_API=1
+  PLAN_API_CONTRACT=1
+  PLAN_AUTH=1
+  PLAN_BACKUP=1
+  PLAN_BROWSER=1
+  PLAN_CONTROL_PLANE=1
+  PLAN_DOWNLOADS=1
+  PLAN_FRONTEND=1
+  PLAN_INFRASTRUCTURE=1
+  PLAN_RUNTIME_CONTROLLER=1
+  PLAN_STORAGE=1
+  if [[ "${requested_mode}" == smart ]]; then
+    if [[ -x "${CURRENT}/ops/deploy-plan" ]]; then
+      eval "$(
+        "${CURRENT}/ops/deploy-plan" \
+          --root "${CURRENT}" \
+          --base-manifest "${CURRENT}/.warehouse-release/files.sha256" \
+          --candidate-manifest "${staging}/.warehouse-release/files.sha256" \
+          --format shell
+      )"
+      PLAN_ADAPTIVE=1
+      mode="${PLAN_MODE}"
+      [[ "${PLAN_DEPLOY_REQUIRED}" == 1 ]] \
+        || fail "smart deploy contains no runtime-impacting changes"
+      local declared_mode
+      declared_mode="$(awk -F= '$1 == "planned_mode" {print $2}' \
+        "${staging}/.warehouse-release/manifest.env")"
+      [[ "${declared_mode}" =~ ^(quick|standard|full)$ ]] \
+        || fail "candidate smart plan is missing a valid planned_mode"
+      if (( $(lane_rank "${declared_mode}") < $(lane_rank "${mode}") )); then
+        fail "server impact plan escalated ${declared_mode} to ${mode}; rerun local verification against the active manifest"
+      fi
+      printf 'adaptive_plan=active risk=%s lane=%s changes=%s\n' \
+        "${PLAN_RISK}" "${mode}" "${PLAN_CHANGED_COUNT}"
+    else
+      # One conservative release bootstraps the trusted planner. Candidate code
+      # is never executed as root to decide its own verification level.
+      mode=full
+      printf 'adaptive_plan=bootstrap lane=full\n'
+    fi
+  fi
+
+  if [[ "${mode}" == quick ]]; then
+    quick_guard "${staging}"
+  elif [[ "${requested_mode}" != smart || "${PLAN_BACKUP}" == 1 ]]; then
+    phase_started="${SECONDS}"
+    "${CURRENT}/infra/backup/warehouse-postgres-backup.sh" >/dev/null
+    log_event deploy_phase succeeded "${release}" backup "" \
+      "$((SECONDS - phase_started))"
+  fi
+
+  mv "${staging}" "${release_dir}"
+  if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_CONTROL_PLANE}" == 1 || "${PLAN_INFRASTRUCTURE}" == 1 ]]; then
+    install_shield_agent "${release_dir}"
+    install_backup_service "${release_dir}"
+  fi
+  install_browser_runtime_config
+  local image="warehouse-os-api:${release}"
+  local browser_image="warehouse-os-browser:${release}"
+  phase_started="${SECONDS}"
+  if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_API}" == 1 ]]; then
+    docker build --file "${release_dir}/backend/Dockerfile" --tag "${image}" "${release_dir}" >/dev/null
+  else
+    image="$(active_api_image)" \
+      || fail "unchanged API has no healthy source image"
+  fi
+  if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_BROWSER}" == 1 ]]; then
+    docker build --file "${release_dir}/browser-runtime/Dockerfile" --tag "${browser_image}" "${release_dir}" >/dev/null
+  else
+    browser_image="$(active_browser_image)" \
+      || fail "unchanged Browser Runtime has no healthy source image"
+  fi
+  log_event deploy_phase succeeded "${release}" image_build "" \
+    "$((SECONDS - phase_started))"
+
+  # New objects are routed only after the HDD has passed validation and the
+  # immutable legacy object set has been copied additively. The independent
+  # workspace PostgreSQL cluster must also be healthy before a slot can start.
+  phase_started="${SECONDS}"
+  ensure_hosted_database
+  log_event deploy_phase succeeded "${release}" hosted_database "" \
+    "$((SECONDS - phase_started))"
+
+  local previous_slot next_slot next_port container browser_container runtime_controller previous_release
+  previous_slot="$(active_slot)"
+  next_slot="$(other_slot "${previous_slot}")"
+  next_port="$(slot_port "${next_slot}")"
+  previous_release="$(readlink -f "${CURRENT}" 2>/dev/null || true)"
+  container="$(start_slot "${next_slot}" "${release}" "${image}")"
+
+  phase_started="${SECONDS}"
+  if ! validate_candidate "${next_port}" "${mode}" "${container}"; then
+    docker rm -f "${container}" >/dev/null 2>&1 || true
+    log_event deploy failed "${release}" "${mode}" "${next_slot}" \
+      "$((SECONDS - install_started))"
+    fail "candidate validation failed"
+  fi
+  log_event deploy_phase succeeded "${release}" candidate_validation \
+    "${next_slot}" "$((SECONDS - phase_started))"
+
+  phase_started="${SECONDS}"
+  if ! browser_container="$(start_browser_worker "${next_slot}" "${release}" "${browser_image}")"; then
+    docker rm -f "${container}" "warehouse-os-browser-${next_slot}" >/dev/null 2>&1 || true
+    log_event deploy failed "${release}" "${mode}" "${next_slot}" \
+      "$((SECONDS - install_started))"
+    fail "candidate Browser Runtime failed"
+  fi
+  log_event deploy_phase succeeded "${release}" browser_worker \
+    "${next_slot}" "$((SECONDS - phase_started))"
+
+  phase_started="${SECONDS}"
+  switch_upstream "${next_port}"
+  if ! public_smoke; then
+    if [[ -n "${previous_slot}" ]]; then
+      switch_upstream "$(slot_port "${previous_slot}")"
+    else
+      switch_upstream 8080
+    fi
+    docker rm -f "${container}" >/dev/null 2>&1 || true
+    docker rm -f "${browser_container}" >/dev/null 2>&1 || true
+    log_event deploy rolled_back "${release}" "${mode}" "${next_slot}" \
+      "$((SECONDS - install_started))"
+    fail "public smoke failed; upstream restored"
+  fi
+  log_event deploy_phase succeeded "${release}" public_smoke \
+    "${next_slot}" "$((SECONDS - phase_started))"
+
+  phase_started="${SECONDS}"
+  if [[ "${PLAN_ADAPTIVE}" == 1 && "${PLAN_RUNTIME_CONTROLLER}" != 1 ]] \
+    && runtime_controller="$(healthy_runtime_controller)"; then
+    printf 'runtime_controller=%s action=reused\n' "${runtime_controller}"
+  else
+    if ! runtime_controller="$(start_runtime_controller "${release}" "${image}")"; then
+      if [[ -n "${previous_slot}" ]]; then
+        switch_upstream "$(slot_port "${previous_slot}")"
+      else
+        switch_upstream 8080
+      fi
+      docker rm -f "${container}" "${browser_container}" >/dev/null 2>&1 || true
+      log_event deploy rolled_back "${release}" "${mode}" "${next_slot}" \
+        "$((SECONDS - install_started))"
+      fail "candidate Runtime Controller failed; upstream restored"
+    fi
+  fi
+  log_event deploy_phase succeeded "${release}" runtime_controller \
+    "${next_slot}" "$((SECONDS - phase_started))"
+
+  ln -sfn "${release_dir}" "${CURRENT}"
+  printf '%s\n' "${next_slot}" > "${STATE}/active-slot"
+  printf '%s\n' "${release}" > "${STATE}/slot-${next_slot}-release"
+  printf '%s\n' "${previous_release}" > "${STATE}/previous-release-path"
+  # The fixed channel is versioned with every immutable release.  Replace the
+  # host entry point only after candidate and public verification both pass,
+  # so the next deploy uses the same audited logic as the active release.
+  local manager_candidate
+  manager_candidate="$(mktemp /usr/local/sbin/warehouse-deploy.XXXXXX)"
+  install -m 0755 "${release_dir}/ops/server/warehouse-deploy" "${manager_candidate}"
+  mv -f "${manager_candidate}" "${REMOTE_MANAGER:-/usr/local/sbin/warehouse-deploy}"
+  docker rm -f warehouse-os-api-1 >/dev/null 2>&1 || true
+  if [[ -n "${previous_slot}" && "${previous_slot}" != "${next_slot}" ]]; then
+    docker rm -f "warehouse-os-browser-${previous_slot}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${archive}" "${checksum}"
+  log_event deploy succeeded "${release}" "${mode}" "${next_slot}" \
+    "$((SECONDS - install_started))"
+  printf 'release=%s requested_mode=%s effective_mode=%s adaptive=%s slot=%s port=%s duration_seconds=%s status=healthy\n' \
+    "${release}" "${requested_mode}" "${mode}" "${PLAN_ADAPTIVE}" \
+    "${next_slot}" "${next_port}" "$((SECONDS - install_started))"
+}
+
+rollback_release() {
+  local current_slot target_slot target_release target_port current_release
+  current_slot="$(active_slot)"
+  [[ -n "${current_slot}" ]] || fail "no blue/green deployment is active"
+  target_slot="$(other_slot "${current_slot}")"
+  target_release="$(slot_release "${target_slot}")"
+  [[ -n "${target_release}" ]] || fail "the previous slot has no release"
+  target_port="$(slot_port "${target_slot}")"
+  wait_health "http://127.0.0.1:${target_port}/api/health" 10 \
+    || fail "previous slot is not healthy"
+  current_release="$(slot_release "${current_slot}")"
+  switch_upstream "${target_port}"
+  if ! public_smoke; then
+    switch_upstream "$(slot_port "${current_slot}")"
+    fail "rollback public smoke failed; current upstream restored"
+  fi
+  ln -sfn "${RELEASES}/${target_release}" "${CURRENT}"
+  printf '%s\n' "${target_slot}" > "${STATE}/active-slot"
+  log_event rollback succeeded "${target_release}" rollback "${target_slot}"
+  printf 'rolled_back_from=%s release=%s slot=%s status=healthy\n' \
+    "${current_release}" "${target_release}" "${target_slot}"
+}
+
+initialize_data_disk() {
+  local device=/dev/vdb
+  local partition=/dev/vdb1
+  local mountpoint=/mnt/warehouse-data
+  local expected_size=42949672960
+  local actual_size root_source partition_count filesystem label uuid
+  local backup_path write_test
+
+  [[ -b "${device}" ]] || fail "data disk is missing: ${device}"
+  [[ "$(lsblk -dnro TYPE "${device}")" == disk ]] \
+    || fail "data disk is not a whole block device: ${device}"
+  actual_size="$(lsblk -dnbo SIZE "${device}")"
+  [[ "${actual_size}" == "${expected_size}" ]] \
+    || fail "unexpected data disk size: ${actual_size} bytes"
+  root_source="$(findmnt -nro SOURCE /)"
+  [[ "${root_source}" != "${device}" && "${root_source}" != "${partition}" ]] \
+    || fail "refusing to operate on the root filesystem"
+
+  partition_count="$(lsblk -nrpo TYPE "${device}" | awk '$1 == "part" {count++} END {print count + 0}')"
+  if [[ "${partition_count}" == 0 ]]; then
+    [[ -z "$(lsblk -dnro FSTYPE "${device}")" ]] \
+      || fail "unpartitioned data disk already contains a filesystem"
+    [[ -z "$(findmnt -nro TARGET --source "${device}" 2>/dev/null || true)" ]] \
+      || fail "unpartitioned data disk is already mounted"
+    printf 'label: gpt\nname="warehouse-data", type=linux\n' \
+      | sfdisk --wipe always --wipe-partitions always "${device}" >/dev/null
+    if command -v partprobe >/dev/null 2>&1; then
+      partprobe "${device}"
+    else
+      blockdev --rereadpt "${device}"
+    fi
+    udevadm settle
+    for _ in {1..20}; do
+      [[ -b "${partition}" ]] && break
+      sleep 0.5
+    done
+    [[ -b "${partition}" ]] || fail "partition did not appear: ${partition}"
+  else
+    [[ "${partition_count}" == 1 && -b "${partition}" ]] \
+      || fail "unexpected partition layout on ${device}"
+  fi
+
+  filesystem="$(lsblk -dnro FSTYPE "${partition}")"
+  if [[ -z "${filesystem}" ]]; then
+    [[ -z "$(findmnt -nro TARGET --source "${partition}" 2>/dev/null || true)" ]] \
+      || fail "unformatted data partition is already mounted"
+    mkfs.ext4 -F -m 0 -L warehouse-data "${partition}" >/dev/null
+    udevadm settle
+    filesystem="$(lsblk -dnro FSTYPE "${partition}")"
+  fi
+  [[ "${filesystem}" == ext4 ]] \
+    || fail "unexpected data partition filesystem: ${filesystem}"
+  label="$(lsblk -dnro LABEL "${partition}")"
+  [[ "${label}" == warehouse-data ]] \
+    || fail "unexpected data partition label: ${label}"
+  uuid="$(blkid -s UUID -o value "${partition}")"
+  [[ -n "${uuid}" ]] || fail "data partition UUID is unavailable"
+
+  install -d -m 0755 -o root -g root "${mountpoint}"
+  if grep -Eq "^[[:space:]]*UUID=${uuid}[[:space:]]+${mountpoint}[[:space:]]+ext4[[:space:]]" /etc/fstab; then
+    :
+  else
+    if grep -Eq "^[[:space:]]*[^#].*[[:space:]]${mountpoint}[[:space:]]" /etc/fstab; then
+      fail "fstab already contains a different entry for ${mountpoint}"
+    fi
+    if grep -Eq "^[[:space:]]*UUID=${uuid}[[:space:]]" /etc/fstab; then
+      fail "fstab already uses the data partition UUID at another mountpoint"
+    fi
+    backup_path="/etc/fstab.before-warehouse-data-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -a /etc/fstab "${backup_path}"
+    printf 'UUID=%s %s ext4 defaults,nofail 0 2\n' "${uuid}" "${mountpoint}" \
+      >> /etc/fstab
+    findmnt --verify --tab-file /etc/fstab >/dev/null \
+      || { cp -a "${backup_path}" /etc/fstab; fail "fstab verification failed"; }
+  fi
+  systemctl daemon-reload
+
+  if mountpoint -q "${mountpoint}"; then
+    [[ "$(findmnt -nro UUID --target "${mountpoint}")" == "${uuid}" ]] \
+      || fail "mountpoint is occupied by an unexpected filesystem"
+  else
+    mount "${mountpoint}"
+  fi
+  chown root:root "${mountpoint}"
+  chmod 0755 "${mountpoint}"
+  write_test="$(mktemp "${mountpoint}/.warehouse-data-write-test.XXXXXX")"
+  printf 'warehouse-data-write-test\n' > "${write_test}"
+  sync "${write_test}"
+  rm -f "${write_test}"
+
+  printf 'data_disk=ready\ndevice=%s\npartition=%s\nfilesystem=%s\nuuid=%s\nmountpoint=%s\n' \
+    "${device}" "${partition}" "${filesystem}" "${uuid}" "${mountpoint}"
+  df -hT "${mountpoint}"
+}
+
+prepare_hosted_storage() {
+  local source_path source_bytes target_bytes marker
+
+  [[ "$(findmnt -nro SOURCE --target "${DATA_MOUNTPOINT}" 2>/dev/null || true)" == /dev/vdb1 ]] \
+    || fail "warehouse data disk is not mounted at ${DATA_MOUNTPOINT}"
+  [[ "$(findmnt -nro FSTYPE --target "${DATA_MOUNTPOINT}")" == ext4 ]] \
+    || fail "warehouse data filesystem must be ext4"
+  [[ "$(lsblk -dnro LABEL /dev/vdb1)" == warehouse-data ]] \
+    || fail "warehouse data filesystem label is invalid"
+  findmnt -nro OPTIONS --target "${DATA_MOUNTPOINT}" | grep -qw rw \
+    || fail "warehouse data filesystem is not writable"
+
+  install -d -m 0750 -o root -g root \
+    "${HOSTED_DATA_ROOT}" "${HOSTED_ASSET_ROOT}" \
+    "${HOSTED_RUNTIME_ROOT}" "${HOSTED_ARCHIVE_ROOT}"
+  install -d -m 0700 -o root -g root "${HOSTED_ARCHIVE_ROOT}/database-backups"
+  install -d -m 0755 -o root -g root "${HOSTED_DATABASE_OBSERVER_ROOT}"
+  install -d -m 0700 -o 999 -g 999 "${HOSTED_DATABASE_ROOT}"
+
+  source_path="$(docker volume inspect "${LEGACY_ASSET_VOLUME}" \
+    --format '{{ .Mountpoint }}' 2>/dev/null || true)"
+  if [[ -n "${source_path}" && -d "${source_path}" ]]; then
+    source_bytes="$(du -sb "${source_path}" | awk '{print $1}')"
+    cp -a "${source_path}/." "${HOSTED_ASSET_ROOT}/"
+    sync "${HOSTED_ASSET_ROOT}"
+    target_bytes="$(du -sb "${HOSTED_ASSET_ROOT}" | awk '{print $1}')"
+    [[ "${target_bytes}" -ge "${source_bytes}" ]] \
+      || fail "hosted asset copy verification failed"
+  else
+    source_bytes=0
+    target_bytes="$(du -sb "${HOSTED_ASSET_ROOT}" | awk '{print $1}')"
+  fi
+
+  marker="${STATE}/hosted-storage-active"
+  printf 'activated_at=%s\nmountpoint=%s\nsource_bytes=%s\ntarget_bytes=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_MOUNTPOINT}" \
+    "${source_bytes}" "${target_bytes}" > "${marker}"
+  chmod 0640 "${marker}"
+  log_event storage_activation succeeded "" storage ""
+  printf 'storage=ready\ndefault_code=hdd\noptional_code=ssd\ndata=hdd\nsource_bytes=%s\ntarget_bytes=%s\n' \
+    "${source_bytes}" "${target_bytes}"
+  df -hT "${DATA_MOUNTPOINT}"
+}
+
+benchmark_data_disk() {
+  local partition=/dev/vdb1
+  local mountpoint=/mnt/warehouse-data
+  local expected_uuid=c77dbffd-3c6f-4d93-b418-de47b52db731
+  local test_file available_bytes
+
+  [[ -b "${partition}" ]] || fail "data partition is missing: ${partition}"
+  [[ "$(findmnt -nro UUID --target "${mountpoint}" 2>/dev/null || true)" == "${expected_uuid}" ]] \
+    || fail "expected data filesystem is not mounted at ${mountpoint}"
+  [[ "$(findmnt -nro FSTYPE --target "${mountpoint}")" == ext4 ]] \
+    || fail "data filesystem is not ext4"
+  findmnt -nro OPTIONS --target "${mountpoint}" | grep -qw rw \
+    || fail "data filesystem is not mounted read-write"
+  available_bytes="$(df -B1 --output=avail "${mountpoint}" | awk 'NR == 2 {print $1}')"
+  [[ "${available_bytes}" =~ ^[0-9]+$ && "${available_bytes}" -ge 2147483648 ]] \
+    || fail "at least 2 GiB free space is required for the benchmark"
+
+  test_file="$(mktemp "${mountpoint}/.warehouse-speed-test.XXXXXX")"
+  trap 'rm -f -- "${test_file}"' RETURN
+  printf 'benchmark=sequential-direct\nsize_bytes=1073741824\nentropy_source_result:\n'
+  LC_ALL=C dd if=/dev/urandom of=/dev/null bs=16M count=64 2>&1 | tail -n 1
+  printf 'write_result:\n'
+  LC_ALL=C dd if=/dev/urandom of="${test_file}" bs=16M count=64 \
+    oflag=direct conv=fdatasync 2>&1 | tail -n 1
+  printf 'read_result:\n'
+  LC_ALL=C dd if="${test_file}" of=/dev/null bs=16M iflag=direct 2>&1 | tail -n 1
+  rm -f -- "${test_file}"
+  trap - RETURN
+}
+
+show_status() {
+  local slot release port
+  slot="$(active_slot)"
+  release="$(slot_release "${slot}")"
+  if [[ -n "${slot}" ]]; then port="$(slot_port "${slot}")"; else port=8080; fi
+  printf 'current=%s\nactive_slot=%s\nrelease=%s\nupstream_port=%s\n' \
+    "$(readlink -f "${CURRENT}" 2>/dev/null || true)" "${slot:-legacy}" \
+    "${release:-legacy}" "${port}"
+  docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}' \
+    --filter name=warehouse-os-api
+  docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}|{{.Mounts}}' \
+    --filter "name=${HOSTED_DATABASE_CONTAINER}"
+  docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}' \
+    --filter label=org.bonfirework.role=runtime-controller
+  df -hT "${DATA_MOUNTPOINT}" | tail -n 1
+  curl --fail --silent --show-error --max-time 10 "${DOMAIN}/api/health"
+  printf '\n'
+}
+
+show_runtime_status() {
+  local container
+  container="$(
+    docker ps -a \
+      --filter label=org.bonfirework.role=runtime-controller \
+      --format '{{.Names}}' | head -n 1
+  )"
+  [[ -n "${container}" ]] || fail "Runtime Controller container is missing"
+  docker inspect \
+    --format 'name={{.Name}} image={{.Config.Image}} state={{.State.Status}} restart_count={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+    "${container}"
+  docker logs --tail 160 "${container}" 2>&1
+}
+
+show_api_logs() {
+  local slot container
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "active API slot is missing"
+  container="warehouse-os-api-${slot}"
+  docker logs --tail 240 "${container}" 2>&1
+}
+
+show_manifest() {
+  local manifest="${CURRENT}/.warehouse-release/files.sha256"
+  [[ -f "${manifest}" ]] || fail "active release manifest is missing"
+  cat "${manifest}"
+}
+
+hosting_smoke() {
+  local filename="$1" digest="$2" tenant="$3" workspace_key="$4"
+  local runtime_type="$5" component="$6" entrypoint="$7" version="$8"
+  local expect_text="$9" name="${10}"
+  local archive="${INCOMING}/${filename}" slot container inside
+
+  [[ "${filename}" =~ ^hosting-smoke-[A-Za-z0-9._-]{8,160}\.tar\.gz$ ]] \
+    || fail "invalid hosting smoke filename"
+  [[ "${digest}" =~ ^[a-f0-9]{64}$ ]] || fail "invalid hosting smoke digest"
+  [[ "${tenant}" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]] || fail "invalid tenant slug"
+  [[ "${workspace_key}" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]] \
+    || fail "invalid workspace key"
+  [[ "${runtime_type}" =~ ^(auto|static|web|api|worker|agent|container|compose)$ ]] \
+    || fail "invalid runtime type"
+  [[ "${component}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || fail "invalid component"
+  [[ "${entrypoint}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,160}$ ]] \
+    || fail "invalid entrypoint"
+  [[ "${version}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]] \
+    || fail "invalid source version"
+  [[ "${expect_text}" =~ ^[A-Za-z0-9][A-Za-z0-9._[:space:]-]{0,79}$ ]] \
+    || fail "invalid expected text"
+  [[ "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._[:space:]-]{0,119}$ ]] \
+    || fail "invalid asset name"
+  [[ -f "${archive}" ]] || fail "hosting smoke archive is missing"
+  printf '%s  %s\n' "${digest}" "${archive}" | sha256sum --check --status \
+    || fail "hosting smoke archive checksum mismatch"
+
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "hosting smoke requires an active API slot"
+  container="warehouse-os-api-${slot}"
+  inside="/tmp/${filename}"
+  docker cp "${archive}" "${container}:${inside}"
+  trap 'docker exec "${container}" rm -f -- "${inside}" >/dev/null 2>&1 || true; rm -f -- "${archive}"' RETURN
+  docker exec "${container}" python -m app.hosting_smoke \
+    --archive "${inside}" \
+    --tenant "${tenant}" \
+    --name "${name}" \
+    --workspace-key "${workspace_key}" \
+    --runtime-type "${runtime_type}" \
+    --component "${component}" \
+    --entrypoint "${entrypoint}" \
+    --version "${version}" \
+    --expect-text "${expect_text}"
+  log_event hosting_smoke succeeded "$(slot_release "${slot}")" \
+    "${runtime_type}" "${slot}"
+  docker exec "${container}" rm -f -- "${inside}" >/dev/null
+  rm -f -- "${archive}"
+  trap - RETURN
+}
+
+mkdir -p "${RELEASES}" "${STATE}"
+touch "${LOG_FILE}"
+exec 9>"${LOCK_FILE}"
+flock -w 30 9 || fail "another deployment is running"
+
+command="${1:-status}"
+case "${command}" in
+  install)
+    [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy install RELEASE MODE"
+    install_release "$2" "$3"
+    ;;
+  rollback)
+    [[ "$#" -eq 1 ]] || fail "rollback takes no arguments"
+    rollback_release
+    ;;
+  init-data-disk)
+    [[ "$#" -eq 1 ]] || fail "init-data-disk takes no arguments"
+    initialize_data_disk
+    ;;
+  activate-hosted-storage)
+    [[ "$#" -eq 1 ]] || fail "activate-hosted-storage takes no arguments"
+    prepare_hosted_storage
+    ;;
+  activate-hosted-database)
+    [[ "$#" -eq 1 ]] || fail "activate-hosted-database takes no arguments"
+    ensure_hosted_database
+    ;;
+  migrate-hosted-databases)
+    [[ "$#" -eq 1 ]] || fail "migrate-hosted-databases takes no arguments"
+    migrate_hosted_databases
+    ;;
+  backup-now)
+    [[ "$#" -eq 1 ]] || fail "backup-now takes no arguments"
+    backup_now
+    ;;
+  benchmark-data-disk)
+    [[ "$#" -eq 1 ]] || fail "benchmark-data-disk takes no arguments"
+    benchmark_data_disk
+    ;;
+  status)
+    [[ "$#" -eq 1 ]] || fail "status takes no arguments"
+    show_status
+    ;;
+  runtime-status)
+    [[ "$#" -eq 1 ]] || fail "runtime-status takes no arguments"
+    show_runtime_status
+    ;;
+  api-logs)
+    [[ "$#" -eq 1 ]] || fail "api-logs takes no arguments"
+    show_api_logs
+    ;;
+  manifest)
+    [[ "$#" -eq 1 ]] || fail "manifest takes no arguments"
+    show_manifest
+    ;;
+  hosting-smoke)
+    [[ "$#" -eq 11 ]] \
+      || fail "usage: warehouse-deploy hosting-smoke ARCHIVE SHA256 TENANT WORKSPACE RUNTIME COMPONENT ENTRYPOINT VERSION EXPECT_TEXT NAME"
+    hosting_smoke "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}"
+    ;;
+  history)
+    [[ "$#" -eq 1 ]] || fail "history takes no arguments"
+    tail -50 "${LOG_FILE}"
+    ;;
+  *)
+    fail "unsupported command: ${command}"
+    ;;
+esac

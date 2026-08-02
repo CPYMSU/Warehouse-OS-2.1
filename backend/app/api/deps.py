@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import text
 
@@ -36,6 +39,9 @@ class ActorContext:
     topology_title: str | None
     permissions: frozenset[str] = frozenset()
     identities: tuple[PositionIdentity, ...] = ()
+    auth_kind: str = "session"
+    credential_id: int | None = None
+    credential_scopes: frozenset[str] = frozenset()
 
     @property
     def user_payload(self) -> dict[str, object]:
@@ -58,6 +64,29 @@ class ActorContext:
                 for identity in self.identities
             ],
         }
+
+
+_internal_actor: ContextVar[ActorContext | None] = ContextVar(
+    "warehouse_internal_actor",
+    default=None,
+)
+
+
+@contextmanager
+def internal_actor_scope(actor: ActorContext) -> Generator[None, None, None]:
+    """Bind an already-authenticated actor to one in-process ASGI dispatch.
+
+    This context has no HTTP representation and therefore cannot be supplied by
+    a client.  It lets the company AI projection retain its complete
+    current-tenant authority while native route dependencies continue to use
+    the ordinary ``current_actor`` boundary.
+    """
+
+    token = _internal_actor.set(actor)
+    try:
+        yield
+    finally:
+        _internal_actor.reset(token)
 
 
 def _permission_set(value: object) -> set[str]:
@@ -114,17 +143,8 @@ def _capped_position_permissions(
     return all_permissions, None if has_unrestricted_position else direct_allow_ceiling
 
 
-def current_actor(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    settings: Settings = Depends(get_settings),
-) -> ActorContext:
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication is required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user_id, tenant_id = decode_access_token(settings=settings, token=credentials.credentials)
+def _load_actor(user_id: UUID, tenant_id: UUID) -> ActorContext:
+    """Reload the complete live multi-position authority for one tenant identity."""
     with tenant_session(tenant_id) as session:
         row = (
             session.execute(
@@ -282,3 +302,81 @@ def current_actor(
         permissions=permissions,
         identities=identities,
     )
+
+
+def _runtime_api_scope(request: Request) -> str | None:
+    """Return the only Runtime-key audience accepted for this public request."""
+    path = request.url.path
+    method = request.method.upper()
+    if method == "GET" and path == "/api/auth/me":
+        return None
+    if path.startswith("/api/cli/"):
+        return "terminal"
+    if path.startswith(("/api/agent/", "/api/ai/", "/api/hosting/")):
+        return "assistant"
+    if path.startswith("/api/research/"):
+        return "research"
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Runtime API Key audience does not include this endpoint",
+    )
+
+
+def current_actor(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    settings: Settings = Depends(get_settings),
+) -> ActorContext:
+    bound_actor = _internal_actor.get()
+    if bound_actor is not None:
+        return bound_actor
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = credentials.credentials.strip()
+    if token.startswith("wsk_"):
+        from app.services.runtime_api_keys import (
+            SCOPE_PERMISSIONS,
+            RuntimeApiKeyError,
+            authenticate_runtime_api_key,
+        )
+
+        try:
+            credential = authenticate_runtime_api_key(token, settings)
+        except RuntimeApiKeyError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+        required_scope = _runtime_api_scope(request)
+        if required_scope is not None and required_scope not in credential.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Runtime API Key is missing the {required_scope} scope",
+            )
+        actor = _load_actor(credential.user_id, credential.tenant_id)
+        if required_scope is not None:
+            required_permissions = SCOPE_PERMISSIONS[required_scope]
+            if not any(
+                permission in actor.permissions
+                for permission in required_permissions
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Runtime API access was withdrawn with "
+                        + " or ".join(required_permissions)
+                    ),
+                )
+        return replace(
+            actor,
+            auth_kind="runtime_api_key",
+            credential_id=credential.key_id,
+            credential_scopes=credential.scopes,
+        )
+    user_id, tenant_id = decode_access_token(settings=settings, token=token)
+    return _load_actor(user_id, tenant_id)

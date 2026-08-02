@@ -8,7 +8,7 @@ and data layer are rebuilt independently for PostgreSQL.
 
 | Path | Product |
 | --- | --- |
-| `frontend/v2/` | Warehouse OS 2.0 web application (the current Swiss/Bonfire design system) |
+| `frontend/v2/` | Warehouse OS 2.1 web application (the current Swiss/Bonfire design system) |
 | `frontend/` | Classic web application and mobile web variants |
 | `mobile/` | React Native mobile application |
 | `wechat-miniapp/` | WeChat Mini Program |
@@ -22,14 +22,14 @@ node scripts/build_v2_frontend.cjs
 node scripts/build_v2_frontend.cjs --check
 ```
 
-The applications still call the former `/api/...` contract. That is intentional:
-no legacy service code, SQLite databases, secrets, deployment configuration, or
-database migrations were copied into this repository. The new API contract will
-be implemented by the backend rewrite and backed exclusively by PostgreSQL 18
-with pgvector for permission-scoped AI retrieval.
+The preserved clients still contain compatibility calls, but Warehouse OS 2.1
+does not import the former service runtime, customer databases, secrets or
+deployment state. Native 2.1 domains use PostgreSQL 18 with forced tenant RLS;
+unmigrated compatibility calls must report an explicit unavailable state rather
+than fabricate data or silently fall back to the former system.
 
-See [the rebuild brief](docs/postgresql-backend-rebuild.md) for the proposed
-starting boundary.
+See [the rebuild brief](docs/postgresql-backend-rebuild.md) for the original
+boundary and the documentation map below for the current contracts.
 
 ## Backend foundation
 
@@ -39,10 +39,22 @@ map-topology endpoints without importing legacy SQLite routing or demo records.
 It also includes 13 versioned industry templates. Each new tenant receives a
 template-selected organization, position, permission, and navigation snapshot;
 the former "超高壓電網" template is now named "電力系統" (`power_system`).
-The [governed super terminal](docs/super-terminal.md) imports the 441-command
-catalogue and exposes a single human/AI command contract with typed storage
-ports; commands are activated only after their PostgreSQL domain adapter,
-permissions, RLS, audit, and write-confirmation controls are ready.
+The [Auto Runtime and Super Terminal](docs/super-terminal.md) make the
+Secretary, professional terminal, and embedded assistants different surfaces
+of one goal-driven runtime. The retained 480-command catalogue is a legacy
+compatibility and capability-discovery boundary; retired contracts remain
+searchable as history but cannot be executed or exposed as model tools.
+
+## Current contract documents
+
+| Contract | Document |
+| --- | --- |
+| Customer digital-asset custody, workspace keys and `dam.py` | [Warehouse OS 2.1《數字資產託管指南》](docs/digital-asset-custody-guide-2.1.zh-TW.md) |
+| Digital-asset providers, permanent entry, quota and runtime invariants | [Digital asset hosting contract](docs/digital-asset-hosting.md) |
+| AI-native semantic mutation, Passkey and Action Keychain | [AI-native universal action fabric](docs/ai-native-universal-action-fabric.zh-TW.md) |
+| Intelligent data decomposition and world observations | [Intelligent database decomposition](docs/intelligent-database-decomposition.zh-TW.md) |
+| Runtime API, streaming and key lifecycle | [Runtime API](docs/runtime-api.md) |
+| Production release, rollback and backups | [Production deployment](docs/production-deployment.md) |
 
 Local runtime and Cloudflare Tunnel instructions are in
 [`infra/LOCAL_RUNTIME.md`](infra/LOCAL_RUNTIME.md).

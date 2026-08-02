@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 跨倉在途 — Swiss 版式,真後端(冷鏈 + 到貨 ETA) */
+/* WAREHOUSE 2.1 · 跨倉在途 — Swiss 版式,真後端(冷鏈 + 到貨 ETA) */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;
@@ -187,7 +187,7 @@ const Page = ({ boot, reload }) => {
         </table>
       </div>
       {!list.length && <EM icon="outbound" title={t("當前篩選下沒有在途單")} sub={t("換個篩選,或對秘書說「幫我發運◯◯到◯倉」。")}/>}
-      <div className="muted" style={{ fontSize: 10.5, marginTop: 14, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+      <div className="muted" style={{ fontSize: 10.5, marginTop: 14, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
     </>
   );
 };

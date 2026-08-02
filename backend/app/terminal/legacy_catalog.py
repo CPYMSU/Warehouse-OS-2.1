@@ -31,7 +31,17 @@ class CommandError(ValueError):
         self.hint = hint
 
 
-def _p(flag, dest, help_text, *, required=False, ptype="str", positional=False, default=None):
+def _p(
+    flag,
+    dest,
+    help_text,
+    *,
+    required=False,
+    ptype="str",
+    positional=False,
+    default=None,
+    choices=None,
+):
     return {
         "flag": flag,            # CLI 旗標名(不含 --);positional 時僅作顯示名
         "dest": dest,            # 寫入目標:query.<key> 或 body.<path>(支持 lines[0].name)
@@ -39,6 +49,7 @@ def _p(flag, dest, help_text, *, required=False, ptype="str", positional=False, 
         "required": required,
         "positional": positional,
         "default": default,
+        "choices": list(choices or []),
         "help": help_text,
     }
 
@@ -55,15 +66,64 @@ COMMAND_CATEGORIES = [
     ("erp", "ERP 採購", "預算/採購/工單/供應商/招標/企業間交易", ("erp", "tender", "b2b")),
     ("assets", "金融資產", "股票基金黃金加密的持倉/行情/組合分析", ("asset",)),
     ("dam", "數字資產市場", "工作區接入/掛單交易/分潤/後端托管", ("dm",)),
-    ("org", "組織協作", "賬號角色權限/成員/審批流/站內協作與通知/印章",
-     ("org", "user", "users", "role", "perms", "members", "people", "company",
-      "collab", "msg", "wf", "task", "notify", "seal", "whoami")),
-    ("records", "檔案合規", "檔案/案件/法務/合規/審計/風險自查",
-     ("record", "case", "legal", "compliance", "audit", "risk")),
-    ("ai", "AI 自我管理", "智能知識庫/經驗庫/用戶畫像/提示詞/運行記錄",
-     ("knowledge", "lessons", "profile", "prompt", "assistant", "ai", "runs", "actions")),
-    ("system", "系統平臺", "資料庫直查直改/Python 腳本/系統設置/數據中心/天氣報表",
-     ("db", "script", "settings", "platform", "shield", "web", "datahub", "weather", "report")),
+    (
+        "research",
+        "科研資產",
+        "課題/DMP/協議/實驗 Run/主張證據/覆核重現/發布/Git 文件譜系",
+        ("research",),
+    ),
+    (
+        "org",
+        "組織協作",
+        "賬號角色權限/成員/審批流/站內協作與通知/印章",
+        (
+            "org",
+            "user",
+            "users",
+            "role",
+            "perms",
+            "members",
+            "people",
+            "company",
+            "collab",
+            "msg",
+            "wf",
+            "task",
+            "notify",
+            "seal",
+            "whoami",
+        ),
+    ),
+    (
+        "records",
+        "檔案合規",
+        "檔案/案件/法務/合規/審計/風險自查",
+        ("record", "case", "legal", "compliance", "audit", "risk"),
+    ),
+    (
+        "ai",
+        "AI 自我管理",
+        "智能知識庫/經驗庫/用戶畫像/提示詞/運行記錄",
+        ("knowledge", "lessons", "profile", "prompt", "assistant", "ai", "runs", "actions"),
+    ),
+    (
+        "system",
+        "系統平臺",
+        "資料庫直查直改/Python 腳本/系統設置/數據中心/天氣報表",
+        (
+            "db",
+            "script",
+            "settings",
+            "platform",
+            "shield",
+            "browser",
+            "web",
+            "data",
+            "datahub",
+            "weather",
+            "report",
+        ),
+    ),
 ]
 
 _CATEGORY_BY_PREFIX = {
@@ -91,8 +151,13 @@ def capability_summary(entry):
     internals: discovery explains what an actor can do without turning the
     catalogue into a routing or authorization oracle.
     """
-    _idx, category, category_label = category_rank_for_command(
+    category_index, category, category_label = category_rank_for_command(
         (entry or {}).get("command")
+    )
+    category_guide = (
+        COMMAND_CATEGORIES[category_index][2]
+        if category_index < len(COMMAND_CATEGORIES)
+        else "尚未歸入既有業務域的操作"
     )
     arguments = []
     for parameter in (entry or {}).get("params") or []:
@@ -112,6 +177,8 @@ def capability_summary(entry):
         "description": str((entry or {}).get("description") or ""),
         "category": category,
         "category_label": category_label,
+        "category_order": category_index,
+        "category_guide": category_guide,
         "writes": bool((entry or {}).get("writes")),
         "risk": str((entry or {}).get("risk") or "normal"),
         "arguments": arguments,
@@ -303,7 +370,7 @@ def search_capability_entries(
     query_anchors = tuple(dict.fromkeys(re.findall(
         r"[a-z0-9]+|[\u3400-\u9fff]+", raw_query
     )))
-    ranked = []
+    prepared = []
     for registry_index, entry in enumerate(entries or []):
         if not isinstance(entry, dict):
             continue
@@ -350,9 +417,36 @@ def search_capability_entries(
         compact_haystack = re.sub(
             r"[^a-z0-9\u3400-\u9fff]+", "", haystack
         )
-        anchor_matches = sum(
-            1 for anchor in query_anchors if anchor in haystack
+        haystack_terms = set(_capability_search_terms(haystack))
+        prepared.append(
+            {
+                "registry_index": registry_index,
+                "summary": summary,
+                "tool_name": tool_name,
+                "command": command,
+                "search_aliases": search_aliases,
+                "haystack": haystack,
+                "compact_haystack": compact_haystack,
+                "haystack_terms": haystack_terms,
+            }
         )
+
+    document_frequency = {
+        term: sum(1 for item in prepared if term in item["haystack_terms"])
+        for term in query_terms
+    }
+    document_count = max(1, len(prepared))
+    ranked = []
+    for item in prepared:
+        registry_index = item["registry_index"]
+        summary = item["summary"]
+        tool_name = item["tool_name"]
+        command = item["command"]
+        search_aliases = item["search_aliases"]
+        haystack = item["haystack"]
+        compact_haystack = item["compact_haystack"]
+        haystack_terms = item["haystack_terms"]
+        anchor_matches = sum(1 for anchor in query_anchors if anchor in haystack)
         if not raw_query:
             score = 1
         else:
@@ -369,12 +463,17 @@ def search_capability_entries(
                 score += 900
             if compact_match:
                 score += 200
-            haystack_terms = set(_capability_search_terms(haystack))
             for term in query_terms:
+                frequency = int(document_frequency.get(term) or 0)
+                rarity = (
+                    max(0, (document_count - frequency) * 80 // document_count)
+                    if frequency
+                    else 0
+                )
                 if term in haystack_terms:
-                    score += 30 + min(len(term), 12)
+                    score += 20 + min(len(term), 12) + rarity
                 elif len(term) > 1 and term in compact_haystack:
-                    score += 10
+                    score += 8 + rarity // 3
             # A snake/kebab identifier is normally an exact tool lookup.  A
             # shared suffix such as ``list`` must not turn an unavailable
             # ``record_list`` request into an unrelated ``inventory_list``.
@@ -421,35 +520,48 @@ COMMANDS = [
     {
         "command": "ai key issue",
         "tool_name": "secretary_cli_key_issue",
-        "description": "簽發綁定本人與當前公司的 AI 秘書 CLI API Key；明文只安全顯示一次",
-        "api_method": "POST", "api_path": "/api/assistant/cli-keys",
-        "permission": "ai.use", "writes": True, "risk": "high",
+        "description": "簽發綁定本人與當前公司的 Runtime API Key，可授權 AI、終端與科研 API；明文只安全顯示一次",
+        "api_method": "POST",
+        "api_path": "/api/assistant/cli-keys",
+        "permission": "ai.use",
+        "permission_any": ["terminal.use", "research.read"],
+        "execution_identity": "requesting_user",
+        "writes": True,
+        "risk": "high",
         "secret_result_fields": ["api_key"],
         "ai_requires_confirmation": True,
         "params": [
             _p("label", "body.label", "終端用途標籤，如 MacBook 或 CI", default="我的終端"),
-            _p("scopes", "body.scopes", "assistant,terminal；不得超過本人當前權限"),
+            _p("scopes", "body.scopes", "assistant,terminal,research；不得超過本人當前權限"),
             _p("days", "body.expires_in_days", "有效天數 1-365", ptype="int", default=30),
         ],
-        "examples": [
-            "ai key issue --label MacBook --scopes assistant,terminal --days 30"
-        ],
+        "examples": ["ai key issue --label Research-CLI --scopes research,terminal --days 30"],
     },
     {
         "command": "ai key list",
         "tool_name": "secretary_cli_keys_list",
-        "description": "列出本人 AI 秘書 CLI Key 的 hint、scope、到期、使用與吊銷狀態，不返回明文",
-        "api_method": "GET", "api_path": "/api/assistant/cli-keys",
-        "permission": "ai.use", "writes": False, "risk": "low",
+        "description": "列出本人 Runtime API Key 的 hint、scope、到期、使用與吊銷狀態，不返回明文",
+        "api_method": "GET",
+        "api_path": "/api/assistant/cli-keys",
+        "permission": "ai.use",
+        "permission_any": ["terminal.use", "research.read"],
+        "execution_identity": "requesting_user",
+        "writes": False,
+        "risk": "low",
         "params": [],
         "examples": ["ai key list"],
     },
     {
         "command": "ai key revoke",
         "tool_name": "secretary_cli_key_revoke",
-        "description": "立即吊銷本人一把 AI 秘書 CLI Key，不影響其他 Key",
-        "api_method": "POST", "api_path": "/api/assistant/cli-keys/{id}/revoke",
-        "permission": "ai.use", "writes": True, "risk": "high",
+        "description": "立即吊銷本人一把 Runtime API Key，不影響其他 Key",
+        "api_method": "POST",
+        "api_path": "/api/assistant/cli-keys/{id}/revoke",
+        "permission": "ai.use",
+        "permission_any": ["terminal.use", "research.read"],
+        "execution_identity": "requesting_user",
+        "writes": True,
+        "risk": "high",
         "ai_requires_confirmation": True,
         "params": [
             _p("key-id", "path.id", "ai key list 返回的 key id", required=True, ptype="int")
@@ -486,10 +598,13 @@ COMMANDS = [
         "command": "task show",
         "tool_name": "task_show",
         "description": "讀取一條可見的原生 TASK 詳情、負責人、來源關聯、能力及最新版本號",
-        "api_method": "GET", "api_path": "/api/tasks/{id}",
-        "permission": "tasks.read", "writes": False, "risk": "low",
-        "params": [_p("id", "path.id", "task_items.id", required=True, ptype="int")],
-        "examples": ["task show --id 12"],
+        "api_method": "GET",
+        "api_path": "/api/tasks/{id}",
+        "permission": "tasks.read",
+        "writes": False,
+        "risk": "low",
+        "params": [_p("id", "path.id", "TASK UUID", required=True)],
+        "examples": ["task show --id 2d2e5ca0-840a-4ef0-93f5-e5d8a76fc7cd"],
     },
     {
         "command": "task history",
@@ -498,7 +613,7 @@ COMMANDS = [
         "api_method": "GET", "api_path": "/api/tasks/{id}/history",
         "permission": "tasks.read", "writes": False, "risk": "low",
         "params": [
-            _p("id", "path.id", "task_items.id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("limit", "query.limit", "每頁事件數，最多 500", ptype="int", default=100),
             _p("before-id", "query.before_id", "上一頁 next_before_id；讀取更早事件", ptype="int"),
         ],
@@ -519,13 +634,18 @@ COMMANDS = [
             _p("due", "body.due_at", "截止時間(ISO 8601)"),
             _p("all-day", "body.all_day", "全天安排", ptype="flag"),
             _p("priority", "body.priority", "low/normal/high/urgent", default="normal"),
-            _p("assignee", "body.assignee_user_id", "負責人 user id；省略即本人", ptype="int"),
-            _p("assignees", "body.assignees", "多位負責人 user id，逗號分隔", ptype="list"),
-            _p("visibility", "body.visibility", "private/team/company；默認 private", default="private"),
+            _p("assignee", "body.assignee_user_id", "負責人 user UUID；省略即本人"),
+            _p("assignees", "body.assignees", "多位負責人 user UUID，逗號分隔", ptype="list"),
+            _p(
+                "visibility",
+                "body.visibility",
+                "private/team/company；默認 private",
+                default="private",
+            ),
             _p("timezone", "body.timezone", "IANA 時區，例如 Asia/Singapore", default="UTC"),
             _p("location", "body.location", "地點或線上會議位置"),
-            _p("owner-org", "body.owner_org_unit_id", "責任部門 id", ptype="int"),
-            _p("plan", "body.plan_id", "所屬計劃 task id", ptype="int"),
+            _p("owner-org", "body.owner_org_unit_id", "責任部門 UUID"),
+            _p("plan", "body.plan_id", "所屬計劃 TASK UUID"),
             _p("minutes", "body.planned_minutes", "預計投入分鐘", ptype="int"),
             _p("progress", "body.progress", "進度 0-100", ptype="int"),
             _p("note", "body.description", "說明或計劃內容"),
@@ -545,7 +665,7 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/tasks/{id}/update",
         "permission": "tasks.read", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "path.id", "task_items.id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("version", "body.expected_version", "當前版本號(CAS)", required=True, ptype="int"),
             _p("title", "body.title", "新標題"),
             _p("category", "body.category", "work/meeting/travel/exam/personal/record/other"),
@@ -559,8 +679,8 @@ COMMANDS = [
             _p("location", "body.location", "地點或線上會議位置"),
             _p("minutes", "body.planned_minutes", "預計投入分鐘", ptype="int"),
             _p("progress", "body.progress", "進度 0-100", ptype="int"),
-            _p("plan", "body.plan_id", "所屬計劃 task id", ptype="int"),
-            _p("assignees", "body.assignees", "完整負責人 user id，逗號分隔", ptype="list"),
+            _p("plan", "body.plan_id", "所屬計劃 TASK UUID"),
+            _p("assignees", "body.assignees", "完整負責人 user UUID，逗號分隔", ptype="list"),
             _p("note", "body.description", "新說明"),
         ],
         "examples": ["task update --id 12 --version 3 --due 2026-07-20T18:00:00 --all-day false"],
@@ -572,7 +692,7 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/tasks/{id}/status",
         "permission": "tasks.read", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "path.id", "task_items.id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("status", "body.status", "in_progress/waiting/completed/cancelled", required=True),
             _p("version", "body.expected_version", "當前版本號(CAS)", required=True, ptype="int"),
             _p("note", "body.note", "狀態備註"),
@@ -597,9 +717,12 @@ COMMANDS = [
         "command": "task collab show",
         "tool_name": "task_collab_show",
         "description": "查看一個 TASK 協作空間、成員、邀請、加入申請與可用能力",
-        "api_method": "GET", "api_path": "/api/tasks/{id}/collaboration",
-        "permission": "tasks.read", "writes": False, "risk": "low",
-        "params": [_p("id", "path.id", "TASK id", required=True, ptype="int")],
+        "api_method": "GET",
+        "api_path": "/api/tasks/{id}/collaboration",
+        "permission": "tasks.read",
+        "writes": False,
+        "risk": "low",
+        "params": [_p("id", "path.id", "TASK UUID", required=True)],
         "examples": ["task collab show --id 12"],
     },
     {
@@ -611,7 +734,7 @@ COMMANDS = [
         "ai_exposed": False,
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("join-policy", "body.join_policy", "open/request/invite_only"),
             _p("discoverability", "body.discoverability", "company/team/hidden"),
             _p("max-members", "body.max_members", "成員上限 1-500", ptype="int"),
@@ -627,7 +750,7 @@ COMMANDS = [
         "ai_exposed": False,
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("role", "body.role", "contributor/reviewer/observer", default="contributor"),
             _p("message", "body.message", "加入申請說明"),
         ],
@@ -641,7 +764,7 @@ COMMANDS = [
         "permission": "tasks.read", "writes": True, "risk": "high",
         "ai_exposed": False,
         "ai_requires_confirmation": True,
-        "params": [_p("id", "path.id", "TASK id", required=True, ptype="int")],
+        "params": [_p("id", "path.id", "TASK UUID", required=True)],
         "examples": ["task collab leave --id 12"],
     },
     {
@@ -653,9 +776,14 @@ COMMANDS = [
         "ai_exposed": False,
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
-            _p("user", "body.user_id", "受邀 user id", required=True, ptype="int"),
-            _p("role", "body.role", "coordinator/contributor/reviewer/observer", default="contributor"),
+            _p("id", "path.id", "TASK UUID", required=True),
+            _p("user", "body.user_id", "受邀 user UUID", required=True),
+            _p(
+                "role",
+                "body.role",
+                "coordinator/contributor/reviewer/observer",
+                default="contributor",
+            ),
             _p("message", "body.message", "邀請說明"),
         ],
         "examples": ["task collab invite --id 12 --user 7 --role reviewer"],
@@ -668,10 +796,14 @@ COMMANDS = [
         "permission": "tasks.read", "writes": True, "risk": "high",
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
-            _p("request", "path.request_id", "加入申請 id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
+            _p("request", "path.request_id", "加入申請 UUID", required=True),
             _p("decision", "body.decision", "approve/reject", required=True),
-            _p("role", "body.role", "contributor/reviewer/observer；拒絕時仍須明示", required=True),
+            _p(
+                "role",
+                "body.role",
+                "批准後角色 contributor/reviewer/observer；省略沿用申請角色",
+            ),
         ],
         "examples": ["task collab request decide --id 12 --request 4 --decision approve --role reviewer"],
     },
@@ -683,11 +815,37 @@ COMMANDS = [
         "permission": "tasks.read", "writes": True, "risk": "high",
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
-            _p("invitation", "path.invitation_id", "邀請 id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
+            _p("invitation", "path.invitation_id", "邀請 UUID", required=True),
             _p("decision", "body.decision", "accept/decline", required=True),
         ],
         "examples": ["task collab invitation respond --id 12 --invitation 9 --decision accept"],
+    },
+    {
+        "command": "task collab owner transfer",
+        "tool_name": "task_collab_owner_transfer",
+        "description": "把 TASK 協作負責人移交給目前工作間內的非觀察者成員；以當前 owner UUID 防止競態覆蓋",
+        "api_method": "POST",
+        "api_path": "/api/tasks/{id}/collaboration/owner/transfer",
+        "permission": "tasks.read",
+        "writes": True,
+        "risk": "high",
+        "ai_requires_confirmation": True,
+        "params": [
+            _p("id", "path.id", "TASK UUID", required=True),
+            _p("new-owner", "body.new_owner_user_id", "新負責人 user UUID", required=True),
+            _p(
+                "expected-owner",
+                "body.expected_owner_user_id",
+                "目前負責人 user UUID（CAS）",
+                required=True,
+            ),
+        ],
+        "examples": [
+            "task collab owner transfer --id 2d2e5ca0-840a-4ef0-93f5-e5d8a76fc7cd "
+            "--new-owner e4203dc2-1e23-42c8-a74f-5131ed72fe14 "
+            "--expected-owner 15b0c91c-7190-4efd-a7b9-e539e9d58f27"
+        ],
     },
     {
         "command": "task collab messages",
@@ -696,7 +854,7 @@ COMMANDS = [
         "api_method": "GET", "api_path": "/api/tasks/{id}/collaboration/messages",
         "permission": "tasks.read", "writes": False, "risk": "low",
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("after", "query.after_id", "只讀此 message id 之後的訊息", ptype="int", default=0),
             _p("limit", "query.limit", "返回 1-200 條", ptype="int", default=50),
         ],
@@ -709,11 +867,11 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/tasks/{id}/collaboration/messages",
         "permission": "tasks.read", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("text", "body.body", "訊息內容", required=True),
             _p("client-id", "body.client_message_id", "本次訊息冪等鍵（英數及 ._:-）", required=True),
             _p("reply-to", "body.reply_to_message_id", "被回覆的 message id", ptype="int"),
-            _p("channel", "body.channel_id", "一般頻道 id；省略由服務端解析", ptype="int"),
+            _p("channel", "body.channel_id", "一般頻道 UUID；省略由服務端解析"),
         ],
         "examples": ["task collab message send --id 12 --text 已完成核對 --client-id cli-20260719-001"],
     },
@@ -724,9 +882,9 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/tasks/{id}/collaboration/read",
         "permission": "tasks.read", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "path.id", "TASK id", required=True, ptype="int"),
+            _p("id", "path.id", "TASK UUID", required=True),
             _p("message", "body.message_id", "讀到的 message id；省略表示最新", ptype="int"),
-            _p("channel", "body.channel_id", "一般頻道 id；省略由服務端解析", ptype="int"),
+            _p("channel", "body.channel_id", "一般頻道 UUID；省略由服務端解析"),
         ],
         "examples": ["task collab read --id 12 --message 91"],
     },
@@ -737,16 +895,19 @@ COMMANDS = [
         "api_method": "GET", "api_path": "/api/tasks/{id}/collaboration/document",
         "permission": "tasks.read", "writes": False, "risk": "low",
         "ai_exposed": False,
-        "params": [_p("id", "path.id", "TASK id", required=True, ptype="int")],
+        "params": [_p("id", "path.id", "TASK UUID", required=True)],
         "examples": ["task collab document show --id 12"],
     },
     {
         "command": "task collab document export",
         "tool_name": "task_collab_document_export",
         "description": "在使用者明確要求時讀取 TASK 共編稿的穩定 Markdown 投影、sequence 與內容 hash",
-        "api_method": "GET", "api_path": "/api/tasks/{id}/collaboration/document/export",
-        "permission": "tasks.read", "writes": False, "risk": "low",
-        "params": [_p("id", "path.id", "TASK id", required=True, ptype="int")],
+        "api_method": "GET",
+        "api_path": "/api/tasks/{id}/collaboration/document/export",
+        "permission": "tasks.read",
+        "writes": False,
+        "risk": "low",
+        "params": [_p("id", "path.id", "TASK UUID", required=True)],
         "examples": ["task collab document export --id 12"],
     },
     {
@@ -2041,12 +2202,15 @@ COMMANDS = [
     {
         "command": "item create",
         "tool_name": "item_create",
-        "description": "建檔新物資主數據(之後才能對它做出入庫與庫存校驗)。--category 可不填:不填時系統會按物資名稱自動歸到現有分類(AI 自動分類)",
-        "api_method": "POST", "api_path": "/api/items",
-        "permission": "settings.manage", "writes": True, "risk": "normal",
+        "description": "建檔新物資主數據(之後才能對它做出入庫與庫存校驗)。--category 可不填；AI 可依當前公司的分類目錄主觀建議分類，未指定時保留為未分類，不使用寫死規則。",
+        "api_method": "POST",
+        "api_path": "/api/items",
+        "permission": "settings.manage",
+        "writes": True,
+        "risk": "normal",
         "params": [
             _p("name", "body.item_name", "物資名稱", required=True),
-            _p("category", "body.category_id", "分類 id(可不填,留空則按名稱自動歸類到現有分類)"),
+            _p("category", "body.category_id", "既有分類 UUID、代碼或名稱；可不填"),
             _p("spec", "body.spec_model", "規格型號"),
             _p("unit", "body.unit", "單位(默認 件)"),
         ],
@@ -2059,7 +2223,7 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/items/update",
         "permission": "inventory.adjust", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "body.id", "物資 id(優先)", ptype="int"),
+            _p("id", "body.id", "物資 UUID(優先)"),
             _p("name", "body.name", "物資名稱(用名稱定位,二選一)"),
             _p("price", "body.price", "單價", ptype="float"),
             _p("unit", "body.unit", "單位"),
@@ -2076,9 +2240,9 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/items/delete",
         "permission": "inventory.adjust", "writes": True, "risk": "high",
         "params": [
-            _p("id", "body.id", "物資 id", ptype="int"),
+            _p("id", "body.id", "物資 UUID"),
             _p("name", "body.name", "物資名稱(按名定位)"),
-            _p("ids", "body.ids", "批量:逗號分隔的 id 列表,如 1,2,3"),
+            _p("ids", "body.ids", "批量 UUID；目前手動操作中心請逐筆封存"),
         ],
         "examples": ['item delete --name 奶茶', 'item delete --ids "12,13,14"'],
     },
@@ -2201,6 +2365,143 @@ COMMANDS = [
             _p("action", "body.action", "白名單動作(restart-api/reload-nginx/restart-firefighter/clear-health-flag/healthcheck/status/restart-nginx)", required=True),
         ],
         "examples": ["shield repair --action restart-api", "shield repair --action reload-nginx"],
+    },
+    {
+        "command": "browser capabilities",
+        "tool_name": "browser_capabilities",
+        "description": "查看公司瀏覽器執行層、受控步驟協議、允許網域與工作進程狀態",
+        "api_method": "GET",
+        "api_path": "/api/browser-runtime/capabilities",
+        "permission": "browser.read",
+        "permission_any": ["browser.run"],
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "examples": ["browser capabilities"],
+    },
+    {
+        "command": "browser journey list",
+        "tool_name": "browser_journey_list",
+        "description": "列出當前公司的可重用瀏覽器旅程與固定步驟清單",
+        "api_method": "GET",
+        "api_path": "/api/browser-runtime/journeys",
+        "permission": "browser.read",
+        "permission_any": ["browser.run"],
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [_p("limit", "query.limit", "最多返回 500 條", ptype="int", default=100)],
+        "examples": ["browser journey list"],
+    },
+    {
+        "command": "browser journey create",
+        "tool_name": "browser_journey_create",
+        "description": "建立受控瀏覽器旅程；僅接受語義定位器與白名單步驟，不接受任意 JavaScript 或 CSS selector",
+        "api_method": "POST",
+        "api_path": "/api/browser-runtime/journeys",
+        "permission": "browser.run",
+        "ai_discretionary": True,
+        "writes": True,
+        "risk": "normal",
+        "confirmation_policy": "direct",
+        "params": [
+            _p("key", "body.journey_key", "旅程鍵", required=True),
+            _p("name", "body.name", "旅程名稱", required=True),
+            _p("description", "body.description", "用途說明"),
+            _p("mode", "body.mode", "smoke/full/explore", default="smoke"),
+            _p("auth", "body.auth_mode", "actor/anonymous", default="actor"),
+            _p(
+                "mutation-policy",
+                "body.mutation_policy",
+                "read_only/allow_writes",
+                default="read_only",
+            ),
+            _p("start-path", "body.start_path", "同源起始路徑", default="/"),
+            _p(
+                "steps",
+                "body.steps",
+                "warehouse-browser-steps/v1 JSON 陣列",
+                required=True,
+                ptype="json",
+            ),
+        ],
+        "examples": [
+            'browser journey create --key dashboard-smoke --name "Dashboard smoke" --steps "[{\\"action\\":\\"navigate\\",\\"path\\":\\"/#/dashboard\\"},{\\"action\\":\\"screenshot\\"}]"'
+        ],
+    },
+    {
+        "command": "browser run list",
+        "tool_name": "browser_run_list",
+        "description": "列出當前公司瀏覽器執行紀錄、狀態與失敗步驟數",
+        "api_method": "GET",
+        "api_path": "/api/browser-runtime/runs",
+        "permission": "browser.read",
+        "permission_any": ["browser.run"],
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [_p("limit", "query.limit", "最多返回 500 條", ptype="int", default=100)],
+        "examples": ["browser run list"],
+    },
+    {
+        "command": "browser run start",
+        "tool_name": "browser_run_start",
+        "description": "排隊執行一個租戶隔離的真實瀏覽器旅程；預設唯讀，寫操作必須顯式允許並確認",
+        "api_method": "POST",
+        "api_path": "/api/browser-runtime/runs",
+        "permission": "browser.run",
+        "ai_discretionary": True,
+        "writes": True,
+        "risk": "normal",
+        "confirmation_policy": "direct",
+        "params": [
+            _p("journey", "body.journey", "旅程 ID 或 journey_key"),
+            _p("name", "body.name", "本次執行名稱"),
+            _p("mode", "body.mode", "smoke/full/explore"),
+            _p("auth", "body.auth_mode", "actor/anonymous"),
+            _p("target-origin", "body.target_origin", "後端允許名單中的完整 Origin"),
+            _p("start-path", "body.start_path", "同源起始路徑"),
+            _p("steps", "body.steps", "臨時白名單步驟 JSON 陣列", ptype="json"),
+            _p(
+                "mutation-policy",
+                "body.mutation_policy",
+                "read_only/allow_writes",
+                default="read_only",
+            ),
+            _p("confirm-mutations", "body.confirm_mutations", "允許寫入時的二次確認", ptype="flag"),
+        ],
+        "examples": [
+            "browser run start --journey dashboard-smoke",
+            "browser run start --name Frontend-smoke --start-path /#/dashboard",
+        ],
+    },
+    {
+        "command": "browser run show",
+        "tool_name": "browser_run_show",
+        "description": "查看逐步狀態、DOM/Console/網絡觀測與可校驗證據附件",
+        "api_method": "GET",
+        "api_path": "/api/browser-runtime/runs/{run_id}",
+        "permission": "browser.read",
+        "permission_any": ["browser.run"],
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [_p("run", "path.run_id", "Browser Run ID", required=True)],
+        "examples": ["browser run show --run RUN_ID"],
+    },
+    {
+        "command": "browser run cancel",
+        "tool_name": "browser_run_cancel",
+        "description": "取消排隊中或正在執行的瀏覽器旅程",
+        "api_method": "POST",
+        "api_path": "/api/browser-runtime/runs/{run_id}/cancel",
+        "permission": "browser.run",
+        "ai_discretionary": True,
+        "writes": True,
+        "risk": "normal",
+        "params": [_p("run", "path.run_id", "Browser Run ID", required=True)],
+        "examples": ["browser run cancel --run RUN_ID"],
     },
     {
         "command": "category list",
@@ -5102,10 +5403,15 @@ COMMANDS = [
     {
         "command": "dm show",
         "tool_name": "digital_market_show",
-        "description": "查看一項企業數字資產完整檔案:版本、權益、估值、托管事件、上架與合規審查",
+        "description": "以 UUID、數字 ID、DMA 編號或唯一名稱查看一項企業數字資產完整檔案；工作區 key 不是資產引用，應先沿語義關係取得 asset_id",
         "api_method": "GET", "api_path": "/api/digital-assets/{id}",
         "permission": "asset_mgmt.read", "writes": False, "risk": "low",
-        "params": [_p("id", "path.id", "企業數字資產 id", required=True, ptype="int")],
+        "semantic_contract": {
+            "effect": "observe",
+            "resource": "digital_asset.asset",
+            "target_identity": "preserve",
+        },
+        "params": [_p("id", "path.id", "資產 UUID、數字 ID、DMA 編號或唯一名稱", required=True)],
         "examples": ["dm show --id 1"],
     },
     {
@@ -5151,12 +5457,20 @@ COMMANDS = [
     {
         "command": "dm upload",
         "tool_name": "digital_market_upload",
-        "description": "登記/鏈接用戶上傳的數字資產包(源碼、數據集、模型、Agent 包、文檔)。可自動生成版本、托管事件和托管空間",
+        "description": "把源碼、數據集、模型、Agent 包或文檔附加到已解析資產/工作區；只有使用者明確要建立全新資產時才省略 asset/workspace。自動生成版本與托管事件",
         "api_method": "POST", "api_path": "/api/digital-assets/upload",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
+        "semantic_contract": {
+            "effect": "attach_evidence",
+            "resource": "digital_asset.artifact",
+            "target_relations": ["digital_asset.asset", "digital_asset.workspace"],
+            "target_identity": "preserve",
+        },
         "params": [
-            _p("id", "body.asset_id", "已有企業數字資產 id;不填則按 name 新建", ptype="int"),
-            _p("name", "body.name", "新資產名稱;無 id 時必填"),
+            _p("id", "body.asset_ref", "已有資產 UUID、數字 ID、DMA 編號或唯一名稱"),
+            _p("workspace", "body.workspace_ref", "已解析工作區 UUID、數字 ID 或 workspace_key；服務端沿關係附加到其資產"),
+            _p("new-asset", "body.create_new_asset", "使用者明確要求建立全新資產；未指定 asset/workspace 時必填", ptype="flag"),
+            _p("name", "body.name", "僅在使用者明確建立全新資產且無 asset/workspace 時使用"),
             _p("kind", "body.asset_kind", "類型 data/process/knowledge/software/model/agent/project/other"),
             _p("summary", "body.summary", "資產說明"),
             _p("type", "body.upload_type", "包類型 package/source/dataset/model/agent/doc/other"),
@@ -5165,11 +5479,11 @@ COMMANDS = [
             _p("hash", "body.artifact_hash", "SHA256 或交付物哈希"),
             _p("size", "body.size_bytes", "大小 bytes", ptype="int"),
             _p("version", "body.version_no", "版本號"),
-            _p("workspace", "body.create_workspace", "同時創建托管空間/專屬數據庫", ptype="flag"),
+            _p("create-workspace", "body.create_workspace", "明確要求同時創建托管空間/專屬數據庫", ptype="flag"),
             _p("runtime", "body.runtime_type", "static/web/api/worker/agent"),
             _p("plan", "body.service_plan", "custody/hosted/managed/dedicated"),
         ],
-        "examples": ['dm upload --name "客服 Agent" --kind agent --uri git://repo/app --hash abc123 --workspace --runtime agent'],
+        "examples": ['dm upload --workspace mk4-workspace --type source --uri git://repo/app --hash <sha256>'],
     },
     {
         "command": "dm update",
@@ -5178,7 +5492,7 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/update",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
+            _p("id", "path.id", "企業數字資產 UUID、數字 ID 或 DMA 資產編號", required=True),
             _p("name", "body.name", "資產名稱"),
             _p("summary", "body.summary", "資產說明"),
             _p("kind", "body.asset_kind", "類型"),
@@ -5192,14 +5506,21 @@ COMMANDS = [
     {
         "command": "dm archive",
         "tool_name": "digital_market_archive",
-        "description": "軟歸檔一項企業數字資產並移出日常列表（不是檔案卷宗 record archive）。保留版本、估值、歷史交易與審計；同步關閉上架、撤銷工作區密鑰並停止托管狀態。若仍有未收尾訂單、待驗收或爭議交易則整筆拒絕且不寫入",
+        "description": "軟歸檔一項企業數字資產並移出日常列表（不是檔案卷宗 record archive），保留全部身份與托管審計。可把沒有工作區/版本/交付物的誤建身份標記為另一資產的重複項；有外部活動部署時拒絕用資料庫歸檔假裝服務已停止",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/archive",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
         "confirmation_policy": {"mode": "passkey", "adapter": "staged_action"},
+        "semantic_contract": {
+            "effect": "soft_archive",
+            "resource": "digital_asset.asset",
+            "target_identity": "preserve",
+            "custody_history": "preserve",
+        },
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
+            _p("id", "path.id", "資產 UUID、數字 ID、DMA 編號或唯一名稱", required=True),
             _p("asset-no", "body.asset_no", "DMA 編號（可選，用於與 id 交叉核對）"),
             _p("reason", "body.reason", "歸檔原因（可選）"),
+            _p("reconciled-into", "body.reconciled_into", "若此項是空的重複身份，指定保留的資產 UUID、DMA 編號或唯一名稱"),
         ],
         "examples": ["dm archive --id 18 --asset-no DMA-202607210002 --reason 已停止使用"],
     },
@@ -5210,7 +5531,7 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/version",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
+            _p("id", "path.id", "資產 UUID、數字 ID、DMA 編號或唯一名稱", required=True),
             _p("version", "body.version_no", "版本號,如 v1.0"),
             _p("title", "body.title", "版本標題"),
             _p("uri", "body.artifact_uri", "交付物 URI/路徑"),
@@ -5238,27 +5559,104 @@ COMMANDS = [
     {
         "command": "dm workspace create",
         "tool_name": "digital_market_workspace_create",
-        "description": "為數字資產創建平台托管空間:公開訪問路徑、內部端口、文件存儲根目錄、可選專屬 SQLite 數據庫",
+        "description": "明確建立新的 2.1 托管工作區、永久入口與固定 512MiB 邏輯配額；核心代碼預設 HDD，只有明確聲明時才選 SSD，所有托管資料固定 HDD。若相同資產及 workspace_key 已存在則只返回既有實體",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
+        "semantic_contract": {
+            "effect": "create_if_absent",
+            "resource": "digital_asset.workspace",
+            "target_identity": "idempotent",
+        },
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
-            _p("key", "body.workspace_key", "托管空間 key,用於 /assets/{key}/"),
+            _p("id", "path.id", "資產 UUID、數字 ID、DMA 編號或唯一名稱", required=True),
+            _p("key", "body.workspace_key", "托管空間 key,用於永久入口 /assets/{tenant}/{key}/"),
             _p("runtime", "body.runtime_type", "static/web/api/worker/agent", default="static"),
             _p("plan", "body.service_plan", "custody/hosted/managed/dedicated", default="hosted"),
+            _p(
+                "code-storage",
+                "body.code_storage",
+                "核心代碼位置；預設 hdd，不需主動追問；只有使用者明確要求才選 ssd，托管資料仍固定 hdd",
+                default="hdd",
+                choices=("hdd", "ssd"),
+            ),
             _p("public-url", "body.public_url", "外部訪問 URL 或路徑"),
-            _p("subdomain", "body.subdomain", "可選子域名"),
-            _p("port", "body.internal_port", "內部端口;不填自動分配", ptype="int"),
+            _p("database", "body.database_name", "邏輯數據庫名稱"),
             _p("no-db", "body.no_database", "不創建專屬數據庫", ptype="flag"),
         ],
         "examples": ["dm workspace create --id 1 --runtime web --plan hosted"],
     },
     {
+        "command": "dm workspace storage",
+        "tool_name": "digital_market_workspace_storage_switch",
+        "description": (
+            "在既有工作區尚未有任何源碼版本或 code 工件時，原地切換核心代碼的 "
+            "HDD/SSD 儲存綁定。不建立新工作區、不移動 DATA 或資料庫；已有源碼時會拒絕"
+            "直接切換並返回需做完整性驗證遷移的事實，後續由 AI 自主選擇遷移方案"
+        ),
+        "search_aliases": [
+            "空工作區切換SSD",
+            "空工作區切換HDD",
+            "核心代碼改SSD",
+            "核心代码改SSD",
+            "代碼儲存改硬碟",
+            "代码存储改硬盘",
+            "switch empty workspace code storage",
+            "change code disk before upload",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/workspaces/{workspace_ref}/storage",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "normal",
+        "confirmation_policy": {"mode": "passkey", "adapter": "staged_action"},
+        "semantic_contract": {
+            "effect": "update_if_empty",
+            "resource": "digital_asset.workspace",
+            "related_resources": ["digital_asset.storage_binding"],
+            "target_identity": "preserve",
+            "preconditions": [
+                "source_version_count=0",
+                "code_artifact_count=0",
+            ],
+            "preserves": [
+                "workspace.id",
+                "workspace.workspace_key",
+                "data_storage",
+                "database_storage",
+            ],
+        },
+        "params": [
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+            _p(
+                "code-storage",
+                "body.code_storage",
+                "核心代碼儲存位置；選 hdd 或 ssd",
+                required=True,
+                choices=("hdd", "ssd"),
+            ),
+            _p(
+                "expected-revision",
+                "body.expected_revision",
+                "可選的工作區 revision，避免覆蓋剛發生的變更",
+                ptype="int",
+            ),
+        ],
+        "examples": [
+            "dm workspace storage --workspace ai-architecture-platform --code-storage ssd",
+            "dm workspace storage --workspace mk4-workspace --code-storage hdd --expected-revision 3",
+        ],
+    },
+    {
         "command": "dm workspace resize",
         "tool_name": "digital_market_workspace_resize",
         "description": (
-            "調整既有數字資產托管工作區的正式儲存配額。可重複增加,但單次最多增加 "
-            "200MB;可減少,但不得低於服務端計算的實際用量。操作卡只允許編輯 "
+            "調整既有數字資產托管工作區的正式儲存配額。每個工作區預設 512MiB，"
+            "每次申請只增加 512MiB 並保留審計。操作卡只允許編輯 "
             "delta-mb/target-mb；若在相對調整與總配額模式間切換，actions edit 的 values "
             "必須把另一欄設為 null。資產 id 與 expected-revision 是鎖定及併發控制欄位，"
             "不可編輯"
@@ -5268,29 +5666,61 @@ COMMANDS = [
         "confirmation_policy": {"mode": "passkey", "adapter": "staged_action"},
         "confirmation_editable": ["delta-mb", "target-mb"],
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
-            _p("delta-mb", "body.delta_mb", "相對調整 MB:正數增加、負數減少;與 target-mb 二選一", ptype="int"),
-            _p("target-mb", "body.target_mb", "調整後總配額 MB;與 delta-mb 二選一", ptype="int"),
+            _p("id", "path.id", "資產 UUID、數字 ID、DMA 編號或唯一名稱", required=True),
+            _p("workspace", "body.workspace_ref", "可選工作區 UUID、數字 ID 或 workspace_key"),
+            _p("delta-mb", "body.delta_mb", "本次增加容量，固定填 512；與 target-mb 二選一", ptype="int", default=512),
+            _p("target-mb", "body.target_mb", "調整後總配額 MB，必須是目前配額再加 512；與 delta-mb 二選一", ptype="int"),
             _p("expected-revision", "body.expected_revision", "可選的目前配額 revision,避免併發覆蓋", ptype="int"),
         ],
         "examples": [
-            "dm workspace resize --id 19 --delta-mb 200",
-            "dm workspace resize --id 19 --delta-mb -50 --expected-revision 3",
-            "dm workspace resize --id 19 --target-mb 250",
+            "dm workspace resize --id mk4 --workspace mk4-workspace --delta-mb 512",
+            "dm workspace resize --id DMA-20260801-8A73DE5C --target-mb 1024",
         ],
     },
     {
-        "command": "dm db create",
+        "command": "dm data bind",
         "tool_name": "digital_market_database_create",
-        "description": "為數字資產創建或補齊專屬 SQLite 數據庫,供獨立網頁/API/Agent 服務使用",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/database",
+        "description": "為指定 2.1 工作區建立 HDD PostgreSQL 專用數據庫與隔離角色；仍使用穩定 JSON Data API，資料庫實際用量與代碼、附件、Runtime 共用工作區總配額",
+        "api_method": "POST", "api_path": "/api/workspaces/{workspace_ref}/databases",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
-            _p("key", "body.workspace_key", "托管空間 key"),
-            _p("name", "body.database_name", "數據庫名稱"),
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("name", "body.database_name", "邏輯數據庫名稱"),
+            _p(
+                "isolation",
+                "body.isolation_mode",
+                "workspace_rls/dedicated_schema/dedicated_database/dedicated_cluster",
+                default="workspace_rls",
+                choices=(
+                    "workspace_rls",
+                    "dedicated_schema",
+                    "dedicated_database",
+                    "dedicated_cluster",
+                ),
+            ),
         ],
-        "examples": ["dm db create --id 1 --name dma_customer_agent"],
+        "examples": ["dm data bind --workspace customer-operations --name app"],
+    },
+    {
+        "command": "dm db migrate hdd",
+        "tool_name": "digital_market_database_migrate_hdd",
+        "description": "把既有工作區的 Data API 資料庫原地遷移到 HDD PostgreSQL；接口與 API Key 不變，複製並驗證後切換綁定，SSD 舊記錄暫時保留供回滾",
+        "api_method": "POST",
+        "api_path": "/api/workspaces/{workspace_ref}/database/migrate-hdd",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "high",
+        "ai_requires_confirmation": True,
+        "params": [
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+            _p("database", "body.logical_name", "可選的邏輯資料庫名稱"),
+        ],
+        "examples": ["dm db migrate hdd --workspace mk4-workspace"],
     },
     {
         "command": "dm right add",
@@ -5349,19 +5779,19 @@ COMMANDS = [
     {
         "command": "dm deploy",
         "tool_name": "digital_market_deploy",
-        "description": "為數字資產記錄一次服務部署:靜態頁、Web、API、worker 或 Agent。當前先生成托管/反代規劃與審計記錄",
+        "description": "為已具備相應組件的數字資產記錄一次部署請求。若工作區目前只有 static 前端而要新增後端，必須先用 dm runtime upgrade；本指令不允許猜測資產 id 或工作區 key",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/deploy",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
+            _p("id", "path.id", "資產 UUID、數字 ID、DMA 編號或唯一名稱", required=True),
             _p("asset-no", "body.asset_no", "可選交叉核對的資產編號;若提供必須與 id 指向同一資產"),
             _p("workspace", "body.workspace_key", "可選交叉核對的工作區 key;若已存在必須屬於該資產"),
-            _p("workspace-id", "body.workspace_id", "可選交叉核對的工作區 id;必須屬於該資產", ptype="int"),
+            _p("workspace-id", "body.workspace_id", "可選交叉核對的工作區 UUID 或數字 ID;必須屬於該資產"),
             _p("type", "body.deploy_type", "static/web/api/worker/agent;省略時由 runtime 推導"),
             _p("runtime", "body.runtime", "運行時,如 node/python/static"),
             _p("upload-id", "body.source_upload_id", "來源 upload id", ptype="int"),
-            _p("version-id", "body.source_version_id", "來源 version id", ptype="int"),
+            _p("version-id", "body.source_version_id", "來源 version UUID"),
             _p("public-url", "body.public_url", "外部 URL 或路徑"),
             _p("status", "body.status", "planned/deploying/ready/failed/suspended"),
             _p("notes", "body.notes", "部署說明"),
@@ -5372,11 +5802,63 @@ COMMANDS = [
         ],
     },
     {
+        "command": "dm runtime upgrade",
+        "tool_name": "digital_market_runtime_upgrade",
+        "description": "按真實 workspace_key 把 static 工作區升級成 web/api 後端託管：持久化 Runtime 類型並建立或更新 backend 組件；有已托管源碼版本時生成部署請求，無源碼時只完成配置並明確返回上傳源碼為下一步。不修改資產主檔類型，也不猜測舊式數字資產 id",
+        "search_aliases": [
+            "静态托管升级后端",
+            "靜態託管升級後端",
+            "部署后端API",
+            "部署後端API",
+            "upgrade static workspace backend",
+            "change hosting type to web api",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/workspaces/{workspace_ref}/runtime",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "high",
+        "ai_requires_confirmation": True,
+        "semantic_contract": {
+            "effect": "mutate_in_place",
+            "resource": "digital_asset.workspace",
+            "related_resources": [
+                "digital_asset.component",
+                "digital_asset.deployment",
+            ],
+            "target_identity": "preserve",
+            "external_reality_required_for": ["deployment.ready", "public_url"],
+        },
+        "params": [
+            _p("workspace", "path.workspace_ref", "真實工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p(
+                "type",
+                "body.runtime_type",
+                "託管類型：選擇 web 或 api；後端 API 請填 api，不可填 web/api",
+                required=True,
+                choices=("web", "api"),
+            ),
+            _p("runtime", "body.runtime", "後端運行時,如 node20/python3.12", default="python3.12"),
+            _p("component", "body.component_name", "後端組件名稱", default="api"),
+            _p("entrypoint", "body.entrypoint", "後端入口文件,如 app.py/server.js"),
+            _p("build-command", "body.build_command", "構建命令"),
+            _p("start-command", "body.start_command", "啟動命令"),
+            _p("source-version-id", "body.source_version_id", "已托管源碼版本 UUID"),
+            _p("public-url", "body.public_url", "期望外部 URL 或路徑"),
+            _p("notes", "body.notes", "升級與部署說明"),
+        ],
+        "examples": [
+            "dm runtime upgrade --workspace mk4-workspace --type web --runtime node20 --start-command 'npm start'"
+        ],
+    },
+    {
         "command": "dm site publish",
         "tool_name": "digital_market_site_publish",
-        "description": "把數字資產發布為獨立靜態網頁入口,生成公開路徑、內部端口和部署記錄",
+        "description": "Warehouse 2.0 歷史站點發布命令；2.1 已由永久工作區入口、版本化交付物與 Runtime 部署狀態取代，不可執行。請使用 dm workspace create、dm upload、dm deploy 或 dm runtime upgrade",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/site",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
+        "lifecycle": "retired_2_0",
+        "ai_exposed": False,
         "params": [
             _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
             _p("public-url", "body.public_url", "外部 URL 或路徑"),
@@ -5527,7 +6009,7 @@ COMMANDS = [
     {
         "command": "dm payment declare",
         "tool_name": "digital_market_payment_declare",
-        "description": "買方付款申報(代錄):轉賬流水號必填,可附銀行電子回單編號;整份聲明鋼印封存、實名可追責。買方也可憑自己的 Key 調 /api/dam/v1/payment/declare 自助申報",
+        "description": "買方付款申報(代錄):轉賬流水號必填,可附銀行電子回單編號;整份聲明鋼印封存、實名可追責。2.1 只允許經目前公司的受治理命令契約申報",
         "api_method": "POST", "api_path": "/api/digital-assets/orders/{id}/declare-payment",
         "permission": "asset_mgmt.trade", "writes": True, "risk": "high", "affects_finance": True,
         "params": [
@@ -5555,7 +6037,7 @@ COMMANDS = [
     {
         "command": "dm receipt confirm",
         "tool_name": "digital_market_receipt_confirm",
-        "description": "賣方收款確認(代錄):確認到賬金額並鋼印封存。賣方也可憑該資產工作區的 Key 調 /api/dam/v1/receipt/confirm 自助確認。買方申報+賣方確認雙齊後才能結算",
+        "description": "賣方收款確認(代錄):確認到賬金額並鋼印封存。2.1 只允許經目前公司的受治理命令契約確認；買方申報和賣方確認雙齊後才能結算",
         "api_method": "POST", "api_path": "/api/digital-assets/orders/{id}/confirm-receipt",
         "permission": "asset_mgmt.trade", "writes": True, "risk": "high",
         "params": [
@@ -5720,129 +6202,346 @@ COMMANDS = [
     {
         "command": "dm guide",
         "tool_name": "digital_market_guide",
-        "description": "取《數字資產平台接入指南》權威原文(CLI/API Key/部署/數據庫/版本化/交易全流程)。用戶問接入、部署、Key、dam.py 怎麼用時調這個,引用原文回答;對話裡會自動出現「下載指南」和「下載 dam.py」按鈕,提醒用戶點擊保存",
-        "api_method": "GET", "api_path": "/api/digital-assets/guide",
-        "permission": "ai.use", "writes": False, "risk": "normal",
+        "description": "取得 Warehouse OS 2.1《數字資產託管指南》權威原文與正式下載連結。回答與執行必須以指南列出的原生控制面、PostgreSQL/RLS Data API、永久入口、配額及 wak_ Key 契約為準",
+        "api_method": "GET",
+        "api_path": "/api/digital-assets/guide",
+        "permission": "ai.use",
+        "writes": False,
+        "risk": "normal",
         "params": [],
         "examples": ["dm guide"],
     },
     {
+        "command": "dm hosting requirements",
+        "tool_name": "digital_market_hosting_requirements",
+        "description": "取得《託管應用技術要求 2.2》、機器可讀 Hosting Contract 及正式下載連結。用於設計或檢查可被 Warehouse OS 託管的 Python、Node.js、靜態網站、Container 與 Compose 專案；回答必須區分應用責任、平台保證與 ready 的實證門檻",
+        "search_aliases": [
+            "託管技術要求",
+            "托管技术要求",
+            "託管開發標準",
+            "托管开发标准",
+            "下載託管規範",
+            "下载托管规范",
+            "hosting requirements",
+            "hosting developer standard",
+            "application hosting contract",
+        ],
+        "api_method": "GET",
+        "api_path": "/api/digital-assets/hosting-standard",
+        "permission": "ai.use",
+        "writes": False,
+        "risk": "normal",
+        "params": [],
+        "examples": ["dm hosting requirements"],
+    },
+    {
+        "command": "dm hosting start",
+        "tool_name": "digital_market_hosting_start",
+        "description": "啟動一個可恢復的智能託管會話。這是 AI 秘書處理部署目標的優先入口：先觀察真實工作區、源碼、儲存及 Runtime，再回傳非寫死計畫；可用 desired-state 明確目標，execute=true 時在同一會話內執行並保留逐步證據與精確故障位置",
+        "search_aliases": [
+            "智能部署會話",
+            "智能托管会话",
+            "hosting agent session",
+            "deploy application intelligently",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/hosting/v2/sessions",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("workspace", "body.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("message", "body.message", "要完成的自然語言託管目標", required=True),
+            _p("desired-state", "body.desired_state", "可選 storage/runtime/deployment 目標 JSON", ptype="json"),
+            _p("execute", "body.execute", "是否立即按計畫執行 true/false", ptype="bool", default=False),
+            _p("client-kind", "body.client_kind", "web_secretary/terminal_ai/external_ai/automation", default="web_secretary"),
+        ],
+        "examples": [
+            "dm hosting start --workspace mk4-workspace --message '自動識別源碼並部署到健康網址' --desired-state '{\"runtime\":{\"type\":\"auto\"},\"deployment\":{\"state\":\"ready\"}}' --execute true"
+        ],
+    },
+    {
+        "command": "dm hosting continue",
+        "tool_name": "digital_market_hosting_continue",
+        "description": "繼續既有智能託管會話，保留先前目標、觀察、源碼與失敗診斷；修復或補充資料後應重用 session id，而不是新建資產、工作區或重跑固定流程",
+        "api_method": "POST",
+        "api_path": "/api/hosting/v2/sessions/{session_id}/messages",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("session", "path.session_id", "智能託管 session UUID", required=True),
+            _p("message", "body.message", "本輪補充或下一個目標", required=True),
+            _p("desired-state", "body.desired_state", "本輪合併的 storage/runtime/deployment JSON", ptype="json"),
+            _p("execute", "body.execute", "是否立即執行 true/false", ptype="bool", default=False),
+        ],
+        "examples": [
+            "dm hosting continue --session 8a4210a3-9e19-4cad-8a2a-e5a940d29c76 --message '源碼已附加，繼續到健康網址' --execute true"
+        ],
+    },
+    {
+        "command": "dm hosting status",
+        "tool_name": "digital_market_hosting_status",
+        "description": "讀取智能託管會話的當前階段、真實工作區狀態、執行證據、精確診斷及下一步；refresh 默認重新觀察 Runtime，不把 queued 或資料庫配置誤稱為已上線",
+        "api_method": "GET",
+        "api_path": "/api/hosting/v2/sessions/{session_id}",
+        "permission": "asset_mgmt.read",
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p("session", "path.session_id", "智能託管 session UUID", required=True),
+            _p("refresh", "query.refresh", "是否重新觀察真實狀態", ptype="bool", default=True),
+        ],
+        "examples": ["dm hosting status --session 8a4210a3-9e19-4cad-8a2a-e5a940d29c76"],
+    },
+    {
+        "command": "dm hosting events",
+        "tool_name": "digital_market_hosting_events",
+        "description": "按序讀取同一智能託管會話的理解、觀察、源碼、執行、診斷與 healthy 回執，供 AI 秘書像 Codex 一樣展示每一步狀態",
+        "api_method": "GET",
+        "api_path": "/api/hosting/v2/sessions/{session_id}/events",
+        "permission": "asset_mgmt.read",
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p("session", "path.session_id", "智能託管 session UUID", required=True),
+            _p("after", "query.after", "只讀取此序號之後的事件", ptype="int", default=0),
+        ],
+        "examples": ["dm hosting events --session 8a4210a3-9e19-4cad-8a2a-e5a940d29c76 --after 0"],
+    },
+    {
+        "command": "dm storage pools",
+        "tool_name": "digital_market_storage_pools",
+        "description": "觀察平台 HDD/SSD 儲存池的健康、水位、剩餘容量與資料庫策略閾值；不暴露服務器路徑。核心代碼默認 HDD，SSD 必須來自明確意圖，所有托管資料固定 HDD",
+        "api_method": "GET",
+        "api_path": "/api/storage/v1/pools",
+        "permission": "asset_mgmt.read",
+        "writes": False,
+        "risk": "normal",
+        "params": [],
+        "examples": ["dm storage pools"],
+    },
+    {
         "command": "dm provision",
         "tool_name": "digital_market_provision",
-        "description": "一步開通托管工作區:只要項目名稱,自動登記資產、創建工作區與專屬 SQLite 數據庫並簽發客戶 API Key(明文只返回一次)。客戶之後用 curl -o dam.py <域名>/api/dam/cli 下載 CLI,即可 deploy 網頁、query/exec 數據庫",
-        "api_method": "POST", "api_path": "/api/digital-assets/provision-workspace",
-        "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
+        "description": "在目前公司平台一步托管軟件或應用：建立 2.1 原生數字資產、永久入口、512MiB 邏輯配額與 PostgreSQL/RLS Data API，並簽發主 wak_ Key。核心代碼預設 HDD，僅在使用者明確聲明時選 SSD；附件、資料集、運行持久化資料及備份固定 HDD，配額不預佔實體空間",
+        "search_aliases": [
+            "数字资产托管软件工作区",
+            "數字資產託管軟件工作區",
+            "应用托管工作区密钥",
+            "應用託管工作區密鑰",
+            "host software workspace",
+            "provision hosted application",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/digital-assets/provision",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "high",
         "secret_result_fields": ["api_key"],
         "ai_requires_confirmation": True,
+        # Declarative composition: provisioning already creates the workspace
+        # and its first Key, so the generic planner can remove a redundant
+        # lower-level key issuance step without a business-specific if/else.
+        "supersedes_tools": ["digital_market_key_issue"],
         "params": [
             _p("name", "body.name", "項目/資產名稱", required=True),
             _p("kind", "body.asset_kind", "software/agent/project/data/model/knowledge/process", default="software"),
             _p("summary", "body.summary", "一句話說明"),
+            _p("workspace-key", "body.workspace_key", "工作區代碼(英數及連字符)"),
+            _p(
+                "runtime",
+                "body.runtime_type",
+                "static/web/api/worker/agent",
+                default="static",
+            ),
+            _p(
+                "plan",
+                "body.service_plan",
+                "custody/hosted/managed/dedicated；custody 不建立 Data API",
+                default="hosted",
+            ),
+            _p(
+                "code-storage",
+                "body.code_storage",
+                "核心代碼位置；預設 hdd，不必詢問；只有使用者明確要求才填 ssd",
+                default="hdd",
+                choices=("hdd", "ssd"),
+            ),
+            _p("database", "body.database_name", "邏輯數據庫名稱"),
+            _p("label", "body.label", "主 Key 標籤", default="Primary workspace key"),
+            _p("expires-days", "body.expires_days", "有效天數(1-365)", ptype="int", default=90),
         ],
-        "examples": ["dm provision --name 客戶官網"],
+        "examples": [
+            'dm provision --name "客戶營運系統" --runtime api --workspace-key customer-operations'
+        ],
     },
     {
         "command": "dm key issue",
         "tool_name": "digital_market_key_issue",
-        "description": "為數字資產的托管工作區簽發/輪換客戶 API Key(dak_ 開頭)。明文只返回一次,要提醒用戶立即保存;重簽會使舊 key 失效。客戶憑此 key 調 /api/dam/v1/* 自助管理自己的數據庫與網頁。工作區不存在時自動連專屬數據庫一起開通",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace-key",
-        "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
+        "description": "為已有主 Key 的 2.1 工作區簽發一把附屬 wak_ Key，可獨立定制作用域、用途和有效期。附屬 Key 不影響主 Key或其他附屬 Key，明文只返回一次；新建軟件應先用 dm provision",
+        "search_aliases": [
+            "给工作区签发API KEY",
+            "為工作區簽發API KEY",
+            "issue workspace api key",
+            "issue delegated workspace key",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/workspaces/{workspace_ref}/keys",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "high",
         "secret_result_fields": ["api_key"],
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+            _p("label", "body.label", "附屬 Key 用途標籤", default="Delegated workspace key"),
+            _p(
+                "scopes",
+                "body.scopes",
+                "workspace:read,data:read,data:write 等作用域",
+                ptype="list",
+                default=["workspace:read", "data:read"],
+            ),
+            _p("expires-days", "body.expires_days", "有效天數(1-365)", ptype="int", default=90),
         ],
-        "examples": ["dm key issue --id 1"],
+        "examples": [
+            'dm key issue --workspace customer-operations --label "資料匯入服務" --scopes workspace:read,data:read,data:write --expires-days 30'
+        ],
+    },
+    {
+        "command": "dm key primary rotate",
+        "tool_name": "digital_market_primary_key_rotate",
+        "description": "原子輪換工作區唯一主 wak_ Key：新主 Key 固定取得全部工作區作用域，舊主 Key立即撤銷；既有附屬 Key 保持有效。新 Key 明文只返回一次",
+        "search_aliases": [
+            "轮换主API KEY",
+            "輪換主API KEY",
+            "rotate primary workspace key",
+            "replace master api key",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/workspaces/{workspace_ref}/keys/primary/rotate",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "high",
+        "secret_result_fields": ["api_key"],
+        "ai_requires_confirmation": True,
+        "params": [
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("label", "body.label", "新主 Key 標籤", default="Primary workspace key"),
+            _p("expires-days", "body.expires_days", "有效天數(1-365)", ptype="int", default=90),
+        ],
+        "examples": ["dm key primary rotate --workspace customer-operations --expires-days 90"],
     },
     {
         "command": "dm key revoke",
         "tool_name": "digital_market_key_revoke",
-        "description": "吊銷數字資產工作區的客戶 API Key,客戶端立即無法再調用 /api/dam/v1/*",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace-key-revoke",
+        "description": "按憑證 UUID 吊銷一把附屬 wak_ Key；立即失效且不影響主 Key或其他附屬 Key。活動中的主 Key 不能直接吊銷，必須使用 dm key primary rotate",
+        "api_method": "POST", "api_path": "/api/workspaces/{workspace_ref}/keys/{credential_ref}/revoke",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
+        "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("key-id", "path.credential_ref", "要吊銷的 Key 憑證 UUID", required=True),
         ],
-        "examples": ["dm key revoke --id 1"],
+        "examples": ["dm key revoke --workspace customer-operations --key-id 38d8e62c-5581-4a56-84bd-9b5c19bd5ee0"],
     },
     {
         "command": "dm key add",
         "tool_name": "digital_market_collab_key_issue",
-        "description": "為數字資產工作區【新增一把協作者 API Key】(dak_ 開頭,獨立於主 key)。同一工作區可掛多把,互不影響,作用域與主 key 等同(全功能:部署網頁/後端、讀寫專屬數據庫、pull 拉取全部源碼)。這就是 GitHub 式共同開發:把朋友/同事加為協作者時,給對方一把【他自己的】key,對方憑此 key 即可 pull→改→push 全部代碼與資產,你無需共享自己的 key、且能隨時用 dm key revoke-one 單獨吊銷對方而不影響自己。明文只返回一次,要提醒用戶立即轉交協作者並保存。工作區不存在時自動連專屬數據庫一起開通。",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace-collab-key",
+        "description": "dm key issue 的協作者別名：為既有工作區簽發一把附屬 wak_ Key，可設定標籤、作用域與有效期；明文只返回一次，不授予未列出的能力",
+        "api_method": "POST", "api_path": "/api/workspaces/{workspace_ref}/keys",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
         "secret_result_fields": ["api_key"],
         "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
-            _p("label", "body.label", "協作者標識(姓名/用途),用於日後識別與單獨吊銷", required=True),
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("label", "body.label", "協作者或用途標籤", required=True),
+            _p("scopes", "body.scopes", "限定作用域(逗號分隔)", ptype="list", default=["workspace:read", "data:read"]),
+            _p("expires-days", "body.expires_days", "有效天數(1-365)", ptype="int", default=90),
         ],
-        "examples": ["dm key add --id 4 --label 趙曉晨"],
+        "examples": ["dm key add --workspace customer-operations --label 趙曉晨 --expires-days 30"],
     },
     {
         "command": "dm key list",
         "tool_name": "digital_market_keys_list",
-        "description": "列出數字資產工作區的全部 API Key:主 key(後端運行時自用)+ 全部協作者 key(含 label、hint、簽發人、最近使用時間、是否已吊銷、可單獨吊銷用的 key_id)。只顯示 hint,絕不顯示明文。",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace-keys",
+        "description": "列出工作區全部 wak_ Key 的安全元資料與主從關係：主/附屬類型、父 Key、hint、作用域、簽發/到期/最近使用/吊銷時間；絕不返回明文或 token hash",
+        "api_method": "GET", "api_path": "/api/workspaces/{workspace_ref}/keys",
         "permission": "asset_mgmt.manage", "writes": False, "risk": "normal",
-        "params": [_p("id", "path.id", "企業數字資產 id", required=True, ptype="int")],
-        "examples": ["dm key list --id 4"],
+        "params": [_p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True)],
+        "examples": ["dm key list --workspace customer-operations"],
     },
     {
         "command": "dm key revoke-one",
         "tool_name": "digital_market_collab_key_revoke",
-        "description": "單獨吊銷一把【協作者】key(按 key_id,用 dm key list 查 id),立即生效,不影響主 key 與其他協作者。注意分清:`dm key revoke`(不帶 -one)吊銷的是工作區主 key;要踢掉某個協作者請用本命令。",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace-collab-key-revoke",
+        "description": "dm key revoke 的相容別名：按憑證 UUID 單獨吊銷一把 wak_ Key，立即生效且不影響其他 Key",
+        "api_method": "POST", "api_path": "/api/workspaces/{workspace_ref}/keys/{credential_ref}/revoke",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
+        "ai_requires_confirmation": True,
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
-            _p("key_id", "body.key_id", "要吊銷的協作者 key_id(dm key list 可查)", required=True, ptype="int"),
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("key-id", "path.credential_ref", "要吊銷的 Key 憑證 UUID", required=True),
         ],
-        "examples": ["dm key revoke-one --id 4 --key_id 1"],
+        "examples": ["dm key revoke-one --workspace customer-operations --key-id 38d8e62c-5581-4a56-84bd-9b5c19bd5ee0"],
     },
     {
-        "command": "dm console",
+        "command": "dm data schema",
         "tool_name": "digital_market_console",
-        "description": "查看數字資產工作區控制台:API Key 狀態、專屬數據庫表結構與行數、已部署站點文件清單",
-        "api_method": "GET", "api_path": "/api/digital-assets/{id}/workspace-console",
+        "description": "以目前公司的控制面身份讀取指定 2.1 工作區 Data API 集合結構與記錄數；不返回 Key 明文、token hash、DSN 或 raw SQL 入口",
+        "api_method": "GET", "api_path": "/api/workspaces/{workspace_ref}/database/schema",
         "permission": "asset_mgmt.read", "writes": False, "risk": "normal",
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("database", "query.database", "可選邏輯數據庫名稱"),
         ],
-        "examples": ["dm console --id 1"],
+        "examples": ["dm data schema --workspace customer-operations"],
     },
     {
-        "command": "dm db query",
+        "command": "dm data list",
         "tool_name": "digital_market_db_query",
-        "description": "對數字資產工作區的專屬 SQLite 數據庫做只讀查詢(SELECT/WITH/PRAGMA/EXPLAIN),返回行數封頂 1000",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace-db/query",
+        "description": "以目前公司的控制面身份分頁讀取指定 2.1 工作區的一個 PostgreSQL/RLS Data API 集合；不接受 raw SQL，單次最多 1000 筆",
+        "api_method": "GET", "api_path": "/api/workspaces/{workspace_ref}/data/{collection}",
         "permission": "asset_mgmt.manage", "writes": False, "risk": "normal",
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
-            _p("sql", "body.sql", "只讀 SQL", required=True),
-            _p("limit", "body.limit", "返回行數上限", ptype="int"),
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("collection", "path.collection", "集合名稱", required=True),
+            _p("database", "query.database", "可選邏輯數據庫名稱"),
+            _p("limit", "query.limit", "返回筆數 1-1000", ptype="int", default=100),
+            _p("offset", "query.offset", "分頁起點", ptype="int", default=0),
         ],
-        "examples": ['dm db query --id 1 --sql "SELECT * FROM asset_events ORDER BY id DESC LIMIT 20"'],
+        "examples": ["dm data list --workspace customer-operations --collection customers --limit 100"],
     },
     {
-        "command": "dm db exec",
+        "command": "dm data put",
         "tool_name": "digital_market_db_exec",
-        "description": "對數字資產工作區的專屬 SQLite 數據庫執行寫操作(建表/插入/更新/刪除),全程審計。只作用於該工作區自己的庫,不影響平台主庫",
-        "api_method": "POST", "api_path": "/api/digital-assets/{id}/workspace-db/exec",
+        "description": "以目前公司的控制面身份在指定 2.1 工作區新增或更新一筆 PostgreSQL/RLS Data API JSON 記錄；使用 expected-version 執行樂觀併發，不接受 raw SQL",
+        "api_method": "PUT", "api_path": "/api/workspaces/{workspace_ref}/data/{collection}/{record_key}",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
         "params": [
-            _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
-            _p("sql", "body.sql", "單條寫 SQL"),
-            _p("script", "body.script", "多條 SQL 腳本(分號分隔)"),
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("collection", "path.collection", "集合名稱", required=True),
+            _p("record-key", "path.record_key", "穩定記錄鍵", required=True),
+            _p("data", "body.data", "JSON 物件", required=True, ptype="json"),
+            _p("database", "query.database", "可選邏輯數據庫名稱"),
+            _p("expected-version", "query.expected_version", "新建用 0；更新用上次讀到的版本", ptype="int"),
         ],
-        "examples": ['dm db exec --id 1 --sql "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT)"'],
+        "examples": [
+            'dm data put --workspace customer-operations --collection customers --record-key acme --data \'{"name":"Acme"}\' --expected-version 0'
+        ],
     },
     {
         "command": "dm site put",
         "tool_name": "digital_market_site_put",
-        "description": "⚠️ 覆蓋性寫操作:向托管站點寫入/更新文件,同名文件會被直接覆蓋並即時上線。嚴禁為查看/測試目的調用、嚴禁寫占位內容——只能寫用戶明確提供的真實內容,寫前先 dm site history 確認可回滾並向用戶確認。查看站點請用只讀的 dm console / dm site history / dm site diff",
+        "description": "Warehouse 2.0 歷史站點文件命令；2.1 不允許直接覆蓋在線文件，已由版本化交付物、SHA-256 保管與 Runtime 部署取代，不可執行",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/site-upload",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
+        "lifecycle": "retired_2_0",
+        "ai_exposed": False,
         "params": [
             _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
             _p("path", "body.files[0].path", "站內相對路徑,如 index.html", required=True),
@@ -5853,9 +6552,11 @@ COMMANDS = [
     {
         "command": "dm site history",
         "tool_name": "digital_market_site_history",
-        "description": "看某資產托管站點的版本歷史:每個版本=一次發版快照(+新增 ~修改 -刪除 統計、清單鋼印編號)。客戶用 dam.py push 增量發版、dam.py rollback 回滾",
+        "description": "Warehouse 2.0 歷史站點快照命令；2.1 應讀取資產版本、交付物、託管事件與部署記錄，不可執行此命令",
         "api_method": "GET", "api_path": "/api/digital-assets/{id}/site-versions",
         "permission": "asset_mgmt.read", "writes": False, "risk": "normal",
+        "lifecycle": "retired_2_0",
+        "ai_exposed": False,
         "params": [
             _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
             _p("limit", "query.limit", "返回條數", ptype="int", default=50),
@@ -5865,9 +6566,11 @@ COMMANDS = [
     {
         "command": "dm site diff",
         "tool_name": "digital_market_site_diff",
-        "description": "任意兩個站點版本交叉對比:文件級 新增/修改/刪除 清單;帶 --path 看單文件行級 unified diff(僅文本)。from=0 表示空站(即首版全部為新增)",
+        "description": "Warehouse 2.0 歷史站點差異命令；2.1 尚未提供等價的站點文件差異控制面，不可執行",
         "api_method": "GET", "api_path": "/api/digital-assets/{id}/site-diff",
         "permission": "asset_mgmt.read", "writes": False, "risk": "normal",
+        "lifecycle": "retired_2_0",
+        "ai_exposed": False,
         "params": [
             _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
             _p("from", "query.from", "起始版本號", required=True, ptype="int"),
@@ -5880,9 +6583,11 @@ COMMANDS = [
     {
         "command": "dm site rollback",
         "tool_name": "digital_market_site_rollback",
-        "description": "把站點回滾到指定版本(以舊清單生成新版本上線,歷史保留可再回);執行前向用戶確認目標版本",
+        "description": "Warehouse 2.0 歷史站點回滾命令；2.1 尚未提供等價 Runtime 回滾適配器，不可執行，也不得把資產版本變更宣稱為部署回滾",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/site-rollback",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "high",
+        "lifecycle": "retired_2_0",
+        "ai_exposed": False,
         "params": [
             _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
             _p("version", "body.version", "目標版本號", required=True, ptype="int"),
@@ -5892,9 +6597,11 @@ COMMANDS = [
     {
         "command": "dm site rm",
         "tool_name": "digital_market_site_rm",
-        "description": "刪除數字資產工作區托管站點裡的一個文件",
+        "description": "Warehouse 2.0 歷史站點文件刪除命令；2.1 使用不可變交付物與新版本，不允許原地刪除已保管文件，不可執行",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/site-file-delete",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
+        "lifecycle": "retired_2_0",
+        "ai_exposed": False,
         "params": [
             _p("id", "path.id", "企業數字資產 id", required=True, ptype="int"),
             _p("path", "body.path", "站內相對路徑", required=True),
@@ -5903,8 +6610,8 @@ COMMANDS = [
     },
     # ============================================================
     # 補充收斂(2026-06-14):將既有業務端點納入 AI 可調用動作面。
-    # 純查詢類 risk=low;寫操作帶權限閘門。客戶託管運行時(/api/dam/v1/*)、
-    # 密鑰/外部識別、AI 自身管線屬有意保留,不在此列。
+    # 純查詢類 risk=low;寫操作帶權限閘門。工作區資料面、
+    # 密鑰/外部識別、AI 自身管線由 2.1 原生適配器單獨治理。
     # ============================================================
     {
         "command": "fin drilldown", "tool_name": "fin_statement_drilldown",
@@ -6142,6 +6849,937 @@ COMMANDS = [
             _p("datasets", "body.datasets", "要提交的數據集(可選)"),
         ],
         "examples": ["datahub commit --job 7"],
+    },
+    {
+        "command": "research key issue",
+        "tool_name": "research_api_key_issue",
+        "description": (
+            "為本人簽發綁定當前公司、僅可存取科研 API 的密鑰；"
+            "明文以一次性安全卡交付，不寫入聊天記錄"
+        ),
+        "api_method": "POST",
+        "api_path": "/api/research/api-keys",
+        "permission": "research.read",
+        "permission_any": ["research.read", "research.write", "research.review"],
+        "execution_identity": "requesting_user",
+        "writes": True,
+        "risk": "high",
+        # This is a self-scoped, tenant-bound, permission-ceiling credential.
+        # The user's explicit command is the authorization event; the service
+        # cannot grant another user, company or non-research audience.
+        "confirmation_policy": "direct",
+        "secret_result_fields": ["api_key"],
+        "params": [
+            _p(
+                "label",
+                "body.label",
+                "用途標籤，如實驗室模擬器或資料同步",
+                default="科研 API",
+            ),
+            _p(
+                "days",
+                "body.expires_in_days",
+                "有效天數 1-365",
+                ptype="int",
+                default=30,
+            ),
+        ],
+        "search_aliases": [
+            "科研 api key",
+            "科研 api 密鑰",
+            "研究 api key",
+            "research api key",
+            "給我科研 key",
+            "簽發科研 key",
+        ],
+        "examples": [
+            "research key issue",
+            'research key issue --label "實驗室模擬器" --days 30',
+        ],
+    },
+    {
+        "command": "research key list",
+        "tool_name": "research_api_keys_list",
+        "description": ("列出本人在當前公司的科研 API Key hint、到期、使用與吊銷狀態，不返回明文"),
+        "api_method": "GET",
+        "api_path": "/api/research/api-keys",
+        "permission": "research.read",
+        "permission_any": ["research.read", "research.write", "research.review"],
+        "execution_identity": "requesting_user",
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "search_aliases": [
+            "科研 api key 列表",
+            "查看科研密鑰",
+            "research api keys",
+        ],
+        "examples": ["research key list"],
+    },
+    {
+        "command": "research key revoke",
+        "tool_name": "research_api_key_revoke",
+        "description": "立即吊銷本人在當前公司的一把科研 API Key，不影響其他密鑰",
+        "api_method": "DELETE",
+        "api_path": "/api/research/api-keys/{key_id}",
+        "permission": "research.read",
+        "permission_any": ["research.read", "research.write", "research.review"],
+        "execution_identity": "requesting_user",
+        "writes": True,
+        "risk": "high",
+        "confirmation_policy": "direct",
+        "params": [
+            _p(
+                "key-id",
+                "path.key_id",
+                "research key list 返回的 key id",
+                required=True,
+                ptype="int",
+            )
+        ],
+        "search_aliases": [
+            "吊銷科研 api key",
+            "撤銷科研密鑰",
+            "revoke research api key",
+        ],
+        "examples": ["research key revoke --key-id 7"],
+    },
+    {
+        "command": "research cli show",
+        "tool_name": "research_cli_show",
+        "description": "查看官方無介面科研 CLI 的下載、SHA-256、Key 環境變數與完整操作組",
+        "api_method": "GET",
+        "api_path": "/api/research/cli/manifest",
+        "permission": "research.read",
+        "permission_any": ["research.read", "research.write", "research.review"],
+        "execution_identity": "requesting_user",
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "search_aliases": [
+            "科研 cli",
+            "科研命令行",
+            "下載科研 cli",
+            "research cli",
+        ],
+        "examples": ["research cli show"],
+    },
+    {
+        "command": "research formats list",
+        "tool_name": "research_formats_list",
+        "description": "查看科研托管支援的格式、內嵌閱覽、差異策略與上傳限制",
+        "api_method": "GET",
+        "api_path": "/api/research/formats",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "examples": ["research formats list"],
+    },
+    {
+        "command": "research project list",
+        "tool_name": "research_project_list",
+        "description": "列出當前公司的科研課題及文件、版本與 Git 提交統計",
+        "api_method": "GET",
+        "api_path": "/api/research/projects",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "examples": ["research project list"],
+    },
+    {
+        "command": "research project create",
+        "tool_name": "research_project_create",
+        "description": "建立獨立 Git 科研課題空間",
+        "api_method": "POST",
+        "api_path": "/api/research/projects",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("title", "body.title", "課題名稱", required=True),
+            _p("area", "body.research_area", "研究領域"),
+            _p("summary", "body.summary", "問題、假設或研究邊界摘要"),
+        ],
+        "examples": [
+            'research project create --title "丙二酸反應動力學" --area CHEMISTRY',
+        ],
+    },
+    {
+        "command": "research project show",
+        "tool_name": "research_project_show",
+        "description": "查看一個科研課題的文件、版本與 Git 提交譜系",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research project show --project RSH-2026-001"],
+    },
+    {
+        "command": "research upload contract",
+        "tool_name": "research_upload_contract",
+        "description": "生成當前課題的終端 multipart 上傳契約與安全 curl 模板；實際上傳會建立版本、Git commit 與稽核事件",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/upload-contract",
+        "permission": "research.write",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research upload contract --project RSH-2026-001"],
+    },
+    {
+        "command": "research git log",
+        "tool_name": "research_git_log",
+        "description": "讀取課題原生 Git 提交、作者、父提交與版本清單",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/commits",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("limit", "query.limit", "最多返回 1-200 筆提交", ptype="int", default=80),
+        ],
+        "examples": ["research git log --project RSH-2026-001 --limit 40"],
+    },
+    {
+        "command": "research file versions",
+        "tool_name": "research_file_versions",
+        "description": "列出一份科研文件的不可變版本、SHA-256 與對應 Git commit",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/versions",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "文件 ID 或邏輯路徑", required=True),
+        ],
+        "examples": [
+            "research file versions --project RSH-2026-001 --file manuscript.docx",
+        ],
+    },
+    {
+        "command": "research file preview",
+        "tool_name": "research_file_preview",
+        "description": "在權限邊界內提取一個科研文件版本的內嵌閱覽資料",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/preview",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "文件 ID 或邏輯路徑", required=True),
+            _p("version", "query.version", "指定文件版本", ptype="int"),
+        ],
+        "examples": [
+            "research file preview --project RSH-2026-001 --file manuscript.docx",
+        ],
+    },
+    {
+        "command": "research document review",
+        "tool_name": "research_document_review",
+        "description": "讀取版本固定的論文區塊、字符錨點批注、概念索引與帶引用問答記錄",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/review",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "文件 ID 或邏輯路徑", required=True),
+            _p("version", "query.version", "指定不可變文件版本", ptype="int"),
+        ],
+        "examples": [
+            "research document review --project MK51 --file manuscript/paper.docx",
+        ],
+    },
+    {
+        "command": "research document annotate",
+        "tool_name": "research_document_annotate",
+        "description": "對論文的選定字符範圍新增版本化批注；anchor JSON 須包含 quote，可附 prefix / suffix",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/annotations",
+        "permission_any": ["research.write", "research.review"],
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "文件 ID 或邏輯路徑", required=True),
+            _p("version", "body.version", "指定不可變文件版本", ptype="int"),
+            _p(
+                "anchor",
+                "body.anchor",
+                "字符錨點 JSON：quote / prefix / suffix",
+                required=True,
+                ptype="json",
+            ),
+            _p("body", "body.body", "批注內容", required=True),
+        ],
+        "examples": [
+            "research document annotate --project MK51 --file manuscript/paper.docx "
+            "--anchor '{\"quote\":\"selected sentence\"}' --body '需要補充來源'",
+        ],
+    },
+    {
+        "command": "research document ask",
+        "tool_name": "research_document_ask",
+        "description": "向版本固定的論文索引提問，返回答案及精確區塊引用；可用 anchor JSON 限定選中文字",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/questions",
+        "permission": "research.read",
+        "writes": True,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "文件 ID 或邏輯路徑", required=True),
+            _p("version", "body.version", "指定不可變文件版本", ptype="int"),
+            _p("question", "body.question", "對選區或全文的問題", required=True),
+            _p("anchor", "body.anchor", "可選字符錨點 JSON", ptype="json"),
+        ],
+        "examples": [
+            'research document ask --project MK51 --file manuscript/paper.docx --question "這個公式的物理意義是什麼？"',
+        ],
+    },
+    {
+        "command": "research file diff",
+        "tool_name": "research_file_diff",
+        "description": "比較科研文件的兩個版本並返回語義或表格差異",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/diff",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "文件 ID 或邏輯路徑", required=True),
+            _p("from", "query.from_version", "起始版本", ptype="int"),
+            _p("to", "query.to_version", "目標版本", ptype="int"),
+        ],
+        "examples": [
+            "research file diff --project RSH-2026-001 --file manuscript.docx --from 1 --to 2",
+        ],
+    },
+    {
+        "command": "research workflow show",
+        "tool_name": "research_workflow_show",
+        "description": "讀取課題從 DMP、協議、Run、主張證據、覆核到發布的完整研究工作流",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/workflow",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research workflow show --project RSH-2026-001"],
+    },
+    {
+        "command": "research dmp show",
+        "tool_name": "research_dmp_show",
+        "description": "查看課題目前及歷史資料管理計畫 DMP",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/dmp",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research dmp show --project RSH-2026-001"],
+    },
+    {
+        "command": "research dmp update",
+        "tool_name": "research_dmp_update",
+        "description": "建立下一版動態 DMP；原版本保留並標記為已取代",
+        "api_method": "PUT",
+        "api_path": "/api/research/projects/{project_ref}/dmp",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("question", "body.research_question", "研究問題"),
+            _p("hypothesis", "body.hypothesis", "可驗證假設"),
+            _p("collection", "body.data_collection", "資料收集與文件化"),
+            _p("ethics", "body.ethics_legal_security", "倫理、法律與安全"),
+            _p("storage", "body.storage_preservation", "儲存與長期保存"),
+            _p("sharing", "body.sharing_reuse", "分享與再利用"),
+            _p("responsibilities", "body.responsibilities", "角色與責任"),
+        ],
+        "examples": [
+            'research dmp update --project RSH-2026-001 --question "溫度如何影響強度？" --storage "原始資料唯讀保存"'
+        ],
+    },
+    {
+        "command": "research protocol list",
+        "tool_name": "research_protocol_list",
+        "description": "列出課題研究協議及其鎖版狀態",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/protocols",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research protocol list --project RSH-2026-001"],
+    },
+    {
+        "command": "research protocol create",
+        "tool_name": "research_protocol_create",
+        "description": "建立可審查、可鎖版的研究或實驗協議",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/protocols",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("title", "body.title", "協議名稱", required=True),
+            _p("objective", "body.objective", "協議目的"),
+            _p(
+                "specification",
+                "body.specification",
+                "步驟、樣品、設備與分析計畫 JSON",
+                ptype="json",
+            ),
+        ],
+        "examples": ['research protocol create --project RSH-2026-001 --title "拉伸測試 v1"'],
+    },
+    {
+        "command": "research run list",
+        "tool_name": "research_run_list",
+        "description": "列出課題所有實驗或分析 Run、協議與執行狀態",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/runs",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research run list --project RSH-2026-001"],
+    },
+    {
+        "command": "research run start",
+        "tool_name": "research_run_start",
+        "description": "依研究協議開始一次具有環境、輸入與稽核記錄的 Run",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/runs",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("title", "body.title", "Run 名稱", required=True),
+            _p("protocol", "body.protocol_id", "協議 ID"),
+            _p("inputs", "body.inputs", "輸入、樣品與參數 JSON", ptype="json"),
+            _p("environment", "body.environment", "軟體、設備與環境 JSON", ptype="json"),
+        ],
+        "examples": ['research run start --project RSH-2026-001 --title "20°C 第一次拉伸"'],
+    },
+    {
+        "command": "research run complete",
+        "tool_name": "research_run_complete",
+        "description": "完成一個 Run 並記錄觀察、結果與協議偏差",
+        "api_method": "PATCH",
+        "api_path": "/api/research/projects/{project_ref}/runs/{run_ref}",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("run", "path.run_ref", "Run ID", required=True),
+            _p("status", "body.status", "completed / failed / cancelled", default="completed"),
+            _p("observations", "body.observations", "觀察與輸出 JSON", ptype="json"),
+            _p("deviation", "body.deviation_note", "協議偏差與原因"),
+        ],
+        "examples": [
+            "research run complete --project RSH-2026-001 --run RUN_ID --status completed"
+        ],
+    },
+    {
+        "command": "research claim list",
+        "tool_name": "research_claim_list",
+        "description": "列出課題主張、證據連結與審查狀態",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/claims",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research claim list --project RSH-2026-001"],
+    },
+    {
+        "command": "research claim create",
+        "tool_name": "research_claim_create",
+        "description": "建立待證據與同行覆核的研究主張",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/claims",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("statement", "body.statement", "可檢驗的研究主張", required=True),
+            _p("confidence", "body.confidence", "信心水準 0-1", ptype="float"),
+        ],
+        "examples": [
+            'research claim create --project RSH-2026-001 --statement "升溫使強度下降" --confidence 0.8'
+        ],
+    },
+    {
+        "command": "research evidence link",
+        "tool_name": "research_evidence_link",
+        "description": "把精確文件版本或 Run 連到研究主張，形成主張—證據圖譜",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/claims/{claim_ref}/evidence",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("claim", "path.claim_ref", "主張 ID", required=True),
+            _p("file-version", "body.file_version_id", "不可變文件版本 ID"),
+            _p("run", "body.run_id", "Run ID；與 file-version 二選一"),
+            _p(
+                "relation",
+                "body.relation",
+                "supports / contradicts / method / context",
+                default="supports",
+            ),
+            _p("note", "body.note", "證據說明"),
+        ],
+        "examples": ["research evidence link --project RSH-2026-001 --claim CLAIM_ID --run RUN_ID"],
+    },
+    {
+        "command": "research review list",
+        "tool_name": "research_review_list",
+        "description": "列出課題 DMP、協議、主張和發布的正式覆核記錄",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/reviews",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research review list --project RSH-2026-001"],
+    },
+    {
+        "command": "research review submit",
+        "tool_name": "research_review_submit",
+        "description": "對 DMP、協議、主張或發布提交有稽核記錄的同行覆核決定",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/reviews",
+        "permission": "research.review",
+        "writes": True,
+        "risk": "high",
+        "confirmation_policy": "direct",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p(
+                "target-type", "body.target_type", "dmp / protocol / claim / release", required=True
+            ),
+            _p("target", "body.target_id", "被覆核對象 ID", required=True),
+            _p(
+                "decision",
+                "body.decision",
+                "comment / approve / changes_requested / reject",
+                required=True,
+            ),
+            _p("comment", "body.comment", "覆核理由"),
+        ],
+        "examples": [
+            "research review submit --project RSH-2026-001 --target-type claim --target CLAIM_ID --decision approve"
+        ],
+    },
+    {
+        "command": "research reproduce check",
+        "tool_name": "research_reproduce_check",
+        "description": "凍結目前研究清單並檢查 DMP、協議、Run、環境、文件雜湊與主張證據完整性",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/reproducibility-checks",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research reproduce check --project RSH-2026-001"],
+    },
+    {
+        "command": "research execution runtimes",
+        "tool_name": "research_execution_runtimes",
+        "description": "查看科研重現 Worker 可用的運行時、科學計算套件與隔離契約",
+        "api_method": "GET",
+        "api_path": "/api/research/execution-runtimes",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "examples": ["research execution runtimes"],
+    },
+    {
+        "command": "research execution list",
+        "tool_name": "research_execution_list",
+        "description": "列出課題的持久重現任務、執行狀態、退出碼與產物數",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/executions",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research execution list --project RSH-2026-001"],
+    },
+    {
+        "command": "research execution submit",
+        "tool_name": "research_execution_submit",
+        "description": "把不可變文件版本封裝為無外網、限時限資源的 Python 科研重現任務",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/executions",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "high",
+        "confirmation_policy": "direct",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("title", "body.title", "執行任務名稱"),
+            _p("runtime", "body.runtime", "運行時；目前為 python-3.13", default="python-3.13"),
+            _p("entrypoint", "body.entrypoint", "課題中的 .py 邏輯路徑", required=True),
+            _p("arguments", "body.arguments", "傳給程式的參數 JSON 陣列", ptype="json"),
+            _p(
+                "inputs",
+                "body.input_file_version_ids",
+                "固定輸入版本 ID JSON 陣列；省略時固定全部最新版本",
+                ptype="json",
+            ),
+            _p("run", "body.run_id", "可關聯的研究 Run ID"),
+            _p("limits", "body.resource_limits", "timeout_seconds / memory_mb JSON", ptype="json"),
+        ],
+        "examples": [
+            'research execution submit --project RSH-2026-001 --entrypoint "analysis/main.py" --arguments "["--seed","42"]"'
+        ],
+    },
+    {
+        "command": "research execution show",
+        "tool_name": "research_execution_show",
+        "description": "讀取一個重現任務的固定清單、生命週期事件、日誌摘要與 SHA-256 產物",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/executions/{execution_ref}",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("execution", "path.execution_ref", "Execution ID 或 EXE 代碼", required=True),
+        ],
+        "examples": ["research execution show --project RSH-2026-001 --execution EXE-1234567890"],
+    },
+    {
+        "command": "research execution cancel",
+        "tool_name": "research_execution_cancel",
+        "description": "取消排隊中或運行中的科研重現任務；已完成任務保持不可變",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/executions/{execution_ref}/cancel",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("execution", "path.execution_ref", "Execution ID 或 EXE 代碼", required=True),
+        ],
+        "examples": ["research execution cancel --project RSH-2026-001 --execution EXE-1234567890"],
+    },
+    {
+        "command": "research execution retry",
+        "tool_name": "research_execution_retry",
+        "description": "沿用相同不可變輸入、入口與資源限制建立新的重現任務",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/executions/{execution_ref}/retry",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("execution", "path.execution_ref", "Execution ID 或 EXE 代碼", required=True),
+        ],
+        "examples": ["research execution retry --project RSH-2026-001 --execution EXE-1234567890"],
+    },
+    {
+        "command": "research artifact promote",
+        "tool_name": "research_artifact_promote",
+        "description": "把通過 SHA-256 驗證的運算產物提升為正式科研文件版本並建立 Git commit",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/executions/{execution_ref}/artifacts/{artifact_ref}/promote",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("execution", "path.execution_ref", "Execution ID 或 EXE 代碼", required=True),
+            _p("artifact", "path.artifact_ref", "產物 ID", required=True),
+            _p("path", "body.logical_path", "提升後的課題邏輯路徑"),
+            _p("message", "body.commit_message", "Git 提交說明"),
+        ],
+        "examples": [
+            'research artifact promote --project RSH-2026-001 --execution EXE-1234567890 --artifact ARTIFACT_ID --path "results/summary.csv"'
+        ],
+    },
+    {
+        "command": "research release list",
+        "tool_name": "research_release_list",
+        "description": "列出課題不可變研究發布及其清單雜湊",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/releases",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+        ],
+        "examples": ["research release list --project RSH-2026-001"],
+    },
+    {
+        "command": "research release create",
+        "tool_name": "research_release_create",
+        "description": "在通過重現檢查及主張覆核後建立不可變 RO-Crate 研究發布",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/releases",
+        "permission": "research.review",
+        "writes": True,
+        "risk": "high",
+        "confirmation_policy": "direct",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("title", "body.title", "發布標題"),
+            _p("description", "body.description", "發布說明"),
+            _p(
+                "access", "body.access_level", "open / embargoed / restricted", default="restricted"
+            ),
+            _p("license", "body.license", "授權，例如 CC-BY-4.0"),
+            _p("embargo-until", "body.embargo_until", "禁運截止日 YYYY-MM-DD"),
+        ],
+        "examples": ["research release create --project RSH-2026-001 --access restricted"],
+    },
+    {
+        "command": "research release show",
+        "tool_name": "research_release_show",
+        "description": "讀取一個研究發布的凍結清單、SHA-256 與 RO-Crate",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/releases/{release_ref}",
+        "permission": "research.read",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("release", "path.release_ref", "發布 ID 或發布代碼", required=True),
+        ],
+        "examples": ["research release show --project RSH-2026-001 --release RELEASE_ID"],
+    },
+    {
+        "command": "data resources",
+        "tool_name": "generic_data_resources",
+        "description": "查看目前公司 AI 可理解與操作的全部語義資源；資源不因當前人的權限而從公司 AI 世界中隱藏",
+        "api_method": "GET",
+        "api_path": "/api/data/v2/resources",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "examples": ["data resources"],
+    },
+    {
+        "command": "data schema",
+        "tool_name": "generic_data_schema",
+        "description": "按需展開一種語義資源的欄位、關係、不變量與通用/專用適配器邊界",
+        "api_method": "GET",
+        "api_path": "/api/data/v2/resources/{resource_key}/schema",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("resource", "path.resource_key", "語義資源 key", required=True),
+        ],
+        "examples": ["data schema --resource digital_asset.workspace"],
+    },
+    {
+        "command": "data resolve",
+        "tool_name": "generic_data_resolve",
+        "description": "以 UUID、業務編號、穩定 key 或名稱解析目前公司的真實資源並讀取當前版本",
+        "api_method": "POST",
+        "api_path": "/api/data/v2/resolve",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("resource", "body.resource", "語義資源 key", required=True),
+            _p("ref", "body.ref", "UUID、業務編號、穩定 key 或名稱", required=True),
+        ],
+        "examples": [
+            "data resolve --resource digital_asset.workspace --ref mk4-workspace"
+        ],
+    },
+    {
+        "command": "data observe",
+        "tool_name": "generic_data_observe",
+        "description": "從任一已解析實體展開目前公司的語義資源關係圖；工作區會返回立即可開啟的永久托管網址 hosting_url/entry_url，public_url/application_url 則只表示已驗證部署的應用網址；站點、資料庫、組件、版本、部署與 Key 等狀態由註冊關係自然出現，不預設業務流程或 AI 下一步",
+        "search_aliases": [
+            "打開托管工作區",
+            "打开托管工作区",
+            "工作區控制台",
+            "工作区控制台",
+            "站點資料庫API Key狀態",
+            "站点数据库API Key状态",
+            "打開數字資產托管工作區匯報站點資料庫API Key狀態",
+            "打开数字资产托管工作区汇报站点数据库API Key状态",
+            "查詢資產工作區站點資料庫與API Key",
+            "查询资产工作区站点数据库与API Key",
+            "workspace console site database api key status",
+            "MK4托管网址",
+            "MK4託管網址",
+            "项目托管网址",
+            "項目託管網址",
+            "工作區永久入口",
+            "工作区永久入口",
+            "workspace hosting URL permanent entry",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/data/v2/observe",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "semantic_contract": {
+            "effect": "observe_related_world",
+            "resource": "any_registered_resource",
+            "target_identity": "preserve",
+            "workflow_prescribed": False,
+        },
+        "params": [
+            _p("resource", "body.resource", "語義資源 key", required=True),
+            _p("ref", "body.ref", "UUID、業務編號、穩定 key 或名稱", required=True),
+            _p("depth", "body.depth", "關係展開深度 0-2", ptype="int", default=1),
+            _p("limit", "body.relation_limit", "每種關係最多返回筆數", ptype="int", default=50),
+        ],
+        "examples": [
+            "data observe --resource digital_asset.workspace --ref mk4-workspace --depth 2"
+        ],
+    },
+    {
+        "command": "data query",
+        "tool_name": "generic_data_query",
+        "description": "使用已註冊的語義欄位查詢目前公司資料，不接受 SQL、資料表、schema、DSN 或租戶選擇器",
+        "api_method": "POST",
+        "api_path": "/api/data/v2/query",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("resource", "body.resource", "語義資源 key", required=True),
+            _p("filters", "body.filters", "欄位精確篩選 JSON", ptype="object", default={}),
+            _p("limit", "body.limit", "返回條數，最多 500", ptype="int", default=100),
+            _p("offset", "body.offset", "分頁偏移", ptype="int", default=0),
+        ],
+        "examples": [
+            'data query --resource digital_asset.asset --filters \'{"name":"mk4"}\''
+        ],
+    },
+    {
+        "command": "data mutations",
+        "tool_name": "generic_data_mutations",
+        "description": "查看目前公司通用資料修改的意圖、前後差異、AI 判斷、版本與讀回核驗時間線",
+        "api_method": "GET",
+        "api_path": "/api/data/v2/mutations",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("resource", "query.resource", "可選語義資源 key"),
+            _p("ref", "query.ref", "可選資源 ref"),
+            _p("limit", "query.limit", "返回條數，最多 500", ptype="int", default=100),
+        ],
+        "examples": [
+            "data mutations --resource digital_asset.workspace --ref mk4-workspace"
+        ],
+    },
+    {
+        "command": "data gaps",
+        "tool_name": "generic_data_capability_gaps",
+        "description": "查看由真實通用操作累積出的能力缺口、使用次數及建議提升的專用能力",
+        "api_method": "GET",
+        "api_path": "/api/data/v2/capability-gaps",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("status", "query.status", "observed/reviewing/promoted/dismissed"),
+            _p("limit", "query.limit", "返回條數，最多 500", ptype="int", default=100),
+        ],
+        "examples": ["data gaps --status observed"],
+    },
+    {
+        "command": "data mutation preview",
+        "tool_name": "generic_data_mutation_preview",
+        "description": "預覽通用語義修改的真實前後差異、版本與適配器邊界；預覽不是強制確認，由公司 AI 主觀判斷下一步",
+        "api_method": "POST",
+        "api_path": "/api/data/v2/mutations/preview",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("resource", "body.resource", "語義資源 key", required=True),
+            _p("ref", "body.ref", "目標資源 ref", required=True),
+            _p("changes", "body.changes", "欄位變更 JSON", required=True, ptype="object"),
+            _p("expected-version", "body.expected_version", "可選樂觀鎖版本"),
+            _p("intent", "body.intent", "使用者目標及修改意圖"),
+        ],
+        "examples": [
+            'data mutation preview --resource digital_asset.workspace --ref mk4-workspace --changes \'{"runtime_type":"web"}\''
+        ],
+    },
+    {
+        "command": "data mutate",
+        "tool_name": "generic_data_mutate",
+        "description": "沒有專用指令時依語義欄位直接完成可安全落庫的修改，讀回核驗並標註 command_missing 及能力缺口",
+        "api_method": "POST",
+        "api_path": "/api/data/v2/mutations/commit",
+        "permission": None,
+        "ai_discretionary": True,
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("resource", "body.resource", "語義資源 key", required=True),
+            _p("ref", "body.ref", "目標資源 ref", required=True),
+            _p("changes", "body.changes", "欄位變更 JSON", required=True, ptype="object"),
+            _p("expected-version", "body.expected_version", "可選樂觀鎖版本"),
+            _p("intent", "body.intent", "使用者目標及修改意圖", required=True),
+            _p("reasoning", "body.reasoning_summary", "AI 的精簡判斷依據"),
+            _p("idempotency-key", "body.idempotency_key", "可選冪等鍵"),
+        ],
+        "examples": [
+            'data mutate --resource digital_asset.workspace --ref mk4-workspace --changes \'{"runtime_type":"web"}\' --intent "改成 Web 託管類型"'
+        ],
     },
 ]
 
@@ -6469,101 +8107,106 @@ def database_route_access(entry):
 # sidecar, or enumerate several tenants.  Membership in this set is only a
 # classification: it is never authority to dispatch.  A composite command is
 # AI-routable only when it also has an exact contract below.
-COMPOSITE_STORE_TOOL_NAMES = frozenset({
-    # Tenant operational snapshot + independent firefighter sidecar.  The
-    # sidecar is deliberately not a tenant.core alias.
-    "shield_diagnose",
-    # Platform registry commands that provision/read/mutate tenant stores or
-    # the platform-home identity shadow.  They cannot claim platform-only SQL.
-    "p_company_create",
-    "p_company_edit",
-    "p_owners_list",
-    "p_owner_grant",
-    "p_owner_offboard",
-    "p_owner_restore",
-    "p_signup_approve",
-    "p_category_list",
-    "p_module_list",
-    "p_nav_show",
-    # Platform-only business views reached from a tenant-authenticated surface.
-    "b2b_companies",
-    "b2b_relations",
-    # Platform + tenant or multi-tenant B2B/tender workflows.
-    "b2b_relation_invite",
-    "b2b_relation_respond",
-    "b2b_supplier_bind",
-    "tender_publish",
-    "tender_open",
-    "tender_award",
-    "tender_inbox",
-    "tender_market",
-    "tender_submit_bid",
-    "tender_invite_decline",
-    "tender_apply",
-    "tender_qualification_review",
-    # Membership workflows and cross-tenant/common notification views.
-    "memberships_pending",
-    "membership_approve",
-    "membership_reject",
-    "notifications_summary",
-    "notifications_seen",
-    "digital_market_common",
-    # Tenant catalogue operations that may create, read or write the
-    # independent customer-asset SQLite sidecar.  It is not tenant.core.
-    "digital_market_upload",
-    "digital_market_valuate",
-    "digital_market_workspace_create",
-    "digital_market_workspace_resize",
-    "digital_market_database_create",
-    "digital_market_deploy",
-    "digital_market_assess",
-    "digital_market_provision",
-    "digital_market_key_issue",
-    "digital_market_collab_key_issue",
-    "digital_market_console",
-    "digital_market_db_query",
-    "digital_market_db_exec",
-    "digital_market_site_publish",
-    "digital_market_site_put",
-    "digital_market_site_diff",
-    "digital_market_site_rollback",
-    "digital_market_site_rm",
-    "digital_market_inspect",
-    "digital_market_archive",
-    # Tenant-authenticated command whose business mutation is platform-only.
-    "company_join_request",
-    # Tenant organization writes coupled to platform membership/identity state.
-    "user_add",
-    "organization_template_apply",
-    "organization_user_assign",
-    "organization_department_update",
-    "organization_position_update",
-    "user_role_set",
-    "role_update",
-    "platform_member_org_assign",
-    # Tenant writes whose authorization reads platform identity policy.
-    "organization_department_permissions",
-    "organization_department_navigation",
-    "organization_position_navigation",
-    "user_permission_overrides_set",
-    "user_navigation_overrides_set",
-    # Permission topology responses combine tenant RBAC with platform identity.
-    "permission_topology",
-    "permission_share",
-    "permission_share_revoke",
-    "permission_level_set",
-    # Repair verification writes the tenant repair lifecycle while resolving
-    # the executor's immutable platform identity.  Approval/application remain
-    # Passkey-bound human operations but are classified explicitly as the same
-    # composite domain so a missing route can never be mistaken for policy.
-    "wf_repair_approve",
-    "wf_repair_apply",
-    "wf_repair_verify",
-    # Host power-plane mutation has no tenant/platform database lease that can
-    # faithfully represent it; it therefore receives an explicit human-only
-    # policy below instead of masquerading as a single-store command.
-    "shield_repair",
-})
+COMPOSITE_STORE_TOOL_NAMES = frozenset(
+    {
+        # Tenant operational snapshot + independent firefighter sidecar.  The
+        # sidecar is deliberately not a tenant.core alias.
+        "shield_diagnose",
+        # Platform registry commands that provision/read/mutate tenant stores or
+        # the platform-home identity shadow.  They cannot claim platform-only SQL.
+        "p_company_create",
+        "p_company_edit",
+        "p_owners_list",
+        "p_owner_grant",
+        "p_owner_offboard",
+        "p_owner_restore",
+        "p_signup_approve",
+        "p_category_list",
+        "p_module_list",
+        "p_nav_show",
+        # Platform-only business views reached from a tenant-authenticated surface.
+        "b2b_companies",
+        "b2b_relations",
+        # Platform + tenant or multi-tenant B2B/tender workflows.
+        "b2b_relation_invite",
+        "b2b_relation_respond",
+        "b2b_supplier_bind",
+        "tender_publish",
+        "tender_open",
+        "tender_award",
+        "tender_inbox",
+        "tender_market",
+        "tender_submit_bid",
+        "tender_invite_decline",
+        "tender_apply",
+        "tender_qualification_review",
+        # Membership workflows and cross-tenant/common notification views.
+        "memberships_pending",
+        "membership_approve",
+        "membership_reject",
+        "notifications_summary",
+        "notifications_seen",
+        "digital_market_common",
+        # Digital-asset compatibility operations whose historical adapters may
+        # cross the tenant control plane and an independently attested asset
+        # provider. Native 2.1 workspace Data API routes remain tenant-scoped.
+        "digital_market_upload",
+        "digital_market_valuate",
+        "digital_market_workspace_create",
+        "digital_market_workspace_resize",
+        "digital_market_database_create",
+        "digital_market_deploy",
+        "digital_market_assess",
+        "digital_market_collab_key_issue",
+        "digital_market_console",
+        "digital_market_db_query",
+        "digital_market_db_exec",
+        "digital_market_site_publish",
+        "digital_market_site_put",
+        "digital_market_site_diff",
+        "digital_market_site_rollback",
+        "digital_market_site_rm",
+        "digital_market_inspect",
+        "digital_market_archive",
+        "digital_market_hosting_start",
+        "digital_market_hosting_continue",
+        "digital_market_hosting_status",
+        "digital_market_hosting_events",
+        # Tenant-authenticated command whose business mutation is platform-only.
+        "company_join_request",
+        # Tenant organization writes coupled to platform membership/identity state.
+        "user_add",
+        "organization_template_apply",
+        "organization_user_assign",
+        "organization_department_update",
+        "organization_position_update",
+        "user_role_set",
+        "role_update",
+        "platform_member_org_assign",
+        # Tenant writes whose authorization reads platform identity policy.
+        "organization_department_permissions",
+        "organization_department_navigation",
+        "organization_position_navigation",
+        "user_permission_overrides_set",
+        "user_navigation_overrides_set",
+        # Permission topology responses combine tenant RBAC with platform identity.
+        "permission_topology",
+        "permission_share",
+        "permission_share_revoke",
+        "permission_level_set",
+        # Repair verification writes the tenant repair lifecycle while resolving
+        # the executor's immutable platform identity.  Approval/application remain
+        # Passkey-bound human operations but are classified explicitly as the same
+        # composite domain so a missing route can never be mistaken for policy.
+        "wf_repair_approve",
+        "wf_repair_apply",
+        "wf_repair_verify",
+        # Host power-plane mutation has no tenant/platform database lease that can
+        # faithfully represent it; it therefore receives an explicit human-only
+        # policy below instead of masquerading as a single-store command.
+        "shield_repair",
+    }
+)
 
 
 # Typed composite contracts are deliberately per tool rather than per prefix or
@@ -6573,30 +8216,36 @@ COMPOSITE_STORE_TOOL_NAMES = frozenset({
 # No model argument can select a database path, backend, or tenant.  Commands
 # absent here keep their normal human compatibility path but fail closed for AI
 # until a typed multi-store saga/bridge proves every destination.
-_TENANT_ASSET_SIDECAR_WRITE_TOOLS = frozenset({
-    "digital_market_upload",
-    "digital_market_valuate",
-    "digital_market_workspace_create",
-    "digital_market_workspace_resize",
-    "digital_market_database_create",
-    "digital_market_deploy",
-    "digital_market_assess",
-    "digital_market_provision",
-    "digital_market_key_issue",
-    "digital_market_collab_key_issue",
-    "digital_market_db_exec",
-    "digital_market_site_publish",
-    "digital_market_site_put",
-    "digital_market_site_rollback",
-    "digital_market_site_rm",
-    "digital_market_inspect",
-    "digital_market_archive",
-})
-_TENANT_ASSET_SIDECAR_READ_TOOLS = frozenset({
-    "digital_market_console",
-    "digital_market_db_query",
-    "digital_market_site_diff",
-})
+_TENANT_ASSET_SIDECAR_WRITE_TOOLS = frozenset(
+    {
+        "digital_market_upload",
+        "digital_market_valuate",
+        "digital_market_workspace_create",
+        "digital_market_workspace_resize",
+        "digital_market_database_create",
+        "digital_market_deploy",
+        "digital_market_assess",
+        "digital_market_collab_key_issue",
+        "digital_market_db_exec",
+        "digital_market_site_publish",
+        "digital_market_site_put",
+        "digital_market_site_rollback",
+        "digital_market_site_rm",
+        "digital_market_inspect",
+        "digital_market_archive",
+        "digital_market_hosting_start",
+        "digital_market_hosting_continue",
+    }
+)
+_TENANT_ASSET_SIDECAR_READ_TOOLS = frozenset(
+    {
+        "digital_market_console",
+        "digital_market_db_query",
+        "digital_market_site_diff",
+        "digital_market_hosting_status",
+        "digital_market_hosting_events",
+    }
+)
 COMPOSITE_STORE_ROUTE_CONTRACTS = {
     tool_name: {
         "anchor_store": "tenant.core",
@@ -6898,6 +8547,10 @@ def tool_schema(entry):
         prop = {"type": _json_type(p["type"]), "description": p["help"]}
         if p["type"] == "list":
             prop["items"] = {"type": "string"}
+        if p.get("default") is not None:
+            prop["default"] = p["default"]
+        if p.get("choices"):
+            prop["enum"] = list(p["choices"])
         props[p["flag"]] = prop
         if p["required"]:
             required.append(p["flag"])

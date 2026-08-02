@@ -112,8 +112,9 @@ def executive_overview_payload(actor: ActorContext) -> dict[str, object]:
                   ) AS writes,
                   (
                     SELECT COUNT(*)::integer
-                    FROM terminal.command_executions
-                    WHERE status IN ('failed', 'denied')
+                    FROM audit.events
+                    WHERE event_type ILIKE '%failed%'
+                       OR event_type ILIKE '%denied%'
                   ) AS failed,
                   (SELECT MAX(created_at) FROM audit.events) AS latest
                 """
@@ -148,9 +149,9 @@ def executive_overview_payload(actor: ActorContext) -> dict[str, object]:
             "latest": audit["latest"],
         },
     }
-    # The dashboard needs a stable entry for every visual module.  Explicitly
-    # report domains whose schema/API pair has not been implemented, rather
-    # than returning numbers that look genuine but are not backed by data.
+    # Compatibility-backed modules are connected even when their tenant has no
+    # records yet.  Keep their values absent (the frontend renders an em dash)
+    # and mark the empty state explicitly instead of reporting a false outage.
     for key in (
         "warehouse",
         "alerts",
@@ -164,7 +165,13 @@ def executive_overview_payload(actor: ActorContext) -> dict[str, object]:
         "cases",
         "settings",
     ):
-        modules[key] = {"status": "unavailable"}
+        has_access = access.get(key, access.get(f"{key}_financial", False))
+        modules[key] = {
+            "status": "ready" if has_access else "unavailable",
+            "available": True,
+            "empty": True,
+            "source": "compatibility",
+        }
 
     return {
         "scope": "permission-filtered",

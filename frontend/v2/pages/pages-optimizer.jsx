@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · FEATURE 23 · owner-only cross-company AI optimization analysis */
+/* WAREHOUSE 2.1 · FEATURE 23 · owner-only cross-company AI optimization analysis */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;

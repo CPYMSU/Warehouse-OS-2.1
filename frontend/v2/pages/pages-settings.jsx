@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 設置 — Swiss 版式,真後端(只讀駕駛艙,改動交秘書) */
+/* WAREHOUSE 2.1 · 設置 — Swiss 版式,真後端(只讀駕駛艙,改動交秘書) */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;
@@ -24,12 +24,16 @@ window.W2_LANG.addEN({
   /* 01 AI 密鑰 */
   "AI 引擎與全局密鑰": "AI engines & global keys",
   "管理員配置一次 · 全員共用 · 密鑰入庫保存": "Configured once by an admin · shared by everyone · keys stored in the database",
+  "管理員配置一次 · 公司內共用 · 密鑰加密入庫": "Configured once by an admin · shared within this company · encrypted at rest",
   "智能引擎": "AI Engine",
   "圖片識別": "Vision",
   "語音功能": "Voice",
   "Web 搜索": "Web Search",
   "Tavily 為 AI 秘書提供最新公開 Web 資訊;搜索結果只作外部線索。": "Tavily gives the Secretary current public Web information; results are external leads only.",
   "驅動秘書對話與智能分析,全公司共用一把全局 key。": "Powers the Secretary and analytics; one global key for the whole company.",
+  "均衡 · Flash": "Balanced · Flash",
+  "Thinking · Pro": "Thinking · Pro",
+  "記憶 · Flash 後台蒸餾": "Memory · Flash background distillation",
   "圖片識別共用密鑰,後端按接入地址自動識別供應商。": "Shared key for image recognition; provider auto-detected from the base URL.",
   "語音識別與朗讀共用密鑰,未配置時自動降級瀏覽器原生語音。": "Shared key for ASR + TTS; falls back to native browser speech when unset.",
   "可連接": "Connected",
@@ -48,6 +52,7 @@ window.W2_LANG.addEN({
   "填寫全局 API Key": "Set the global API key",
   "更換全局 API Key": "Replace the global API key",
   "接入地址(可選,留空自動探測)": "Base URL (optional; auto-detected when empty)",
+  "OpenAI 相容 HTTPS 接入地址": "OpenAI-compatible HTTPS base URL",
   "保存並驗證": "Save & validate",
   "保存中…": "Saving…",
   "驗證中…": "Validating…",
@@ -227,7 +232,7 @@ window.W2_LANG.addEN({
   "整庫導出 zip:每表一個 CSV + schema + manifest;含敏感表,注意保密。": "Full export as zip: one CSV per table + schema + manifest; includes sensitive tables — handle with care.",
   "交秘書導出": "Export via Secretary",
   "把當前公司資料庫導出成 CSV 壓縮包,告訴我怎麼拿到文件": "Export the current company database as a CSV zip and tell me how to get the file",
-  "2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "The 2.0 contract: pages are read-only; changes run through the Secretary with a full audit trail.",
+  "2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "The 2.1 contract: pages are read-only; changes run through the Secretary with a full audit trail.",
   "規則與秘書": "Rules & Secretary",
   "AI 秘書 · 法律倫理規則 · 工作區導航 · 指令集 · 通用開關 · BIU 標識；關鍵改動經確認後留痕。": "AI Secretary · legal ethics rules · workspace navigation · instruction sets · general switches · BIU identity; key changes are confirmed and recorded",
   "法律倫理規則與秘書邊界": "Legal ethics rules & Secretary boundaries",
@@ -349,7 +354,7 @@ const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStat
     setBusy("save"); setRes(null);
     try {
       const body = { api_key: k };
-      if (service === "voice" && base.trim()) body.base_url = base.trim();
+      if ((service === "voice" || service === "vision") && base.trim()) body.base_url = base.trim();
       const d = await W2.post("/api/integrations/" + service + "/save", body);
       if (!d || !d.ok) throw new Error((d && d.error) || t("保存失敗"));
       applyStatus(d);                   // 保存端點已自動驗證並返回最新狀態
@@ -409,9 +414,9 @@ const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStat
             <B size="sm" kind="ghost" icon={show ? "eyeOff" : "eye"} title={show ? t("隱藏密鑰") : t("顯示密鑰")}
               disabled={busy === "save"} onClick={() => setShow(v => !v)}/>
           </div>
-          {service === "voice" && (
+          {(service === "voice" || service === "vision") && (
             <input className="field mono" type="text" autoComplete="off" spellCheck={false}
-              style={{ height: 34, fontSize: 12.5 }} placeholder={t("接入地址(可選,留空自動探測)")} value={base} disabled={busy === "save"}
+              style={{ height: 34, fontSize: 12.5 }} placeholder={t("OpenAI 相容 HTTPS 接入地址")} value={base} disabled={busy === "save"}
               onChange={(e) => setBase(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Escape") closeForm(); else if (e.key === "Enter" && !busy && key.trim()) doSave(); }}/>
           )}
@@ -871,14 +876,19 @@ const Page = ({ boot, isOwner, templateKey = "" }) => {
       </div>
 
       {/* 01 · AI 引擎與全局密鑰 */}
-      <Band no="01" title={settingsText(biu, "AI 引擎與全局密鑰")} sub={t("管理員配置一次 · 全員共用 · 密鑰入庫保存")} delay={.05}
+      <Band no="01" title={settingsText(biu, "AI 引擎與全局密鑰")} sub={t("管理員配置一次 · 公司內共用 · 密鑰加密入庫")} delay={.05}
         right={<B size="sm" icon="sparkle" onClick={() => ask(t(biu
           ? "檢查 BIU 秘書的指令集、記憶與連接狀態，只彙報法律倫理學術工作範圍。"
           : "跑一次 AI 資料庫自檢,把結果彙報給我"))}>{t("自檢")}</B>}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
           <ConnPanel icon="cpu" title="智能引擎" st={dsSt} modelOverride={t("智能引擎")}
             service="deepseek" onStatus={(v) => setDs(v || {})}
-            sub={t("驅動秘書對話與智能分析,全公司共用一把全局 key。")}/>
+            sub={t("驅動秘書對話與智能分析,全公司共用一把全局 key。")}
+            extra={<div className="row g6 wrap">
+              <T tone="plain">{t("均衡 · Flash")}</T>
+              <T tone="plain">{t("Thinking · Pro")}</T>
+              <T tone="plain">{t("記憶 · Flash 後台蒸餾")}</T>
+            </div>}/>
           <ConnPanel icon="eye" title="圖片識別" st={vis} modelOverride={t("自動適配")}
             service="vision" onStatus={(v) => setVis(v || {})}
             sub={t("圖片識別共用密鑰,後端按接入地址自動識別供應商。")}/>
@@ -1148,7 +1158,7 @@ const Page = ({ boot, isOwner, templateKey = "" }) => {
               <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>{t("整庫導出 zip:每表一個 CSV + schema + manifest;含敏感表,注意保密。")}</div>
               <div><B size="sm" icon="outbound" onClick={() => ask(t("把當前公司資料庫導出成 CSV 壓縮包,告訴我怎麼拿到文件"))}>{t("交秘書導出")}</B></div>
             </div>}
-            <div className="muted" style={{ fontSize: 10.5, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+            <div className="muted" style={{ fontSize: 10.5, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
           </div>
         </div>
       </Band>

@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · FEATURE 23 · accessible semantic topology enhancement
+/* WAREHOUSE 2.1 · FEATURE 23 · accessible semantic topology enhancement
  *
  * This file is intentionally plain JavaScript.  It can be loaded immediately
  * after pages-optimizer.jsx (or retried as a standalone production asset) and

@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile
@@ -13,6 +17,7 @@ from sqlalchemy import text
 
 from app.api.deps import ActorContext, current_actor
 from app.api.full_stack_identity import _audit, _doc, _docs, _safe, _upsert_doc
+from app.core.config import Settings, get_settings
 from app.db.session import system_session, tenant_session
 
 router = APIRouter(tags=["full-stack-business"])
@@ -146,11 +151,332 @@ def _blob_response(actor: ActorContext, blob_id: str) -> Response:
         ).mappings().one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
+    file_name = str(row["file_name"]).replace("\r", "").replace("\n", "")
+    extension = Path(file_name).suffix
+    ascii_name = f"workflow-attachment{extension}" if extension else "workflow-attachment"
     return Response(
         content=bytes(row["content"]),
         media_type=row["content_type"],
-        headers={"Content-Disposition": f'attachment; filename="{row["file_name"]}"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(file_name, safe='')}"
+            )
+        },
     )
+
+
+WORKFLOW_ATTACHMENT_EXTENSIONS = frozenset(
+    {
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".rtf",
+        ".odt",
+        ".xls",
+        ".xlsx",
+        ".ods",
+        ".csv",
+        ".ppt",
+        ".pptx",
+        ".odp",
+        ".txt",
+        ".md",
+        ".json",
+        ".xml",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".tif",
+        ".tiff",
+        ".zip",
+        ".7z",
+        ".rar",
+    }
+)
+
+
+def _workflow_attachment_permission(actor: ActorContext) -> None:
+    if actor.role_level >= 10:
+        return
+    if actor.permissions.intersection(
+        {
+            "procurement.workflow.use",
+            "procurement.workflow.admin",
+            "procurement.global.act",
+            "workflow.manage",
+        }
+    ):
+        return
+    raise HTTPException(status_code=403, detail="No permission to notarize workflow attachments")
+
+
+def _workflow_attachment_file(
+    file: UploadFile,
+    content: bytes,
+    settings: Settings,
+) -> tuple[str, str]:
+    file_name = (
+        Path(file.filename or "").name.replace("\r", "").replace("\n", "").strip()
+    )
+    if not file_name or file_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="A file name is required")
+    extension = Path(file_name).suffix.lower()
+    if extension not in WORKFLOW_ATTACHMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported workflow attachment type: {extension or 'unknown'}",
+        )
+    if not content:
+        raise HTTPException(status_code=400, detail="The attachment is empty")
+    if len(content) > settings.workflow_attachment_max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Workflow attachment exceeds "
+                f"{settings.workflow_attachment_max_upload_bytes // (1024 * 1024)}MB"
+            ),
+        )
+    return file_name[:240], (file.content_type or "application/octet-stream")[:160]
+
+
+def _workflow_attachment_material(row: dict[str, object]) -> bytes:
+    created_at = row["created_at"]
+    if not isinstance(created_at, datetime):
+        created_at = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    created_at = (
+        created_at.astimezone(UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    payload = {
+        "attachment_id": str(row["id"]),
+        "attachment_key": str(row["attachment_key"]),
+        "tenant_id": str(row["tenant_id"]),
+        "instance_id": str(row["instance_id"]),
+        "node_key": str(row["node_key"]),
+        "kind": str(row["kind"]),
+        "version": int(row["version"]),
+        "file_name": str(row["file_name"]),
+        "content_type": str(row["content_type"]),
+        "size_bytes": int(row["size_bytes"]),
+        "content_sha256": str(row["content_sha256"]),
+        "previous_event_hash": (
+            str(row["previous_event_hash"]) if row.get("previous_event_hash") else None
+        ),
+        "uploaded_by": str(row["uploaded_by"]),
+        "created_at": str(created_at),
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _workflow_attachment_public(row: dict[str, object]) -> dict[str, object]:
+    data = _safe(dict(row))
+    attachment_id = str(data["id"])
+    return {
+        **data,
+        "file_size": data["size_bytes"],
+        "file_sha256": data["content_sha256"],
+        "file_seal": data["notary_serial"],
+        "has_file": True,
+        "notarized": True,
+        "verification_status": "sealed",
+        "download_url": f"/api/wf/artifacts/{attachment_id}/download",
+        "verify_url": f"/api/wf/node-attachments/{attachment_id}/verify",
+    }
+
+
+def _store_workflow_node_attachment(
+    actor: ActorContext,
+    settings: Settings,
+    *,
+    instance_id: UUID,
+    node_key: str,
+    kind: str,
+    file_name: str,
+    content_type: str,
+    content: bytes,
+    expected_sha256: str | None = None,
+    attachment_key: UUID | None = None,
+) -> dict[str, object]:
+    _workflow_attachment_permission(actor)
+    node_key = node_key.strip()
+    kind = (kind.strip() or "node_attachment")[:120]
+    if not node_key:
+        raise HTTPException(status_code=400, detail="A workflow node key is required")
+    content_sha256 = hashlib.sha256(content).hexdigest()
+    if expected_sha256 and not hmac.compare_digest(
+        expected_sha256.strip().lower(), content_sha256
+    ):
+        raise HTTPException(status_code=409, detail="Attachment SHA-256 does not match")
+
+    with tenant_session(actor.tenant_id) as session:
+        instance = session.execute(
+            text(
+                """
+                SELECT wi.id, wd.definition
+                FROM workflow.instances AS wi
+                JOIN workflow.definitions AS wd
+                  ON wd.tenant_id = wi.tenant_id AND wd.id = wi.definition_id
+                WHERE wi.id = :instance_id
+                """
+            ),
+            {"instance_id": instance_id},
+        ).mappings().one_or_none()
+        if instance is None:
+            raise HTTPException(status_code=404, detail="Workflow instance not found")
+        definition = instance["definition"] if isinstance(instance["definition"], dict) else {}
+        node_keys = {
+            str(node.get("node_key"))
+            for node in definition.get("nodes", [])
+            if isinstance(node, dict) and node.get("node_key")
+        }
+        if node_key not in node_keys:
+            raise HTTPException(status_code=404, detail="Workflow node not found")
+
+        logical_key = attachment_key or uuid4()
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {
+                "lock_key": (
+                    f"{actor.tenant_id}:{instance_id}:{node_key}:{logical_key}"
+                )
+            },
+        )
+        previous = session.execute(
+            text(
+                """
+                SELECT version, event_hash
+                FROM workflow.node_attachments
+                WHERE instance_id = :instance_id
+                  AND node_key = :node_key
+                  AND attachment_key = :attachment_key
+                ORDER BY version DESC
+                LIMIT 1
+                FOR UPDATE
+                """
+            ),
+            {
+                "instance_id": instance_id,
+                "node_key": node_key,
+                "attachment_key": logical_key,
+            },
+        ).mappings().one_or_none()
+        version = int(previous["version"]) + 1 if previous else 1
+        previous_event_hash = str(previous["event_hash"]) if previous else None
+        attachment_id = uuid4()
+        blob_id = uuid4()
+        created_at = datetime.now(UTC)
+        notary_row: dict[str, object] = {
+            "id": attachment_id,
+            "tenant_id": actor.tenant_id,
+            "instance_id": instance_id,
+            "node_key": node_key,
+            "attachment_key": logical_key,
+            "kind": kind,
+            "version": version,
+            "file_name": file_name,
+            "content_type": content_type,
+            "size_bytes": len(content),
+            "content_sha256": content_sha256,
+            "previous_event_hash": previous_event_hash,
+            "uploaded_by": actor.user_id,
+            "created_at": created_at,
+        }
+        event_hash = hashlib.sha256(_workflow_attachment_material(notary_row)).hexdigest()
+        notary_signature = hmac.new(
+            settings.integration_secret.encode("utf-8"),
+            event_hash.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        notary_serial = (
+            f"WFN-{created_at:%Y%m%d}-{event_hash[:12].upper()}-"
+            f"{str(attachment_id)[:8].upper()}"
+        )
+        metadata = {
+            "instance_id": str(instance_id),
+            "node_key": node_key,
+            "attachment_key": str(logical_key),
+            "kind": kind,
+            "version": version,
+            "content_sha256": content_sha256,
+            "event_hash": event_hash,
+            "notary_serial": notary_serial,
+        }
+        session.execute(
+            text(
+                """
+                INSERT INTO compatibility.blobs(
+                  id, tenant_id, namespace, entity_key, field_key,
+                  file_name, content_type, content, metadata, created_by, created_at
+                ) VALUES (
+                  :id, :tenant_id, 'workflow.node_attachment', :entity_key, :field_key,
+                  :file_name, :content_type, :content, CAST(:metadata AS jsonb),
+                  :created_by, :created_at
+                )
+                """
+            ),
+            {
+                "id": blob_id,
+                "tenant_id": actor.tenant_id,
+                "entity_key": str(instance_id),
+                "field_key": node_key,
+                "file_name": file_name,
+                "content_type": content_type,
+                "content": content,
+                "metadata": json.dumps(metadata, ensure_ascii=False),
+                "created_by": actor.user_id,
+                "created_at": created_at,
+            },
+        )
+        row = session.execute(
+            text(
+                """
+                INSERT INTO workflow.node_attachments(
+                  id, tenant_id, instance_id, node_key, attachment_key, kind,
+                  version, blob_id, file_name, content_type, size_bytes,
+                  content_sha256, previous_event_hash, event_hash,
+                  notary_serial, notary_signature, uploaded_by, created_at
+                ) VALUES (
+                  :id, :tenant_id, :instance_id, :node_key, :attachment_key, :kind,
+                  :version, :blob_id, :file_name, :content_type, :size_bytes,
+                  :content_sha256, :previous_event_hash, :event_hash,
+                  :notary_serial, :notary_signature, :uploaded_by, :created_at
+                )
+                RETURNING *
+                """
+            ),
+            {
+                **notary_row,
+                "blob_id": blob_id,
+                "event_hash": event_hash,
+                "notary_serial": notary_serial,
+                "notary_signature": notary_signature,
+            },
+        ).mappings().one()
+        _audit(
+            session,
+            actor,
+            "workflow.node_attachment.notarized",
+            {
+                "attachment_id": str(attachment_id),
+                "instance_id": str(instance_id),
+                "node_key": node_key,
+                "version": version,
+                "content_sha256": content_sha256,
+                "event_hash": event_hash,
+                "notary_serial": notary_serial,
+            },
+        )
+    return _workflow_attachment_public(dict(row))
 
 
 def _tenant_people(actor: ActorContext) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -538,12 +864,25 @@ def _record_types(actor: ActorContext) -> list[dict[str, object]]:
     return rows or [dict(row) for row in DEFAULT_RECORD_TYPES]
 
 
+def _record_visible(actor: ActorContext, record: dict[str, object]) -> bool:
+    if str(record.get("type_key") or "") != "personnel_record":
+        return True
+    subject_user_id = str(record.get("subject_user_id") or "")
+    if subject_user_id and subject_user_id == str(actor.user_id):
+        return True
+    return actor.role_level >= 10 or bool(
+        {"records.all.manage", "records.config.manage", "users.manage"} & actor.permissions
+    )
+
+
 def _record_get(actor: ActorContext, record_id: str) -> dict[str, object]:
     with tenant_session(actor.tenant_id) as session:
         row = _doc(session, "record", record_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Record not found")
     result = dict(row)
+    if not _record_visible(actor, result):
+        raise HTTPException(status_code=404, detail="Record not found")
     result.setdefault("id", record_id)
     result.setdefault("record_no", f"REC-{record_id[:8].upper()}")
     result.setdefault("lock_version", 1)
@@ -633,6 +972,7 @@ def records_search_full(
                 for key in ("record_no", "title", "description")
             )
         ]
+    rows = [row for row in rows if _record_visible(actor, row)]
     for source, key in (("status", "status"), ("type", "type_key"), ("record_type", "type_key"), ("category", "category_key")):
         value = str(payload.get(source) or "")
         if value:
@@ -782,6 +1122,60 @@ def _workflow_definition(actor: ActorContext, workflow_key: str) -> dict[str, ob
     return _safe(dict(row)) if row else None
 
 
+def _workflow_node_view(source: object) -> dict[str, object]:
+    """Project versioned workflow JSON into the stable frontend/AI map shape."""
+
+    node = dict(source) if isinstance(source, dict) else {}
+    node.setdefault("node_kind", node.get("kind"))
+    node.setdefault("artifactKinds", node.get("artifact_kinds") or [])
+    sla = node.get("sla")
+    if isinstance(sla, dict):
+        node.setdefault("sla_hours", sla.get("default_hours"))
+    quorum = node.get("quorum")
+    if isinstance(quorum, dict):
+        node["quorum"] = quorum.get("default", 1)
+    assignment = node.get("assignment")
+    if isinstance(assignment, dict):
+        strategy = str(assignment.get("strategy") or "")
+        node.setdefault("position_binding_mode", strategy)
+        node.setdefault("assignee_department_code", assignment.get("department_code"))
+        node.setdefault("assignee_position_code", assignment.get("position_code"))
+        rule_by_strategy = {
+            "initiator": "initiator",
+            "context_department_manager": "dept_manager",
+            "external_party": "external_party",
+            "gateway": "gateway",
+            "responsibility_slot": "role",
+        }
+        node.setdefault("assign_rule", rule_by_strategy.get(strategy, strategy))
+        if strategy == "responsibility_slot":
+            node.setdefault("assign_value", assignment.get("responsibility"))
+    gateway = node.get("gateway")
+    if isinstance(gateway, dict) and not isinstance(node.get("branches"), dict):
+        branches = dict(gateway)
+        if isinstance(gateway.get("branches"), list):
+            branches["branches"] = [
+                {
+                    **branch,
+                    "cond": {
+                        "field": condition.get("field"),
+                        "op": condition.get("operator") or condition.get("op"),
+                        "value": (
+                            condition.get("value")
+                            if condition.get("value") is not None
+                            else condition.get("parameter_ref")
+                        ),
+                    }
+                    if isinstance((condition := branch.get("condition")), dict)
+                    else None,
+                }
+                for branch in gateway["branches"]
+                if isinstance(branch, dict)
+            ]
+        node["branches"] = branches
+    return node
+
+
 @router.get("/api/wf/workflows/{workflow_key}/map")
 def workflow_map(
     workflow_key: str,
@@ -793,11 +1187,24 @@ def workflow_map(
             stored = _doc(session, "workflow.node_config", workflow_key) or {}
         return {"workflow_key": workflow_key, "nodes": stored.get("nodes", []), "edges": []}
     body = definition.get("definition") if isinstance(definition.get("definition"), dict) else {}
+    nodes = [
+        _workflow_node_view(node)
+        for node in (body.get("nodes") if isinstance(body.get("nodes"), list) else [])
+    ]
     return {
         "workflow_key": workflow_key,
         "workflow": definition,
-        "nodes": body.get("nodes", []),
+        "command_binding_schema_version": body.get(
+            "command_binding_schema_version"
+        ),
+        "stages": body.get("stages", []),
+        "nodes": nodes,
         "edges": body.get("edges", []),
+        "command_action_count": sum(
+            len(node.get("actions") or [])
+            for node in nodes
+            if isinstance(node, dict)
+        ),
     }
 
 
@@ -874,7 +1281,7 @@ def workflow_repair_scan(
 
 @router.get("/api/wf/instances/{instance_id}")
 def workflow_instance_detail(
-    instance_id: str,
+    instance_id: UUID,
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     with tenant_session(actor.tenant_id) as session:
@@ -888,11 +1295,112 @@ def workflow_instance_detail(
                 WHERE wi.id = :id
                 """
             ),
-            {"id": UUID(instance_id)},
+            {"id": instance_id},
         ).mappings().one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Workflow instance not found")
-    return {"instance": _safe(dict(row)), "timeline": [], "artifacts": []}
+        if row is None:
+            raise HTTPException(status_code=404, detail="Workflow instance not found")
+        attachment_rows = session.execute(
+            text(
+                """
+                SELECT attachment.*, user_account.display_name AS uploaded_by_name
+                FROM workflow.node_attachments AS attachment
+                LEFT JOIN iam.users AS user_account
+                  ON user_account.id = attachment.uploaded_by
+                WHERE attachment.instance_id = :instance_id
+                ORDER BY attachment.created_at DESC, attachment.id DESC
+                """
+            ),
+            {"instance_id": instance_id},
+        ).mappings().all()
+    return {
+        "instance": _safe(dict(row)),
+        "timeline": [],
+        "artifacts": [
+            _workflow_attachment_public(dict(attachment)) for attachment in attachment_rows
+        ],
+    }
+
+
+@router.get("/api/wf/instances/{instance_id}/nodes/{node_key}/attachments")
+def workflow_node_attachment_list(
+    instance_id: UUID,
+    node_key: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    with tenant_session(actor.tenant_id) as session:
+        instance_exists = session.execute(
+            text("SELECT 1 FROM workflow.instances WHERE id = :instance_id"),
+            {"instance_id": instance_id},
+        ).scalar_one_or_none()
+        if instance_exists is None:
+            raise HTTPException(status_code=404, detail="Workflow instance not found")
+        rows = session.execute(
+            text(
+                """
+                SELECT attachment.*, user_account.display_name AS uploaded_by_name
+                FROM workflow.node_attachments AS attachment
+                LEFT JOIN iam.users AS user_account
+                  ON user_account.id = attachment.uploaded_by
+                WHERE attachment.instance_id = :instance_id
+                  AND attachment.node_key = :node_key
+                ORDER BY attachment.created_at DESC, attachment.id DESC
+                """
+            ),
+            {"instance_id": instance_id, "node_key": node_key},
+        ).mappings().all()
+    attachments = [_workflow_attachment_public(dict(row)) for row in rows]
+    return {
+        "available": True,
+        "instance_id": str(instance_id),
+        "node_key": node_key,
+        "attachments": attachments,
+        "items": attachments,
+        "count": len(attachments),
+    }
+
+
+@router.post("/api/wf/instances/{instance_id}/nodes/{node_key}/attachments")
+async def workflow_node_attachment_upload(
+    instance_id: UUID,
+    node_key: str,
+    file: UploadFile = File(...),
+    kind: str = Form(default="node_attachment"),
+    expected_sha256: str | None = Form(default=None),
+    attachment_key: str | None = Form(default=None),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    content = await file.read(settings.workflow_attachment_max_upload_bytes + 1)
+    file_name, content_type = _workflow_attachment_file(file, content, settings)
+    logical_key: UUID | None = None
+    if attachment_key:
+        try:
+            logical_key = UUID(attachment_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid attachment key") from exc
+    attachment = _store_workflow_node_attachment(
+        actor,
+        settings,
+        instance_id=instance_id,
+        node_key=node_key,
+        kind=kind,
+        file_name=file_name,
+        content_type=content_type,
+        content=content,
+        expected_sha256=expected_sha256,
+        attachment_key=logical_key,
+    )
+    return {
+        "ok": True,
+        "attachment": attachment,
+        "artifact": attachment,
+        "notary": {
+            "serial": attachment["notary_serial"],
+            "content_sha256": attachment["content_sha256"],
+            "event_hash": attachment["event_hash"],
+            "signature": attachment["notary_signature"],
+        },
+    }
 
 
 @router.post("/api/wf/tasks/{task_id}/artifact/upload")
@@ -901,17 +1409,50 @@ async def workflow_artifact_upload(
     kind: str = Form(default="attachment"),
     file: UploadFile = File(...),
     actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
-    content = await file.read()
+    content = await file.read(settings.workflow_attachment_max_upload_bytes + 1)
+    file_name, content_type = _workflow_attachment_file(file, content, settings)
+    with tenant_session(actor.tenant_id) as session:
+        task_rows = _docs(session, "workflow.inbox", 1000)
+    task = next(
+        (
+            row
+            for row in task_rows
+            if str(row.get("id") or row.get("document_key")) == task_id
+        ),
+        None,
+    )
+    task_instance_id = (task or {}).get("instance_id")
+    task_node_key = (task or {}).get("node_key")
+    if task_instance_id and task_node_key:
+        try:
+            instance_uuid = UUID(str(task_instance_id))
+        except ValueError:
+            instance_uuid = None
+        if instance_uuid is not None:
+            attachment = _store_workflow_node_attachment(
+                actor,
+                settings,
+                instance_id=instance_uuid,
+                node_key=str(task_node_key),
+                kind=kind,
+                file_name=file_name,
+                content_type=content_type,
+                content=content,
+            )
+            return {"ok": True, "artifact": attachment, "attachment": attachment}
+
+    content_sha256 = hashlib.sha256(content).hexdigest()
     blob = _blob_insert(
         actor,
         namespace="workflow.artifact",
         entity_key=task_id,
         field_key=kind,
-        file_name=file.filename or "artifact",
-        content_type=file.content_type or "application/octet-stream",
+        file_name=file_name,
+        content_type=content_type,
         content=content,
-        metadata={"kind": kind},
+        metadata={"kind": kind, "content_sha256": content_sha256},
     )
     artifact = {
         "id": blob["id"],
@@ -921,16 +1462,107 @@ async def workflow_artifact_upload(
         "file_size": blob["file_size"],
         "created_at": blob["created_at"],
         "version": 1,
+        "file_sha256": content_sha256,
+        "has_file": True,
     }
     return {"ok": True, "artifact": artifact}
 
 
 @router.get("/api/wf/artifacts/{artifact_id}/download")
 def workflow_artifact_download(
-    artifact_id: str,
+    artifact_id: UUID,
     actor: ActorContext = Depends(current_actor),
 ) -> Response:
-    return _blob_response(actor, artifact_id)
+    with tenant_session(actor.tenant_id) as session:
+        blob_id = session.execute(
+            text(
+                """
+                SELECT blob_id
+                FROM workflow.node_attachments
+                WHERE id = :attachment_id
+                """
+            ),
+            {"attachment_id": artifact_id},
+        ).scalar_one_or_none()
+    return _blob_response(actor, str(blob_id or artifact_id))
+
+
+@router.get("/api/wf/node-attachments/{attachment_id}/verify")
+def workflow_node_attachment_verify(
+    attachment_id: UUID,
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    with tenant_session(actor.tenant_id) as session:
+        row = session.execute(
+            text(
+                """
+                SELECT attachment.*, blob.content
+                FROM workflow.node_attachments AS attachment
+                JOIN compatibility.blobs AS blob
+                  ON blob.tenant_id = attachment.tenant_id
+                 AND blob.id = attachment.blob_id
+                WHERE attachment.id = :attachment_id
+                """
+            ),
+            {"attachment_id": attachment_id},
+        ).mappings().one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Workflow attachment not found")
+        previous_event_hash = None
+        if int(row["version"]) > 1:
+            previous_event_hash = session.execute(
+                text(
+                    """
+                    SELECT event_hash
+                    FROM workflow.node_attachments
+                    WHERE instance_id = :instance_id
+                      AND node_key = :node_key
+                      AND attachment_key = :attachment_key
+                      AND version = :previous_version
+                    """
+                ),
+                {
+                    "instance_id": row["instance_id"],
+                    "node_key": row["node_key"],
+                    "attachment_key": row["attachment_key"],
+                    "previous_version": int(row["version"]) - 1,
+                },
+            ).scalar_one_or_none()
+
+    verification_row = dict(row)
+    content_sha256 = hashlib.sha256(bytes(verification_row.pop("content"))).hexdigest()
+    event_hash = hashlib.sha256(_workflow_attachment_material(verification_row)).hexdigest()
+    signature = hmac.new(
+        settings.integration_secret.encode("utf-8"),
+        event_hash.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    checks = {
+        "content": hmac.compare_digest(content_sha256, str(row["content_sha256"])),
+        "event": hmac.compare_digest(event_hash, str(row["event_hash"])),
+        "signature": hmac.compare_digest(signature, str(row["notary_signature"])),
+        "chain": (
+            row["previous_event_hash"] is None
+            if int(row["version"]) == 1
+            else previous_event_hash is not None
+            and hmac.compare_digest(
+                str(previous_event_hash), str(row["previous_event_hash"])
+            )
+        ),
+    }
+    verified = all(checks.values())
+    return {
+        "ok": verified,
+        "verified": verified,
+        "status": "verified" if verified else "tampered",
+        "attachment_id": str(attachment_id),
+        "notary_serial": row["notary_serial"],
+        "content_sha256": content_sha256,
+        "event_hash": event_hash,
+        "checks": checks,
+        "verified_at": _iso_now(),
+    }
 
 
 @router.post("/api/wf/tasks/{task_id}/{action}")
@@ -974,36 +1606,6 @@ def cli_attachment(
     }
     _upsert_doc(actor, "cli.attachment", item, attachment_id)
     return {"ok": True, "attachment": item}
-
-
-@router.get("/api/shield/status")
-def shield_status(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
-    with tenant_session(actor.tenant_id) as session:
-        state = _doc(session, "shield.status") or {}
-    result = {
-        "status": "ready",
-        "database": "connected",
-        "frontend": "connected",
-        "backend": "connected",
-        "last_repair_at": None,
-        **state,
-    }
-    return {"available": True, **_safe(result)}
-
-
-@router.post("/api/shield/repair")
-def shield_repair(
-    payload: dict[str, object] = Body(default={}),
-    actor: ActorContext = Depends(current_actor),
-) -> dict[str, object]:
-    state = {
-        "status": "ready",
-        "last_repair_at": _iso_now(),
-        "last_action": payload.get("action") or "repair",
-        "result": "completed",
-    }
-    _upsert_doc(actor, "shield.status", state)
-    return {"ok": True, **state}
 
 
 @router.post("/api/legal/contracts/{contract_id}/sign")

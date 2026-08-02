@@ -17,7 +17,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 
 BLUEPRINT_SCHEMA_VERSION = 1
-BLUEPRINT_DATA_VERSION = "2026.07.27.2"
+BLUEPRINT_DATA_VERSION = "2026.08.01.1"
 DEFAULT_BLUEPRINT_KEY = "generic_warehouse"
 
 # The built-in application permissions that organisation templates may grant.
@@ -32,6 +32,8 @@ BLUEPRINT_PERMISSION_KEYS = frozenset(
         "finance.write",
         "reports.read",
         "terminal.use",
+        "browser.read",
+        "browser.run",
         "inventory.read",
         "inventory.import",
         "inventory.inbound",
@@ -66,6 +68,9 @@ BLUEPRINT_PERMISSION_KEYS = frozenset(
         "asset_mgmt.read",
         "asset_mgmt.manage",
         "asset_mgmt.trade",
+        "research.read",
+        "research.write",
+        "research.review",
         "cases.read",
         "cases.create",
         "cases.process",
@@ -251,9 +256,7 @@ DB_MANAGER_WRITE_CAPABILITY_DOMAINS: dict[str, frozenset[str]] = {
     # roles use the governed legal API).  Raw schema/write ownership therefore
     # comes only from the explicit department map above.
     "legal": frozenset(),
-    "assets": frozenset(
-        {"assets.manage", "asset_mgmt.manage", "asset_mgmt.trade"}
-    ),
+    "assets": frozenset({"assets.manage", "asset_mgmt.manage", "asset_mgmt.trade"}),
     "operations": frozenset(),
 }
 
@@ -265,9 +268,7 @@ def _domains_for_permissions(
     """Translate an explicit permission set through an explicit domain map."""
 
     permission_set = {
-        str(permission).strip()
-        for permission in (permissions or ())
-        if str(permission).strip()
+        str(permission).strip() for permission in (permissions or ()) if str(permission).strip()
     }
     return {
         domain
@@ -314,22 +315,14 @@ def _database_access(
         source = "executive"
     else:
         native_domains = set(DB_DEPARTMENT_NATIVE_DOMAINS.get(department, ()))
-        native_domains.update(
-            _domains_for_permissions(permissions, DB_PERMISSION_READ_DOMAINS)
-        )
+        native_domains.update(_domains_for_permissions(permissions, DB_PERMISSION_READ_DOMAINS))
         read_domains = native_domains | {department_domain}
-        native_write_domains = set(
-            DB_DEPARTMENT_NATIVE_WRITE_DOMAINS.get(department, ())
-        )
+        native_write_domains = set(DB_DEPARTMENT_NATIVE_WRITE_DOMAINS.get(department, ()))
         if is_manager:
             native_write_domains.update(
-                _domains_for_permissions(
-                    permissions, DB_MANAGER_WRITE_CAPABILITY_DOMAINS
-                )
+                _domains_for_permissions(permissions, DB_MANAGER_WRITE_CAPABILITY_DOMAINS)
             )
-        write_domains = (
-            native_write_domains | {department_domain} if is_manager else set()
-        )
+        write_domains = native_write_domains | {department_domain} if is_manager else set()
         source = "department_manager" if is_manager else "department_member"
 
     return {
@@ -345,20 +338,34 @@ def _permissions(*groups: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted({permission for group in groups for permission in group}))
 
 
-_BASE_USER = _permissions((
-    "overview.read", "alerts.read", "ai.use",
-    "cases.read", "cases.create", "cases.process",
-    "records.read", "records.create",
-    "tasks.read", "tasks.create",
-))
+_BASE_USER = _permissions(
+    (
+        "overview.read",
+        "alerts.read",
+        "ai.use",
+        "cases.read",
+        "cases.create",
+        "cases.process",
+        "records.read",
+        "records.create",
+        "tasks.read",
+        "tasks.create",
+    )
+)
 _BUSINESS_USER = _permissions(_BASE_USER, ("erp.read",))
 _DEPARTMENT_MANAGER = _permissions(
     _BUSINESS_USER,
     (
-        "reports.read", "approval.review", "permissions.delegate",
-        "procurement.workflow.use", "procurement.workflow.approve",
-        "cases.assign", "cases.close", "cases.analytics.read",
-        "records.edit", "records.archive",
+        "reports.read",
+        "approval.review",
+        "permissions.delegate",
+        "procurement.workflow.use",
+        "procurement.workflow.approve",
+        "cases.assign",
+        "cases.close",
+        "cases.analytics.read",
+        "records.edit",
+        "records.archive",
         "tasks.assign",
     ),
 )
@@ -377,6 +384,8 @@ _INVENTORY_OPERATOR = _permissions(
         "procurement.workflow.use",
     ),
 )
+_RESEARCH_EDITOR = _permissions(("research.read", "research.write"))
+_RESEARCH_REVIEWER = _permissions(_RESEARCH_EDITOR, ("research.review",))
 _WAREHOUSE_MANAGER = _permissions(
     _INVENTORY_OPERATOR,
     (
@@ -417,8 +426,12 @@ _FINANCE_USER = _permissions(
 _FINANCE_MANAGER = _permissions(
     _FINANCE_USER,
     (
-        "approval.review", "audit.read", "legal.manage", "permissions.delegate",
-        "procurement.workflow.use", "procurement.workflow.approve",
+        "approval.review",
+        "audit.read",
+        "legal.manage",
+        "permissions.delegate",
+        "procurement.workflow.use",
+        "procurement.workflow.approve",
     ),
 )
 _HR_USER = _permissions(
@@ -428,8 +441,11 @@ _HR_USER = _permissions(
 _HR_MANAGER = _permissions(
     _HR_USER,
     (
-        "approval.review", "permissions.delegate", "audit.read",
-        "procurement.workflow.use", "procurement.workflow.approve",
+        "approval.review",
+        "permissions.delegate",
+        "audit.read",
+        "procurement.workflow.use",
+        "procurement.workflow.approve",
     ),
 )
 _EXECUTIVE = _permissions(
@@ -447,6 +463,8 @@ _EXECUTIVE = _permissions(
         "legal.manage",
         "assets.read",
         "asset_mgmt.read",
+        "research.read",
+        "research.review",
         "cases.all.manage",
         "cases.config.manage",
         "records.all.manage",
@@ -467,10 +485,16 @@ _SYSTEM_ADMIN = tuple(
         }
     )
 )
-_CASE_DEPARTMENT_MANAGER = _permissions((
-    "cases.read", "cases.create", "cases.process", "cases.assign",
-    "cases.close", "cases.analytics.read",
-))
+_CASE_DEPARTMENT_MANAGER = _permissions(
+    (
+        "cases.read",
+        "cases.create",
+        "cases.process",
+        "cases.assign",
+        "cases.close",
+        "cases.analytics.read",
+    )
+)
 _CASE_COMPANY_MANAGER = _permissions(
     _CASE_DEPARTMENT_MANAGER,
     ("cases.all.manage", "cases.config.manage"),
@@ -480,10 +504,15 @@ _CASE_COMPANY_MANAGER = _permissions(
 # deliberately separate from ``_BASE_USER`` and ``_DEPARTMENT_MANAGER`` so a
 # legal-education position never inherits warehouse, procurement, finance or
 # contract/seal capabilities.
-_BIU_MEMBER = _permissions((
-    "overview.read", "ai.use", "cases.read", "records.read",
-    "tasks.read",
-))
+_BIU_MEMBER = _permissions(
+    (
+        "overview.read",
+        "ai.use",
+        "cases.read",
+        "records.read",
+        "tasks.read",
+    )
+)
 _BIU_DIRECT_CONTRIBUTOR = _permissions(
     _BIU_MEMBER,
     ("tasks.create", "records.create"),
@@ -499,8 +528,13 @@ _BIU_CASE_ACTOR = _permissions(
 _BIU_CASE_ADMINISTRATOR = _permissions(
     _BIU_CASE_ACTOR,
     (
-        "cases.create", "cases.assign", "cases.close", "cases.analytics.read",
-        "records.archive", "tasks.assign", "audit.read",
+        "cases.create",
+        "cases.assign",
+        "cases.close",
+        "cases.analytics.read",
+        "records.archive",
+        "tasks.assign",
+        "audit.read",
     ),
 )
 _BIU_ARCHIVE_REVIEWER = _permissions(
@@ -510,9 +544,14 @@ _BIU_ARCHIVE_REVIEWER = _permissions(
 _BIU_ACADEMIC_GOVERNANCE = _permissions(
     _BIU_MEMBER,
     (
-        "cases.analytics.read", "records.config.manage", "tasks.manage",
-        "users.manage", "permissions.topology.read",
-        "permissions.topology.manage", "permissions.delegate", "audit.read",
+        "cases.analytics.read",
+        "records.config.manage",
+        "tasks.manage",
+        "users.manage",
+        "permissions.topology.read",
+        "permissions.topology.manage",
+        "permissions.delegate",
+        "audit.read",
     ),
 )
 _BIU_SYSTEM_ADMIN = _permissions(
@@ -520,8 +559,11 @@ _BIU_SYSTEM_ADMIN = _permissions(
     _BIU_CASE_ADMINISTRATOR,
     _BIU_ARCHIVE_REVIEWER,
     (
-        "cases.all.manage", "cases.config.manage",
-        "records.all.manage", "records.cli.manage", "settings.manage",
+        "cases.all.manage",
+        "cases.config.manage",
+        "records.all.manage",
+        "records.cli.manage",
+        "settings.manage",
     ),
 )
 
@@ -530,20 +572,41 @@ BIU_ENTRY_MODES = frozenset({"direct", "application", "exam", "appointment"})
 BIU_CATALOG_VISIBILITIES = frozenset({"public", "locked", "hidden"})
 BIU_PERMISSION_TIERS = frozenset({"P0", "P1", "P2", "P3", "P4", "P5"})
 BIU_QUICK_REGISTRATION_TIERS = frozenset({"P0", "P1"})
-BIU_QUICK_REGISTRATION_ALLOWED_PERMISSIONS = frozenset({
-    # Quick entry may use only the row-scoped academic collaboration surface.
-    # Keeping this as a positive allowlist prevents a future template edit from
-    # silently turning open registration into an unrelated tenant capability.
-    "overview.read", "ai.use", "cases.read", "records.read", "records.create",
-    "tasks.read", "tasks.create",
-})
-BIU_DIRECT_ENTRY_FORBIDDEN_PERMISSIONS = frozenset({
-    "ai.write", "audit.read", "cases.process", "cases.assign", "cases.close",
-    "cases.config.manage", "cases.all.manage", "records.archive",
-    "records.config.manage", "records.all.manage", "records.cli.manage",
-    "tasks.assign", "tasks.manage", "users.manage",
-    "permissions.topology.manage", "permissions.delegate", "settings.manage",
-})
+BIU_QUICK_REGISTRATION_ALLOWED_PERMISSIONS = frozenset(
+    {
+        # Quick entry may use only the row-scoped academic collaboration surface.
+        # Keeping this as a positive allowlist prevents a future template edit from
+        # silently turning open registration into an unrelated tenant capability.
+        "overview.read",
+        "ai.use",
+        "cases.read",
+        "records.read",
+        "records.create",
+        "tasks.read",
+        "tasks.create",
+    }
+)
+BIU_DIRECT_ENTRY_FORBIDDEN_PERMISSIONS = frozenset(
+    {
+        "ai.write",
+        "audit.read",
+        "cases.process",
+        "cases.assign",
+        "cases.close",
+        "cases.config.manage",
+        "cases.all.manage",
+        "records.archive",
+        "records.config.manage",
+        "records.all.manage",
+        "records.cli.manage",
+        "tasks.assign",
+        "tasks.manage",
+        "users.manage",
+        "permissions.topology.manage",
+        "permissions.delegate",
+        "settings.manage",
+    }
+)
 
 # Warehouse 2.0 navigation rules, in the exact order used by the live shell.
 # Keeping the permission rule beside the id lets industry defaults be derived
@@ -561,6 +624,7 @@ V2_NAV_MODULE_RULES = (
     ("erp", ("erp.read",), ()),
     ("finance", ("finance.read",), ()),
     ("assets", (), ("assets.read", "asset_mgmt.read")),
+    ("research", (), ("research.read", "research.write", "research.review")),
     ("procurement", ("procurement.workflow.use",), ()),
     ("legal", ("legal.manage",), ()),
     ("gis", ("gis.read",), ()),
@@ -591,9 +655,7 @@ def nav_modules_for_permissions(permission_keys: Iterable[str]) -> list[str]:
     deterministic and always matches :data:`V2_NAV_MODULE_RULES`.
     """
     permissions = {
-        str(permission).strip()
-        for permission in (permission_keys or ())
-        if str(permission).strip()
+        str(permission).strip() for permission in (permission_keys or ()) if str(permission).strip()
     }
     modules: list[str] = []
     for module_id, required_all, required_any in V2_NAV_MODULE_RULES:
@@ -644,9 +706,7 @@ def _position(
     automatic_task_grants: bool = True,
 ) -> dict[str, Any]:
     automatic_case_permissions = (
-        _CASE_COMPANY_MANAGER if level >= 9
-        else _CASE_DEPARTMENT_MANAGER if is_manager
-        else ()
+        _CASE_COMPANY_MANAGER if level >= 9 else _CASE_DEPARTMENT_MANAGER if is_manager else ()
     )
     automatic_task_permissions = ()
     if automatic_task_grants:
@@ -778,9 +838,7 @@ def _biu_position(
         # than its reviewed quick-registration allowlist.
         automatic_task_grants=False,
     )
-    resolved_workflow = (
-        defaults["workflow_ref"] if workflow_ref is None else workflow_ref
-    )
+    resolved_workflow = defaults["workflow_ref"] if workflow_ref is None else workflow_ref
     position.update(
         {
             "name_en": name_en,
@@ -850,17 +908,67 @@ _BLUEPRINTS["generic_warehouse"] = _blueprint(
     ],
     [
         _position("general_manager", "總經理", "management", "總經理", 9, True, _EXECUTIVE),
-        _position("deputy_general_manager", "副總經理", "management", "副總經理", 8, True, _EXECUTIVE),
-        _position("system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("warehouse_manager", "倉儲主管", "warehouse_ops", "倉儲主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("warehouse_clerk", "出入庫管理員", "warehouse_ops", "出入庫管理員", 3, False, _INVENTORY_OPERATOR),
-        _position("inventory_auditor", "盤點員", "warehouse_ops", "盤點員", 3, False, _INVENTORY_VIEWER, ("inventory.adjust", "audit.read")),
-        _position("procurement_manager", "採購主管", "procurement", "採購主管", 6, True, _PROCUREMENT_MANAGER),
-        _position("buyer", "採購專員", "procurement", "採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
+        _position(
+            "deputy_general_manager", "副總經理", "management", "副總經理", 8, True, _EXECUTIVE
+        ),
+        _position(
+            "system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "warehouse_manager",
+            "倉儲主管",
+            "warehouse_ops",
+            "倉儲主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "warehouse_clerk",
+            "出入庫管理員",
+            "warehouse_ops",
+            "出入庫管理員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "inventory_auditor",
+            "盤點員",
+            "warehouse_ops",
+            "盤點員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.adjust", "audit.read"),
+        ),
+        _position(
+            "procurement_manager",
+            "採購主管",
+            "procurement",
+            "採購主管",
+            6,
+            True,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "buyer",
+            "採購專員",
+            "procurement",
+            "採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
         _position("finance_manager", "財務主管", "finance", "財務主管", 7, True, _FINANCE_MANAGER),
         _position("accountant", "會計", "finance", "會計", 4, False, _FINANCE_USER),
-        _position("hr_admin_manager", "人事行政主管", "hr_admin", "人事行政主管", 6, True, _HR_MANAGER),
-        _position("hr_admin_specialist", "人事行政專員", "hr_admin", "人事行政專員", 3, False, _HR_USER),
+        _position(
+            "hr_admin_manager", "人事行政主管", "hr_admin", "人事行政主管", 6, True, _HR_MANAGER
+        ),
+        _position(
+            "hr_admin_specialist", "人事行政專員", "hr_admin", "人事行政專員", 3, False, _HR_USER
+        ),
     ],
 )
 
@@ -881,24 +989,141 @@ _BLUEPRINTS["hotel_homestay"] = _blueprint(
         _department("hr_admin", "人事行政", "招聘、排班支持、培訓與行政管理。"),
     ],
     [
-        _position("hotel_general_manager", "酒店總經理", "management", "酒店總經理", 9, True, _EXECUTIVE),
-        _position("hotel_deputy_general_manager", "酒店副總經理", "management", "酒店副總經理", 8, True, _EXECUTIVE),
-        _position("hotel_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("front_office_manager", "前臺經理", "front_office", "前臺經理", 6, True, _DEPARTMENT_MANAGER),
+        _position(
+            "hotel_general_manager", "酒店總經理", "management", "酒店總經理", 9, True, _EXECUTIVE
+        ),
+        _position(
+            "hotel_deputy_general_manager",
+            "酒店副總經理",
+            "management",
+            "酒店副總經理",
+            8,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "hotel_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "front_office_manager",
+            "前臺經理",
+            "front_office",
+            "前臺經理",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+        ),
         _position("receptionist", "前臺接待", "front_office", "前臺接待", 3, False, _BUSINESS_USER),
-        _position("housekeeping_manager", "房務經理", "housekeeping", "房務經理", 6, True, _INVENTORY_VIEWER, _DEPARTMENT_MANAGER),
-        _position("room_attendant", "客房服務員", "housekeeping", "客房服務員", 2, False, _INVENTORY_VIEWER, ("inventory.outbound",)),
-        _position("food_beverage_manager", "餐飲經理", "food_beverage", "餐飲經理", 6, True, _INVENTORY_VIEWER, _DEPARTMENT_MANAGER),
-        _position("hotel_restaurant_storekeeper", "餐飲庫管員", "food_beverage", "餐飲庫管員", 3, False, _INVENTORY_OPERATOR),
-        _position("hotel_engineering_manager", "工程經理", "hotel_engineering", "工程經理", 6, True, _INVENTORY_VIEWER, _DEPARTMENT_MANAGER),
-        _position("maintenance_technician", "維修技師", "hotel_engineering", "維修技師", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "gis.locate")),
-        _position("hotel_supply_manager", "採購倉儲經理", "procurement_warehouse", "採購倉儲經理", 6, True, _WAREHOUSE_MANAGER, _PROCUREMENT_MANAGER),
-        _position("hotel_buyer", "採購專員", "procurement_warehouse", "酒店採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("hotel_warehouse_clerk", "倉庫管理員", "procurement_warehouse", "酒店倉庫管理員", 3, False, _INVENTORY_OPERATOR),
-        _position("hotel_finance_manager", "財務經理", "finance", "酒店財務經理", 7, True, _FINANCE_MANAGER),
+        _position(
+            "housekeeping_manager",
+            "房務經理",
+            "housekeeping",
+            "房務經理",
+            6,
+            True,
+            _INVENTORY_VIEWER,
+            _DEPARTMENT_MANAGER,
+        ),
+        _position(
+            "room_attendant",
+            "客房服務員",
+            "housekeeping",
+            "客房服務員",
+            2,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound",),
+        ),
+        _position(
+            "food_beverage_manager",
+            "餐飲經理",
+            "food_beverage",
+            "餐飲經理",
+            6,
+            True,
+            _INVENTORY_VIEWER,
+            _DEPARTMENT_MANAGER,
+        ),
+        _position(
+            "hotel_restaurant_storekeeper",
+            "餐飲庫管員",
+            "food_beverage",
+            "餐飲庫管員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "hotel_engineering_manager",
+            "工程經理",
+            "hotel_engineering",
+            "工程經理",
+            6,
+            True,
+            _INVENTORY_VIEWER,
+            _DEPARTMENT_MANAGER,
+        ),
+        _position(
+            "maintenance_technician",
+            "維修技師",
+            "hotel_engineering",
+            "維修技師",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "gis.locate"),
+        ),
+        _position(
+            "hotel_supply_manager",
+            "採購倉儲經理",
+            "procurement_warehouse",
+            "採購倉儲經理",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "hotel_buyer",
+            "採購專員",
+            "procurement_warehouse",
+            "酒店採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "hotel_warehouse_clerk",
+            "倉庫管理員",
+            "procurement_warehouse",
+            "酒店倉庫管理員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "hotel_finance_manager",
+            "財務經理",
+            "finance",
+            "酒店財務經理",
+            7,
+            True,
+            _FINANCE_MANAGER,
+        ),
         _position("hotel_accountant", "會計", "finance", "酒店會計", 4, False, _FINANCE_USER),
-        _position("hotel_hr_manager", "人事行政經理", "hr_admin", "酒店人事行政經理", 6, True, _HR_MANAGER),
-        _position("hotel_hr_specialist", "人事行政專員", "hr_admin", "酒店人事行政專員", 3, False, _HR_USER),
+        _position(
+            "hotel_hr_manager", "人事行政經理", "hr_admin", "酒店人事行政經理", 6, True, _HR_MANAGER
+        ),
+        _position(
+            "hotel_hr_specialist",
+            "人事行政專員",
+            "hr_admin",
+            "酒店人事行政專員",
+            3,
+            False,
+            _HR_USER,
+        ),
     ],
 )
 
@@ -913,33 +1138,168 @@ _BLUEPRINTS["power_system"] = _blueprint(
         _department("marketing_customer", "營銷與客戶服務", "市場、用戶服務、合同與業務協調。"),
         _department("production_maintenance", "生產運維", "輸變電設備運行、巡檢、檢修與缺陷處置。"),
         _department("dispatch_safety", "調度與安全", "運行調度、安全監督、兩票與應急管理。"),
-        _department("procurement_warehouse", "採購倉儲", "招標採購、供應商、備品備件與工器具管理。"),
+        _department(
+            "procurement_warehouse", "採購倉儲", "招標採購、供應商、備品備件與工器具管理。"
+        ),
         _department("finance", "財務", "預算、資金、核算、成本與財務監督。"),
         _department("legal_compliance", "法務合規", "合同、訴訟、牌照、履約與合規風險。"),
         _department("research_technology", "研究與技術", "技術監督、科研、標準與數字化研究。"),
         _department("hr_admin", "人事行政", "組織人事、培訓、行政與綜合保障。"),
     ],
     [
-        _position("grid_general_manager", "總經理", "management", "電力企業總經理", 9, True, _EXECUTIVE),
-        _position("grid_deputy_general_manager", "副總經理", "management", "電力企業副總經理", 8, True, _EXECUTIVE),
-        _position("grid_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("marketing_manager", "營銷主管", "marketing_customer", "營銷主管", 6, True, _DEPARTMENT_MANAGER, ("legal.manage",)),
-        _position("customer_specialist", "客戶服務專員", "marketing_customer", "客戶服務專員", 3, False, _BUSINESS_USER),
-        _position("power_production_manager", "生產運維主管", "production_maintenance", "生產運維主管", 7, True, _WAREHOUSE_MANAGER, _DEPARTMENT_MANAGER),
-        _position("grid_maintenance_technician", "檢修運維人員", "production_maintenance", "檢修運維人員", 4, False, _INVENTORY_VIEWER, ("inventory.outbound", "gis.locate", "ledger.write")),
-        _position("dispatch_safety_manager", "調度安全主管", "dispatch_safety", "調度安全主管", 7, True, _DEPARTMENT_MANAGER, ("gis.read", "gis.manage", "audit.read", "inventory.read", "ledger.read")),
-        _position("dispatch_operator", "調度值班員", "dispatch_safety", "調度值班員", 4, False, _BUSINESS_USER, ("gis.read", "audit.read")),
-        _position("grid_supply_manager", "採購倉儲主管", "procurement_warehouse", "電力採購倉儲主管", 7, True, _WAREHOUSE_MANAGER, _PROCUREMENT_MANAGER),
-        _position("grid_buyer", "採購專員", "procurement_warehouse", "電力採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("grid_warehouse_clerk", "物資庫管員", "procurement_warehouse", "電力物資庫管員", 3, False, _INVENTORY_OPERATOR),
-        _position("grid_finance_manager", "財務主管", "finance", "電力財務主管", 7, True, _FINANCE_MANAGER),
+        _position(
+            "grid_general_manager", "總經理", "management", "電力企業總經理", 9, True, _EXECUTIVE
+        ),
+        _position(
+            "grid_deputy_general_manager",
+            "副總經理",
+            "management",
+            "電力企業副總經理",
+            8,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "grid_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "marketing_manager",
+            "營銷主管",
+            "marketing_customer",
+            "營銷主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("legal.manage",),
+        ),
+        _position(
+            "customer_specialist",
+            "客戶服務專員",
+            "marketing_customer",
+            "客戶服務專員",
+            3,
+            False,
+            _BUSINESS_USER,
+        ),
+        _position(
+            "power_production_manager",
+            "生產運維主管",
+            "production_maintenance",
+            "生產運維主管",
+            7,
+            True,
+            _WAREHOUSE_MANAGER,
+            _DEPARTMENT_MANAGER,
+        ),
+        _position(
+            "grid_maintenance_technician",
+            "檢修運維人員",
+            "production_maintenance",
+            "檢修運維人員",
+            4,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "gis.locate", "ledger.write"),
+        ),
+        _position(
+            "dispatch_safety_manager",
+            "調度安全主管",
+            "dispatch_safety",
+            "調度安全主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("gis.read", "gis.manage", "audit.read", "inventory.read", "ledger.read"),
+        ),
+        _position(
+            "dispatch_operator",
+            "調度值班員",
+            "dispatch_safety",
+            "調度值班員",
+            4,
+            False,
+            _BUSINESS_USER,
+            ("gis.read", "audit.read"),
+        ),
+        _position(
+            "grid_supply_manager",
+            "採購倉儲主管",
+            "procurement_warehouse",
+            "電力採購倉儲主管",
+            7,
+            True,
+            _WAREHOUSE_MANAGER,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "grid_buyer",
+            "採購專員",
+            "procurement_warehouse",
+            "電力採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "grid_warehouse_clerk",
+            "物資庫管員",
+            "procurement_warehouse",
+            "電力物資庫管員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "grid_finance_manager", "財務主管", "finance", "電力財務主管", 7, True, _FINANCE_MANAGER
+        ),
         _position("grid_accountant", "會計", "finance", "電力會計", 4, False, _FINANCE_USER),
-        _position("legal_manager", "法務合規主管", "legal_compliance", "法務合規主管", 7, True, _DEPARTMENT_MANAGER, ("legal.manage", "audit.read")),
-        _position("legal_specialist", "法務專員", "legal_compliance", "法務專員", 4, False, _BUSINESS_USER, ("legal.manage",)),
-        _position("research_director", "研究技術主管", "research_technology", "研究技術主管", 7, True, _DEPARTMENT_MANAGER, ("inventory.read", "ledger.read")),
-        _position("research_engineer", "研究工程師", "research_technology", "研究工程師", 4, False, _BUSINESS_USER, ("inventory.read", "ledger.read")),
-        _position("grid_hr_manager", "人事行政主管", "hr_admin", "電力人事行政主管", 6, True, _HR_MANAGER),
-        _position("grid_hr_specialist", "人事行政專員", "hr_admin", "電力人事行政專員", 3, False, _HR_USER),
+        _position(
+            "legal_manager",
+            "法務合規主管",
+            "legal_compliance",
+            "法務合規主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("legal.manage", "audit.read"),
+        ),
+        _position(
+            "legal_specialist",
+            "法務專員",
+            "legal_compliance",
+            "法務專員",
+            4,
+            False,
+            _BUSINESS_USER,
+            ("legal.manage",),
+        ),
+        _position(
+            "research_director",
+            "研究技術主管",
+            "research_technology",
+            "研究技術主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("inventory.read", "ledger.read"),
+        ),
+        _position(
+            "research_engineer",
+            "研究工程師",
+            "research_technology",
+            "研究工程師",
+            4,
+            False,
+            _BUSINESS_USER,
+            ("inventory.read", "ledger.read"),
+        ),
+        _position(
+            "grid_hr_manager", "人事行政主管", "hr_admin", "電力人事行政主管", 6, True, _HR_MANAGER
+        ),
+        _position(
+            "grid_hr_specialist", "人事行政專員", "hr_admin", "電力人事行政專員", 3, False, _HR_USER
+        ),
     ],
 )
 
@@ -960,21 +1320,137 @@ _BLUEPRINTS["manufacturing_factory"] = _blueprint(
     ],
     [
         _position("factory_general_manager", "廠長", "management", "工廠廠長", 9, True, _EXECUTIVE),
-        _position("factory_deputy_director", "副廠長", "management", "工廠副廠長", 8, True, _EXECUTIVE),
-        _position("factory_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("manufacturing_production_manager", "生產主管", "manufacturing_production", "製造生產主管", 6, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER),
-        _position("production_operator", "生產領料員", "manufacturing_production", "生產領料員", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "ledger.write")),
-        _position("quality_manager", "品質主管", "quality", "製造品質主管", 6, True, _DEPARTMENT_MANAGER, ("inventory.read", "ledger.read", "audit.read")),
-        _position("quality_inspector", "品質檢驗員", "quality", "品質檢驗員", 3, False, _INVENTORY_VIEWER, ("audit.read",)),
-        _position("manufacturing_equipment_manager", "設備主管", "equipment", "設備工程主管", 6, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER),
-        _position("equipment_technician", "設備維修技師", "equipment", "設備維修技師", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "gis.locate")),
-        _position("factory_supply_manager", "採購倉儲主管", "procurement_warehouse", "製造採購倉儲主管", 7, True, _WAREHOUSE_MANAGER, _PROCUREMENT_MANAGER),
-        _position("factory_buyer", "採購專員", "procurement_warehouse", "製造採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("factory_warehouse_clerk", "物料庫管員", "procurement_warehouse", "製造物料庫管員", 3, False, _INVENTORY_OPERATOR),
-        _position("factory_finance_manager", "財務主管", "finance", "製造財務主管", 7, True, _FINANCE_MANAGER),
-        _position("cost_accountant", "成本會計", "finance", "製造成本會計", 4, False, _FINANCE_USER),
-        _position("factory_hr_manager", "人事行政主管", "hr_admin", "製造人事行政主管", 6, True, _HR_MANAGER),
-        _position("factory_hr_specialist", "人事行政專員", "hr_admin", "製造人事行政專員", 3, False, _HR_USER),
+        _position(
+            "factory_deputy_director", "副廠長", "management", "工廠副廠長", 8, True, _EXECUTIVE
+        ),
+        _position(
+            "factory_system_admin",
+            "系統管理員",
+            "management",
+            "系統管理員",
+            10,
+            True,
+            _SYSTEM_ADMIN,
+        ),
+        _position(
+            "manufacturing_production_manager",
+            "生產主管",
+            "manufacturing_production",
+            "製造生產主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "production_operator",
+            "生產領料員",
+            "manufacturing_production",
+            "生產領料員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "ledger.write"),
+        ),
+        _position(
+            "quality_manager",
+            "品質主管",
+            "quality",
+            "製造品質主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("inventory.read", "ledger.read", "audit.read"),
+        ),
+        _position(
+            "quality_inspector",
+            "品質檢驗員",
+            "quality",
+            "品質檢驗員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("audit.read",),
+        ),
+        _position(
+            "manufacturing_equipment_manager",
+            "設備主管",
+            "equipment",
+            "設備工程主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "equipment_technician",
+            "設備維修技師",
+            "equipment",
+            "設備維修技師",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "gis.locate"),
+        ),
+        _position(
+            "factory_supply_manager",
+            "採購倉儲主管",
+            "procurement_warehouse",
+            "製造採購倉儲主管",
+            7,
+            True,
+            _WAREHOUSE_MANAGER,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "factory_buyer",
+            "採購專員",
+            "procurement_warehouse",
+            "製造採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "factory_warehouse_clerk",
+            "物料庫管員",
+            "procurement_warehouse",
+            "製造物料庫管員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "factory_finance_manager",
+            "財務主管",
+            "finance",
+            "製造財務主管",
+            7,
+            True,
+            _FINANCE_MANAGER,
+        ),
+        _position(
+            "cost_accountant", "成本會計", "finance", "製造成本會計", 4, False, _FINANCE_USER
+        ),
+        _position(
+            "factory_hr_manager",
+            "人事行政主管",
+            "hr_admin",
+            "製造人事行政主管",
+            6,
+            True,
+            _HR_MANAGER,
+        ),
+        _position(
+            "factory_hr_specialist",
+            "人事行政專員",
+            "hr_admin",
+            "製造人事行政專員",
+            3,
+            False,
+            _HR_USER,
+        ),
     ],
 )
 
@@ -995,23 +1471,162 @@ _BLUEPRINTS["construction_site"] = _blueprint(
         _department("hr_admin", "人事行政", "項目人員、行政與後勤保障。"),
     ],
     [
-        _position("construction_general_manager", "總經理", "management", "工程企業總經理", 9, True, _EXECUTIVE),
-        _position("construction_deputy_general_manager", "副總經理", "management", "工程企業副總經理", 8, True, _EXECUTIVE),
-        _position("construction_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("project_manager", "項目經理", "project_management", "工程項目經理", 7, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER, ("audit.read",)),
-        _position("site_coordinator", "現場協調員", "project_management", "工程現場協調員", 4, False, _BUSINESS_USER, ("gis.read",)),
-        _position("construction_engineering_manager", "技術負責人", "construction_engineering", "工程技術負責人", 7, True, _DEPARTMENT_MANAGER, ("gis.read",)),
-        _position("site_engineer", "施工工程師", "construction_engineering", "施工工程師", 4, False, _BUSINESS_USER, ("gis.read", "inventory.read")),
-        _position("safety_quality_manager", "安全品質主管", "safety_quality", "安全品質主管", 7, True, _DEPARTMENT_MANAGER, ("audit.read", "gis.read", "inventory.read")),
-        _position("safety_inspector", "安全員", "safety_quality", "工程安全員", 4, False, _BUSINESS_USER, ("audit.read", "gis.read")),
-        _position("materials_manager", "材料主管", "materials_warehouse", "工程材料主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("site_storekeeper", "現場庫管員", "materials_warehouse", "工程現場庫管員", 3, False, _INVENTORY_OPERATOR),
-        _position("contracts_manager", "採購合同主管", "procurement_contracts", "工程採購合同主管", 7, True, _PROCUREMENT_MANAGER, ("legal.manage",)),
-        _position("construction_buyer", "採購專員", "procurement_contracts", "工程採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("construction_finance_manager", "財務主管", "finance", "工程財務主管", 7, True, _FINANCE_MANAGER),
-        _position("project_accountant", "項目會計", "finance", "工程項目會計", 4, False, _FINANCE_USER),
-        _position("construction_hr_manager", "人事行政主管", "hr_admin", "工程人事行政主管", 6, True, _HR_MANAGER),
-        _position("construction_hr_specialist", "人事行政專員", "hr_admin", "工程人事行政專員", 3, False, _HR_USER),
+        _position(
+            "construction_general_manager",
+            "總經理",
+            "management",
+            "工程企業總經理",
+            9,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "construction_deputy_general_manager",
+            "副總經理",
+            "management",
+            "工程企業副總經理",
+            8,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "construction_system_admin",
+            "系統管理員",
+            "management",
+            "系統管理員",
+            10,
+            True,
+            _SYSTEM_ADMIN,
+        ),
+        _position(
+            "project_manager",
+            "項目經理",
+            "project_management",
+            "工程項目經理",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            ("audit.read",),
+        ),
+        _position(
+            "site_coordinator",
+            "現場協調員",
+            "project_management",
+            "工程現場協調員",
+            4,
+            False,
+            _BUSINESS_USER,
+            ("gis.read",),
+        ),
+        _position(
+            "construction_engineering_manager",
+            "技術負責人",
+            "construction_engineering",
+            "工程技術負責人",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("gis.read",),
+        ),
+        _position(
+            "site_engineer",
+            "施工工程師",
+            "construction_engineering",
+            "施工工程師",
+            4,
+            False,
+            _BUSINESS_USER,
+            ("gis.read", "inventory.read"),
+        ),
+        _position(
+            "safety_quality_manager",
+            "安全品質主管",
+            "safety_quality",
+            "安全品質主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("audit.read", "gis.read", "inventory.read"),
+        ),
+        _position(
+            "safety_inspector",
+            "安全員",
+            "safety_quality",
+            "工程安全員",
+            4,
+            False,
+            _BUSINESS_USER,
+            ("audit.read", "gis.read"),
+        ),
+        _position(
+            "materials_manager",
+            "材料主管",
+            "materials_warehouse",
+            "工程材料主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "site_storekeeper",
+            "現場庫管員",
+            "materials_warehouse",
+            "工程現場庫管員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "contracts_manager",
+            "採購合同主管",
+            "procurement_contracts",
+            "工程採購合同主管",
+            7,
+            True,
+            _PROCUREMENT_MANAGER,
+            ("legal.manage",),
+        ),
+        _position(
+            "construction_buyer",
+            "採購專員",
+            "procurement_contracts",
+            "工程採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "construction_finance_manager",
+            "財務主管",
+            "finance",
+            "工程財務主管",
+            7,
+            True,
+            _FINANCE_MANAGER,
+        ),
+        _position(
+            "project_accountant", "項目會計", "finance", "工程項目會計", 4, False, _FINANCE_USER
+        ),
+        _position(
+            "construction_hr_manager",
+            "人事行政主管",
+            "hr_admin",
+            "工程人事行政主管",
+            6,
+            True,
+            _HR_MANAGER,
+        ),
+        _position(
+            "construction_hr_specialist",
+            "人事行政專員",
+            "hr_admin",
+            "工程人事行政專員",
+            3,
+            False,
+            _HR_USER,
+        ),
     ],
 )
 
@@ -1031,22 +1646,130 @@ _BLUEPRINTS["restaurant_kitchen"] = _blueprint(
         _department("hr_admin", "人事行政", "招聘、排班支持、培訓與行政。"),
     ],
     [
-        _position("restaurant_general_manager", "店長", "management", "餐飲店長", 8, True, _EXECUTIVE),
-        _position("restaurant_deputy_manager", "副店長", "management", "餐飲副店長", 7, True, _EXECUTIVE),
-        _position("restaurant_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("front_service_manager", "前廳主管", "front_service", "餐飲前廳主管", 6, True, _DEPARTMENT_MANAGER),
-        _position("service_staff", "服務員", "front_service", "餐飲服務員", 2, False, _BUSINESS_USER),
-        _position("executive_chef", "廚師長", "kitchen", "廚師長", 6, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER),
-        _position("kitchen_receiver", "後廚領料員", "kitchen", "後廚領料員", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "ledger.write")),
-        _position("food_safety_manager", "食品安全主管", "food_safety", "食品安全主管", 6, True, _DEPARTMENT_MANAGER, ("inventory.read", "ledger.read", "audit.read")),
-        _position("food_safety_inspector", "食品安全員", "food_safety", "食品安全員", 3, False, _INVENTORY_VIEWER, ("audit.read",)),
-        _position("restaurant_supply_manager", "採購倉儲主管", "procurement_warehouse", "餐飲採購倉儲主管", 6, True, _WAREHOUSE_MANAGER, _PROCUREMENT_MANAGER),
-        _position("restaurant_buyer", "採購專員", "procurement_warehouse", "餐飲採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("restaurant_kitchen_storekeeper", "倉庫管理員", "procurement_warehouse", "餐飲倉庫管理員", 3, False, _INVENTORY_OPERATOR),
-        _position("restaurant_finance_manager", "財務主管", "finance", "餐飲財務主管", 7, True, _FINANCE_MANAGER),
+        _position(
+            "restaurant_general_manager", "店長", "management", "餐飲店長", 8, True, _EXECUTIVE
+        ),
+        _position(
+            "restaurant_deputy_manager", "副店長", "management", "餐飲副店長", 7, True, _EXECUTIVE
+        ),
+        _position(
+            "restaurant_system_admin",
+            "系統管理員",
+            "management",
+            "系統管理員",
+            10,
+            True,
+            _SYSTEM_ADMIN,
+        ),
+        _position(
+            "front_service_manager",
+            "前廳主管",
+            "front_service",
+            "餐飲前廳主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+        ),
+        _position(
+            "service_staff", "服務員", "front_service", "餐飲服務員", 2, False, _BUSINESS_USER
+        ),
+        _position(
+            "executive_chef",
+            "廚師長",
+            "kitchen",
+            "廚師長",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "kitchen_receiver",
+            "後廚領料員",
+            "kitchen",
+            "後廚領料員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "ledger.write"),
+        ),
+        _position(
+            "food_safety_manager",
+            "食品安全主管",
+            "food_safety",
+            "食品安全主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("inventory.read", "ledger.read", "audit.read"),
+        ),
+        _position(
+            "food_safety_inspector",
+            "食品安全員",
+            "food_safety",
+            "食品安全員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("audit.read",),
+        ),
+        _position(
+            "restaurant_supply_manager",
+            "採購倉儲主管",
+            "procurement_warehouse",
+            "餐飲採購倉儲主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "restaurant_buyer",
+            "採購專員",
+            "procurement_warehouse",
+            "餐飲採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "restaurant_kitchen_storekeeper",
+            "倉庫管理員",
+            "procurement_warehouse",
+            "餐飲倉庫管理員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "restaurant_finance_manager",
+            "財務主管",
+            "finance",
+            "餐飲財務主管",
+            7,
+            True,
+            _FINANCE_MANAGER,
+        ),
         _position("restaurant_accountant", "會計", "finance", "餐飲會計", 4, False, _FINANCE_USER),
-        _position("restaurant_hr_manager", "人事行政主管", "hr_admin", "餐飲人事行政主管", 6, True, _HR_MANAGER),
-        _position("restaurant_hr_specialist", "人事行政專員", "hr_admin", "餐飲人事行政專員", 3, False, _HR_USER),
+        _position(
+            "restaurant_hr_manager",
+            "人事行政主管",
+            "hr_admin",
+            "餐飲人事行政主管",
+            6,
+            True,
+            _HR_MANAGER,
+        ),
+        _position(
+            "restaurant_hr_specialist",
+            "人事行政專員",
+            "hr_admin",
+            "餐飲人事行政專員",
+            3,
+            False,
+            _HR_USER,
+        ),
     ],
 )
 
@@ -1066,21 +1789,116 @@ _BLUEPRINTS["medical_clinic"] = _blueprint(
         _department("hr_admin_compliance", "人事行政與合規", "人員資質、行政、牌照與合規台賬。"),
     ],
     [
-        _position("clinic_director", "診所主任", "management", "診所主任", 9, True, _EXECUTIVE, ("legal.manage",)),
-        _position("clinic_deputy_director", "診所副主任", "management", "診所副主任", 8, True, _EXECUTIVE),
-        _position("clinic_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("clinical_manager", "臨床負責人", "clinical", "臨床負責人", 7, True, _DEPARTMENT_MANAGER),
+        _position(
+            "clinic_director",
+            "診所主任",
+            "management",
+            "診所主任",
+            9,
+            True,
+            _EXECUTIVE,
+            ("legal.manage",),
+        ),
+        _position(
+            "clinic_deputy_director", "診所副主任", "management", "診所副主任", 8, True, _EXECUTIVE
+        ),
+        _position(
+            "clinic_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "clinical_manager", "臨床負責人", "clinical", "臨床負責人", 7, True, _DEPARTMENT_MANAGER
+        ),
         _position("doctor", "醫師", "clinical", "診所醫師", 5, False, _BUSINESS_USER),
-        _position("nursing_manager", "護理主管", "nursing", "診所護理主管", 6, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER),
-        _position("nurse", "護理人員", "nursing", "診所護理人員", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "ledger.write")),
-        _position("pharmacy_manager", "藥房物資主管", "pharmacy_supplies", "藥房物資主管", 7, True, _WAREHOUSE_MANAGER),
-        _position("pharmacy_storekeeper", "藥品物資管理員", "pharmacy_supplies", "藥品物資管理員", 4, False, _INVENTORY_OPERATOR, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("clinic_equipment_manager", "設備消毒主管", "equipment_sterilization", "醫療設備消毒主管", 6, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER),
-        _position("sterilization_technician", "消毒設備技師", "equipment_sterilization", "消毒設備技師", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "gis.locate")),
-        _position("clinic_finance_manager", "財務主管", "finance", "診所財務主管", 7, True, _FINANCE_MANAGER),
-        _position("clinic_accountant", "會計收費員", "finance", "診所會計收費員", 4, False, _FINANCE_USER),
-        _position("clinic_admin_manager", "人事行政合規主管", "hr_admin_compliance", "診所人事行政合規主管", 7, True, _HR_MANAGER, ("legal.manage",)),
-        _position("clinic_admin_specialist", "人事行政專員", "hr_admin_compliance", "診所人事行政專員", 3, False, _HR_USER),
+        _position(
+            "nursing_manager",
+            "護理主管",
+            "nursing",
+            "診所護理主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "nurse",
+            "護理人員",
+            "nursing",
+            "診所護理人員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "ledger.write"),
+        ),
+        _position(
+            "pharmacy_manager",
+            "藥房物資主管",
+            "pharmacy_supplies",
+            "藥房物資主管",
+            7,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "pharmacy_storekeeper",
+            "藥品物資管理員",
+            "pharmacy_supplies",
+            "藥品物資管理員",
+            4,
+            False,
+            _INVENTORY_OPERATOR,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "clinic_equipment_manager",
+            "設備消毒主管",
+            "equipment_sterilization",
+            "醫療設備消毒主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "sterilization_technician",
+            "消毒設備技師",
+            "equipment_sterilization",
+            "消毒設備技師",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "gis.locate"),
+        ),
+        _position(
+            "clinic_finance_manager",
+            "財務主管",
+            "finance",
+            "診所財務主管",
+            7,
+            True,
+            _FINANCE_MANAGER,
+        ),
+        _position(
+            "clinic_accountant", "會計收費員", "finance", "診所會計收費員", 4, False, _FINANCE_USER
+        ),
+        _position(
+            "clinic_admin_manager",
+            "人事行政合規主管",
+            "hr_admin_compliance",
+            "診所人事行政合規主管",
+            7,
+            True,
+            _HR_MANAGER,
+            ("legal.manage",),
+        ),
+        _position(
+            "clinic_admin_specialist",
+            "人事行政專員",
+            "hr_admin_compliance",
+            "診所人事行政專員",
+            3,
+            False,
+            _HR_USER,
+        ),
     ],
 )
 
@@ -1100,18 +1918,99 @@ _BLUEPRINTS["retail_store"] = _blueprint(
     ],
     [
         _position("retail_general_manager", "店長", "management", "零售店長", 8, True, _EXECUTIVE),
-        _position("retail_deputy_manager", "副店長", "management", "零售副店長", 7, True, _EXECUTIVE),
-        _position("retail_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("operations_manager", "門店運營主管", "store_operations", "零售運營主管", 6, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER),
-        _position("store_associate", "門店員工", "store_operations", "零售門店員工", 2, False, _INVENTORY_VIEWER, ("inventory.outbound",)),
-        _position("merchandising_manager", "商品主管", "merchandising", "零售商品主管", 6, True, _PROCUREMENT_MANAGER),
-        _position("merchandiser", "商品專員", "merchandising", "零售商品專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("replenishment_manager", "倉儲補貨主管", "warehouse_replenishment", "零售倉儲補貨主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("retail_storekeeper", "收貨補貨員", "warehouse_replenishment", "零售收貨補貨員", 3, False, _INVENTORY_OPERATOR),
-        _position("retail_finance_manager", "財務主管", "finance", "零售財務主管", 7, True, _FINANCE_MANAGER),
-        _position("retail_accountant", "門店會計", "finance", "零售門店會計", 4, False, _FINANCE_USER),
-        _position("retail_hr_manager", "人事行政主管", "hr_admin", "零售人事行政主管", 6, True, _HR_MANAGER),
-        _position("retail_hr_specialist", "人事行政專員", "hr_admin", "零售人事行政專員", 3, False, _HR_USER),
+        _position(
+            "retail_deputy_manager", "副店長", "management", "零售副店長", 7, True, _EXECUTIVE
+        ),
+        _position(
+            "retail_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "operations_manager",
+            "門店運營主管",
+            "store_operations",
+            "零售運營主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "store_associate",
+            "門店員工",
+            "store_operations",
+            "零售門店員工",
+            2,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound",),
+        ),
+        _position(
+            "merchandising_manager",
+            "商品主管",
+            "merchandising",
+            "零售商品主管",
+            6,
+            True,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "merchandiser",
+            "商品專員",
+            "merchandising",
+            "零售商品專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "replenishment_manager",
+            "倉儲補貨主管",
+            "warehouse_replenishment",
+            "零售倉儲補貨主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "retail_storekeeper",
+            "收貨補貨員",
+            "warehouse_replenishment",
+            "零售收貨補貨員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "retail_finance_manager",
+            "財務主管",
+            "finance",
+            "零售財務主管",
+            7,
+            True,
+            _FINANCE_MANAGER,
+        ),
+        _position(
+            "retail_accountant", "門店會計", "finance", "零售門店會計", 4, False, _FINANCE_USER
+        ),
+        _position(
+            "retail_hr_manager",
+            "人事行政主管",
+            "hr_admin",
+            "零售人事行政主管",
+            6,
+            True,
+            _HR_MANAGER,
+        ),
+        _position(
+            "retail_hr_specialist",
+            "人事行政專員",
+            "hr_admin",
+            "零售人事行政專員",
+            3,
+            False,
+            _HR_USER,
+        ),
     ],
 )
 
@@ -1131,21 +2030,141 @@ _BLUEPRINTS["logistics_express"] = _blueprint(
         _department("hr_admin", "人事行政", "人員、班次支持、培訓與行政。"),
     ],
     [
-        _position("logistics_general_manager", "總經理", "management", "物流企業總經理", 9, True, _EXECUTIVE),
-        _position("logistics_deputy_general_manager", "副總經理", "management", "物流企業副總經理", 8, True, _EXECUTIVE),
-        _position("logistics_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("dispatch_manager", "運營調度主管", "operations_dispatch", "物流運營調度主管", 7, True, _DEPARTMENT_MANAGER, ("gis.read", "gis.manage", "audit.read")),
-        _position("dispatcher", "調度員", "operations_dispatch", "物流調度員", 4, False, _BUSINESS_USER, ("gis.read",)),
-        _position("sorting_manager", "分揀倉儲主管", "sorting_warehouse", "物流分揀倉儲主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("sorting_storekeeper", "分揀庫管員", "sorting_warehouse", "物流分揀庫管員", 3, False, _INVENTORY_OPERATOR, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("fleet_manager", "車隊設備主管", "fleet_equipment", "物流車隊設備主管", 6, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER, ("gis.read", "gis.locate")),
-        _position("fleet_technician", "設備維修員", "fleet_equipment", "物流設備維修員", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "gis.locate")),
-        _position("customer_service_manager", "客服主管", "customer_service", "物流客服主管", 6, True, _DEPARTMENT_MANAGER),
-        _position("customer_service_agent", "客服專員", "customer_service", "物流客服專員", 3, False, _BUSINESS_USER),
-        _position("logistics_finance_manager", "財務主管", "finance", "物流財務主管", 7, True, _FINANCE_MANAGER),
-        _position("logistics_accountant", "結算會計", "finance", "物流結算會計", 4, False, _FINANCE_USER),
-        _position("logistics_hr_manager", "人事行政主管", "hr_admin", "物流人事行政主管", 6, True, _HR_MANAGER),
-        _position("logistics_hr_specialist", "人事行政專員", "hr_admin", "物流人事行政專員", 3, False, _HR_USER),
+        _position(
+            "logistics_general_manager",
+            "總經理",
+            "management",
+            "物流企業總經理",
+            9,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "logistics_deputy_general_manager",
+            "副總經理",
+            "management",
+            "物流企業副總經理",
+            8,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "logistics_system_admin",
+            "系統管理員",
+            "management",
+            "系統管理員",
+            10,
+            True,
+            _SYSTEM_ADMIN,
+        ),
+        _position(
+            "dispatch_manager",
+            "運營調度主管",
+            "operations_dispatch",
+            "物流運營調度主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("gis.read", "gis.manage", "audit.read"),
+        ),
+        _position(
+            "dispatcher",
+            "調度員",
+            "operations_dispatch",
+            "物流調度員",
+            4,
+            False,
+            _BUSINESS_USER,
+            ("gis.read",),
+        ),
+        _position(
+            "sorting_manager",
+            "分揀倉儲主管",
+            "sorting_warehouse",
+            "物流分揀倉儲主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "sorting_storekeeper",
+            "分揀庫管員",
+            "sorting_warehouse",
+            "物流分揀庫管員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "fleet_manager",
+            "車隊設備主管",
+            "fleet_equipment",
+            "物流車隊設備主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            ("gis.read", "gis.locate"),
+        ),
+        _position(
+            "fleet_technician",
+            "設備維修員",
+            "fleet_equipment",
+            "物流設備維修員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "gis.locate"),
+        ),
+        _position(
+            "customer_service_manager",
+            "客服主管",
+            "customer_service",
+            "物流客服主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+        ),
+        _position(
+            "customer_service_agent",
+            "客服專員",
+            "customer_service",
+            "物流客服專員",
+            3,
+            False,
+            _BUSINESS_USER,
+        ),
+        _position(
+            "logistics_finance_manager",
+            "財務主管",
+            "finance",
+            "物流財務主管",
+            7,
+            True,
+            _FINANCE_MANAGER,
+        ),
+        _position(
+            "logistics_accountant", "結算會計", "finance", "物流結算會計", 4, False, _FINANCE_USER
+        ),
+        _position(
+            "logistics_hr_manager",
+            "人事行政主管",
+            "hr_admin",
+            "物流人事行政主管",
+            6,
+            True,
+            _HR_MANAGER,
+        ),
+        _position(
+            "logistics_hr_specialist",
+            "人事行政專員",
+            "hr_admin",
+            "物流人事行政專員",
+            3,
+            False,
+            _HR_USER,
+        ),
     ],
 )
 
@@ -1157,30 +2176,233 @@ _BLUEPRINTS["research_lab"] = _blueprint(
     [
         _company(),
         _department("management", "管理層", "科研方向、資源分配與重大安全責任。"),
-        _department("research", "研究與課題", "課題、研究人員、成果與技術協作。"),
-        _department("lab_operations", "實驗運行", "實驗室、儀器、試劑耗材與預約借還。"),
+        _department("research", "研究中心", "研究課題、研究方案、課題負責人、研究人員與成果管理。"),
+        _department(
+            "lab_research_technology",
+            "科研中心",
+            "科研技術、方法開發、技術驗證、工程轉化與技術協作。",
+        ),
+        _department("lab_operations", "實驗室", "實驗運行、儀器、試劑耗材與預約借還。"),
         _department("safety_compliance", "安全合規", "危化品、實驗安全、資質與審計。"),
         _department("procurement_warehouse", "採購倉儲", "科研採購、供應商、試劑及物資庫存。"),
         _department("finance", "財務", "課題預算、報銷、資金與財務報表。"),
         _department("hr_admin", "人事行政", "科研人員、訪客、培訓與行政保障。"),
     ],
     [
-        _position("lab_director", "實驗室主任", "management", "實驗室主任", 9, True, _EXECUTIVE),
-        _position("lab_deputy_director", "實驗室副主任", "management", "實驗室副主任", 8, True, _EXECUTIVE),
-        _position("lab_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("research_manager", "研究主管", "research", "科研研究主管", 7, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER),
-        _position("researcher", "研究人員", "research", "科研研究人員", 4, False, _INVENTORY_VIEWER, ("inventory.outbound", "ledger.write")),
-        _position("lab_operations_manager", "實驗運行主管", "lab_operations", "實驗運行主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("instrument_technician", "儀器管理員", "lab_operations", "科研儀器管理員", 4, False, _INVENTORY_OPERATOR),
-        _position("lab_safety_manager", "安全合規主管", "safety_compliance", "實驗室安全合規主管", 7, True, _DEPARTMENT_MANAGER, ("inventory.read", "ledger.read", "audit.read", "legal.manage")),
-        _position("lab_safety_officer", "安全員", "safety_compliance", "實驗室安全員", 4, False, _INVENTORY_VIEWER, ("audit.read", "legal.manage")),
-        _position("lab_supply_manager", "科研採購倉儲主管", "procurement_warehouse", "科研採購倉儲主管", 6, True, _WAREHOUSE_MANAGER, _PROCUREMENT_MANAGER),
-        _position("lab_buyer", "科研採購專員", "procurement_warehouse", "科研採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("lab_storekeeper", "試劑物資管理員", "procurement_warehouse", "試劑物資管理員", 3, False, _INVENTORY_OPERATOR),
-        _position("lab_finance_manager", "財務主管", "finance", "科研財務主管", 7, True, _FINANCE_MANAGER),
-        _position("grant_accountant", "課題會計", "finance", "科研課題會計", 4, False, _FINANCE_USER),
-        _position("lab_hr_manager", "人事行政主管", "hr_admin", "科研人事行政主管", 6, True, _HR_MANAGER),
-        _position("lab_hr_specialist", "人事行政專員", "hr_admin", "科研人事行政專員", 3, False, _HR_USER),
+        _position("lab_general_manager", "總經理", "management", "總經理", 9, True, _EXECUTIVE),
+        _position(
+            "lab_deputy_general_manager", "副總經理", "management", "副總經理", 8, True, _EXECUTIVE
+        ),
+        _position(
+            "lab_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "research_center_director",
+            "研究中心主任",
+            "research",
+            "研究中心主任",
+            8,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            _RESEARCH_REVIEWER,
+        ),
+        _position(
+            "research_center_deputy_director",
+            "研究中心副主任",
+            "research",
+            "研究中心副主任",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            _RESEARCH_REVIEWER,
+        ),
+        _position(
+            "principal_investigator",
+            "課題負責人",
+            "research",
+            "課題負責人",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            _RESEARCH_REVIEWER,
+        ),
+        _position(
+            "researcher",
+            "研究員",
+            "research",
+            "研究員",
+            4,
+            False,
+            _INVENTORY_VIEWER,
+            _RESEARCH_EDITOR,
+            ("inventory.outbound", "ledger.write"),
+        ),
+        _position(
+            "research_assistant",
+            "助理研究員",
+            "research",
+            "助理研究員",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            _RESEARCH_EDITOR,
+        ),
+        _position(
+            "scientific_research_center_director",
+            "科研中心主任",
+            "lab_research_technology",
+            "科研中心主任",
+            8,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            _RESEARCH_REVIEWER,
+        ),
+        _position(
+            "scientific_research_center_deputy_director",
+            "科研中心副主任",
+            "lab_research_technology",
+            "科研中心副主任",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            _RESEARCH_REVIEWER,
+        ),
+        _position(
+            "research_technology_manager",
+            "科研技術主管",
+            "lab_research_technology",
+            "科研技術主管",
+            6,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            _RESEARCH_REVIEWER,
+        ),
+        _position(
+            "lab_research_engineer",
+            "科研工程師",
+            "lab_research_technology",
+            "科研工程師",
+            4,
+            False,
+            _INVENTORY_VIEWER,
+            _RESEARCH_EDITOR,
+            ("inventory.outbound", "ledger.write"),
+        ),
+        _position(
+            "technical_researcher",
+            "技術研究員",
+            "lab_research_technology",
+            "技術研究員",
+            4,
+            False,
+            _INVENTORY_VIEWER,
+            _RESEARCH_EDITOR,
+        ),
+        _position(
+            "lab_director",
+            "實驗室主任",
+            "lab_operations",
+            "實驗室主任",
+            8,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "lab_deputy_director",
+            "實驗室副主任",
+            "lab_operations",
+            "實驗室副主任",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+        ),
+        _position(
+            "lab_operations_manager",
+            "實驗運行主管",
+            "lab_operations",
+            "實驗運行主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "instrument_technician",
+            "儀器管理員",
+            "lab_operations",
+            "科研儀器管理員",
+            4,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "lab_safety_manager",
+            "安全合規主管",
+            "safety_compliance",
+            "實驗室安全合規主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("inventory.read", "ledger.read", "audit.read", "legal.manage"),
+        ),
+        _position(
+            "lab_safety_officer",
+            "安全員",
+            "safety_compliance",
+            "實驗室安全員",
+            4,
+            False,
+            _INVENTORY_VIEWER,
+            ("audit.read", "legal.manage"),
+        ),
+        _position(
+            "lab_supply_manager",
+            "科研採購倉儲主管",
+            "procurement_warehouse",
+            "科研採購倉儲主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "lab_buyer",
+            "科研採購專員",
+            "procurement_warehouse",
+            "科研採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "lab_storekeeper",
+            "試劑物資管理員",
+            "procurement_warehouse",
+            "試劑物資管理員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "lab_finance_manager", "財務主管", "finance", "科研財務主管", 7, True, _FINANCE_MANAGER
+        ),
+        _position(
+            "grant_accountant", "課題會計", "finance", "科研課題會計", 4, False, _FINANCE_USER
+        ),
+        _position(
+            "lab_hr_manager", "人事行政主管", "hr_admin", "科研人事行政主管", 6, True, _HR_MANAGER
+        ),
+        _position(
+            "lab_hr_specialist", "人事行政專員", "hr_admin", "科研人事行政專員", 3, False, _HR_USER
+        ),
     ],
 )
 
@@ -1200,21 +2422,128 @@ _BLUEPRINTS["it_office_asset"] = _blueprint(
         _department("hr_admin", "人事行政", "入離職協同、人員與辦公行政。"),
     ],
     [
-        _position("it_general_manager", "總經理", "management", "IT 資產企業總經理", 9, True, _EXECUTIVE),
-        _position("it_deputy_general_manager", "副總經理", "management", "IT 資產企業副總經理", 8, True, _EXECUTIVE),
-        _position("it_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("it_operations_manager", "IT 運維主管", "it_operations", "IT 運維主管", 7, True, _DEPARTMENT_MANAGER, _INVENTORY_VIEWER, ("settings.manage", "terminal.use")),
-        _position("it_support_engineer", "IT 支持工程師", "it_operations", "IT 支持工程師", 4, False, _INVENTORY_VIEWER, ("inventory.outbound", "gis.locate")),
-        _position("security_manager", "資訊安全主管", "information_security", "資訊安全主管", 8, True, _DEPARTMENT_MANAGER, ("users.manage", "permissions.topology.manage", "audit.read", "settings.manage")),
-        _position("security_auditor", "資訊安全審計員", "information_security", "資訊安全審計員", 5, False, _BUSINESS_USER, ("audit.read",)),
-        _position("it_asset_manager", "資產倉儲主管", "asset_warehouse", "IT 資產倉儲主管", 6, True, _WAREHOUSE_MANAGER, ("asset_mgmt.read", "asset_mgmt.manage")),
-        _position("it_asset_clerk", "資產管理員", "asset_warehouse", "IT 資產管理員", 3, False, _INVENTORY_OPERATOR, ("asset_mgmt.read",)),
-        _position("it_procurement_manager", "採購主管", "procurement", "IT 採購主管", 6, True, _PROCUREMENT_MANAGER, ("legal.manage",)),
-        _position("it_buyer", "採購專員", "procurement", "IT 採購專員", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("it_finance_manager", "財務主管", "finance", "IT 資產財務主管", 7, True, _FINANCE_MANAGER, ("asset_mgmt.read",)),
-        _position("it_accountant", "資產會計", "finance", "IT 資產會計", 4, False, _FINANCE_USER, ("asset_mgmt.read",)),
-        _position("it_hr_manager", "人事行政主管", "hr_admin", "IT 人事行政主管", 6, True, _HR_MANAGER),
-        _position("it_hr_specialist", "人事行政專員", "hr_admin", "IT 人事行政專員", 3, False, _HR_USER),
+        _position(
+            "it_general_manager", "總經理", "management", "IT 資產企業總經理", 9, True, _EXECUTIVE
+        ),
+        _position(
+            "it_deputy_general_manager",
+            "副總經理",
+            "management",
+            "IT 資產企業副總經理",
+            8,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "it_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "it_operations_manager",
+            "IT 運維主管",
+            "it_operations",
+            "IT 運維主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            _INVENTORY_VIEWER,
+            ("settings.manage", "terminal.use"),
+        ),
+        _position(
+            "it_support_engineer",
+            "IT 支持工程師",
+            "it_operations",
+            "IT 支持工程師",
+            4,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "gis.locate"),
+        ),
+        _position(
+            "security_manager",
+            "資訊安全主管",
+            "information_security",
+            "資訊安全主管",
+            8,
+            True,
+            _DEPARTMENT_MANAGER,
+            ("users.manage", "permissions.topology.manage", "audit.read", "settings.manage"),
+        ),
+        _position(
+            "security_auditor",
+            "資訊安全審計員",
+            "information_security",
+            "資訊安全審計員",
+            5,
+            False,
+            _BUSINESS_USER,
+            ("audit.read",),
+        ),
+        _position(
+            "it_asset_manager",
+            "資產倉儲主管",
+            "asset_warehouse",
+            "IT 資產倉儲主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+            ("asset_mgmt.read", "asset_mgmt.manage"),
+        ),
+        _position(
+            "it_asset_clerk",
+            "資產管理員",
+            "asset_warehouse",
+            "IT 資產管理員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+            ("asset_mgmt.read",),
+        ),
+        _position(
+            "it_procurement_manager",
+            "採購主管",
+            "procurement",
+            "IT 採購主管",
+            6,
+            True,
+            _PROCUREMENT_MANAGER,
+            ("legal.manage",),
+        ),
+        _position(
+            "it_buyer",
+            "採購專員",
+            "procurement",
+            "IT 採購專員",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "it_finance_manager",
+            "財務主管",
+            "finance",
+            "IT 資產財務主管",
+            7,
+            True,
+            _FINANCE_MANAGER,
+            ("asset_mgmt.read",),
+        ),
+        _position(
+            "it_accountant",
+            "資產會計",
+            "finance",
+            "IT 資產會計",
+            4,
+            False,
+            _FINANCE_USER,
+            ("asset_mgmt.read",),
+        ),
+        _position(
+            "it_hr_manager", "人事行政主管", "hr_admin", "IT 人事行政主管", 6, True, _HR_MANAGER
+        ),
+        _position(
+            "it_hr_specialist", "人事行政專員", "hr_admin", "IT 人事行政專員", 3, False, _HR_USER
+        ),
     ],
 )
 
@@ -1234,21 +2563,116 @@ _BLUEPRINTS["film_equipment"] = _blueprint(
         _department("hr_admin", "人事行政", "劇組人員、合同、檔期與行政保障。"),
     ],
     [
-        _position("film_general_manager", "總經理", "management", "影視企業總經理", 9, True, _EXECUTIVE),
-        _position("film_deputy_general_manager", "副總經理", "management", "影視企業副總經理", 8, True, _EXECUTIVE),
-        _position("film_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN),
-        _position("producer", "製片主管", "film_production", "影視製片主管", 7, True, _DEPARTMENT_MANAGER, _PROCUREMENT_MANAGER),
-        _position("production_coordinator", "製片協調", "film_production", "影視製片協調", 4, False, _PROCUREMENT_USER, _PROCUREMENT_WORKFLOW_OPERATOR),
-        _position("camera_manager", "攝影器材主管", "camera", "影視攝影器材主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("camera_assistant", "攝影助理", "camera", "影視攝影助理", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "ledger.write", "gis.locate")),
-        _position("lighting_manager", "燈光器材主管", "lighting", "影視燈光器材主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("lighting_assistant", "燈光助理", "lighting", "影視燈光助理", 3, False, _INVENTORY_VIEWER, ("inventory.outbound", "ledger.write", "gis.locate")),
-        _position("props_manager", "道具倉儲主管", "props_warehouse", "影視道具倉儲主管", 6, True, _WAREHOUSE_MANAGER),
-        _position("props_storekeeper", "道具器材管理員", "props_warehouse", "影視道具器材管理員", 3, False, _INVENTORY_OPERATOR),
-        _position("film_finance_manager", "財務主管", "finance", "影視財務主管", 7, True, _FINANCE_MANAGER),
-        _position("production_accountant", "項目會計", "finance", "影視項目會計", 4, False, _FINANCE_USER),
-        _position("film_hr_manager", "人事行政主管", "hr_admin", "影視人事行政主管", 6, True, _HR_MANAGER, ("legal.manage",)),
-        _position("film_hr_specialist", "人事行政專員", "hr_admin", "影視人事行政專員", 3, False, _HR_USER),
+        _position(
+            "film_general_manager", "總經理", "management", "影視企業總經理", 9, True, _EXECUTIVE
+        ),
+        _position(
+            "film_deputy_general_manager",
+            "副總經理",
+            "management",
+            "影視企業副總經理",
+            8,
+            True,
+            _EXECUTIVE,
+        ),
+        _position(
+            "film_system_admin", "系統管理員", "management", "系統管理員", 10, True, _SYSTEM_ADMIN
+        ),
+        _position(
+            "producer",
+            "製片主管",
+            "film_production",
+            "影視製片主管",
+            7,
+            True,
+            _DEPARTMENT_MANAGER,
+            _PROCUREMENT_MANAGER,
+        ),
+        _position(
+            "production_coordinator",
+            "製片協調",
+            "film_production",
+            "影視製片協調",
+            4,
+            False,
+            _PROCUREMENT_USER,
+            _PROCUREMENT_WORKFLOW_OPERATOR,
+        ),
+        _position(
+            "camera_manager",
+            "攝影器材主管",
+            "camera",
+            "影視攝影器材主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "camera_assistant",
+            "攝影助理",
+            "camera",
+            "影視攝影助理",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "ledger.write", "gis.locate"),
+        ),
+        _position(
+            "lighting_manager",
+            "燈光器材主管",
+            "lighting",
+            "影視燈光器材主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "lighting_assistant",
+            "燈光助理",
+            "lighting",
+            "影視燈光助理",
+            3,
+            False,
+            _INVENTORY_VIEWER,
+            ("inventory.outbound", "ledger.write", "gis.locate"),
+        ),
+        _position(
+            "props_manager",
+            "道具倉儲主管",
+            "props_warehouse",
+            "影視道具倉儲主管",
+            6,
+            True,
+            _WAREHOUSE_MANAGER,
+        ),
+        _position(
+            "props_storekeeper",
+            "道具器材管理員",
+            "props_warehouse",
+            "影視道具器材管理員",
+            3,
+            False,
+            _INVENTORY_OPERATOR,
+        ),
+        _position(
+            "film_finance_manager", "財務主管", "finance", "影視財務主管", 7, True, _FINANCE_MANAGER
+        ),
+        _position(
+            "production_accountant", "項目會計", "finance", "影視項目會計", 4, False, _FINANCE_USER
+        ),
+        _position(
+            "film_hr_manager",
+            "人事行政主管",
+            "hr_admin",
+            "影視人事行政主管",
+            6,
+            True,
+            _HR_MANAGER,
+            ("legal.manage",),
+        ),
+        _position(
+            "film_hr_specialist", "人事行政專員", "hr_admin", "影視人事行政專員", 3, False, _HR_USER
+        ),
     ],
 )
 
@@ -2289,10 +3713,7 @@ def _biu_exam_question(question_id, prompt, options, correct, explanation):
     return {
         "question_id": question_id,
         "prompt": prompt,
-        "options": tuple(
-            {"option_id": option_id, "label": label}
-            for option_id, label in options
-        ),
+        "options": tuple({"option_id": option_id, "label": label} for option_id, label in options),
         "correct_option_id": correct,
         "explanation": explanation,
     }
@@ -2304,29 +3725,64 @@ _BIU_EXAM_BANKS = {
         "threshold_percent": 75,
         "questions": (
             _biu_exam_question(
-                "ri_source", "引用一份公开材料前，最先应确认什么？",
-                (("a", "它是否支持自己的结论"), ("b", "来源、版本、日期与取得路径"), ("c", "文字是否足够简短"), ("d", "是否已有其他人转发")),
-                "b", "可复核的来源、版本、日期和取得路径是材料进入研究记录的基础。",
+                "ri_source",
+                "引用一份公开材料前，最先应确认什么？",
+                (
+                    ("a", "它是否支持自己的结论"),
+                    ("b", "来源、版本、日期与取得路径"),
+                    ("c", "文字是否足够简短"),
+                    ("d", "是否已有其他人转发"),
+                ),
+                "b",
+                "可复核的来源、版本、日期和取得路径是材料进入研究记录的基础。",
             ),
             _biu_exam_question(
-                "ri_conflict", "两份材料对同一日期记载不一致，适当做法是？",
-                (("a", "选择更符合预期的一份"), ("b", "删除其中一份"), ("c", "保留两份并记录差异与核查状态"), ("d", "把日期改成相同")),
-                "c", "应保存冲突本身及核查状态，避免用未经说明的编辑制造确定性。",
+                "ri_conflict",
+                "两份材料对同一日期记载不一致，适当做法是？",
+                (
+                    ("a", "选择更符合预期的一份"),
+                    ("b", "删除其中一份"),
+                    ("c", "保留两份并记录差异与核查状态"),
+                    ("d", "把日期改成相同"),
+                ),
+                "c",
+                "应保存冲突本身及核查状态，避免用未经说明的编辑制造确定性。",
             ),
             _biu_exam_question(
-                "ri_minimum", "判断案例材料是否足以进入下一阶段时，最重要的是？",
-                (("a", "材料数量越多越好"), ("b", "核心争点具有可核查事实和明确来源"), ("c", "标题足够吸引人"), ("d", "已经形成一致结论")),
-                "b", "适格性关注能否围绕争点进行可复核研究，而不是材料数量或预设结论。",
+                "ri_minimum",
+                "判断案例材料是否足以进入下一阶段时，最重要的是？",
+                (
+                    ("a", "材料数量越多越好"),
+                    ("b", "核心争点具有可核查事实和明确来源"),
+                    ("c", "标题足够吸引人"),
+                    ("d", "已经形成一致结论"),
+                ),
+                "b",
+                "适格性关注能否围绕争点进行可复核研究，而不是材料数量或预设结论。",
             ),
             _biu_exam_question(
-                "ri_version", "档案封存前发现附件有新版本，应怎样处理？",
-                (("a", "直接覆盖旧文件"), ("b", "忽略新版本"), ("c", "保留版本关系并重新核对清单"), ("d", "只修改文件名")),
-                "c", "版本关系和完整清单必须可追溯，不能以覆盖方式隐藏变化。",
+                "ri_version",
+                "档案封存前发现附件有新版本，应怎样处理？",
+                (
+                    ("a", "直接覆盖旧文件"),
+                    ("b", "忽略新版本"),
+                    ("c", "保留版本关系并重新核对清单"),
+                    ("d", "只修改文件名"),
+                ),
+                "c",
+                "版本关系和完整清单必须可追溯，不能以覆盖方式隐藏变化。",
             ),
             _biu_exam_question(
-                "ri_gap", "无法补齐一项非核心材料时，最佳记录方式是？",
-                (("a", "假定它不存在"), ("b", "不提及缺口"), ("c", "明确标注缺失、影响与已采取的核查步骤"), ("d", "用相似材料替代且不说明")),
-                "c", "透明记录缺失及其影响，比制造表面完整更符合学术诚信。",
+                "ri_gap",
+                "无法补齐一项非核心材料时，最佳记录方式是？",
+                (
+                    ("a", "假定它不存在"),
+                    ("b", "不提及缺口"),
+                    ("c", "明确标注缺失、影响与已采取的核查步骤"),
+                    ("d", "用相似材料替代且不说明"),
+                ),
+                "c",
+                "透明记录缺失及其影响，比制造表面完整更符合学术诚信。",
             ),
         ),
     },
@@ -2335,29 +3791,64 @@ _BIU_EXAM_BANKS = {
         "threshold_percent": 75,
         "questions": (
             _biu_exam_question(
-                "er_minimize", "研究目标可以用较少个人信息完成时，应选择？",
-                (("a", "仍保留全部信息"), ("b", "最小必要范围并说明处理理由"), ("c", "把信息复制到更多位置"), ("d", "只要公开过就不再评估")),
-                "b", "公开可见不等于可以无限使用；应遵循最小必要和目的限制。",
+                "er_minimize",
+                "研究目标可以用较少个人信息完成时，应选择？",
+                (
+                    ("a", "仍保留全部信息"),
+                    ("b", "最小必要范围并说明处理理由"),
+                    ("c", "把信息复制到更多位置"),
+                    ("d", "只要公开过就不再评估"),
+                ),
+                "b",
+                "公开可见不等于可以无限使用；应遵循最小必要和目的限制。",
             ),
             _biu_exam_question(
-                "er_reidentify", "去掉姓名后仍可由罕见经历识别当事人，应如何处理？",
-                (("a", "已经删除姓名，所以无需处理"), ("b", "进一步泛化或移除可组合识别线索"), ("c", "增加更多细节"), ("d", "仅更换字体")),
-                "b", "去标识化需考虑信息组合后的重新识别风险，而不只是姓名字段。",
+                "er_reidentify",
+                "去掉姓名后仍可由罕见经历识别当事人，应如何处理？",
+                (
+                    ("a", "已经删除姓名，所以无需处理"),
+                    ("b", "进一步泛化或移除可组合识别线索"),
+                    ("c", "增加更多细节"),
+                    ("d", "仅更换字体"),
+                ),
+                "b",
+                "去标识化需考虑信息组合后的重新识别风险，而不只是姓名字段。",
             ),
             _biu_exam_question(
-                "er_ai_citation", "AI 给出一条看似准确但无法找到原文的引用，应怎样做？",
-                (("a", "直接采用"), ("b", "改写后采用"), ("c", "独立核查；无法验证则不作为依据"), ("d", "让 AI 重复生成")),
-                "c", "AI 输出不能代替来源核查；无法验证的引用不应进入论证依据。",
+                "er_ai_citation",
+                "AI 给出一条看似准确但无法找到原文的引用，应怎样做？",
+                (
+                    ("a", "直接采用"),
+                    ("b", "改写后采用"),
+                    ("c", "独立核查；无法验证则不作为依据"),
+                    ("d", "让 AI 重复生成"),
+                ),
+                "c",
+                "AI 输出不能代替来源核查；无法验证的引用不应进入论证依据。",
             ),
             _biu_exam_question(
-                "er_bias", "AI 分析对某一群体持续给出不利标签，第一步应是？",
-                (("a", "认为模型必然中立"), ("b", "检查数据、指标和输出差异并暂停高风险使用"), ("c", "隐藏标签"), ("d", "扩大自动化范围")),
-                "b", "应先识别偏差来源和影响，在完成审查前限制高风险用途。",
+                "er_bias",
+                "AI 分析对某一群体持续给出不利标签，第一步应是？",
+                (
+                    ("a", "认为模型必然中立"),
+                    ("b", "检查数据、指标和输出差异并暂停高风险使用"),
+                    ("c", "隐藏标签"),
+                    ("d", "扩大自动化范围"),
+                ),
+                "b",
+                "应先识别偏差来源和影响，在完成审查前限制高风险用途。",
             ),
             _biu_exam_question(
-                "er_accountability", "团队使用 AI 辅助形成意见，最终责任属于？",
-                (("a", "AI 工具"), ("b", "没有任何人"), ("c", "负责复核与发布意见的人员和团队"), ("d", "软件供应商自动承担全部责任")),
-                "c", "工具不能承担学术与专业责任；人类复核、说明和发布责任必须明确。",
+                "er_accountability",
+                "团队使用 AI 辅助形成意见，最终责任属于？",
+                (
+                    ("a", "AI 工具"),
+                    ("b", "没有任何人"),
+                    ("c", "负责复核与发布意见的人员和团队"),
+                    ("d", "软件供应商自动承担全部责任"),
+                ),
+                "c",
+                "工具不能承担学术与专业责任；人类复核、说明和发布责任必须明确。",
             ),
         ),
     },
@@ -2366,29 +3857,64 @@ _BIU_EXAM_BANKS = {
         "threshold_percent": 75,
         "questions": (
             _biu_exam_question(
-                "la_issue", "构建一方论证的合适起点是？",
-                (("a", "先写结论"), ("b", "明确争点、适用规则、关键事实和所求结果"), ("c", "忽略不利事实"), ("d", "只引用最长的材料")),
-                "b", "清晰论证应把争点、规则、事实与所求结果连接起来。",
+                "la_issue",
+                "构建一方论证的合适起点是？",
+                (
+                    ("a", "先写结论"),
+                    ("b", "明确争点、适用规则、关键事实和所求结果"),
+                    ("c", "忽略不利事实"),
+                    ("d", "只引用最长的材料"),
+                ),
+                "b",
+                "清晰论证应把争点、规则、事实与所求结果连接起来。",
             ),
             _biu_exam_question(
-                "la_adverse", "发现一项明显不利于己方的材料时，应怎样做？",
-                (("a", "删除它"), ("b", "准确披露并解释其证明力或适用边界"), ("c", "改变日期"), ("d", "攻击材料提交者")),
-                "b", "诚实处理不利材料并回应其意义，比隐藏材料更能形成可靠论证。",
+                "la_adverse",
+                "发现一项明显不利于己方的材料时，应怎样做？",
+                (
+                    ("a", "删除它"),
+                    ("b", "准确披露并解释其证明力或适用边界"),
+                    ("c", "改变日期"),
+                    ("d", "攻击材料提交者"),
+                ),
+                "b",
+                "诚实处理不利材料并回应其意义，比隐藏材料更能形成可靠论证。",
             ),
             _biu_exam_question(
-                "la_burden", "举证责任尚未满足时，哪种表述更恰当？",
-                (("a", "把怀疑写成确定事实"), ("b", "说明现有证据不足及仍需证明的事项"), ("c", "要求读者自行补充"), ("d", "假定对方必须证明一切")),
-                "b", "应准确说明责任、证明标准和目前证据之间的缺口。",
+                "la_burden",
+                "举证责任尚未满足时，哪种表述更恰当？",
+                (
+                    ("a", "把怀疑写成确定事实"),
+                    ("b", "说明现有证据不足及仍需证明的事项"),
+                    ("c", "要求读者自行补充"),
+                    ("d", "假定对方必须证明一切"),
+                ),
+                "b",
+                "应准确说明责任、证明标准和目前证据之间的缺口。",
             ),
             _biu_exam_question(
-                "la_counter", "回应对方最强观点时，最佳方法是？",
-                (("a", "换一个话题"), ("b", "准确重述后以规则和材料回应"), ("c", "只评价对方动机"), ("d", "重复自己的结论")),
-                "b", "先公平呈现对方观点，再针对理由和材料作答，才能形成有效回应。",
+                "la_counter",
+                "回应对方最强观点时，最佳方法是？",
+                (
+                    ("a", "换一个话题"),
+                    ("b", "准确重述后以规则和材料回应"),
+                    ("c", "只评价对方动机"),
+                    ("d", "重复自己的结论"),
+                ),
+                "b",
+                "先公平呈现对方观点，再针对理由和材料作答，才能形成有效回应。",
             ),
             _biu_exam_question(
-                "la_remedy", "讨论可能结果时，应避免什么？",
-                (("a", "说明不同前提下的结果"), ("b", "区分主要与备选请求"), ("c", "承诺一个材料无法支持的确定结果"), ("d", "说明限制")),
-                "c", "法律研究意见应说明条件与限制，不能把预测包装为保证。",
+                "la_remedy",
+                "讨论可能结果时，应避免什么？",
+                (
+                    ("a", "说明不同前提下的结果"),
+                    ("b", "区分主要与备选请求"),
+                    ("c", "承诺一个材料无法支持的确定结果"),
+                    ("d", "说明限制"),
+                ),
+                "c",
+                "法律研究意见应说明条件与限制，不能把预测包装为保证。",
             ),
         ),
     },
@@ -2397,29 +3923,64 @@ _BIU_EXAM_BANKS = {
         "threshold_percent": 75,
         "questions": (
             _biu_exam_question(
-                "ea_relevance", "一项材料与案件主题有关，是否就足以证明主张？",
-                (("a", "是，相关即充分"), ("b", "否，还需评估可靠性、证明方向与其他材料"), ("c", "只看文件长度"), ("d", "只看提交时间")),
-                "b", "相关性只是起点，证明力还取决于可靠性、联系强度和整体材料。",
+                "ea_relevance",
+                "一项材料与案件主题有关，是否就足以证明主张？",
+                (
+                    ("a", "是，相关即充分"),
+                    ("b", "否，还需评估可靠性、证明方向与其他材料"),
+                    ("c", "只看文件长度"),
+                    ("d", "只看提交时间"),
+                ),
+                "b",
+                "相关性只是起点，证明力还取决于可靠性、联系强度和整体材料。",
             ),
             _biu_exam_question(
-                "ea_chain", "数字文件在多人之间传递后，首先应补充什么？",
-                (("a", "更吸引人的文件名"), ("b", "来源、取得方式、传递记录和完整性校验"), ("c", "更多副本"), ("d", "个人猜测")),
-                "b", "数字材料需要可追溯的来源、处理链条和完整性信息。",
+                "ea_chain",
+                "数字文件在多人之间传递后，首先应补充什么？",
+                (
+                    ("a", "更吸引人的文件名"),
+                    ("b", "来源、取得方式、传递记录和完整性校验"),
+                    ("c", "更多副本"),
+                    ("d", "个人猜测"),
+                ),
+                "b",
+                "数字材料需要可追溯的来源、处理链条和完整性信息。",
             ),
             _biu_exam_question(
-                "ea_scope", "证据开示请求怎样更合适？",
-                (("a", "要求所有可能资料"), ("b", "围绕争点限定对象、时间和材料类型"), ("c", "不说明目的"), ("d", "只使用口头要求")),
-                "b", "清晰且成比例的范围有助于获得相关材料并减少不必要披露。",
+                "ea_scope",
+                "证据开示请求怎样更合适？",
+                (
+                    ("a", "要求所有可能资料"),
+                    ("b", "围绕争点限定对象、时间和材料类型"),
+                    ("c", "不说明目的"),
+                    ("d", "只使用口头要求"),
+                ),
+                "b",
+                "清晰且成比例的范围有助于获得相关材料并减少不必要披露。",
             ),
             _biu_exam_question(
-                "ea_metadata", "截图与原始文件内容不同，适当做法是？",
-                (("a", "只保留截图"), ("b", "保留两者并核查元数据、生成方式和差异"), ("c", "修改原始文件"), ("d", "选择更清晰的一份")),
-                "b", "应保留原始材料和派生材料，并解释生成与差异，避免证据链断裂。",
+                "ea_metadata",
+                "截图与原始文件内容不同，适当做法是？",
+                (
+                    ("a", "只保留截图"),
+                    ("b", "保留两者并核查元数据、生成方式和差异"),
+                    ("c", "修改原始文件"),
+                    ("d", "选择更清晰的一份"),
+                ),
+                "b",
+                "应保留原始材料和派生材料，并解释生成与差异，避免证据链断裂。",
             ),
             _biu_exam_question(
-                "ea_inference", "时间上先后发生的两件事，是否足以证明因果关系？",
-                (("a", "一定足以"), ("b", "不一定，还需检验其他解释和支持材料"), ("c", "取决于标题"), ("d", "只要间隔很短就足以")),
-                "b", "时间顺序可以提供线索，但不能单独排除其他原因。",
+                "ea_inference",
+                "时间上先后发生的两件事，是否足以证明因果关系？",
+                (
+                    ("a", "一定足以"),
+                    ("b", "不一定，还需检验其他解释和支持材料"),
+                    ("c", "取决于标题"),
+                    ("d", "只要间隔很短就足以"),
+                ),
+                "b",
+                "时间顺序可以提供线索，但不能单独排除其他原因。",
             ),
         ),
     },
@@ -2428,29 +3989,64 @@ _BIU_EXAM_BANKS = {
         "threshold_percent": 75,
         "questions": (
             _biu_exam_question(
-                "me_neutral", "调解员听到一方强烈陈述后，应首先？",
-                (("a", "立即裁定谁对"), ("b", "复述关切并给另一方同等表达机会"), ("c", "替一方提出主张"), ("d", "结束沟通")),
-                "b", "调解重在中立地澄清关切并维持平等参与，而不是替代裁判。",
+                "me_neutral",
+                "调解员听到一方强烈陈述后，应首先？",
+                (
+                    ("a", "立即裁定谁对"),
+                    ("b", "复述关切并给另一方同等表达机会"),
+                    ("c", "替一方提出主张"),
+                    ("d", "结束沟通"),
+                ),
+                "b",
+                "调解重在中立地澄清关切并维持平等参与，而不是替代裁判。",
             ),
             _biu_exam_question(
-                "me_interest", "从立场转向利益，指的是？",
-                (("a", "要求放弃观点"), ("b", "探索某项要求背后希望解决的问题"), ("c", "隐藏分歧"), ("d", "决定结果")),
-                "b", "理解要求背后的需要，有助于发现双方可以讨论的选项。",
+                "me_interest",
+                "从立场转向利益，指的是？",
+                (
+                    ("a", "要求放弃观点"),
+                    ("b", "探索某项要求背后希望解决的问题"),
+                    ("c", "隐藏分歧"),
+                    ("d", "决定结果"),
+                ),
+                "b",
+                "理解要求背后的需要，有助于发现双方可以讨论的选项。",
             ),
             _biu_exam_question(
-                "me_voluntary", "一方表示尚未理解方案却被催促同意，应怎样处理？",
-                (("a", "继续催促"), ("b", "暂停并确认理解、选择和自愿性"), ("c", "代替其签署"), ("d", "删掉异议")),
-                "b", "调解结果必须建立在理解与自愿之上，不能用程序压力替代同意。",
+                "me_voluntary",
+                "一方表示尚未理解方案却被催促同意，应怎样处理？",
+                (
+                    ("a", "继续催促"),
+                    ("b", "暂停并确认理解、选择和自愿性"),
+                    ("c", "代替其签署"),
+                    ("d", "删掉异议"),
+                ),
+                "b",
+                "调解结果必须建立在理解与自愿之上，不能用程序压力替代同意。",
             ),
             _biu_exam_question(
-                "me_confidentiality", "讨论中出现敏感信息时，适当做法是？",
-                (("a", "立即公开"), ("b", "依既定规则确认使用范围并作必要记录"), ("c", "转发给无关人员"), ("d", "假定没有边界")),
-                "b", "信息使用范围应由明确规则和参与者理解共同约束。",
+                "me_confidentiality",
+                "讨论中出现敏感信息时，适当做法是？",
+                (
+                    ("a", "立即公开"),
+                    ("b", "依既定规则确认使用范围并作必要记录"),
+                    ("c", "转发给无关人员"),
+                    ("d", "假定没有边界"),
+                ),
+                "b",
+                "信息使用范围应由明确规则和参与者理解共同约束。",
             ),
             _biu_exam_question(
-                "me_record", "形成结果记录时应包括？",
-                (("a", "模糊口号"), ("b", "具体事项、条件、责任人与未解决问题"), ("c", "调解员个人胜负评价"), ("d", "未讨论的新义务")),
-                "b", "清晰记录已同意事项及未解决问题，才能忠实反映沟通过程。",
+                "me_record",
+                "形成结果记录时应包括？",
+                (
+                    ("a", "模糊口号"),
+                    ("b", "具体事项、条件、责任人与未解决问题"),
+                    ("c", "调解员个人胜负评价"),
+                    ("d", "未讨论的新义务"),
+                ),
+                "b",
+                "清晰记录已同意事项及未解决问题，才能忠实反映沟通过程。",
             ),
         ),
     },
@@ -2459,29 +4055,64 @@ _BIU_EXAM_BANKS = {
         "threshold_percent": 75,
         "questions": (
             _biu_exam_question(
-                "tr_record", "形成初审意见时，事实基础应来自？",
-                (("a", "未提交的传闻"), ("b", "获准记录中可识别、可核查的材料"), ("c", "个人经验替代材料"), ("d", "网络评论数量")),
-                "b", "意见应建立在获准记录之上，并让事实依据可以被复核。",
+                "tr_record",
+                "形成初审意见时，事实基础应来自？",
+                (
+                    ("a", "未提交的传闻"),
+                    ("b", "获准记录中可识别、可核查的材料"),
+                    ("c", "个人经验替代材料"),
+                    ("d", "网络评论数量"),
+                ),
+                "b",
+                "意见应建立在获准记录之上，并让事实依据可以被复核。",
             ),
             _biu_exam_question(
-                "tr_both", "双方对关键规则提出不同解释时，应怎样写意见？",
-                (("a", "只复制一方"), ("b", "公平呈现主要解释并说明采纳理由"), ("c", "忽略规则"), ("d", "不写理由")),
-                "b", "可理解的判断需要回应主要论点并公开说明推理路径。",
+                "tr_both",
+                "双方对关键规则提出不同解释时，应怎样写意见？",
+                (
+                    ("a", "只复制一方"),
+                    ("b", "公平呈现主要解释并说明采纳理由"),
+                    ("c", "忽略规则"),
+                    ("d", "不写理由"),
+                ),
+                "b",
+                "可理解的判断需要回应主要论点并公开说明推理路径。",
             ),
             _biu_exam_question(
-                "tr_conflict", "发现自己与参与者存在可能影响中立的关系，应？",
-                (("a", "隐瞒"), ("b", "及时披露并依规则评估是否回避"), ("c", "让参与者猜测"), ("d", "删除记录")),
-                "b", "利益冲突应透明披露并依既定程序处理。",
+                "tr_conflict",
+                "发现自己与参与者存在可能影响中立的关系，应？",
+                (
+                    ("a", "隐瞒"),
+                    ("b", "及时披露并依规则评估是否回避"),
+                    ("c", "让参与者猜测"),
+                    ("d", "删除记录"),
+                ),
+                "b",
+                "利益冲突应透明披露并依既定程序处理。",
             ),
             _biu_exam_question(
-                "tr_uncertainty", "材料不足以支持确定事实时，应？",
-                (("a", "补写想象内容"), ("b", "说明证明不足及其对结论的影响"), ("c", "提高语气强度"), ("d", "改变证明标准")),
-                "b", "判断者必须正视不确定性，而不能用措辞替代证据。",
+                "tr_uncertainty",
+                "材料不足以支持确定事实时，应？",
+                (
+                    ("a", "补写想象内容"),
+                    ("b", "说明证明不足及其对结论的影响"),
+                    ("c", "提高语气强度"),
+                    ("d", "改变证明标准"),
+                ),
+                "b",
+                "判断者必须正视不确定性，而不能用措辞替代证据。",
             ),
             _biu_exam_question(
-                "tr_scope", "处理一个未由双方充分讨论的新问题时，较适当的是？",
-                (("a", "直接作不利结论"), ("b", "给予适当通知与回应机会"), ("c", "仅私下询问一方"), ("d", "隐藏问题来源")),
-                "b", "程序公平要求受影响参与者知道问题并获得合理回应机会。",
+                "tr_scope",
+                "处理一个未由双方充分讨论的新问题时，较适当的是？",
+                (
+                    ("a", "直接作不利结论"),
+                    ("b", "给予适当通知与回应机会"),
+                    ("c", "仅私下询问一方"),
+                    ("d", "隐藏问题来源"),
+                ),
+                "b",
+                "程序公平要求受影响参与者知道问题并获得合理回应机会。",
             ),
         ),
     },
@@ -2490,29 +4121,64 @@ _BIU_EXAM_BANKS = {
         "threshold_percent": 75,
         "questions": (
             _biu_exam_question(
-                "ar_scope", "上诉审查的第一项程序任务通常是？",
-                (("a", "重新收集所有事实"), ("b", "确认可审查问题、记录范围和适用标准"), ("c", "直接宣布结果"), ("d", "忽略初审意见")),
-                "b", "审查范围和标准决定上诉机构能够处理什么以及如何处理。",
+                "ar_scope",
+                "上诉审查的第一项程序任务通常是？",
+                (
+                    ("a", "重新收集所有事实"),
+                    ("b", "确认可审查问题、记录范围和适用标准"),
+                    ("c", "直接宣布结果"),
+                    ("d", "忽略初审意见"),
+                ),
+                "b",
+                "审查范围和标准决定上诉机构能够处理什么以及如何处理。",
             ),
             _biu_exam_question(
-                "ar_preserve", "某项理由在初审记录中没有提出，审查时应？",
-                (("a", "自动视为已提出"), ("b", "依规则分析是否保留、放弃或属于例外"), ("c", "删除初审记录"), ("d", "只看理由是否有趣")),
-                "b", "上诉审查应明确处理保留与例外问题，不能绕开程序历史。",
+                "ar_preserve",
+                "某项理由在初审记录中没有提出，审查时应？",
+                (
+                    ("a", "自动视为已提出"),
+                    ("b", "依规则分析是否保留、放弃或属于例外"),
+                    ("c", "删除初审记录"),
+                    ("d", "只看理由是否有趣"),
+                ),
+                "b",
+                "上诉审查应明确处理保留与例外问题，不能绕开程序历史。",
             ),
             _biu_exam_question(
-                "ar_error", "发现初审理由有错误，是否必然改变结果？",
-                (("a", "必然"), ("b", "不一定，还需分析错误是否影响结果"), ("c", "从不影响"), ("d", "只由篇幅决定")),
-                "b", "需要区分错误存在与错误是否具有结果影响。",
+                "ar_error",
+                "发现初审理由有错误，是否必然改变结果？",
+                (
+                    ("a", "必然"),
+                    ("b", "不一定，还需分析错误是否影响结果"),
+                    ("c", "从不影响"),
+                    ("d", "只由篇幅决定"),
+                ),
+                "b",
+                "需要区分错误存在与错误是否具有结果影响。",
             ),
             _biu_exam_question(
-                "ar_deference", "审查事实判断与法律问题时应？",
-                (("a", "始终使用同一标准"), ("b", "依问题类型采用相应审查标准并说明"), ("c", "只看最终结论"), ("d", "由个人偏好决定")),
-                "b", "不同问题可能适用不同审查强度，意见应公开说明所用标准。",
+                "ar_deference",
+                "审查事实判断与法律问题时应？",
+                (
+                    ("a", "始终使用同一标准"),
+                    ("b", "依问题类型采用相应审查标准并说明"),
+                    ("c", "只看最终结论"),
+                    ("d", "由个人偏好决定"),
+                ),
+                "b",
+                "不同问题可能适用不同审查强度，意见应公开说明所用标准。",
             ),
             _biu_exam_question(
-                "ar_disposition", "上诉意见的处理结果应当？",
-                (("a", "只写胜负"), ("b", "说明维持、撤销、变更或发回的范围与理由"), ("c", "加入未讨论的新事实"), ("d", "省略后续步骤")),
-                "b", "清楚的处理范围和理由能让后续程序知道哪些事项已经解决。",
+                "ar_disposition",
+                "上诉意见的处理结果应当？",
+                (
+                    ("a", "只写胜负"),
+                    ("b", "说明维持、撤销、变更或发回的范围与理由"),
+                    ("c", "加入未讨论的新事实"),
+                    ("d", "省略后续步骤"),
+                ),
+                "b",
+                "清楚的处理范围和理由能让后续程序知道哪些事项已经解决。",
             ),
         ),
     },
@@ -2541,7 +4207,8 @@ def _biu_exam_bank_with_balanced_slots(bank_id, bank):
     for question, target_slot in zip(questions, slots):
         options = list(question.get("options") or ())
         correct_option = next(
-            option for option in options
+            option
+            for option in options
             if option.get("option_id") == question.get("correct_option_id")
         )
         remaining = [option for option in options if option is not correct_option]
@@ -2622,9 +4289,7 @@ def _validate_biu_learning_definitions(
 
     errors: list[str] = []
     axes: dict[str, Mapping[str, Any]] = {}
-    if not isinstance(BIU_GUIDANCE_AXES, (list, tuple)) or not (
-        4 <= len(BIU_GUIDANCE_AXES) <= 8
-    ):
+    if not isinstance(BIU_GUIDANCE_AXES, (list, tuple)) or not (4 <= len(BIU_GUIDANCE_AXES) <= 8):
         errors.append(f"{prefix}.biu_guidance.axes: expected 4 to 8 axes")
     else:
         for index, axis in enumerate(BIU_GUIDANCE_AXES):
@@ -2659,9 +4324,7 @@ def _validate_biu_learning_definitions(
         if not _biu_learning_identifier(question_id):
             errors.append(f"{item_prefix}.question_id: invalid identifier")
         elif str(question_id) in question_ids:
-            errors.append(
-                f"{prefix}.biu_guidance.questions: duplicate id {question_id!r}"
-            )
+            errors.append(f"{prefix}.biu_guidance.questions: duplicate id {question_id!r}")
         else:
             question_ids.add(str(question_id))
         if not _non_empty_string(question.get("prompt")):
@@ -2691,9 +4354,7 @@ def _validate_biu_learning_definitions(
                 continue
             unknown_axes = set(scores).difference(axes)
             if unknown_axes:
-                errors.append(
-                    f"{option_prefix}.scores: unknown axes {sorted(unknown_axes)!r}"
-                )
+                errors.append(f"{option_prefix}.scores: unknown axes {sorted(unknown_axes)!r}")
             if any(type(score) is not int or not (1 <= score <= 3) for score in scores.values()):
                 errors.append(f"{option_prefix}.scores: values must be integers from 1 to 3")
 
@@ -2755,9 +4416,7 @@ def _validate_biu_learning_definitions(
         if type(threshold) is not int or not (60 <= threshold <= 100):
             errors.append(f"{item_prefix}.threshold_percent: expected integer from 60 to 100")
         bank_questions = bank.get("questions")
-        if not isinstance(bank_questions, (list, tuple)) or not (
-            4 <= len(bank_questions) <= 12
-        ):
+        if not isinstance(bank_questions, (list, tuple)) or not (4 <= len(bank_questions) <= 12):
             errors.append(f"{item_prefix}.questions: expected 4 to 12 questions")
             continue
         bank_question_ids: set[str] = set()
@@ -2868,9 +4527,7 @@ def get_all_blueprints(
     return {key: deepcopy(_BLUEPRINTS[key]) for key in INDUSTRY_BLUEPRINT_KEYS}
 
 
-def list_blueprints(
-    *, schema_version: int = BLUEPRINT_SCHEMA_VERSION
-) -> list[dict[str, Any]]:
+def list_blueprints(*, schema_version: int = BLUEPRINT_SCHEMA_VERSION) -> list[dict[str, Any]]:
     """Return deep-copied catalogue metadata without the large organisation lists."""
 
     _require_schema_version(schema_version)
@@ -2908,9 +4565,7 @@ def blueprint_nav_defaults(blueprint_or_key: Any) -> dict[str, list[str]]:
     return {
         str(position["code"]): [
             module_id
-            for module_id in nav_modules_for_permissions(
-                position.get("permissions") or ()
-            )
+            for module_id in nav_modules_for_permissions(position.get("permissions") or ())
             if module_id in enabled
         ]
         for position in blueprint.get("positions") or ()
@@ -2931,8 +4586,7 @@ def blueprint_nav_ceilings(blueprint_or_key: Any) -> dict[str, list[str]]:
         if department.get("type") != "company"
     }
     ceilings: dict[str, set[str]] = {
-        str(department["code"]): set()
-        for department in blueprint.get("departments") or ()
+        str(department["code"]): set() for department in blueprint.get("departments") or ()
     }
     ceilings.setdefault("company", set())
     defaults = blueprint_nav_defaults(blueprint)
@@ -2951,6 +4605,42 @@ def blueprint_nav_ceilings(blueprint_or_key: Any) -> dict[str, list[str]]:
         code: sorted(modules, key=lambda module_id: order[module_id])
         for code, modules in ceilings.items()
     }
+
+
+def blueprint_permission_ceilings(blueprint_or_key: Any) -> dict[str, list[str]]:
+    """Derive department permission envelopes from the positions they contain.
+
+    The template does not encode a second, hand-maintained policy table.  A
+    department receives the union of the reviewed job capabilities in its
+    subtree, and every ancestor receives the same contribution.  This keeps
+    the preset explainable and prevents department and position rules from
+    silently drifting apart.
+    """
+    blueprint = _blueprint_value(blueprint_or_key)
+    parent_by_code = {
+        str(department["code"]): str(department.get("parent") or "company")
+        for department in blueprint.get("departments") or ()
+        if department.get("type") != "company"
+    }
+    ceilings: dict[str, set[str]] = {
+        str(department["code"]): set() for department in blueprint.get("departments") or ()
+    }
+    ceilings.setdefault("company", set())
+    for position in blueprint.get("positions") or ():
+        permissions = {
+            str(permission)
+            for permission in position.get("permissions") or ()
+            if str(permission).strip()
+        }
+        cursor = str(position["department"])
+        visited: set[str] = set()
+        while cursor and cursor not in visited:
+            visited.add(cursor)
+            ceilings.setdefault(cursor, set()).update(permissions)
+            if cursor == "company":
+                break
+            cursor = parent_by_code.get(cursor, "company")
+    return {code: sorted(permissions) for code, permissions in ceilings.items()}
 
 
 def _normalise_blueprint_input(
@@ -2994,9 +4684,7 @@ def validate_blueprints(
 
     errors: list[str] = []
     items = _normalise_blueprint_input(blueprints, errors)
-    allowed = set(
-        BLUEPRINT_PERMISSION_KEYS if allowed_permissions is None else allowed_permissions
-    )
+    allowed = set(BLUEPRINT_PERMISSION_KEYS if allowed_permissions is None else allowed_permissions)
     seen_blueprint_keys: set[str] = set()
     global_position_owners: dict[str, str] = {}
     global_department_names: dict[str, tuple[str, str]] = {}
@@ -3014,9 +4702,7 @@ def validate_blueprints(
         if not _non_empty_string(declared_key):
             errors.append(f"{prefix}.key: must be a non-empty string")
         elif str(declared_key) != input_key:
-            errors.append(
-                f"{prefix}.key: declared key {declared_key!r} does not match mapping key"
-            )
+            errors.append(f"{prefix}.key: declared key {declared_key!r} does not match mapping key")
         if blueprint.get("schema_version") != BLUEPRINT_SCHEMA_VERSION:
             errors.append(
                 f"{prefix}.schema_version: expected {BLUEPRINT_SCHEMA_VERSION}, "
@@ -3061,9 +4747,7 @@ def validate_blueprints(
                     f"blueprint {previous_department[0]!r} for a different department"
                 )
             elif _non_empty_string(department_name):
-                global_department_names.setdefault(
-                    code, (input_key, str(department_name))
-                )
+                global_department_names.setdefault(code, (input_key, str(department_name)))
             parent = department.get("parent")
             if parent is not None and not _non_empty_string(parent):
                 errors.append(f"{item_prefix}.parent: must be null or a non-empty string")
@@ -3071,15 +4755,15 @@ def validate_blueprints(
             for field in ("name", "description"):
                 if not _non_empty_string(department.get(field)):
                     errors.append(f"{item_prefix}.{field}: must be a non-empty string")
-            if input_key == BIU_TEMPLATE_KEY and not _non_empty_string(
-                department.get("name_en")
-            ) and code != "company":
+            if (
+                input_key == BIU_TEMPLATE_KEY
+                and not _non_empty_string(department.get("name_en"))
+                and code != "company"
+            ):
                 errors.append(f"{item_prefix}.name_en: must be a non-empty string")
             unit_type = department.get("type")
             if unit_type not in VALID_DEPARTMENT_TYPES:
-                errors.append(
-                    f"{item_prefix}.type: unknown department type {unit_type!r}"
-                )
+                errors.append(f"{item_prefix}.type: unknown department type {unit_type!r}")
             if unit_type == "company":
                 company_count += 1
                 if parent is not None:
@@ -3145,9 +4829,7 @@ def validate_blueprints(
                     errors.append(f"{item_prefix}.{field}: must be a non-empty string")
             department = position.get("department")
             if not _non_empty_string(department) or department not in department_codes:
-                errors.append(
-                    f"{item_prefix}.department: unknown department {department!r}"
-                )
+                errors.append(f"{item_prefix}.department: unknown department {department!r}")
             level = position.get("level")
             if type(level) is not int or not 1 <= level <= 10:
                 errors.append(f"{item_prefix}.level: must be an integer from 1 to 10")
@@ -3204,9 +4886,7 @@ def validate_blueprints(
                     access_domains[access_kind] = domains
 
                 if database_access.get("business_write") is not True:
-                    errors.append(
-                        f"{item_prefix}.database_access.business_write: must be true"
-                    )
+                    errors.append(f"{item_prefix}.database_access.business_write: must be true")
                 if not _non_empty_string(database_access.get("source")):
                     errors.append(
                         f"{item_prefix}.database_access.source: must be a non-empty string"
@@ -3218,9 +4898,7 @@ def validate_blueprints(
                 if not read_domains:
                     errors.append(f"{item_prefix}.database_access.read: must not be empty")
                 if write_domains - read_domains:
-                    errors.append(
-                        f"{item_prefix}.database_access.write: must be a subset of read"
-                    )
+                    errors.append(f"{item_prefix}.database_access.write: must be a subset of read")
                 if schema_domains - write_domains:
                     errors.append(
                         f"{item_prefix}.database_access.schema: must be a subset of write"
@@ -3248,11 +4926,7 @@ def validate_blueprints(
                             )
                             else ()
                         ),
-                        (
-                            str(database_access_mode)
-                            if database_access_mode is not None
-                            else None
-                        ),
+                        (str(database_access_mode) if database_access_mode is not None else None),
                     )
                     for access_kind in ("read", "write", "schema"):
                         expected_domains = set(expected_access[access_kind])
@@ -3276,13 +4950,9 @@ def validate_blueprints(
                 errors.append(f"{item_prefix}.permissions: contains duplicate keys")
             for permission in permission_list:
                 if not _non_empty_string(permission):
-                    errors.append(
-                        f"{item_prefix}.permissions: contains an invalid permission key"
-                    )
+                    errors.append(f"{item_prefix}.permissions: contains an invalid permission key")
                 elif permission not in allowed:
-                    errors.append(
-                        f"{item_prefix}.permissions: unknown permission {permission!r}"
-                    )
+                    errors.append(f"{item_prefix}.permissions: unknown permission {permission!r}")
 
             if input_key == BIU_TEMPLATE_KEY:
                 if not _non_empty_string(position.get("name_en")):
@@ -3329,9 +4999,7 @@ def validate_blueprints(
                             errors.append(
                                 f"{item_prefix}.public_entry.workflow_ref: direct entry must not use a workflow"
                             )
-                    elif entry_mode in BIU_ENTRY_MODES and not _non_empty_string(
-                        workflow_ref
-                    ):
+                    elif entry_mode in BIU_ENTRY_MODES and not _non_empty_string(workflow_ref):
                         errors.append(
                             f"{item_prefix}.public_entry.workflow_ref: must be a non-empty string"
                         )
@@ -3349,9 +5017,7 @@ def validate_blueprints(
                             "requires a public direct P0/P1 position"
                         )
                     if type(guest_enabled) is not bool:
-                        errors.append(
-                            f"{item_prefix}.public_entry.guest_enabled: must be boolean"
-                        )
+                        errors.append(f"{item_prefix}.public_entry.guest_enabled: must be boolean")
                     elif guest_enabled and (
                         visibility == "hidden"
                         or code == str(blueprint.get("admin_position_code") or "")
@@ -3395,10 +5061,7 @@ def validate_blueprints(
                     quick_registration_excess = set(permission_list).difference(
                         BIU_QUICK_REGISTRATION_ALLOWED_PERMISSIONS
                     )
-                    if (
-                        public_entry.get("quick_registration")
-                        and quick_registration_excess
-                    ):
+                    if public_entry.get("quick_registration") and quick_registration_excess:
                         errors.append(
                             f"{item_prefix}.public_entry.quick_registration: "
                             "position permissions are outside the quick-entry allowlist "
@@ -3418,18 +5081,12 @@ def validate_blueprints(
         admin_position_code = blueprint.get("admin_position_code")
         admin_position = position_by_code.get(str(admin_position_code))
         if not _non_empty_string(admin_position_code) or admin_position is None:
-            errors.append(
-                f"{prefix}.admin_position_code: unknown position {admin_position_code!r}"
-            )
+            errors.append(f"{prefix}.admin_position_code: unknown position {admin_position_code!r}")
         else:
             if admin_position.get("department") != "management":
-                errors.append(
-                    f"{prefix}.admin_position_code: position must belong to 'management'"
-                )
+                errors.append(f"{prefix}.admin_position_code: position must belong to 'management'")
             if admin_position.get("is_manager") is not True:
-                errors.append(
-                    f"{prefix}.admin_position_code: position must have is_manager=true"
-                )
+                errors.append(f"{prefix}.admin_position_code: position must have is_manager=true")
             if admin_position.get("role_name") != "系統管理員":
                 errors.append(
                     f"{prefix}.admin_position_code: position must retain role_name '系統管理員'"
@@ -3443,9 +5100,7 @@ def validate_blueprints(
                 )
 
         if input_key == BIU_TEMPLATE_KEY:
-            errors.extend(
-                _validate_biu_learning_definitions(position_by_code, prefix)
-            )
+            errors.extend(_validate_biu_learning_definitions(position_by_code, prefix))
 
         modules = blueprint.get("enabled_modules")
         if not isinstance(modules, (list, tuple, set, frozenset)):
@@ -3507,6 +5162,7 @@ __all__ = [
     "nav_modules_for_permissions",
     "blueprint_nav_defaults",
     "blueprint_nav_ceilings",
+    "blueprint_permission_ceilings",
     "get_blueprint",
     "get_all_blueprints",
     "list_blueprints",

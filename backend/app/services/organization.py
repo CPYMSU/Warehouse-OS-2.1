@@ -30,7 +30,9 @@ from app.services.templates import (
 from app.templates.industry_blueprints import (
     BLUEPRINT_PERMISSION_KEYS,
     VALID_DEPARTMENT_TYPES,
+    blueprint_nav_ceilings,
     blueprint_nav_defaults,
+    blueprint_permission_ceilings,
 )
 
 NAVIGATION_CATALOG: tuple[dict[str, object], ...] = (
@@ -45,6 +47,7 @@ NAVIGATION_CATALOG: tuple[dict[str, object], ...] = (
     {"id": "erp", "idx": "08", "label": "ERP", "group": "業務"},
     {"id": "finance", "idx": "09", "label": "財務", "group": "業務"},
     {"id": "assets", "idx": "10", "label": "資產", "group": "業務"},
+    {"id": "research", "idx": "R1", "label": "科研", "group": "業務"},
     {"id": "procurement", "idx": "11", "label": "採購", "group": "業務"},
     {"id": "legal", "idx": "12", "label": "法務", "group": "業務"},
     {"id": "gis", "idx": "13", "label": "地圖", "group": "業務"},
@@ -78,6 +81,7 @@ NAV_PERMISSION_RULES: dict[str, tuple[str, ...]] = {
 }
 NAV_PERMISSION_ANY: dict[str, tuple[str, ...]] = {
     "assets": ("assets.read", "asset_mgmt.read"),
+    "research": ("research.read", "research.write", "research.review"),
     "cases": ("cases.read", "records.read"),
     "perms": (
         "permissions.topology.read",
@@ -570,6 +574,7 @@ def _projection(snapshot: dict[str, object]) -> dict[str, object]:
                 "level": int(position["role_level"]),
                 "is_manager": bool(position["is_manager"]),
                 "permissions": _strings(position["permissions"]),
+                "database_access": position.get("database_access") or {},
                 "active": bool(position["active"]),
                 "nav_default": defaults,
                 "nav_default_enabled": bool(policy.get("navigation_default_enabled")),
@@ -704,6 +709,85 @@ def topology_payload(actor: ActorContext) -> dict[str, object]:
             "users": len(projection["users"]),
             "roles": len(_roles(projection)),
             "delegations": 0,
+        },
+    }
+
+
+def runtime_authority_snapshot(actor: ActorContext) -> dict[str, object]:
+    """Describe the complete authority world inside the actor's current tenant.
+
+    This is model context, not an execution grant.  The company AI needs to
+    understand every active department, position and person so it can reason
+    about responsibility and recommend who should participate even when the
+    current human does not personally hold a capability.
+    """
+    with tenant_session(actor.tenant_id) as session:
+        projection = _projection(_snapshot(session))
+    units = [
+        {
+            "code": row["unit_code"],
+            "name": row["unit_name"],
+            "type": row["unit_type"],
+            "parent_id": row["parent_id"],
+            "manager": row["manager_name"],
+            "permission_ceiling_enabled": row["permission_ceiling_enabled"],
+            "permission_ceiling": row["permission_ceiling"],
+        }
+        for row in projection["units"]
+        if row["active"]
+    ]
+    positions = [
+        {
+            "code": row["position_code"],
+            "name": row["position_name"],
+            "department_id": row["org_unit_id"],
+            "role_name": row["role_name"],
+            "level": row["level"],
+            "is_manager": row["is_manager"],
+            "permissions": row["permissions"],
+            "database_access": row["database_access"],
+        }
+        for row in projection["positions"]
+        if row["active"]
+    ]
+    people = [
+        {
+            "username": row["username"],
+            "display_name": row["display_name"],
+            "active": row["active"],
+            "role_level": row["role_level"],
+            "topology_title": row["topology_title"],
+            "identities": row["identities"],
+            "effective_permissions": row["effective_permissions"],
+        }
+        for row in projection["users"]
+        if row["active"]
+    ]
+    responsibility: dict[str, dict[str, list[str]]] = defaultdict(
+        lambda: {"people": [], "positions": []}
+    )
+    for person in people:
+        for permission in person["effective_permissions"]:
+            responsibility[str(permission)]["people"].append(str(person["display_name"]))
+    for position in positions:
+        for permission in position["permissions"]:
+            responsibility[str(permission)]["positions"].append(str(position["name"]))
+    return {
+        "scope": "current_tenant_only",
+        "company": {
+            "slug": actor.tenant_slug,
+            "name": actor.tenant_name,
+            "industry_template": actor.industry_template_key,
+        },
+        "departments": units,
+        "positions": positions,
+        "people": people,
+        "responsibility_index": {
+            permission: {
+                "people": list(dict.fromkeys(values["people"])),
+                "positions": list(dict.fromkeys(values["positions"])),
+            }
+            for permission, values in sorted(responsibility.items())
         },
     }
 
@@ -1457,7 +1541,10 @@ def apply_template(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                 "role_level": int(item["level"]),
                 "is_manager": bool(item["is_manager"]),
                 "permissions": json.dumps(item.get("permissions") or []),
+                "database_access": json.dumps(item.get("database_access") or {}),
                 "navigation_defaults": json.dumps(nav_defaults.get(code) or []),
+                "public_entry": json.dumps(item.get("public_entry")),
+                "case_roles": json.dumps(item.get("case_roles") or []),
             }
             if code in existing_positions:
                 session.execute(
@@ -1465,7 +1552,10 @@ def apply_template(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                     UPDATE iam.position_profiles SET template_key = :template_key, department_code = :department_code,
                       name = :name, name_en = :name_en, role_name = :role_name, role_level = :role_level,
                       is_manager = :is_manager, permissions = CAST(:permissions AS jsonb),
-                      navigation_defaults = CAST(:navigation_defaults AS jsonb), active = true
+                      database_access = CAST(:database_access AS jsonb),
+                      navigation_defaults = CAST(:navigation_defaults AS jsonb),
+                      public_entry = CAST(:public_entry AS jsonb),
+                      case_roles = CAST(:case_roles AS jsonb), active = true
                     WHERE id = :id
                 """),
                     {**values, "id": existing_positions[code]["id"]},
@@ -1473,11 +1563,38 @@ def apply_template(actor: ActorContext, payload: dict[str, object]) -> dict[str,
             else:
                 session.execute(
                     text("""
-                    INSERT INTO iam.position_profiles(id, tenant_id, template_key, position_code, department_code, name, name_en, role_name, role_level, is_manager, permissions, navigation_defaults)
-                    VALUES (:id, :tenant_id, :template_key, :position_code, :department_code, :name, :name_en, :role_name, :role_level, :is_manager, CAST(:permissions AS jsonb), CAST(:navigation_defaults AS jsonb))
+                    INSERT INTO iam.position_profiles(id, tenant_id, template_key, position_code, department_code, name, name_en, role_name, role_level, is_manager, permissions, database_access, navigation_defaults, public_entry, case_roles)
+                    VALUES (:id, :tenant_id, :template_key, :position_code, :department_code, :name, :name_en, :role_name, :role_level, :is_manager, CAST(:permissions AS jsonb), CAST(:database_access AS jsonb), CAST(:navigation_defaults AS jsonb), CAST(:public_entry AS jsonb), CAST(:case_roles AS jsonb))
                 """),
                     {**values, "id": uuid4(), "tenant_id": actor.tenant_id, "position_code": code},
                 )
+        permission_ceilings = blueprint_permission_ceilings(blueprint)
+        navigation_ceilings = blueprint_nav_ceilings(blueprint)
+        for department in blueprint.get("departments") or []:
+            code = str(department["code"])
+            session.execute(
+                text("""
+                INSERT INTO iam.department_access_policies(
+                  tenant_id, org_unit_id, permission_ceiling_enabled,
+                  permission_ceiling, navigation_ceiling_enabled, navigation_ceiling
+                )
+                SELECT :tenant_id, ou.id, true, CAST(:permissions AS jsonb),
+                       true, CAST(:navigation AS jsonb)
+                FROM iam.organizational_units AS ou
+                WHERE ou.tenant_id = :tenant_id AND ou.unit_code = :unit_code
+                ON CONFLICT (tenant_id, org_unit_id) DO UPDATE SET
+                  permission_ceiling_enabled = EXCLUDED.permission_ceiling_enabled,
+                  permission_ceiling = EXCLUDED.permission_ceiling,
+                  navigation_ceiling_enabled = EXCLUDED.navigation_ceiling_enabled,
+                  navigation_ceiling = EXCLUDED.navigation_ceiling
+            """),
+                {
+                    "tenant_id": actor.tenant_id,
+                    "unit_code": code,
+                    "permissions": json.dumps(permission_ceilings.get(code) or []),
+                    "navigation": json.dumps(navigation_ceilings.get(code) or []),
+                },
+            )
         session.execute(
             text(
                 "UPDATE iam.tenants SET industry_template_key = :template_key WHERE id = :tenant_id"

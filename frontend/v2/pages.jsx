@@ -1,5 +1,5 @@
 /* ============================================================
-   WAREHOUSE 2.0 · pages — Swiss 版式 · 三語(tw/cn/en)
+   WAREHOUSE 2.1 · pages — Swiss 版式 · 三語(tw/cn/en)
    ============================================================ */
 (() => {
 const W2 = window.W2;
@@ -582,7 +582,7 @@ const PageInventory2 = ({ boot, reload }) => {
       <Folio no="02" en="INVENTORY" title={t("庫存")}
         sub={<>{t("可用 {a} 種 · 零庫存 {z} 種 · 出入庫可一鍵手動,複雜操作交秘書 · 按", { a: availableSkus, z: zeroSkus })} <span className="num">/</span> {t("搜索")}</>}
         right={<>
-          {canAdjust && <B icon="plus" onClick={() => ask(t("我要新增一種物資,幫我登記(名稱、分類、單位、初始庫存、安全庫存)"))}>{t("新增物資")}</B>}
+          {canAdjust && <B icon="plus" onClick={() => W2.openBusinessAction("item_create")}>{t("新增物資")}</B>}
           <B kind="primary" icon="sparkle" onClick={() => ask(t("庫存現在最需要處理的是什麼?"))}>{t("問秘書")}</B>
         </>}/>
 
@@ -836,7 +836,7 @@ const InvDrawer2 = ({ item, onClose, canInbound, canOutbound, canShipment, canAd
             ))}
           </div>
         </>}
-        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
       </div>
     </div>
   );
@@ -1186,6 +1186,7 @@ const BRIDGE_META = {
   erp: ["07", "ERP", "ERP 中樞", "預算 · 成本中心 · 採購申請 · 業財一體化"],
   finance: ["08", "FINANCE", "財務", "複式總賬 · 憑證 · 三大報表 · AA 記賬"],
   assets: ["09", "ASSETS", "資產", "金融資產 · 數字資產市場 · AI 評估"],
+  research: ["R01", "RESEARCH", "科研工作台", "可重現研究 · 文件版本 · 語義差異"],
   procurement: ["10", "PROCUREMENT", "採購招標", "採購流程 · 招標評審 · 供應商"],
   gis: ["11", "MAP / GIS", "倉庫地圖", "倉庫 GIS 定位 · 庫區與貨位可視化"],
   reports: ["12", "REPORTS", "報表", "經營報表 · 導出"],
@@ -1205,10 +1206,9 @@ const PageBridge = ({ route }) => {
         <div style={{ maxWidth: 620 }}>
           <LB red style={{ marginBottom: 16 }}>REDESIGN IN PROGRESS</LB>
           <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-.03em", lineHeight: 1.35, marginBottom: 14 }}>
-            {t("此模塊的 2.0 版式在排期中。")}<br/>{t("功能在經典版一件不少,同一個後端,同一份數據。")}
+            {t("此模塊的 2.1 版式在排期中。")}
           </div>
           <div className="row g10" style={{ marginTop: 26 }}>
-            <a href={W2.CLASSIC_URL} className="btn primary" style={{ textDecoration: "none" }}><I name="arrow" size={14}/>{t("在經典版打開")}{t(title)}</a>
             <B icon="sparkle" onClick={() => ask(t("關於{t}({d}):現在有什麼需要我處理的?", { t: t(title), d: t(desc) }))}>{t("先問秘書")}</B>
           </div>
           <div className="mono muted" style={{ fontSize: 9.5, letterSpacing: ".18em", marginTop: 30 }}>SAME BACKEND · SAME DATA · ZERO LOSS</div>

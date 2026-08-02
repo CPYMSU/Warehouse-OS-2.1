@@ -1,0 +1,33 @@
+[Unit]
+Description=Warehouse OS restricted SHIELD host agent
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/opt/warehouse-os/shared/.env.production
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=warehouse-shield
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/sbin/warehouse-shield-agent
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/warehouse-shield /var/log /opt/warehouse-os/shared/shield /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/letsencrypt /var/lib/letsencrypt
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

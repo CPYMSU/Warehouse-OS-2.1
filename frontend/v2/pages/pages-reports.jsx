@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 報表 — Swiss 版式,真後端(/api/reports/summary) */
+/* WAREHOUSE 2.1 · 報表 — Swiss 版式,真後端(/api/reports/summary) */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;
@@ -50,8 +50,8 @@ window.W2_LANG.addEN({
   "秘書生成導出": "Generate & export", "問要點": "Key points", "關鍵數字": "Key figure",
   "入庫 {a} 單 · 出庫 {b} 單": "In {a} · Out {b}", "週轉": "turnover",
   "{n} 條未關閉": "{n} open",
-  "2.0 約定:頁面只讀,報表由秘書按最新數據生成與導出,全程留痕。":
-    "2.0 covenant: the page is read-only. Reports are generated and exported by the Secretary from live data, fully audited.",
+  "2.1 約定:頁面只讀,報表由秘書按最新數據生成與導出,全程留痕。":
+    "2.1 covenant: the page is read-only. Reports are generated and exported by the Secretary from live data, fully audited.",
   // 秘書指令
   "把本期經營報表的要點講給我聽:出入庫、庫存儲值、消耗排行、預警處理,各給關鍵數字和一句判斷":
     "Walk me through this period's reports: in/out, stock value, consumption ranking, alert handling — key figures plus one-line verdicts",
@@ -313,7 +313,7 @@ const Page = ({ boot }) => {
           </div>
         ))}
       </div>
-      <div className="muted" style={{ fontSize: 10.5, marginTop: 14, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,報表由秘書按最新數據生成與導出,全程留痕。")}</div>
+      <div className="muted" style={{ fontSize: 10.5, marginTop: 14, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,報表由秘書按最新數據生成與導出,全程留痕。")}</div>
     </Band>
   </>);
 };

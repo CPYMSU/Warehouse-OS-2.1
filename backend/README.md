@@ -12,6 +12,11 @@ no per-tenant database files, and no seeded demonstration data.
   every tenant-domain transaction;
 - `pgvector` knowledge chunks and an HNSW cosine-similarity index for the AI
   secretary's permission-scoped retrieval;
+- append-only secretary transcripts plus a tenant-isolated layered memory
+  fabric: complete-turn background distillation, evidence-bearing semantic,
+  episodic and procedural memory, conflict relations, cached
+  `index`/`focused`/`deep` resolution, and private-memory forgetting without
+  deleting source messages;
 - 13 versioned industry templates persisted in PostgreSQL, including
   `power_system` (電力系統), with every template's departments, positions,
   permissions, navigation defaults, and special BIU catalogue metadata;
@@ -21,10 +26,23 @@ no per-tenant database files, and no seeded demonstration data.
   explicitly non-superuser and therefore cannot bypass RLS.
 - real `POST /api/auth/login`, `GET /api/auth/me`, `GET /api/bootstrap`, and
   `GET /api/map/zones` compatibility endpoints;
-- governed super-terminal foundation: the complete 441-command legacy
-  catalogue, a shared human/AI executor, typed storage ports, PostgreSQL audit
-  records with forced RLS, and explicitly gated command activation;
+- shared Auto Runtime boundary: every current AI surface submits a goal to the
+  same observe → understand → plan → act → reflect loop; all 450 capability
+  genes are visible to its layered context, while execution remains bound to
+  the current company's identity, PostgreSQL RLS scope, confirmation policy,
+  and audit trail;
+- catalogue-driven internal API dispatch: all 428 tenant commands retain their
+  registered method/path/parameter contracts, use native FastAPI routes where
+  available, and otherwise enter the tenant-isolated PostgreSQL capability
+  gateway; the 22 platform commands remain L11-governed;
 - an interactive command for creating the first real tenant administrator.
+
+Terminal-based research upload and version inspection are documented in
+[`docs/research-api.md`](../docs/research-api.md).
+That contract now includes the downloadable, dependency-free
+`bonfire-research` CLI for project, file, Git lineage, DMP, protocol, Run,
+evidence, review, reproducibility, isolated execution, artifact, and release
+automation with a research-only Runtime API Key.
 
 ## Local setup
 
@@ -60,5 +78,7 @@ curl http://127.0.0.1:8080/api/health
 After signing in, list the provisionable catalogue at
 `GET /api/platform/templates` (also available as `GET /api/industry-templates`)
 and retrieve one full blueprint at `GET /api/industry-templates/{template_key}`.
-See [the super-terminal design](../docs/super-terminal.md) for command state,
-AI tool routing, and the database-replacement boundary.
+See [the Auto Runtime and Super Terminal design](../docs/super-terminal.md)
+for the shared-surface contract and legacy compatibility boundary, and
+[the Layered Memory Fabric](../docs/layered-memory-fabric.md) for conversation
+distillation and resolution.

@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from webauthn.helpers import bytes_to_base64url
+from webauthn.helpers.structs import CredentialDeviceType
 
 from app.api.deps import ActorContext, current_actor
 from app.core.security import hash_password
 from app.db.session import system_session, tenant_session
 from app.main import app
+from app.services import auto_runtime
 from app.services.templates import provision_tenant_template
+from app.terminal import executor
+from app.terminal.store import (
+    COMMAND_EXECUTION_ORIGINS,
+    COMMAND_EXECUTION_STATUSES,
+)
+
+pytestmark = pytest.mark.integration
 
 
 def _actor() -> ActorContext:
@@ -72,7 +86,11 @@ def _actor() -> ActorContext:
     )
 
 
-def test_identity_settings_cases_records_and_files_round_trip() -> None:
+def test_identity_settings_cases_records_and_files_round_trip(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.integrations.validate_credentials",
+        lambda *_args, **_kwargs: SimpleNamespace(ok=True, latency_ms=7, error=None),
+    )
     actor = _actor()
     app.dependency_overrides[current_actor] = lambda: actor
     client = TestClient(app)
@@ -97,7 +115,53 @@ def test_identity_settings_cases_records_and_files_round_trip() -> None:
         )
         assert response.status_code == 200
         assert response.json()["appearance"]["preset_id"] == "basel_cobalt"
-        assert client.get("/api/runtime/preferences").json()["appearance"]["accent_color"] == "#0757A6"
+        assert (
+            client.get("/api/runtime/preferences").json()["appearance"]["accent_color"] == "#0757A6"
+        )
+
+        response = client.get("/api/alerts/watch")
+        assert response.status_code == 200
+        assert response.json()["available"] is True
+        assert response.json()["alerts"] == []
+
+        response = client.get("/api/erp/gl/ap")
+        assert response.status_code == 200
+        assert response.json()["available"] is True
+        assert response.json()["by_party"] == []
+
+        response = client.get("/api/erp/gl/ar")
+        assert response.status_code == 200
+        assert response.json()["available"] is True
+        assert response.json()["by_party"] == []
+
+        response = client.get("/api/overview/executive")
+        assert response.status_code == 200
+        modules = response.json()["modules"]
+        assert modules["finance"]["status"] == "ready"
+        assert modules["assets"]["status"] == "ready"
+
+        response = client.get("/api/runtime/world")
+        assert response.status_code == 200
+        world = response.json()
+        assert world["source"] == "tenant_postgresql"
+        assert world["scope"] == "permission-filtered"
+        assert world["company"]["slug"] == actor.tenant_slug
+        assert world["inventory"]["available"] is True
+
+        response = client.get("/api/runtime/skills")
+        assert response.status_code == 200
+        skills = response.json()
+        assert skills["total"] == 508
+        assert skills["skills"][0]["invocation"] == "goal_guided"
+        assert "api_path" not in skills["skills"][0]
+
+        response = client.get("/api/platform/optimizer/overview?window_days=30")
+        assert response.status_code == 200
+        assert response.json()["feature"]["owner_only"] is True
+        assert response.json()["privacy"] == {
+            "aggregate_only": True,
+            "raw_transcripts_exposed": False,
+        }
 
         response = client.post(
             "/api/integrations/deepseek/save",
@@ -105,7 +169,20 @@ def test_identity_settings_cases_records_and_files_round_trip() -> None:
         )
         assert response.status_code == 200
         assert response.json()["deepseek"]["configured"] is True
+        assert response.json()["deepseek"]["connected"] is True
+        assert "api_key" not in response.json()["deepseek"]
         assert client.get("/api/integrations/deepseek").json()["deepseek"]["model"] == "test-model"
+        with tenant_session(actor.tenant_id) as session:
+            stored = session.execute(
+                text(
+                    """
+                    SELECT payload FROM compatibility.documents
+                    WHERE namespace = 'integration.deepseek' AND document_key = 'default'
+                    """
+                )
+            ).scalar_one()
+        assert "api_key" not in stored
+        assert str(stored["secret_ciphertext"]).startswith("fernet:v1:")
 
         response = client.post(
             "/api/cases",
@@ -132,7 +209,14 @@ def test_identity_settings_cases_records_and_files_round_trip() -> None:
         )
         assert response.status_code == 201
         record_id = response.json()["record"]["id"]
-        assert client.post("/api/records/search", json={"query": "Connected"}).json()["total"] == 1
+        records_search = client.post(
+            "/api/records/search", json={"query": "Connected"}
+        ).json()
+        assert records_search["total"] == 2
+        assert {item["type_key"] for item in records_search["records"]} == {
+            "general_record",
+            "personnel_record",
+        }
 
         response = client.post(
             f"/api/records/{record_id}/documents",
@@ -151,5 +235,992 @@ def test_identity_settings_cases_records_and_files_round_trip() -> None:
         )
         assert response.status_code == 201
         assert response.json()["conversation"]["title"] == "Connected conversation"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_every_workflow_node_accepts_versioned_notarized_attachments() -> None:
+    actor = _actor()
+    instance_id = uuid4()
+    with tenant_session(actor.tenant_id) as session:
+        definition = session.execute(
+            text(
+                """
+                SELECT id, definition
+                FROM workflow.definitions
+                WHERE active
+                ORDER BY workflow_key, version DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().one()
+        node_key = str(definition["definition"]["nodes"][0]["node_key"])
+        session.execute(
+            text(
+                """
+                INSERT INTO workflow.instances(
+                  id, tenant_id, definition_id, status,
+                  subject_type, subject_id, state
+                ) VALUES (
+                  :id, :tenant_id, :definition_id, 'active',
+                  'erp_purchase_request', :subject_id,
+                  CAST(:state AS jsonb)
+                )
+                """
+            ),
+            {
+                "id": instance_id,
+                "tenant_id": actor.tenant_id,
+                "definition_id": definition["id"],
+                "subject_id": uuid4(),
+                "state": json.dumps({"current_node_key": node_key}),
+            },
+        )
+
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        first_content = b"%PDF-1.7\nfirst notarized workflow attachment\n"
+        first = client.post(
+            f"/api/wf/instances/{instance_id}/nodes/{node_key}/attachments",
+            data={"kind": "node_attachment"},
+            files={"file": ("採購審批.pdf", first_content, "application/pdf")},
+        )
+        assert first.status_code == 200
+        first_attachment = first.json()["attachment"]
+        assert first_attachment["version"] == 1
+        assert first_attachment["notarized"] is True
+        assert len(first_attachment["file_sha256"]) == 64
+        assert first_attachment["file_seal"].startswith("WFN-")
+
+        verified = client.get(first_attachment["verify_url"])
+        assert verified.status_code == 200
+        assert verified.json()["verified"] is True, verified.json()
+        assert all(verified.json()["checks"].values())
+
+        download = client.get(first_attachment["download_url"])
+        assert download.status_code == 200
+        assert download.content == first_content
+        assert "filename*=UTF-8''" in download.headers["content-disposition"]
+
+        second = client.post(
+            f"/api/wf/instances/{instance_id}/nodes/{node_key}/attachments",
+            data={
+                "kind": "node_attachment",
+                "attachment_key": first_attachment["attachment_key"],
+            },
+            files={
+                "file": (
+                    "approval-v2.docx",
+                    b"PK\\x03\\x04second notarized workflow attachment",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        assert second.status_code == 200
+        second_attachment = second.json()["attachment"]
+        assert second_attachment["version"] == 2
+        assert second_attachment["previous_event_hash"] == first_attachment["event_hash"]
+        assert client.get(second_attachment["verify_url"]).json()["verified"] is True
+
+        detail = client.get(f"/api/wf/instances/{instance_id}")
+        assert detail.status_code == 200
+        artifacts = detail.json()["artifacts"]
+        assert [item["version"] for item in artifacts] == [2, 1]
+        assert all(item["node_key"] == node_key for item in artifacts)
+
+        listed = client.get(
+            f"/api/wf/instances/{instance_id}/nodes/{node_key}/attachments"
+        )
+        assert listed.status_code == 200
+        assert listed.json()["count"] == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_terminal_gateway_persists_and_reads_a_real_tenant_business_projection() -> None:
+    actor = _actor()
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        sent = client.post(
+            "/api/cli/exec",
+            json={"line": 'msg send --to all --text "Capability gateway message"'},
+        )
+        assert sent.status_code == 200
+        assert sent.json()["status"] == "succeeded"
+        assert sent.json()["data"]["adapter"] == "tenant_postgresql_capability_gateway"
+
+        inbox = client.post("/api/cli/exec", json={"line": "msg inbox"})
+        assert inbox.status_code == 200
+        assert inbox.json()["status"] == "succeeded"
+        rows = inbox.json()["data"]["items"]
+        assert any(row.get("text") == "Capability gateway message" for row in rows)
+
+        with tenant_session(actor.tenant_id) as session:
+            stored = session.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM compatibility.documents
+                    WHERE namespace = 'capability.collab.messages'
+                      AND payload->>'text' = 'Capability gateway message'
+                    """
+                )
+            ).scalar_one()
+            audited = session.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM audit.events
+                    WHERE event_type = 'capability.gateway.executed'
+                      AND payload->>'tool_name' IN ('msg_send', 'msg_inbox')
+                    """
+                )
+            ).scalar_one()
+        assert int(stored) == 1
+        assert int(audited) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_manual_and_ai_actions_share_native_inventory_round_trip() -> None:
+    actor = replace(
+        _actor(),
+        permissions=frozenset(
+            {
+                "settings.manage",
+                "cli.catalog",
+                "inventory.adjust",
+                "inventory.inbound",
+                "inventory.outbound",
+            }
+        ),
+    )
+    warehouse_id = uuid4()
+    item_name = f"Shared action item {uuid4().hex[:8]}"
+    with tenant_session(actor.tenant_id) as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO warehouse.warehouses(
+                  id, tenant_id, code, name, warehouse_type
+                ) VALUES (
+                  :id, :tenant_id, 'DEFAULT', 'Default test warehouse', 'general'
+                )
+                """
+            ),
+            {"id": warehouse_id, "tenant_id": actor.tenant_id},
+        )
+
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/business/actions/item_create/execute",
+            json={
+                "arguments": {
+                    "name": item_name,
+                    "spec": "M-01",
+                    "unit": "件",
+                }
+            },
+        )
+        assert created.status_code == 200
+        assert created.json()["status"] == "succeeded"
+        item_id = created.json()["data"]["item"]["id"]
+
+        updated = client.post(
+            "/api/ai/tools/item_update/execute",
+            json={"arguments": {"id": item_id, "price": 12.5}},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["status"] == "succeeded"
+
+        received = client.post(
+            "/api/business/actions/inbound_create/execute",
+            json={
+                "arguments": {
+                    "request-id": f"manual-in-{uuid4().hex}",
+                    "item": item_name,
+                    "qty": 10,
+                    "type": "調撥入庫",
+                    "batch": "BATCH-NATIVE-1",
+                    "production-date": "2026-07-01",
+                    "shelf-life": 30,
+                }
+            },
+        )
+        assert received.status_code == 200
+        assert received.json()["status"] == "succeeded"
+
+        issued = client.post(
+            "/api/ai/tools/outbound_create/execute",
+            json={
+                "arguments": {
+                    "request-id": f"ai-out-{uuid4().hex}",
+                    "item": item_name,
+                    "qty": 3,
+                    "use": "檢修",
+                    "target": "Native round trip",
+                }
+            },
+        )
+        assert issued.status_code == 200
+        assert issued.json()["status"] == "succeeded"
+
+        inventory = client.get("/api/bootstrap").json()["INVENTORY"]
+        item_rows = [row for row in inventory if row["itemId"] == item_id]
+        assert len(item_rows) == 1
+        assert item_rows[0]["stock"] == 7.0
+        assert item_rows[0]["unitPrice"] == 12.5
+
+        with tenant_session(actor.tenant_id) as session:
+            native = (
+                session.execute(
+                    text(
+                        """
+                        SELECT
+                          (SELECT count(*) FROM warehouse.inbound_order_lines
+                           WHERE item_id = CAST(:item_id AS uuid)) AS inbound_lines,
+                          (SELECT count(*) FROM warehouse.outbound_order_lines
+                           WHERE item_id = CAST(:item_id AS uuid)) AS outbound_lines,
+                          (SELECT COALESCE(SUM(quantity_on_hand), 0)
+                           FROM warehouse.stock_lots
+                           WHERE item_id = CAST(:item_id AS uuid) AND active) AS stock,
+                          (SELECT array_agg(DISTINCT origin ORDER BY origin)
+                           FROM terminal.command_executions
+                           WHERE tool_name IN (
+                             'item_create', 'item_update', 'inbound_create', 'outbound_create'
+                           )) AS origins
+                        """
+                    ),
+                    {"item_id": item_id},
+                )
+                .mappings()
+                .one()
+            )
+        assert int(native["inbound_lines"]) == 1
+        assert int(native["outbound_lines"]) == 1
+        assert float(native["stock"]) == 7.0
+        assert native["origins"] == ["ai_tool", "manual_ui"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_command_audit_accepts_runtime_and_all_live_executor_outcomes(
+    monkeypatch,
+) -> None:
+    actor = _actor()
+
+    market = executor.execute_runtime_tool_call(actor, "tender_market", {})
+    assert market["status"] == "succeeded"
+    assert market["data"]["available"] is True
+    assert market["data"]["empty"] is True
+    assert market["data"]["reason"] == "no_records"
+    assert market["data"]["market_scope"] == "warehouse_os_connected_companies"
+    assert market["data"]["external_public_sources"]["connected"] is False
+    assert market["data"]["screening"] == {
+        "performed": False,
+        "reason": "no_connected_platform_tenders_to_screen",
+    }
+    assert market["execution_id"]
+
+    confirmation = executor.execute_runtime_tool_call(
+        actor,
+        "record_category_create",
+        {"key": "runtime_test", "name": "Runtime test"},
+    )
+    assert confirmation["status"] == "confirmation_required"
+    assert confirmation["execution_id"]
+
+    def reject_target(*_args, **_kwargs) -> object:
+        raise executor.CommandAdapterError(409, {"detail": "test rejection"})
+
+    monkeypatch.setattr(executor, "_dispatch", reject_target)
+    rejected = executor.execute_runtime_tool_call(actor, "tender_market", {})
+    assert rejected["status"] == "target_rejected"
+    assert rejected["execution_id"]
+
+    invalid_contract = executor._execute_entry(
+        {
+            "command": "invalid contract test",
+            "tool_name": "invalid_contract_test",
+            "api_method": "TRACE",
+            "api_path": "/not-an-api-contract",
+            "params": [],
+            "permission": "",
+            "writes": False,
+            "risk": "low",
+        },
+        actor,
+        {},
+        origin="auto_runtime",
+        enforce_actor_permissions=False,
+    )
+    assert invalid_contract["status"] == "invalid_contract"
+    assert invalid_contract["execution_id"]
+
+    with tenant_session(actor.tenant_id) as session:
+        audited = (
+            session.execute(
+                text(
+                    """
+                SELECT origin, status, tool_name
+                FROM terminal.command_executions
+                WHERE id = ANY(CAST(:execution_ids AS uuid[]))
+                ORDER BY created_at, id
+                """
+                ),
+                {
+                    "execution_ids": [
+                        market["execution_id"],
+                        confirmation["execution_id"],
+                        rejected["execution_id"],
+                        invalid_contract["execution_id"],
+                    ]
+                },
+            )
+            .mappings()
+            .all()
+        )
+
+    assert {row["origin"] for row in audited} == {"auto_runtime"}
+    assert {row["status"] for row in audited} == {
+        "succeeded",
+        "confirmation_required",
+        "target_rejected",
+        "invalid_contract",
+    }
+
+
+def test_database_command_audit_constraints_cover_the_application_contract() -> None:
+    with system_session() as session:
+        constraints = dict(
+            session.execute(
+                text(
+                    """
+                    SELECT conname, pg_get_constraintdef(oid)
+                    FROM pg_constraint
+                    WHERE conrelid = 'terminal.command_executions'::regclass
+                      AND conname IN (
+                        'command_executions_origin_check',
+                        'command_executions_status_check'
+                      )
+                    """
+                )
+            ).all()
+        )
+
+    origin_contract = constraints["command_executions_origin_check"]
+    status_contract = constraints["command_executions_status_check"]
+    assert all(f"'{value}'" in origin_contract for value in COMMAND_EXECUTION_ORIGINS)
+    assert all(f"'{value}'" in status_contract for value in COMMAND_EXECUTION_STATUSES)
+
+
+def test_organization_topology_edit_buttons_round_trip() -> None:
+    actor = _actor()
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        structure = client.get("/api/org/structure")
+        assert structure.status_code == 200
+        company = next(unit for unit in structure.json()["units"] if unit["unit_type"] == "company")
+
+        created_department = client.post(
+            "/api/org/departments",
+            json={
+                "unit_name": "可編輯部門",
+                "unit_type": "department",
+                "parent_id": company["id"],
+                "description": "created by topology round trip",
+            },
+        )
+        assert created_department.status_code == 200
+        department_id = created_department.json()["id"]
+
+        updated_department = client.post(
+            f"/api/org/departments/{department_id}",
+            json={
+                "unit_name": "已編輯部門",
+                "unit_type": "team",
+                "parent_id": company["id"],
+                "manager_user_id": None,
+                "description": "edited by topology round trip",
+            },
+        )
+        assert updated_department.status_code == 200
+
+        created_position = client.post(
+            "/api/org/positions",
+            json={
+                "position_name": "可編輯崗位",
+                "org_unit_id": department_id,
+                "role_id": None,
+                "level": 3,
+                "is_manager": False,
+                "description": "",
+            },
+        )
+        assert created_position.status_code == 200
+        position_id = created_position.json()["id"]
+
+        updated_position = client.post(
+            f"/api/org/positions/{position_id}",
+            json={
+                "position_name": "已編輯崗位",
+                "org_unit_id": department_id,
+                "role_id": "自訂角色",
+                "level": 4,
+                "is_manager": True,
+                "description": "",
+            },
+        )
+        assert updated_position.status_code == 200
+
+        assert (
+            client.post(
+                f"/api/org/departments/{department_id}/permissions",
+                json={"enabled": True, "permissions": ["overview.read"]},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"/api/org/departments/{department_id}/navigation",
+                json={"enabled": True, "modules": ["dashboard"]},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"/api/org/positions/{position_id}/navigation",
+                json={"enabled": True, "modules": ["dashboard"]},
+            ).status_code
+            == 200
+        )
+
+        assert client.post(f"/api/org/positions/{position_id}/archive").status_code == 200
+        assert client.post(f"/api/org/departments/{department_id}/archive").status_code == 200
+
+        structure = client.get("/api/org/structure").json()
+        department = next(unit for unit in structure["units"] if unit["id"] == department_id)
+        position = next(item for item in structure["positions"] if item["id"] == position_id)
+        assert department["unit_name"] == "已編輯部門"
+        assert department["active"] is False
+        assert position["position_name"] == "已編輯崗位"
+        assert position["active"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_auto_runtime_distils_all_company_authority_and_capability_genes(monkeypatch) -> None:
+    actor = _actor()
+    replies = iter(
+        [
+            {
+                "understood_goal": "Understand the warehouse state",
+                "success_criteria": ["Current warehouses are observed"],
+                "uncertainties": [],
+                "selected_tool_names": ["warehouse_list"],
+                "context_focus": ["warehouse"],
+                "reasoning": "The goal needs a live warehouse observation.",
+            },
+            {
+                "message": "I identified the warehouse observation capability.",
+                "plan": ["Observe the warehouse", "Reflect on the result"],
+                "decisions": [
+                    {
+                        "tool_name": "warehouse_list",
+                        "judgment": "ask_person",
+                        "arguments": {},
+                        "reasoning": "Keep this test non-executing.",
+                        "continue_after_result": False,
+                    }
+                ],
+                "completion_assessment": {
+                    "complete": False,
+                    "reason": "The capability has not been invoked.",
+                },
+            },
+            {
+                "message": "The capability is available, but the person must decide whether to invoke it.",
+                "goal_complete": False,
+                "evidence": [],
+                "contradictions": [],
+                "revised_plan": ["Ask whether the warehouse observation should run"],
+                "continue_reason": "The selected judgment explicitly asks the person.",
+                "continue_autonomously": False,
+                "requires_user_input": True,
+                "next_domains": [],
+                "next_families": [],
+                "next_decisions": [],
+            },
+        ]
+    )
+
+    class _ModelResponse:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": json.dumps(self._payload)}}]}
+
+    monkeypatch.setattr(
+        auto_runtime,
+        "connected_deepseek",
+        lambda *_args: SimpleNamespace(
+            base_url="https://model.example.test",
+            api_key="secret",
+            model="runtime-test",
+        ),
+    )
+    monkeypatch.setattr(
+        auto_runtime.httpx,
+        "post",
+        lambda *_args, **_kwargs: _ModelResponse(next(replies)),
+    )
+
+    result = auto_runtime.run_auto_runtime(
+        actor,
+        SimpleNamespace(),
+        "Please understand the warehouse state",
+        surface="super_terminal",
+    )
+
+    assert result.observations["context_architecture"] == "hierarchical_funnel_v2"
+    assert (
+        result.observations["context_strategy"]
+        == "domain_then_family_then_exact_tool_then_live_data"
+    )
+    assert result.observations["capability_genes"] == 502
+    assert result.observations["authority_world"]["positions"] >= 1
+    assert result.distillation["selected_tool_names"] == ["warehouse_list"]
+    assert result.decisions[0]["judgment"] == "ask_person"
+    with tenant_session(actor.tenant_id) as session:
+        stored = (
+            session.execute(
+                text(
+                    """
+                SELECT status, context_snapshot
+                FROM secretariat.runs WHERE id = :id
+                """
+                ),
+                {"id": result.run_id},
+            )
+            .mappings()
+            .one()
+        )
+    assert stored["status"] == "succeeded"
+    assert stored["context_snapshot"]["architecture"] == "hierarchical_funnel_v2"
+    assert "L0_permanent_world_map" in stored["context_snapshot"]["layers"]
+
+
+def test_auto_runtime_simple_conversation_uses_one_compact_model_call(monkeypatch) -> None:
+    actor = _actor()
+    calls: list[dict[str, object]] = []
+
+    class _ModelResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "interaction_mode": "conversation",
+                                    "understood_goal": "Greet the user",
+                                    "message": "您好，我在這裡。",
+                                    "needs_tools": False,
+                                    "selected_domains": [],
+                                    "context_requests": [],
+                                    "success_criteria": ["Respond naturally"],
+                                    "uncertainties": [],
+                                    "reasoning": "No live business evidence is required.",
+                                    "memory_depth": "index",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        auto_runtime,
+        "connected_deepseek",
+        lambda *_args: SimpleNamespace(
+            base_url="https://model.example.test",
+            api_key="secret",
+            model="runtime-test",
+        ),
+    )
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        return _ModelResponse()
+
+    monkeypatch.setattr(auto_runtime.httpx, "post", fake_post)
+
+    result = auto_runtime.run_auto_runtime(
+        actor,
+        SimpleNamespace(),
+        "你好",
+        surface="assistant",
+    )
+
+    assert result.message == "您好，我在這裡。"
+    assert len(calls) == 1
+    assert result.observations["expanded_domains"] == []
+    metrics = result.observations["context_metrics"]
+    assert metrics["model_calls"] == 1
+    assert metrics["total_input_chars"] < 20_000
+    assert metrics["phases"][0]["phase"] == "route"
+    request_body = calls[0]["json"]
+    assert request_body["model"] == "deepseek-v4-flash"
+    assert request_body["thinking"] == {"type": "disabled"}
+    assert request_body["response_format"] == {"type": "json_object"}
+    assert request_body["max_tokens"] == 800
+
+
+def test_auto_runtime_stops_at_model_judged_human_input_boundary(monkeypatch) -> None:
+    actor = _actor()
+    calls: list[dict[str, object]] = []
+
+    class _ModelResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "interaction_mode": "operational",
+                                    "understood_goal": "Draft a contract in stages",
+                                    "message": (
+                                        "請先提供合同名稱與類型、相對方、標的與金額，"
+                                        "以及關鍵商務條件。"
+                                    ),
+                                    "needs_tools": True,
+                                    "requires_user_input": True,
+                                    "selected_domains": ["legal"],
+                                    "selected_families": [],
+                                    "context_requests": ["operational_world"],
+                                    "success_criteria": ["Collect essential human inputs"],
+                                    "uncertainties": ["Contract terms are not supplied"],
+                                    "reasoning": "Human input must precede legal-ledger review.",
+                                    "memory_depth": "index",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        auto_runtime,
+        "connected_deepseek",
+        lambda *_args: SimpleNamespace(
+            base_url="https://model.example.test",
+            api_key="secret",
+            model="runtime-test",
+        ),
+    )
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        return _ModelResponse()
+
+    monkeypatch.setattr(auto_runtime.httpx, "post", fake_post)
+
+    result = auto_runtime.run_auto_runtime(
+        actor,
+        SimpleNamespace(),
+        "先追問合同資料，再讀取法務台帳並起草合同。",
+        surface="secretary",
+        context_mode="thinking",
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["json"]["model"] == "deepseek-v4-pro"
+    assert calls[0]["json"]["thinking"] == {"type": "enabled"}
+    assert result.reflection["goal_complete"] is False
+    assert result.reflection["requires_user_input"] is True
+    assert result.reflection["runtime_stop_reason"] == "requires_user_input"
+    assert result.observations["expanded_domains"] == []
+    assert result.message.startswith("請先提供合同名稱")
+
+
+def test_auto_runtime_autonomously_acquires_missing_evidence(monkeypatch) -> None:
+    actor = _actor()
+    replies = iter(
+        [
+            {
+                "understood_goal": "Diagnose procurement workflow blockers",
+                "success_criteria": ["Blockers are supported by live evidence"],
+                "uncertainties": ["Workflow definitions are not yet observed"],
+                "selected_tool_names": ["wf_inbox"],
+                "context_focus": ["procurement"],
+                "reasoning": "Begin with the live procurement inbox.",
+            },
+            {
+                "message": "I will inspect the current procurement inbox.",
+                "plan": ["Inspect inbox", "Resolve any remaining evidence gaps"],
+                "decisions": [
+                    {
+                        "tool_name": "wf_inbox",
+                        "judgment": "execute",
+                        "arguments": {"scope": "all"},
+                        "reasoning": "Observe every current-company procurement task.",
+                        "continue_after_result": True,
+                    }
+                ],
+                "completion_assessment": {
+                    "complete": False,
+                    "reason": "Workflow definitions have not been observed.",
+                },
+            },
+            {
+                "message": "The inbox is empty; I am checking workflow definitions.",
+                "goal_complete": False,
+                "evidence": ["The current-company inbox is empty."],
+                "contradictions": [],
+                "revised_plan": ["Inspect inbox", "Inspect workflow definitions"],
+                "continue_reason": "A registered read capability can resolve the gap.",
+                "continue_autonomously": True,
+                "requires_user_input": False,
+                "next_decisions": [
+                    {
+                        "tool_name": "wf_workflows",
+                        "arguments": {},
+                        "reasoning": "Confirm whether active definitions exist.",
+                    }
+                ],
+                "memory_candidate": None,
+            },
+            {
+                "message": "No active workflow definition exists, so new procurement tasks cannot start.",
+                "goal_complete": True,
+                "evidence": [
+                    "The inbox is empty.",
+                    "The workflow definition list is empty.",
+                ],
+                "contradictions": [],
+                "revised_plan": ["Provision a workflow definition before starting a request"],
+                "continue_reason": None,
+                "continue_autonomously": False,
+                "requires_user_input": False,
+                "next_decisions": [],
+                "memory_candidate": None,
+            },
+        ]
+    )
+    executed: list[tuple[str, dict[str, object]]] = []
+
+    class _ModelResponse:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": json.dumps(self._payload)}}]}
+
+    monkeypatch.setattr(
+        auto_runtime,
+        "connected_deepseek",
+        lambda *_args: SimpleNamespace(
+            base_url="https://model.example.test",
+            api_key="secret",
+            model="runtime-test",
+        ),
+    )
+    monkeypatch.setattr(
+        auto_runtime.httpx,
+        "post",
+        lambda *_args, **_kwargs: _ModelResponse(next(replies)),
+    )
+    monkeypatch.setattr(
+        auto_runtime,
+        "execute_runtime_tool_call",
+        lambda _actor, tool_name, arguments, **_kwargs: (
+            executed.append((tool_name, arguments))
+            or {
+                "ok": True,
+                "data": {
+                    "items": [],
+                    "count": 0,
+                    "reason": "no_records",
+                },
+            }
+        ),
+    )
+
+    result = auto_runtime.run_auto_runtime(
+        actor,
+        SimpleNamespace(),
+        "Diagnose procurement workflow blockers",
+        surface="super_terminal",
+    )
+
+    assert executed == [("wf_inbox", {"scope": "all"}), ("wf_workflows", {})]
+    assert result.reflection["goal_complete"] is True
+    assert result.reflection["runtime_stop_reason"] == "goal_complete"
+    assert result.reflection["autonomous_rounds"] == 2
+    assert result.observations["selected_capability_genes"] == [
+        "wf_inbox",
+        "wf_workflows",
+    ]
+    assert [item["runtime_round"] for item in result.tool_results] == [1, 2]
+    assert max(
+        int(item["input_chars"])
+        for item in result.observations["context_metrics"]["phases"]
+    ) < 50_000
+
+
+def test_passkey_registration_login_list_and_delete_round_trip(monkeypatch) -> None:
+    actor = _actor()
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    credential_id_bytes = b"verified-passkey-credential"
+    credential_id = bytes_to_base64url(credential_id_bytes)
+    registration = SimpleNamespace(
+        credential_id=credential_id_bytes,
+        credential_public_key=b"verified-public-key",
+        sign_count=0,
+        aaguid="00000000-0000-0000-0000-000000000000",
+        credential_device_type=CredentialDeviceType.SINGLE_DEVICE,
+        credential_backed_up=False,
+    )
+    authentication = SimpleNamespace(
+        new_sign_count=1,
+        credential_device_type=CredentialDeviceType.SINGLE_DEVICE,
+        credential_backed_up=False,
+    )
+    monkeypatch.setattr(
+        "app.api.full_stack_identity.verify_registration_response",
+        lambda **_: registration,
+    )
+    monkeypatch.setattr(
+        "app.api.full_stack_identity.verify_authentication_response",
+        lambda **_: authentication,
+    )
+    try:
+        unknown_rp = client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": actor.username},
+        )
+        assert unknown_rp.status_code == 409
+        assert "目前網站" in unknown_rp.json()["detail"]
+
+        discoverable = client.post("/api/auth/passkeys/login/options", json={})
+        assert discoverable.status_code == 200
+        assert discoverable.json()["publicKey"]["allowCredentials"] == []
+
+        denied = client.post(
+            "/api/auth/passkeys/register/options",
+            json={"password": "wrong-password"},
+        )
+        assert denied.status_code == 401
+
+        options = client.post(
+            "/api/auth/passkeys/register/options",
+            json={"password": "test-password"},
+        )
+        assert options.status_code == 200
+        assert options.json()["publicKey"]["rp"]["id"] == "localhost"
+
+        registered = client.post(
+            "/api/auth/passkeys/register/verify",
+            json={
+                "request_id": options.json()["request_id"],
+                "name": "Test device",
+                "credential": {
+                    "id": credential_id,
+                    "rawId": credential_id,
+                    "type": "public-key",
+                    "response": {"transports": ["internal"]},
+                },
+            },
+        )
+        assert registered.status_code == 200
+        passkey_id = registered.json()["passkey"]["id"]
+
+        listed = client.get("/api/auth/passkeys")
+        assert listed.status_code == 200
+        assert listed.json()["passkeys"][0]["name"] == "Test device"
+        assert listed.json()["passkeys"][0]["rp_id"] == "localhost"
+        assert "credential_id" not in listed.json()["passkeys"][0]
+
+        with system_session() as session:
+            session.execute(
+                text("UPDATE iam.passkeys SET rp_id = 'bonfirework.org' WHERE id = :id"),
+                {"id": passkey_id},
+            )
+        foreign_rp = client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": actor.username},
+        )
+        assert foreign_rp.status_code == 409
+        assert client.get("/api/auth/passkeys").json()["passkeys"] == []
+        assert client.post(
+            "/api/auth/passkeys/step-up/options",
+            json={"purpose": "test", "resource": {"id": "foreign-rp"}},
+        ).status_code == 409
+        assert client.request(
+            "DELETE",
+            f"/api/auth/passkeys/{passkey_id}",
+            json={"password": "test-password"},
+        ).status_code == 404
+        with system_session() as session:
+            session.execute(
+                text("UPDATE iam.passkeys SET rp_id = 'localhost' WHERE id = :id"),
+                {"id": passkey_id},
+            )
+
+        login_options = client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": actor.username},
+        )
+        assert login_options.status_code == 200
+        assert login_options.json()["publicKey"]["rpId"] == "localhost"
+
+        login = client.post(
+            "/api/auth/passkeys/login/verify",
+            json={
+                "request_id": login_options.json()["request_id"],
+                "credential": {
+                    "id": credential_id,
+                    "rawId": credential_id,
+                    "type": "public-key",
+                    "response": {},
+                },
+            },
+        )
+        assert login.status_code == 200
+        assert login.json()["token"]
+
+        denied_delete = client.request(
+            "DELETE",
+            f"/api/auth/passkeys/{passkey_id}",
+            json={"password": "wrong-password"},
+        )
+        assert denied_delete.status_code == 401
+        deleted = client.request(
+            "DELETE",
+            f"/api/auth/passkeys/{passkey_id}",
+            json={"password": "test-password"},
+        )
+        assert deleted.status_code == 200
+        assert client.get("/api/auth/passkeys").json()["passkeys"] == []
     finally:
         app.dependency_overrides.clear()
