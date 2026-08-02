@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import digital_assets as digital_assets_module
+from app.api import hosted_runtime_gateway as hosted_runtime_gateway_module
 from app.api import intelligent_hosting as intelligent_hosting_module
 from app.api.browser_runtime import router as browser_runtime_router
 from app.api.capability_gateway import router as capability_gateway_router
@@ -19,6 +20,7 @@ from app.api.digital_assets import router as digital_asset_router
 from app.api.error_diagnostics import install_error_diagnostics
 from app.api.full_stack import router as full_stack_router
 from app.api.generic_data import router as generic_data_router
+from app.api.hosted_gateway_compat import rewrite_cookie_path
 from app.api.hosted_runtime_gateway import router as hosted_runtime_gateway_router
 from app.api.hosting_session_extension_compat import (
     router as hosting_session_extension_compat_router,
@@ -41,6 +43,10 @@ from app.core.config import get_settings
 # autonomous key verifier instead of being bypassed by a parallel implementation.
 digital_assets_module.guess_type = guess_type
 intelligent_hosting_module.authenticate_workspace_key = authenticate_workspace_key
+hosted_runtime_gateway_module._REQUEST_EXCLUDED = (
+    hosted_runtime_gateway_module._REQUEST_EXCLUDED - {"host"}
+)
+hosted_runtime_gateway_module._rewrite_cookie = rewrite_cookie_path
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="2.1.0", docs_url="/docs", redoc_url=None)
