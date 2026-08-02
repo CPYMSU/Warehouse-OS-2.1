@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 倉庫地圖 MAP / GIS — Swiss 版式,真後端(內置 MapLibre 實景地圖) */
+/* WAREHOUSE 2.1 · 倉庫地圖 MAP / GIS — Swiss 版式,真後端(內置 MapLibre 實景地圖) */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;

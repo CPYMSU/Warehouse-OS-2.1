@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 通用檔案管理前端
+/* WAREHOUSE 2.1 · 通用檔案管理前端
    保留 cases 內部路由與 allowed_nav 契約，並把原事務頁收納為「事務檔案」。 */
 (() => {
 const W2 = window.W2;

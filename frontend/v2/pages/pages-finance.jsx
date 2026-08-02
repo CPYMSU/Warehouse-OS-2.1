@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 財務 — Swiss 版式,真後端
+/* WAREHOUSE 2.1 · 財務 — Swiss 版式,真後端
    複式總賬駕駛艙(只讀):利潤表 / 資產負債表 / 現金流量表 / AP·AR 賬齡 / 記賬憑證
    一切動賬 = 交給財務秘書;借貸平衡由後端 GL 引擎保證 */
 (() => {
@@ -6,7 +6,7 @@ const W2 = window.W2;
 const { t } = window.W2_LANG;
 window.W2_LANG.addEN({
   "財務": "Finance", "問秘書": "Ask Secretary", "交給秘書": "Secretary",
-  "2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.0 contract: pages are read-only; changes run through the Secretary with full audit.",
+  "2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.1 contract: pages are read-only; changes run through the Secretary with full audit.",
   "複式總賬即時推算 · 頁面只讀,動賬交秘書,借貸平衡由後端保證": "Computed live from the double-entry ledger · read-only page, postings via Secretary, balance guaranteed by the backend",
   "本期財務怎麼樣?利潤、現金、應收應付撿重點講,有風險直接說。": "How are the finances this period? Hit the highlights — profit, cash, AR/AP — and flag any risk directly.",
   "月末結賬": "Close period",
@@ -339,7 +339,7 @@ const Page = ({ boot }) => {
     e && (!e.ledger_scope || e.ledger_scope === "company") && !e.voucher_id
       && ["draft", "needs_clarification", "ready"].includes(e.status));
 
-  const backfillPrompt = () => ask(t("幫我補錄一筆賬:先問我是收款、非採購開銷還是其他事項;若是付供應商,不得用通用補錄,必須改為選擇已完成採購工作流、已收貨且有未結應付的正式 PO ID,再確認本次付款金額。"));
+  const backfillPrompt = () => W2.openBusinessAction("fin_event_draft");
   const quick = [
     ["補錄流水", "幫我補錄一筆賬:先問我是收款、非採購開銷還是其他事項;若是付供應商,不得用通用補錄,必須改為選擇已完成採購工作流、已收貨且有未結應付的正式 PO ID,再確認本次付款金額。"],
     ["收客戶款", "幫我記一筆收款:收到客戶 ___ ¥___(用 fin receive),請追問客戶和金額後執行。"],
@@ -601,7 +601,7 @@ const Page = ({ boot }) => {
       )}
     </Band>
 
-    <div className="muted" style={{ fontSize: 10.5, padding: "16px 0 0", lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+    <div className="muted" style={{ fontSize: 10.5, padding: "16px 0 0", lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
   </>);
 };
 

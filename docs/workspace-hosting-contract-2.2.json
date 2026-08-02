@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contract": "warehouse.hosting-application.v2.2",
+  "version": "2.2",
+  "status": "stable",
+  "responsibilities": {
+    "application": [
+      "Provide a safe ZIP or TAR source package",
+      "Expose one deterministic entrypoint",
+      "Listen on 0.0.0.0 and the injected PORT",
+      "Expose an unauthenticated health_path",
+      "Treat source as read-only and persist only under /workspace/data or platform services",
+      "Read secrets and DATABASE_URL only from injected environment",
+      "Support graceful SIGTERM shutdown"
+    ],
+    "platform": [
+      "Validate tenant, workspace and scopes",
+      "Recompute source SHA-256 and inspect the archive safely",
+      "Preserve immutable source versions and deployment lineage",
+      "Mount source read-only and persistent data read-write",
+      "Verify process, health path and public route before ready",
+      "Retain the previous healthy deployment when activation fails",
+      "Return stage evidence and sanitized diagnostics",
+      "Use a real write probe for storage health"
+    ]
+  },
+  "runtime_environment": {
+    "required": {
+      "PORT": "HTTP port allocated by the platform",
+      "DATABASE_URL": "Present when a platform database is attached"
+    },
+    "optional": {
+      "WAREHOUSE_ROUTE_PREFIX": "External route prefix for path-aware applications",
+      "WAREHOUSE_SOURCE_VERSION_ID": "Immutable source version identifier",
+      "WAREHOUSE_DEPLOYMENT_ID": "Deployment correlation identifier"
+    },
+    "listen_host": "0.0.0.0"
+  },
+  "filesystem": {
+    "source": {
+      "mode": "read-only",
+      "immutable_per_source_version": true
+    },
+    "persistent_data": {
+      "path": "/workspace/data",
+      "mode": "read-write"
+    },
+    "temporary_data": {
+      "durability": "not-guaranteed"
+    }
+  },
+  "source_archive": {
+    "formats": [
+      "zip",
+      "tar",
+      "tar.gz",
+      "tgz"
+    ],
+    "server_sha256_required": true,
+    "reject": [
+      "absolute paths",
+      "parent traversal",
+      "device files",
+      "escaping symbolic or hard links",
+      "encrypted members",
+      "archive bombs"
+    ]
+  },
+  "health": {
+    "recommended_path": "/healthz",
+    "authentication": false,
+    "success_status": "200-299",
+    "side_effect_free": true,
+    "ready_requires": [
+      "runtime process is running",
+      "health_path succeeds",
+      "public route reaches the target deployment"
+    ]
+  },
+  "database": {
+    "connection_env": "DATABASE_URL",
+    "versioned_migrations": true,
+    "activate_after_migration": true,
+    "migration_failure_blocks_activation": true,
+    "expand_contract_recommended": true
+  },
+  "security": {
+    "secret_sources": [
+      "platform secret resource",
+      "injected environment"
+    ],
+    "forbidden_secret_targets": [
+      "source archive",
+      "git history",
+      "browser assets",
+      "logs",
+      "API responses"
+    ],
+    "privileged_runtime": false
+  },
+  "manifest_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "warehouse.hosting.json",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "runtime"
+    ],
+    "properties": {
+      "schema": {
+        "const": "warehouse.hosting-application.v2.2"
+      },
+      "runtime": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "health_path"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "static",
+              "web",
+              "api",
+              "worker",
+              "agent",
+              "container",
+              "compose"
+            ]
+          },
+          "runtime": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entrypoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "build_command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "health_path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "dockerfile": {
+            "type": "string",
+            "minLength": 1
+          },
+          "compose_file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "route_service": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "persistent_path": {
+            "const": "/workspace/data"
+          },
+          "database_url_env": {
+            "const": "DATABASE_URL"
+          }
+        }
+      },
+      "deployment": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "activate_when_healthy": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  },
+  "example_manifest": {
+    "schema": "warehouse.hosting-application.v2.2",
+    "runtime": {
+      "type": "api",
+      "runtime": "python3.12",
+      "entrypoint": "app/main.py",
+      "build_command": "pip install --require-hashes -r requirements.txt",
+      "start_command": "uvicorn app.main:app --host 0.0.0.0 --port $PORT",
+      "port": 8080,
+      "health_path": "/healthz"
+    },
+    "data": {
+      "persistent_path": "/workspace/data",
+      "database_url_env": "DATABASE_URL"
+    },
+    "deployment": {
+      "activate_when_healthy": true
+    }
+  }
+}

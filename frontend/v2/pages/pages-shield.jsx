@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · SHIELD 值守駕駛艙 — ADMIN 權力面,真後端
+/* WAREHOUSE 2.1 · SHIELD 值守駕駛艙 — ADMIN 權力面,真後端
    系統體徵(/api/shield/status,5s 可見頁輪詢)+ 白名單修復(POST /api/shield/repair,
    逐字對齊 scripts/shieldctl.py ACTIONS)+ 值守記錄(status 內時間線/守護日誌/風險事件)。
    政策:允許直接調管理端點;每個動作行內確認;失敗把後端 error 原文紅字呈現;全程審計。 */
@@ -51,7 +51,10 @@ window.W2_LANG.addEN({
   "CPU 使用率": "CPU usage", "CPU 負載": "CPU load", "負載 1 / 5 / 15 分": "Load 1 / 5 / 15m",
   "程序 CPU": "Process CPU", "系統已運行": "System uptime", "總容量": "Total", "可用": "Available",
   "Swap 使用": "Swap used", "程序 RSS": "Process RSS", "程序執行緒": "Process threads",
-  "FD 使用": "FD usage", "根磁碟": "Root volume", "磁碟可用": "Disk free", "磁碟增長": "Disk growth",
+  "FD 使用": "FD usage", "根磁碟": "Root volume", "系統磁碟": "System volume", "資料磁碟": "Data volume",
+  "資料磁碟狀態": "Data volume state", "資料磁碟可用": "Data volume free", "掛載位置": "Mountpoint",
+  "檔案系統": "Filesystem", "已掛載": "Mounted", "未掛載": "Unmounted", "裝置不符": "Unexpected device",
+  "磁碟可用": "Disk free", "磁碟增長": "Disk growth",
   "備份數": "Backups", "下載速率": "RX rate", "上傳速率": "TX rate", "累計下載": "RX total",
   "累計上傳": "TX total", "TCP 已連線": "TCP established", "TCP 監聽": "TCP listening",
   "請求速率": "Request rate", "5xx 比例": "5xx ratio", "登入失敗 / 2 分": "Login failures / 2m",
@@ -67,7 +70,7 @@ window.W2_LANG.addEN({
   "消防員": "Firefighter",
   "體徵指標待接入:消防員數據庫尚未回報,或後端未返回 live_metrics。": "Vitals pending: the firefighter database has not reported yet, or the backend returned no live_metrics.",
   "健康探活結論": "Healthcheck verdict",
-  "只讀動作:POST /api/shield/repair {action:\"healthcheck\"},探活 /api/ai/health,不需確認。": "Read-only: POST /api/shield/repair {action:\"healthcheck\"} probes /api/ai/health — no confirmation needed.",
+  "只讀動作:POST /api/shield/repair {action:\"healthcheck\"},探活含數據庫的 /api/health,不需確認。": "Read-only: POST /api/shield/repair {action:\"healthcheck\"} probes database-aware /api/health — no confirmation needed.",
   "體檢未通過": "Check failed",
   "通過": "Passed",
   "成功 · 空響應": "OK · empty response",
@@ -78,10 +81,10 @@ window.W2_LANG.addEN({
   "五個白名單動作 · 委派 shieldctl · 絕不裸 shell · 每一下都寫入審計": "Five whitelisted actions · delegated to shieldctl · never raw shell · every click audited",
   "高風險": "HIGH RISK", "低風險": "LOW RISK",
   "重啟 API 服務": "Restart API service",
-  "systemctl restart warehouse-api,重啟前後各跑一次健康探活。": "systemctl restart warehouse-api, with health probes before and after.",
+  "重啟當前藍綠 API 容器,重啟前後各跑一次健康探活。": "Restarts the active blue/green API container, with health probes before and after.",
   "重啟期間 API 短暫斷檔,進行中的請求會中斷。": "API briefly unavailable during restart; in-flight requests are dropped.",
   "重啟消防員守護": "Restart firefighter daemon",
-  "systemctl restart warehouse-firefighter。": "systemctl restart warehouse-firefighter.",
+  "重啟受限的 warehouse-shield-agent 消防員服務。": "Restarts the restricted warehouse-shield-agent firefighter service.",
   "值守短暫空窗,不影響業務 API。": "Brief watch gap; business API unaffected.",
   "重載 Nginx 配置": "Reload Nginx config",
   "先 nginx -t 驗證配置,通過才 systemctl reload nginx。": "Runs nginx -t first; reloads only if the config test passes.",
@@ -90,7 +93,7 @@ window.W2_LANG.addEN({
   "先 nginx -t 驗證配置,通過才 systemctl restart nginx。": "Runs nginx -t first; restarts only if the config test passes.",
   "入口斷流數秒,全站短暫不可達。": "Gateway down for seconds; the whole site is briefly unreachable.",
   "清除健康失敗計數": "Clear health-fail flag",
-  "刪除 database/.integrity/health_fail 標記檔。": "Deletes the database/.integrity/health_fail flag file.",
+  "刪除 shared/shield/health_fail 固定標記檔。": "Deletes the fixed shared/shield/health_fail flag file.",
   "只清標記,不動服務;守護將重新計數。": "Clears the flag only; no service touched — the guardian recounts.",
   "作用": "Action", "風險": "Risk",
   "執行": "Execute",
@@ -234,6 +237,14 @@ const ShieldLedger = ({ rows }) => <div className="sv-ledger">
 const ShieldTelemetryWall = ({ vitals, history, sampleAge, stale }) => {
   if (!vitals || typeof vitals !== "object") return <div className="shield-vitals-wall"><div className="sv-source-line">{t("實時採樣資料尚未返回。")}</div></div>;
   const cpu = vitals.cpu || {}; const memory = vitals.memory || {}; const storage = vitals.storage || {};
+  const storageVolumes = Array.isArray(storage.volumes) ? storage.volumes.filter((item) => item && typeof item === "object") : [];
+  const rootVolume = storageVolumes.find((item) => item.id === "root") || storage;
+  const dataVolume = storageVolumes.find((item) => item.id === "warehouse-data") || null;
+  const dataVolumeReady = !!(dataVolume && dataVolume.mounted === true && dataVolume.available === true && dataVolume.state !== "unexpected-device");
+  const dataVolumeState = !dataVolume ? t("未接入")
+    : dataVolume.state === "mounted" ? t("已掛載")
+    : dataVolume.state === "unexpected-device" ? t("裝置不符")
+    : dataVolume.state === "unavailable" ? t("不可用") : t("未掛載");
   const network = vitals.network || {}; const process = vitals.process || {}; const thermal = vitals.thermal || {};
   const traffic = vitals.traffic || {}; const security = vitals.security || {}; const resilience = vitals.resilience || {};
   const runtime = vitals.runtime || {}; const services = Array.isArray(vitals.services) ? vitals.services : [];
@@ -280,10 +291,13 @@ const ShieldTelemetryWall = ({ vitals, history, sampleAge, stale }) => {
       <ShieldResource index="02" label={t("記憶體")} value={memory.used_pct} unit="%" meter={memory.used_pct}
         tone={toneFor(memory.used_pct, 82, 94)} history={historyValues("memory")}
         footLeft={fmtBytes(memory.used_bytes)} footRight={fmtBytes(memory.total_bytes)}/>
-      <ShieldResource index="03" label={t("儲存")} value={storage.used_pct} unit="%" meter={storage.used_pct}
-        tone={toneFor(storage.used_pct, 82, 94)} history={historyValues("storage")}
-        footLeft={fmtBytes(storage.used_bytes)} footRight={fmtBytes(storage.total_bytes)}/>
-      <ShieldResource index="04" label={t("CPU 負載")} value={cpu.load_1m} unit=" / 1m" meter={cpu.load_normalized_pct}
+      <ShieldResource index="03" label={t("系統磁碟")} value={rootVolume.used_pct} unit="%" meter={rootVolume.used_pct}
+        tone={toneFor(rootVolume.used_pct, 82, 94)} history={historyValues("storage")}
+        footLeft={fmtBytes(rootVolume.used_bytes)} footRight={fmtBytes(rootVolume.total_bytes)}/>
+      <ShieldResource index="04" label={t("資料磁碟")} value={dataVolume && dataVolume.used_pct} unit="%" meter={dataVolume && dataVolume.used_pct}
+        tone={dataVolume && !dataVolumeReady ? "critical" : toneFor(dataVolume && dataVolume.used_pct, 82, 94)} history={historyValues("dataStorage")}
+        footLeft={dataVolumeReady ? fmtBytes(dataVolume.used_bytes) : dataVolumeState} footRight={dataVolumeReady ? fmtBytes(dataVolume.total_bytes) : ""}/>
+      <ShieldResource index="05" label={t("CPU 負載")} value={cpu.load_1m} unit=" / 1m" meter={cpu.load_normalized_pct}
         tone={toneFor(cpu.load_normalized_pct, 100, 160)} history={historyValues("load")}
         footLeft={finite(cpu.logical_cores) ? fmtNum(cpu.logical_cores, 0) + " " + t("核心") : "—"} footRight={fmtPct(cpu.load_normalized_pct, 0)}/>
     </section>
@@ -308,9 +322,14 @@ const ShieldTelemetryWall = ({ vitals, history, sampleAge, stale }) => {
       ]}/></article>
 
       <article className="sv-detail"><div className="sv-detail-head"><h3>{t("儲存")}</h3><span className="sv-detail-no">C / STORAGE</span></div><ShieldLedger rows={[
-        { label: t("根磁碟"), value: fmtPct(storage.used_pct, 1), bad: finite(storage.used_pct) && storage.used_pct >= 82 },
-        { label: t("總容量"), value: fmtBytes(storage.total_bytes) },
-        { label: t("磁碟可用"), value: fmtBytes(storage.free_bytes) },
+        { label: t("系統磁碟"), value: fmtPct(rootVolume.used_pct, 1), bad: finite(rootVolume.used_pct) && rootVolume.used_pct >= 82 },
+        { label: t("總容量"), value: fmtBytes(rootVolume.total_bytes) },
+        { label: t("磁碟可用"), value: fmtBytes(rootVolume.free_bytes) },
+        { label: t("資料磁碟狀態"), value: dataVolumeState, bad: !!(dataVolume && !dataVolumeReady) },
+        { label: t("資料磁碟"), value: dataVolumeReady ? fmtPct(dataVolume.used_pct, 1) : "—", bad: finite(dataVolume && dataVolume.used_pct) && dataVolume.used_pct >= 82 },
+        { label: t("資料磁碟可用"), value: dataVolumeReady ? fmtBytes(dataVolume.free_bytes) : "—" },
+        { label: t("掛載位置"), value: dataVolume && dataVolume.mountpoint || "—" },
+        { label: t("檔案系統"), value: dataVolume ? [dataVolume.device, dataVolume.filesystem, dataVolume.filesystem_label].filter(Boolean).join(" · ") || "—" : "—" },
         { label: t("磁碟增長"), value: finite(resilience.disk_growth_gb_per_day) ? fmtNum(resilience.disk_growth_gb_per_day, 2) + " GB/d" : "—" },
         { label: t("備份數"), value: fmtNum(resilience.backup_count, 0) },
         { label: "SWAP OBSERVED", value: finite(resilience.swap_used_mb_observed) ? fmtNum(resilience.swap_used_mb_observed, 1) + " MB" : "—" },
@@ -361,10 +380,10 @@ const failText = (resp) => {
 /* ── 白名單動作卡(逐字對齊 scripts/shieldctl.py ACTIONS)── */
 const REPAIRS = [
   { id: "restart-api", icon: "cpu", high: true, name: "重啟 API 服務",
-    does: "systemctl restart warehouse-api,重啟前後各跑一次健康探活。",
+    does: "重啟當前藍綠 API 容器,重啟前後各跑一次健康探活。",
     risk: "重啟期間 API 短暫斷檔,進行中的請求會中斷。" },
   { id: "restart-firefighter", icon: "flame", high: false, name: "重啟消防員守護",
-    does: "systemctl restart warehouse-firefighter。",
+    does: "重啟受限的 warehouse-shield-agent 消防員服務。",
     risk: "值守短暫空窗,不影響業務 API。" },
   { id: "reload-nginx", icon: "refresh", high: false, name: "重載 Nginx 配置",
     does: "先 nginx -t 驗證配置,通過才 systemctl reload nginx。",
@@ -373,7 +392,7 @@ const REPAIRS = [
     does: "先 nginx -t 驗證配置,通過才 systemctl restart nginx。",
     risk: "入口斷流數秒,全站短暫不可達。" },
   { id: "clear-health-flag", icon: "checkCircle", high: false, name: "清除健康失敗計數",
-    does: "刪除 database/.integrity/health_fail 標記檔。",
+    does: "刪除 shared/shield/health_fail 固定標記檔。",
     risk: "只清標記,不動服務;守護將重新計數。" },
 ];
 
@@ -427,7 +446,7 @@ const RepairCard = ({ a, idx }) => {
   const [err, setErr] = _s("");
   const run = () => {
     setPhase("busy"); setErr(""); setResp(null);
-    W2.post("/api/shield/repair", { action: a.id })
+    W2.post("/api/shield/repair", { action: a.id, confirm: true, apply: true })
       .then((d) => { setResp(d && typeof d === "object" ? d : {}); setPhase("done"); })
       .catch((e) => { setErr(e.message || String(e)); setPhase("done"); });
   };
@@ -508,11 +527,16 @@ const Page = () => {
         setResponseMs(Math.max(0, Math.round(elapsed)));
         const v = data.system_vitals;
         if (v && typeof v === "object") {
+          const sampledStorage = v.storage || {};
+          const sampledVolumes = Array.isArray(sampledStorage.volumes) ? sampledStorage.volumes : [];
+          const sampledRoot = sampledVolumes.find((item) => item && item.id === "root") || sampledStorage;
+          const sampledData = sampledVolumes.find((item) => item && item.id === "warehouse-data") || {};
           const sample = {
             at: v.sampled_at || at.toISOString(),
             cpu: (v.cpu || {}).usage_pct,
             memory: (v.memory || {}).used_pct,
-            storage: (v.storage || {}).used_pct,
+            storage: sampledRoot.used_pct,
+            dataStorage: sampledData.used_pct,
             load: (v.cpu || {}).load_1m,
             network: (finite((v.network || {}).rx_bytes_per_second) ? (v.network || {}).rx_bytes_per_second : 0)
               + (finite((v.network || {}).tx_bytes_per_second) ? (v.network || {}).tx_bytes_per_second : 0),
@@ -571,6 +595,7 @@ const Page = () => {
   };
 
   const ready = !!(st && st.ok === true);
+  const disconnected = !!(st && st.ok === false);
   const incidents = (st && Array.isArray(st.open_incidents)) ? st.open_incidents : [];
   const timeline = (st && Array.isArray(st.recent_timeline)) ? st.recent_timeline : [];
   const guardian = (st && Array.isArray(st.guardian_tail)) ? st.guardian_tail : [];
@@ -652,8 +677,8 @@ const Page = () => {
 
     {/* ═══ Band A · 系統體徵 ═══ */}
     <div className="kpi-band" style={{ marginTop: 8 }}>
-      <Kpi label={t("API 存活")} value={stErr ? t("離線") : ready ? t("在線") : "—"} red={!!stErr} delay={0}
-        foot={ready ? <StateTag st={st.state}/> : stErr ? <T tone="bad" dot>{t("離線")}</T> : pending}/>
+      <Kpi label={t("API 存活")} value={stErr || disconnected ? t("離線") : ready ? t("在線") : "—"} red={!!stErr || disconnected} delay={0}
+        foot={ready ? <StateTag st={st.state}/> : stErr || disconnected ? <T tone="bad" dot>{t("離線")}</T> : pending}/>
       <Kpi label={t("完整性")}
         value={guardian.length ? (guardAlert ? t("告警") : t("一致")) : "—"}
         red={guardAlert} delay={.05}
@@ -702,7 +727,7 @@ const Page = () => {
             )}
           </div>
         )}
-        {!hcBusy && !hcGrade && <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>{t("只讀動作:POST /api/shield/repair {action:\"healthcheck\"},探活 /api/ai/health,不需確認。")}</div>}
+        {!hcBusy && !hcGrade && <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>{t("只讀動作:POST /api/shield/repair {action:\"healthcheck\"},探活含數據庫的 /api/health,不需確認。")}</div>}
       </div>
     </Band>
 

@@ -1,114 +1,129 @@
-# Governed Super Terminal
+# Super Terminal and Auto Runtime
 
-The super terminal has one command contract for people and AI. It is not a
-database shell and no caller receives a database DSN, tenant selector, schema
-name, or arbitrary SQL capability.
-
-## Current migration state
-
-The imported legacy catalogue contains 441 commands:
-
-- 419 tenant commands;
-- 22 platform commands.
-
-The contracts are preserved in
-[`backend/app/terminal/legacy_catalog.py`](../backend/app/terminal/legacy_catalog.py).
-They retain command grammar, JSON tool schemas, permission alternatives, risk,
-confirmation policy, and audit-redaction metadata.
-
-Importing a contract does not make it executable. The current PostgreSQL
-foundation enables only the two read-only commands whose new domain adapters
-exist:
-
-- `whoami` (`auth_me`)
-- `warehouse list` (`warehouse_list`)
-
-Every other tenant command returns `awaiting_domain_adapter`, records an audit
-event, and performs no business operation. All 22 platform commands are held
-at `requires_l11_governance` until the L11 owner model, delegation, revocation,
-and last-owner protection are implemented.
-
-Use these authenticated endpoints:
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /api/cli/commands` | Commands executable by the current actor now |
-| `GET /api/cli/migration-status` | Full import/activation progress without false positives |
-| `POST /api/cli/exec` | Human terminal command: `{ "line": "warehouse list" }` |
-| `GET /api/ai/tools` | All 441 function schemas plus their activation states |
-| `POST /api/ai/tools/{tool_name}/execute` | AI tool call: `{ "arguments": {} }` |
-| `POST /api/agent/run/stream` | Provider-neutral NDJSON bridge; `!command` uses the same executor |
-
-`/api/admin/sql` is deliberately absent. It would turn an API credential or
-model prompt injection into database administration.
-
-## AI knows the command vocabulary; company data remains isolated
-
-AI discovery is global only for non-secret command metadata. `/api/ai/tools`
-returns every tenant and platform command plus a state for each: active,
-awaiting a domain adapter, or awaiting L11 governance. This lets an AI explain
-what is possible or prepare a hand-off instead of pretending a capability does
-not exist.
-
-Company databases are absolutely isolated. Every AI run, tool call, audit
-record, vector retrieval, and storage-port call is bound to exactly one
-`tenant_id`; PostgreSQL RLS is enabled and forced for tenant tables. An AI for
-Company A never receives Company B's users, roles, permission assignments,
-business records, embeddings, files, or query results. The command vocabulary
-is shared; data and authority context are not.
-
-Tool schemas do not contain a permission grant. The future AI execution ledger
-will store the AI's decision (`execute`, `request_confirmation`, `delegate`, or
-`deny`), the requesting person, target tenant and target user, evidence used,
-and the outcome. The server remains responsible for non-delegable invariants:
-tenant isolation, active identity, L11 last-owner protection, write
-confirmation, idempotency and audit. This prevents a browser from forging an
-"AI approved" request while still allowing AI to make the operational
-judgment.
-
-There is no cross-company authority graph for AI. Any future L11 governance is
-platform identity metadata, not a bypass of tenant data isolation. Until more
-domain adapters are active, direct execution stays bound to the authenticated
-tenant actor and only the two active read adapters can run.
-
-## Execution model
+The Super Terminal is a high-density professional interaction surface.  It is
+not a command shell, SQL console, model client, planner, memory store, or tool
+router.  The Company Secretary, embedded page assistants, mobile clients, and
+the Super Terminal all enter the same Auto Runtime.
 
 ```text
-Human terminal / AI tool call
-        -> versioned command catalogue
-        -> actor, tenant, permission, risk and confirmation checks
-        -> typed domain adapter
-        -> storage port (for example WarehouseReader)
-        -> PostgreSQL implementation + RLS
-        -> terminal.command_executions + audit.events
+interaction surface
+        -> POST /api/agent/run/stream
+        -> Auto Runtime
+           observe -> understand goal -> plan -> act -> reflect
+        -> capability adapters / execution world
+        -> surface-specific presentation
 ```
 
-The catalogue is version-controlled code so a deployment cannot silently alter
-a command's route or security policy. Execution records are tenant-scoped in
-PostgreSQL and `terminal.command_executions` has forced RLS.
+## Codex terminal and database world
 
-## Firebase-like developer experience, without a generic database backdoor
+The V2 Super Terminal preserves Warehouse's dark, high-density terminal
+language: monospace output, an activity stream, workset history, quick
+workflows, a status rail, and a live indicator.  Those are presentation
+choices, not an invitation to expose a command shell or SQL console.
 
-Clients should use stable application APIs such as
-`GET /api/warehouses/geo`, not PostgreSQL table access. Command adapters use
-small storage ports such as `WarehouseReader` and `CommandAuditWriter` in
-[`backend/app/terminal/store.py`](../backend/app/terminal/store.py). PostgreSQL
-is one implementation of those ports.
+`GET /api/runtime/world` supplies the terminal's live status rail.  It reads
+the authenticated tenant's PostgreSQL data through the ordinary RLS session
+and returns only a small permission-filtered world snapshot: inventory risk,
+open work, active or delayed shipments, and audit counts.  The same snapshot
+is embedded in the Runtime's `observe` event, so the terminal, secretary, and
+model reason from the same visible facts.
 
-To change database technology later, implement the same ports and preserve the
-HTTP/AI command contracts. This is the useful part of the Firebase experience:
-the UI and AI keep one API while storage changes behind it. A generic
-`/api/database` or unrestricted SQL endpoint is intentionally not compatible
-with tenant isolation, validation, audit, financial controls, or safe AI use.
+`GET /api/runtime/skills` retains the imported Warehouse ability universe as a
+human-visible Skills catalogue. Its 502 entries are searchable by category,
+name, and description: 480 tenant entries and 22 separately L11-governed
+platform entries. Six Warehouse 2.0 site-file contracts remain visible only as
+retired history; they are unavailable to human execution and excluded from AI
+tool schemas, search candidates and context expansion. Human discovery and
+execution display the current account's authorization and lifecycle state,
+while Company Runtime receives the complete active current-company
+responsibility map.
 
-## Activation checklist for each remaining command
+## Surface contract
 
-1. Migrate its domain tables and typed validation into the new model.
-2. Add a domain adapter using a storage port; never issue an internal HTTP call
-   or let the command choose its data source.
-3. Apply tenant RLS and add role/position permission coverage.
-4. For every write, implement a persistent confirmation/approval workflow,
-   idempotency key, audit event, and outbox event before activation.
-5. Add parser, authorization, adapter, RLS, and API integration tests.
-6. Mark the adapter active only after all checks pass; it then becomes visible
-   automatically in both `/api/cli/commands` and `/api/ai/tools`.
+`POST /api/agent/run/stream` accepts a goal, optional conversation identifier,
+and a `surface` label.  The label is observational context only: it cannot
+choose a provider, command set, planner, or execution path.
+
+The NDJSON stream emits:
+
+| Event | Meaning |
+| --- | --- |
+| `run_start` | The shared Runtime accepted the goal. |
+| `runtime_state` / `observe` | Current world and interaction context were assembled. |
+| `runtime_state` / `plan` | Runtime published its provisional capability-oriented plan. |
+| `runtime_state` / `reflect` | Runtime assessed evidence and completion before responding. |
+| `final` | A surface-neutral response for rendering. |
+
+The Runtime expands only the capability genes selected during context
+distillation.  An execution uses the same boundary as the human terminal:
+registered argument validation, the original method/path contract, tenant
+identity, PostgreSQL RLS, confirmation metadata, and durable audit.  Existing
+native FastAPI domain routes execute first.  A catalogue contract without a
+native route is handled by the PostgreSQL capability gateway, which provides a
+real tenant-isolated transitional projection until that domain receives a
+specialized schema.
+
+## Hierarchical context funnel
+
+Auto Runtime uses `hierarchical_funnel_v2` instead of inserting the entire
+company, memory, and active command catalogue into every model call:
+
+```text
+company micro-summary + complete domain atlas
+        -> model-selected command families
+        -> exact tool schemas and parameter contracts
+        -> tenant-local live results
+        -> incremental reflection + authority evidence projection
+```
+
+Every active capability remains conceptually visible. Domains and command
+families are generated from non-retired catalogue metadata, so adding or
+retiring a command changes discovery without adding a hard-coded business
+route. Exact schemas expand only after model judgment. The full company
+authority topology is loaded only for an operational working set and is
+distilled into responsibility, required permission, referenced position,
+active-holder, department, and workflow-node evidence. Another company's data
+is never included.
+
+Ordinary conversation completes in the compact top-router call. History,
+memory, hosting, live operational snapshots, and full authority are independent
+model-requested expansions. Later autonomous rounds receive the previous
+reflection plus only newly acquired evidence; they do not resend all earlier
+tool results. Each run records per-phase input characters, estimated tokens,
+duration, and model-call count in `context_metrics`.
+
+The `final` stream status distinguishes a completed answer (`succeeded`) from
+an evidence-bounded diagnosis (`incomplete`) and a genuine human decision
+boundary (`requires_user_input`).
+
+## Shared execution boundary
+
+The repository retains `/api/cli/*` for the human terminal and
+`/api/ai/tools*` for governed external model clients.  Auto Runtime invokes the
+same executor internally after its model decision:
+
+- Route and database targets are server-owned; neither a human nor a model can
+  supply a tenant, DSN, backend, or connection string.
+- Direct human calls retain current-account authorization.  Company Runtime can
+  reason across every role and capability in its own company.
+- Confirmation policy is command metadata, not a hard-coded tool whitelist.
+- Every terminal, external-tool, and Runtime execution is audited.
+- `!command` remains ordinary goal text in `/api/agent/run/stream`; it is not
+  an execution escape hatch.
+
+The historical `terminal.command_executions` schema and Alembic revision are
+also retained to preserve deployed migration history and audit data.  Removing
+that data requires a separately authorized forward migration and backup plan.
+Revision `20260728_0021` synchronizes its database constraints with the shared
+executor: `terminal`, `super_terminal`, `ai_tool`, and `auto_runtime` are valid
+origins, while completed, denied, confirmation, adapter-rejection, contract,
+and failure outcomes remain representable without turning a successful
+business read into a database constraint error.
+
+## External Runtime API
+
+Revision `20260728_0023` ports the Warehouse 2.0 tenant-bound `wsk_...` design
+to PostgreSQL. The external API calls the same `/api/agent/run/stream` and
+`/api/cli/exec` routes used by the retained clients. See
+[`runtime-api.md`](runtime-api.md) for the key lifecycle, scopes, NDJSON
+contract, live-authority reload, and tenant-isolation boundary.

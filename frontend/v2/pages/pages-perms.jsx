@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 權限(Folio 13 · ACCESS)— Swiss 版式,真後端
+/* WAREHOUSE 2.1 · 權限(Folio 13 · ACCESS)— Swiss 版式,真後端
    模板控制台:目錄(/api/org/templates)· 差異預覽(/api/org/template-preview)· 確認套用(/api/org/apply-template)
    讀視圖:成員清單(/api/users,退回 boot.PEOPLE)· 註冊/加入審批(/api/auth/registrations、/api/memberships/pending)
    · 角色×等級矩陣(topology/users/boot.ROLES)· 權限分享(/api/permissions/topology)
@@ -975,11 +975,16 @@ const OrgEntityForm = ({ mode, entity, seedParentId, units, memberships, roles, 
 };
 
 const makeOrgTree = (data, topology, biu = false) => {
-  const allUnits = Array.isArray(data.units) ? data.units : [];
+  const isActive = (row) => !(row && (row.active === false || row.active === 0 || row.active === "0" || String(row.active).toLowerCase() === "false"));
+  // Archived rows remain in PostgreSQL for audit/history, but they are not
+  // editable live topology nodes. Rendering them made an already archived
+  // legacy root position (for example "Bonfire / 總經理") appear impossible
+  // to delete.
+  const allUnits = (Array.isArray(data.units) ? data.units : []).filter(isActive);
   const navigationCatalog = biuNavCatalog(data.navigation_catalog, biu);
   const departments = allUnits.filter(u => String(u.unit_type || "") !== "company");
-  const positions = Array.isArray(data.positions) ? data.positions : [];
-  const memberships = Array.isArray(data.memberships) ? data.memberships : [];
+  const positions = (Array.isArray(data.positions) ? data.positions : []).filter(isActive);
+  const memberships = (Array.isArray(data.memberships) ? data.memberships : []).filter(isActive);
   const users = topology && Array.isArray(topology.users) ? topology.users : [];
   const allowedRoleNames = new Set(
     (topology && Array.isArray(topology.roles) ? topology.roles : [])

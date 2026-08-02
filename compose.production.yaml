@@ -1,0 +1,235 @@
+name: warehouse-os
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.5-pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: warehouse_os
+      POSTGRES_USER: warehouse_admin
+      POSTGRES_PASSWORD: ${WAREHOUSE_ADMIN_DB_PASSWORD:?required}
+      POSTGRES_INITDB_ARGS: --data-checksums
+      WAREHOUSE_API_DB_PASSWORD: ${WAREHOUSE_API_DB_PASSWORD:?required}
+      WAREHOUSE_MIGRATOR_DB_PASSWORD: ${WAREHOUSE_MIGRATOR_DB_PASSWORD:?required}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - warehouse-postgres-data:/var/lib/postgresql
+      - ./infra/postgres/production:/docker-entrypoint-initdb.d:ro
+    networks:
+      - default
+      - research-executor
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse_admin -d warehouse_os"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  hosted-postgres:
+    image: pgvector/pgvector:0.8.5-pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: warehouse_hosted_admin
+      POSTGRES_PASSWORD: ${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?required}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - /mnt/warehouse-data/hosted/postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse_hosted_admin -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./.env.production
+    environment:
+      WAREHOUSE_ENVIRONMENT: production
+      WAREHOUSE_PUBLIC_ORIGIN: ${WAREHOUSE_PUBLIC_ORIGIN:-https://bonfirework.org}
+      WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD:?required}@postgres:5432/warehouse_os
+      WAREHOUSE_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:${WAREHOUSE_MIGRATOR_DB_PASSWORD:?required}@postgres:5432/warehouse_os
+      WAREHOUSE_ASSET_STORAGE_ROOT: /data/hdd/digital-assets
+      WAREHOUSE_ASSET_CODE_SSD_ROOT: /data/ssd-code/digital-assets
+      WAREHOUSE_ASSET_LEGACY_STORAGE_ROOT: /data/legacy-assets
+      WAREHOUSE_HOSTED_RUNTIME_DATA_ROOT: /data/hdd/runtime-volumes
+      WAREHOUSE_RUNTIME_HOST_DATA_ROOT: /mnt/warehouse-data/hosted/runtime-volumes
+      WAREHOUSE_HOSTED_DATABASE_ROOT: /data/hdd/database-capacity
+      WAREHOUSE_HOSTED_DATABASE_ADMIN_URL: postgresql+psycopg://warehouse_hosted_admin:${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?required}@hosted-postgres:5432/postgres
+      WAREHOUSE_RESEARCH_REPOSITORY_ROOT: /data/research-repositories
+      WAREHOUSE_RESEARCH_EXECUTION_ROOT: /data/research-executions
+      WAREHOUSE_BROWSER_RUNTIME_ROOT: /data/browser-runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hosted-postgres:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -c
+      - alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /mnt/warehouse-data/hosted/digital-assets:/data/hdd/digital-assets
+      - /mnt/warehouse-data/hosted/runtime-volumes:/data/hdd/runtime-volumes
+      - /mnt/warehouse-data/hosted/database-capacity:/data/hdd/database-capacity:ro
+      - warehouse-code-ssd:/data/ssd-code/digital-assets
+      - warehouse-digital-assets:/data/legacy-assets:ro
+      - warehouse-research-repositories:/data/research-repositories
+      - warehouse-research-executions:/data/research-executions
+      - warehouse-browser-runtime:/data/browser-runtime
+      - /run/warehouse-shield:/run/warehouse-shield
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  runtime-controller:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./.env.production
+    environment:
+      WAREHOUSE_ENVIRONMENT: production
+      WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD:?required}@postgres:5432/warehouse_os
+      WAREHOUSE_ASSET_STORAGE_ROOT: /data/hdd/digital-assets
+      WAREHOUSE_ASSET_CODE_SSD_ROOT: /data/ssd-code/digital-assets
+      WAREHOUSE_ASSET_LEGACY_STORAGE_ROOT: /data/legacy-assets
+      WAREHOUSE_HOSTED_RUNTIME_DATA_ROOT: /data/hdd/runtime-volumes
+      WAREHOUSE_RUNTIME_HOST_DATA_ROOT: /mnt/warehouse-data/hosted/runtime-volumes
+      WAREHOUSE_RUNTIME_CONTROLLER_ENABLED: "true"
+      WAREHOUSE_RUNTIME_DOCKER_NETWORK: warehouse-os_default
+      WAREHOUSE_HOSTED_DATABASE_ADMIN_URL: postgresql+psycopg://warehouse_hosted_admin:${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?required}@hosted-postgres:5432/postgres
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-m", "app.runtime_controller"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/warehouse-data/hosted/digital-assets:/data/hdd/digital-assets
+      - /mnt/warehouse-data/hosted/runtime-volumes:/data/hdd/runtime-volumes
+      - warehouse-code-ssd:/data/ssd-code/digital-assets
+      - warehouse-digital-assets:/data/legacy-assets:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/runtime-controller-ready -mmin -1 -print | grep -q ."]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  research-executor:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.research-executor
+    restart: unless-stopped
+    environment:
+      WAREHOUSE_ENVIRONMENT: development
+      WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD:?required}@postgres:5432/warehouse_os
+      WAREHOUSE_ASSET_STORAGE_ROOT: /data/unavailable-assets
+      WAREHOUSE_RESEARCH_EXECUTION_ROOT: /data/research-executions
+      WAREHOUSE_RESEARCH_EXECUTION_TIMEOUT_SECONDS: 300
+      WAREHOUSE_RESEARCH_EXECUTION_MAX_OUTPUT_BYTES: 104857600
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-m", "app.research_executor"]
+    volumes:
+      - warehouse-research-executions:/data/research-executions
+    networks:
+      - research-executor
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 2304m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/tmp/research-worker-ready').is_file()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  browser-runtime:
+    build:
+      context: .
+      dockerfile: browser-runtime/Dockerfile
+    restart: unless-stopped
+    init: true
+    ipc: host
+    env_file:
+      - ./.env.production
+    environment:
+      WAREHOUSE_DATABASE_URL: postgresql://warehouse_os:${WAREHOUSE_API_DB_PASSWORD:?required}@postgres:5432/warehouse_os
+      WAREHOUSE_BROWSER_API_BASE: http://api:8080
+      WAREHOUSE_BROWSER_RUNTIME_ROOT: /data/browser-runtime
+      WAREHOUSE_BROWSER_ALLOWED_ORIGINS: https://bonfirework.org
+      WAREHOUSE_BROWSER_RESOURCE_ORIGINS: https://static.cloudflareinsights.com,https://cloudflareinsights.com,https://fonts.googleapis.com,https://fonts.gstatic.com,https://unpkg.com
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - warehouse-browser-runtime:/data/browser-runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1536m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/browser-worker-ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  warehouse-postgres-data:
+  warehouse-digital-assets:
+  warehouse-code-ssd:
+  warehouse-research-repositories:
+  warehouse-research-executions:
+  warehouse-browser-runtime:
+
+networks:
+  research-executor:
+    internal: true

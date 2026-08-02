@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PG_BIN="${WAREHOUSE_TEST_PG_BIN:-/opt/homebrew/opt/postgresql@18/bin}"
+pytest_targets=("$@")
+if [[ ${#pytest_targets[@]} -eq 0 ]]; then
+  pytest_targets=(tests)
+fi
+
+verify_application_role() {
+  WAREHOUSE_ROLE_CHECK_URL="${WAREHOUSE_DATABASE_URL}" \
+    "${ROOT}/backend/.venv/bin/python" -c '
+import os
+from sqlalchemy import create_engine, text
+
+engine = create_engine(os.environ["WAREHOUSE_ROLE_CHECK_URL"])
+with engine.connect() as connection:
+    role = connection.execute(
+        text("SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+    ).mappings().one()
+engine.dispose()
+if role["rolsuper"] or role["rolbypassrls"]:
+    raise SystemExit(
+        "full verification refuses RLS-bypassing application role: {}".format(
+            role["current_user"]
+        )
+    )
+'
+}
+
+if [[ -n "${WAREHOUSE_TEST_DATABASE_URL:-}" ]]; then
+  [[ -n "${WAREHOUSE_TEST_MIGRATION_DATABASE_URL:-}" ]] || {
+    printf 'WAREHOUSE_TEST_MIGRATION_DATABASE_URL is required with WAREHOUSE_TEST_DATABASE_URL\n' >&2
+    exit 1
+  }
+  export WAREHOUSE_DATABASE_URL="${WAREHOUSE_TEST_DATABASE_URL}"
+  export WAREHOUSE_MIGRATION_DATABASE_URL="${WAREHOUSE_TEST_MIGRATION_DATABASE_URL}"
+  export WAREHOUSE_RUN_INTEGRATION_TESTS=1
+  cd "${ROOT}/backend"
+  .venv/bin/alembic upgrade head
+  verify_application_role
+  .venv/bin/pytest -q "${pytest_targets[@]}"
+  exit 0
+fi
+
+for command in createdb dropdb psql; do
+  [[ -x "${PG_BIN}/${command}" ]] || {
+    printf 'full verification requires %s/%s or WAREHOUSE_TEST_DATABASE_URL\n' \
+      "${PG_BIN}" "${command}" >&2
+    exit 1
+  }
+done
+
+database="warehouse_deploy_test_$(date -u +%Y%m%d%H%M%S)_$$"
+application_role="${database}_app"
+application_password="test_$(date -u +%s)_$$_${RANDOM}"
+cleanup() {
+  "${PG_BIN}/dropdb" --if-exists "${database}" >/dev/null 2>&1 || true
+  "${PG_BIN}/psql" -d postgres -v ON_ERROR_STOP=1 \
+    -c "DROP ROLE IF EXISTS \"${application_role}\"" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+"${PG_BIN}/createdb" "${database}"
+"${PG_BIN}/psql" -d postgres -v ON_ERROR_STOP=1 \
+  -c "CREATE ROLE \"${application_role}\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION PASSWORD '${application_password}'" \
+  -c "GRANT warehouse_os TO \"${application_role}\"" \
+  -c "GRANT CONNECT, TEMPORARY ON DATABASE \"${database}\" TO \"${application_role}\"" \
+  >/dev/null
+"${PG_BIN}/psql" -d "${database}" -v ON_ERROR_STOP=1 \
+  -c 'CREATE SCHEMA app' \
+  -c 'CREATE EXTENSION IF NOT EXISTS vector' >/dev/null
+
+export WAREHOUSE_DATABASE_URL="postgresql+psycopg://${application_role}:${application_password}@127.0.0.1:5432/${database}"
+export WAREHOUSE_MIGRATION_DATABASE_URL="postgresql+psycopg://$(id -un)@127.0.0.1:5432/${database}"
+export WAREHOUSE_RUN_INTEGRATION_TESTS=1
+
+cd "${ROOT}/backend"
+.venv/bin/alembic upgrade head
+verify_application_role
+.venv/bin/pytest -q "${pytest_targets[@]}"

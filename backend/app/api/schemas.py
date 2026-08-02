@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -37,21 +39,45 @@ class AiToolCallRequest(BaseModel):
 class AgentRunRequest(BaseModel):
     text: str = Field(min_length=1, max_length=16_384)
     conversation_id: str | None = Field(default=None, max_length=128)
+    turn_id: str | None = Field(default=None, min_length=1, max_length=128)
+    # A surface identifies presentation context only.  It never selects a
+    # different model, command set, planner, or execution path.
+    surface: str = Field(default="assistant", min_length=1, max_length=64)
+    # The presentation may request a fast or deliberative inference policy,
+    # but both modes still enter the same shared Auto Runtime and capability
+    # gateway.
+    context_mode: Literal["balanced", "thinking"] = "balanced"
+    # Canonical UI/account locale. In auto mode a strong language signal in
+    # the current turn may override it; fixed mode always honours this value.
+    locale: Literal["zh-Hant", "zh-Hans", "en"] | None = None
+    language_mode: Literal["auto", "fixed"] = "auto"
+    # A confirmation card only issues this opaque, one-use authorization
+    # signal. The shared Runtime consumes it; the card endpoint never invokes
+    # a business adapter directly.
+    resume_confirmation_action_id: int | None = Field(default=None, ge=1)
+    authorization_keychain_id: str | None = Field(default=None, max_length=128)
+    hidden_user_turn: bool = False
+    terminal_event: bool = False
 
 
 class WarehouseLineInput(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     qty: float = Field(gt=0)
     unit: str | None = Field(default=None, max_length=32)
+    batch: str | None = Field(default=None, max_length=160)
     production_date: str | None = Field(default=None, max_length=10)
     shelf_life_days: int | None = Field(default=None, ge=0, le=36_500)
+    expire_at: str | None = Field(default=None, max_length=10)
+    purchase_order_line_id: int | None = Field(default=None, ge=1)
 
 
 class InboundCreateRequest(BaseModel):
     request_id: str | None = Field(default=None, max_length=160)
+    purchase_order_id: int | None = Field(default=None, ge=1)
     lines: list[WarehouseLineInput] = Field(min_length=1, max_length=500)
-    warehouse: str = Field(min_length=1, max_length=256)
+    warehouse: str | None = Field(default=None, min_length=1, max_length=256)
     source: str | None = Field(default=None, max_length=256)
+    handler: str | None = Field(default=None, max_length=256)
     type: str | None = Field(default=None, max_length=80)
 
 

@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · AI 批量自治盤庫
+/* WAREHOUSE 2.1 · AI 批量自治盤庫
    現場只連續採集,AI 在草稿區批量整理,負責人最後一次整單入賬。 */
 (() => {
 const W2 = window.W2;
@@ -1711,7 +1711,7 @@ const Page = ({ boot = {}, isOwner = false }) => {
     } finally { setCommitBusy(false); }
   };
 
-  const askStart = () => W2.openSecretary("發起一次盤點任務。請先追問全庫覆蓋(full)還是抽盤(spot)，並先查實際庫存規模再按規模給建議，不要假設庫存量。再確認任務名稱、倉庫/庫位範圍、負責人與計劃品類數後創建");
+  const askStart = () => W2.openBusinessAction("stocktake_create");
 
   return (<>
     <style>{`

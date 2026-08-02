@@ -88,7 +88,7 @@ export default function FinanceScreen() {
 
       <Card style={{ marginHorizontal: 16, marginTop: 16, backgroundColor: C.blueSoft, borderColor: C.blueSoft }}>
         <Txt c={C.blueDeep} s={13} w="700">{t("需要動賬?")}</Txt>
-        <Txt c={C.ink2} s={12.5} style={{ marginTop: 4 }}>{t("付款、收款、計提折舊、期末結轉等請用右下角「AI 秘書」對話完成。")}</Txt>
+        <Txt c={C.ink2} s={12.5} style={{ marginTop: 4 }}>{t("付款、收款、計提折舊、期末結轉等目標可交給右下角「AI 秘書」分析與規劃。")}</Txt>
       </Card>
       <View style={{ height: 20 }} />
     </ScrollView>

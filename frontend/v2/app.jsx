@@ -1,5 +1,5 @@
 /* ============================================================
-   WAREHOUSE 2.0 · app — Swiss 報頭殼層 / 海報登入 / 路由 / 三語
+   WAREHOUSE 2.1 · app — Swiss 報頭殼層 / 海報登入 / 路由 / 三語
    ============================================================ */
 (() => {
 const W2 = window.W2;
@@ -169,6 +169,13 @@ window.W2_LANG.addEN({
   "已停用": "Inactive",
   "最高學歷": "Highest education",
   "學術職稱": "Academic title",
+  "未設定": "Not set",
+  "正式員工": "Employee",
+  "合約人員": "Contractor",
+  "訪問人員": "Visiting member",
+  "實習人員": "Intern",
+  "附屬成員": "Affiliate",
+  "其他": "Other",
   "正式稱號由公司檔案提供且只能讀取；稱號不代表角色、權限或審批能力。": "Official titles come from the company record and are read-only. Titles do not grant roles, permissions or approval authority.",
   "此稱號來源已停用或屬於歷史資料，因此不會顯示在姓名旁。": "This title source is inactive or historical, so it is not shown beside the live profile name.",
   "公司正式資料由主管或檔案人員維護；你可以查看，但不能在這裡直接改動。": "Official employment data is maintained by managers or archive staff. You can view it here but cannot edit it directly.",
@@ -395,6 +402,7 @@ const NAV2 = [
   { idx: "08", id: "erp", label: "ERP" },
   { idx: "09", id: "finance", label: "財務" },
   { idx: "10", id: "assets", label: "資產" },
+  { idx: "R1", id: "research", label: "科研" },
   { idx: "11", id: "procurement", label: "採購" },
   { idx: "12", id: "legal", label: "法務" },
   { idx: "13", id: "gis", label: "地圖" },
@@ -437,9 +445,10 @@ W2.NAV = NAV2;
 const ADMIN_LEVEL = 11;
 const NAV_ADMIN = [
   { idx: "19", id: "terminal", label: "終端", need: "all" },
-  { idx: "20", id: "shield", label: "SHIELD", need: "l11" },
-  { idx: "21", id: "companies", label: "公司", need: "l11" },
-  { idx: "22", id: "optimizer", label: "進化分析", need: "owner" },
+  { idx: "20", id: "browser", label: "瀏覽器", need: "l11" },
+  { idx: "21", id: "shield", label: "SHIELD", need: "l11" },
+  { idx: "22", id: "companies", label: "公司", need: "l11" },
+  { idx: "23", id: "optimizer", label: "進化分析", need: "owner" },
 ];
 W2.NAV_ADMIN = NAV_ADMIN;
 const roleLevelOf = (user) => Math.max(0, ...(((user || {}).roles) || []).map(r => Number(r.level) || 0));
@@ -531,6 +540,9 @@ const normalizeRuntimePreferences = raw => {
   return {
     sound: !!source.sound,
     dark: !!source.dark,
+    language: source.language || null,
+    language_mode: source.language_mode === "fixed" ? "fixed" : "auto",
+    language_source: source.language_source || null,
     updated_at: source.updated_at || null,
     appearance: normalizeAppearance(appearance),
   };
@@ -620,6 +632,7 @@ const NAV_PERMISSION_RULES = {
   erp: { all: ["erp.read"] },
   finance: { all: ["finance.read"] },
   assets: { any: ["assets.read", "asset_mgmt.read"] },
+  research: { any: ["research.read", "research.write", "research.review"] },
   procurement: { all: ["procurement.workflow.use"] },
   legal: { all: ["legal.manage"] },
   gis: { all: ["gis.read"] },
@@ -959,7 +972,7 @@ const Login2 = ({ onDone, notice }) => {
     : { login: "SIGN IN", apply: "OPEN COMPANY", join: "JOIN COMPANY" }[mode];
   const title = mode === "apply" ? t("申請開通公司")
     : mode === "join" ? (isBiuCatalogue ? t("選擇 BIU 學術職位") : t("申請加入公司"))
-    : "WAREHOUSE OS 2.0";
+    : "WAREHOUSE OS 2.1";
 
   return (
     <div className="login-wrap">
@@ -969,7 +982,7 @@ const Login2 = ({ onDone, notice }) => {
           <div className="row g10">
             <PlatformMark size={28}/>
             <div className="col g4">
-              <Label>WAREHOUSE OS 2.0</Label>
+              <Label>WAREHOUSE OS 2.1</Label>
               <span className="platform-byline">BY BONFIRE WORKSHOP</span>
             </div>
           </div>
@@ -1215,7 +1228,7 @@ const Login2 = ({ onDone, notice }) => {
               )}
               <div className="row spread" style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
                 {mode === "login"
-                  ? <span>{t("系統初始化 →")} <a href={W2.CLASSIC_URL} style={{ color: "var(--red)", fontWeight: 650, textDecoration: "none" }}>{t("經典版")}</a></span>
+                  ? <span>{t("系統初始化 · Warehouse OS 2.1")}</span>
                   : <span className="mono" style={{ fontSize: 9, letterSpacing: ".16em" }}>ADMIN REVIEW</span>}
                 <span className="mono" style={{ fontSize: 9, letterSpacing: ".16em" }}>AUDIT ON</span>
               </div>
@@ -2039,7 +2052,10 @@ const personalOfficialFormalTitles = official => {
   const result = [];
   source.slice(0, 24).forEach(item => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return;
-    const label = personalOfficialTitleText(item.label, 80);
+    const currentLanguage = lang();
+    const localizedLabel = currentLanguage === "en" ? item.label_en
+      : (currentLanguage === "cn" ? item.label_zh_hans : item.label_zh_hant);
+    const label = personalOfficialTitleText(localizedLabel || item.label, 80);
     const abbreviation = personalOfficialTitleText(item.abbreviation, 24);
     const kind = personalOfficialTitleText(item.kind, 32).toLowerCase();
     if (!label || !["standard", "custom"].includes(kind) || (kind === "standard" && !abbreviation)) return;
@@ -2048,10 +2064,29 @@ const personalOfficialFormalTitles = official => {
     const key = display.toLocaleLowerCase();
     if (!key || seen.has(key) || result.length >= 12) return;
     seen.add(key);
-    result.push({ display, label, abbreviation: custom ? "" : abbreviation, kind, custom });
+    result.push({
+      display,
+      label,
+      abbreviation: custom ? "" : abbreviation,
+      kind,
+      custom,
+      category: personalOfficialTitleText(item.category, 40),
+      code: personalOfficialTitleText(item.code, 80),
+      source_kind: personalOfficialTitleText(item.source_kind, 40),
+      appointment_type: personalOfficialTitleText(item.appointment_type, 24),
+      rank: Number.isFinite(Number(item.rank)) ? Math.max(1, Number(item.rank)) : result.length + 1,
+      verified: item.verified === true,
+    });
   });
   return result;
 };
+const personalOfficialCategoryLabel = category => ({
+  academic_degree: "ACADEMIC DEGREE",
+  academic_appointment: "ACADEMIC APPOINTMENT",
+  organizational_office: "ORGANIZATIONAL OFFICE",
+  professional: "PROFESSIONAL TITLE",
+  honorary: "HONORARY TITLE",
+}[category] || "VERIFIED TITLE");
 const personalOfficialTitlePrefix = official => personalOfficialTitleText(
   official && typeof official === "object" ? official.title_prefix : "",
   80,
@@ -2512,8 +2547,9 @@ const PersonalPanel = ({ user, onClose, onOpenAppearance, onOpenPasskey, onSaved
                 <header><div><span>OFFICIAL TITLES</span><b id="personal-official-titles-heading">{t("正式稱號")}</b></div><span>{formalTitleStateLabel} · READ ONLY</span></header>
                 {formalTitles.length ? <ul aria-label={formalTitleSummary}>
                   {formalTitles.map((item, index) => <li key={`${item.display}-${index}`}>
+                    <span className="personal-formal-title-rank num">{String(item.rank || index + 1).padStart(2, "0")}</span>
                     <span className="personal-formal-title-chip">{item.abbreviation ? <abbr title={item.label}>{item.display}</abbr> : item.display}</span>
-                    <small><b>{t("來源")}</b><span>{[item.label !== item.display ? item.label : "", formalTitleSource.label || t("公司正式檔案")].filter(Boolean).join(" · ")}</span></small>
+                    <small><b>{personalOfficialCategoryLabel(item.category)}</b><span>{[item.label !== item.display ? item.label : "", formalTitleSource.label || t("公司正式檔案")].filter(Boolean).join(" · ")}</span></small>
                   </li>)}
                 </ul> : <p className="personal-official-titles-empty">{t("尚無正式稱號")}</p>}
                 <p className="personal-official-titles-note">{t("正式稱號由公司檔案提供且只能讀取；稱號不代表角色、權限或審批能力。")}</p>
@@ -2577,7 +2613,8 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
   const [personalOpen, setPersonalOpen] = $s(false);
   const [passkeyOpen, setPasskeyOpen] = $s(false);
   const [appearanceOpen, setAppearanceOpen] = $s(false);
-  const [, setProfileRevision] = $s(0);
+  const [profileRevision, setProfileRevision] = $s(0);
+  const [accountIdentity, setAccountIdentity] = $s(null);
   const accountTriggerRef = $r(null);
   const toggleCompanyMenu = () => {
     const opening = !companyOpen;
@@ -2592,10 +2629,29 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
     if (route === "apply") { setApplyOpen(true); location.replace(home); }
     else if (route === "join") { setJoinOpen(true); location.replace(home); }
   }, [route, firstAllowed]);
+  $e(() => {
+    let alive = true;
+    setAccountIdentity(null);
+    W2.json("/api/account/profile").then(payload => {
+      if (alive) setAccountIdentity(normalizePersonalProfile(payload, user, null));
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [tenant, user && (user.global_user_id || user.id || user.username), profileRevision]);
   const brand = (companies.find(c => c.slug === tenant) || {}).name || (biu ? "BIU" : t("倉儲管理"));
   const alerts = (boot.ALERTS || []).length;
   const d = new Date();
   const dateMono = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
+  const accountOfficial = accountIdentity && accountIdentity.official || {};
+  const accountTitles = personalOfficialFormalTitles(accountOfficial);
+  const accountPrimarySource = accountOfficial.primary_title && typeof accountOfficial.primary_title === "object"
+    ? accountOfficial.primary_title : null;
+  const accountPrimaryTitle = personalOfficialTitleText(
+    (accountTitles[0] && accountTitles[0].display)
+      || accountPrimarySource && (accountPrimarySource.display || accountPrimarySource.abbreviation || accountPrimarySource.label) || "",
+    80,
+  );
+  const accountAvatar = accountIdentity && accountIdentity.avatar;
+  const accountName = accountIdentity && accountIdentity.display_name || user.display_name || user.username;
 
   return (
     <div className={`col w2-shell route-${route}`} style={{ height: "100vh", minHeight: "100dvh" }}>
@@ -2603,12 +2659,15 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
         <div className="mast-top">
           <div className="mast-brand">
             <CompanyMark size={30} branding={branding}/>
-            <span className="wordmark">{biu ? "BIU · LEGAL ETHICS" : "WAREHOUSE OS 2.0"}</span>
+            <span className="wordmark">{biu ? "BIU · LEGAL ETHICS" : "WAREHOUSE OS 2.1"}</span>
             <span className="label dim" style={{ transform: "translateY(-1px)" }}>{brand}</span>
           </div>
           <div style={{ flex: 1 }}/>
           <span className="label dim">{dateMono}</span>
           <div className="mast-lang"><LangSeg compact/></div>
+          <button className="top-meta mast-actions" onClick={() => W2.openBusinessAction({ route })} title={t("業務操作")}>
+            <Icon name="plus" size={13}/><span>{t("業務操作")}</span>
+          </button>
           <div className="mast-company" style={{ position: "relative" }}>
             <button className="top-meta mast-company-trigger" onClick={toggleCompanyMenu} aria-expanded={companyOpen} aria-haspopup="menu">
               <Icon name="building" size={13}/><span className="mast-company-name">{brand}</span><Icon name="chevronDown" size={12}/>
@@ -2639,16 +2698,27 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
             )}
           </div>
           <button className="top-meta mast-refresh" onClick={reload} title={t("刷新數據")}><Icon name="refresh" size={13}/></button>
-          <a className="top-meta mast-classic" href={W2.CLASSIC_URL} style={{ textDecoration: "none" }} title={t("經典版")}>1.0 ↗</a>
           <div className="mast-account" style={{ position: "relative" }}>
             <button ref={accountTriggerRef} className="top-meta mast-account-trigger" onClick={toggleAccountMenu} aria-expanded={accountOpen} aria-haspopup="menu" title={t("個人中心")}>
-              <Icon name="user" size={13}/><span className="mast-account-name">{user.display_name || user.username}</span><span className="mast-account-chevron"><Icon name="chevronDown" size={11}/></span>
+              <span className="mast-account-avatar-wrap">
+                <PersonalAvatar avatar={accountAvatar} name={accountName} size="mast"/>
+                {!!accountPrimaryTitle && <span className="mast-account-rank">{t(accountPrimaryTitle)}</span>}
+              </span>
+              <span className="mast-account-copy">
+                {!!accountPrimaryTitle && <small>{t(accountPrimaryTitle)}</small>}
+                <span className="mast-account-name">{accountName}</span>
+              </span>
+              <span className="mast-account-chevron"><Icon name="chevronDown" size={11}/></span>
             </button>
             {accountOpen && (
               <div role="menu" className="panel fade" style={{ position: "absolute", right: 0, top: 36, width: 238, zIndex: 65, borderColor: "var(--ink)" }}>
-                <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--hair)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 750, overflow: "hidden", textOverflow: "ellipsis" }}>{user.display_name || user.username}</div>
-                  <div className="mono muted" style={{ fontSize: 9.5, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis" }}>{user.username}</div>
+                <div className="mast-account-card">
+                  <PersonalAvatar avatar={accountAvatar} name={accountName} size="sm"/>
+                  <div>
+                    {!!accountPrimaryTitle && <small>{t(accountPrimaryTitle)} · 01</small>}
+                    <strong>{accountName}</strong>
+                    <span>{user.username}</span>
+                  </div>
                 </div>
                 <button role="menuitem" className="row g8" style={{ width: "100%", padding: "11px 14px", fontSize: 12.5, fontWeight: 650, textAlign: "left" }}
                   onClick={() => { setAccountOpen(false); setPersonalOpen(true); }}>
@@ -2715,10 +2785,12 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
         onSaved={next => {
           if (next && next.display_name) user.display_name = next.display_name;
           if (window.W2_USER && next && next.display_name) window.W2_USER.display_name = next.display_name;
+          if (next) setAccountIdentity(next);
           setProfileRevision(value => value + 1);
         }}/>} 
       {passkeyOpen && <PasskeyPanel onClose={() => setPasskeyOpen(false)}/>} 
       {appearanceOpen && <AppearancePanel onClose={() => setAppearanceOpen(false)}/>} 
+      <W2.BusinessActionCenter tenant={tenant} route={route} onComplete={() => reload()}/>
       <GuideHost/>
       <SecretaryDock key={`${tenant || ""}:${user.global_user_id || user.id || user.username || ""}`}/>
       {!biu && <W2.BusinessWorkbench/>}
@@ -2827,6 +2899,14 @@ const App2 = () => {
         runtimeActorIdentity(window.W2_USER) !== requestIdentity
       ) return null;
       const next = normalizeRuntimePreferences(data);
+      if (
+        next.language_source === "stored" && next.language &&
+        window.W2_LANG && window.W2_LANG.locale &&
+        window.W2_LANG.locale() !== next.language
+      ) {
+        await window.W2_LANG.setLang(next.language, { persistRemote: false });
+        return next;
+      }
       cacheRuntimePreferences(requestSlug, requestActor, next);
       window.W2_RUNTIME_PREFS = next;
       setRuntimePrefs(next);
@@ -3093,6 +3173,13 @@ const App2 = () => {
   }, [user, loadBoot, loadRuntimePreferences, loadBranding, restoreTenantSwitch]);
 
   $e(() => {
+    if (!W2.hasUsableToken()) {
+      W2.setToken("");
+      W2.setTenant("");
+      setTenant("");
+      setPhase("login");
+      return;
+    }
     check(true).catch(error => {
       if (error && error.status === 401) return;
       setNotice((error && error.message) || t("服務器暫時無法確認登入狀態,請重試"));
@@ -3267,7 +3354,7 @@ const App2 = () => {
   if (phase === "checking") return (
     <div className="col" style={{ height: "100vh", alignItems: "center", justifyContent: "center", gap: 16 }}>
       <PlatformMark size={54}/>
-      <Label>CONNECTING — WAREHOUSE OS 2.0</Label>
+      <Label>CONNECTING — WAREHOUSE OS 2.1</Label>
       <span className="platform-byline">BONFIRE WORKSHOP · PLATFORM SERVICE</span>
     </div>
   );

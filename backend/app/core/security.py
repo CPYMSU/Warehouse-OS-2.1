@@ -50,8 +50,15 @@ def needs_password_rehash(password_hash: str) -> bool:
     return password_hash.startswith("pbkdf2_sha256$")
 
 
-def create_access_token(*, settings: Settings, user_id: UUID, tenant_id: UUID) -> str:
-    expires_at = datetime.now(UTC) + timedelta(minutes=settings.jwt_access_token_minutes)
+def create_access_token(
+    *,
+    settings: Settings,
+    user_id: UUID,
+    tenant_id: UUID,
+    expires_minutes: int | None = None,
+) -> str:
+    lifetime = settings.jwt_access_token_minutes if expires_minutes is None else expires_minutes
+    expires_at = datetime.now(UTC) + timedelta(minutes=max(1, min(int(lifetime), 1440)))
     return jwt.encode(
         {"sub": str(user_id), "tenant_id": str(tenant_id), "exp": expires_at},
         settings.jwt_secret,

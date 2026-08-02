@@ -1,11 +1,19 @@
 /* ============================================================
-   WAREHOUSE 2.0 · lang — 三語詞庫(繁中 tw / 简中 cn / 英 en)
+   WAREHOUSE 2.1 · lang — 三語詞庫(繁中 tw / 简中 cn / 英 en)
    默認:按時區自動(大陸→cn,台港澳→tw,其他→en);手選持久化。
    cn = 短語覆蓋 + 繁→簡字級轉換兜底(動態句子也能兜住)
    en = 完整短語詞典(缺條回退繁中)
    ============================================================ */
 (() => {
 const LANG_KEY = "w2_lang";
+const LANGUAGE_MODE_KEY = "w2_language_mode";
+const LOCALE_BY_CODE = Object.freeze({ tw: "zh-Hant", cn: "zh-Hans", en: "en" });
+const CODE_BY_LOCALE = Object.freeze({
+  tw: "tw", cn: "cn", en: "en",
+  "zh-hant": "tw", "zh-tw": "tw", "zh-hk": "tw",
+  "zh-hans": "cn", "zh-cn": "cn", "zh-sg": "cn",
+});
+const normalizeCode = value => CODE_BY_LOCALE[String(value || "").trim().toLowerCase()] || null;
 
 const autoLang = () => {
   try {
@@ -18,12 +26,38 @@ const autoLang = () => {
   } catch (e) { return "tw"; }
 };
 const lang = () => {
-  try { return localStorage.getItem(LANG_KEY) || autoLang(); }
+  try { return normalizeCode(localStorage.getItem(LANG_KEY)) || autoLang(); }
   catch (e) { return autoLang(); }
 };
-const setLang = (l) => {
-  try { localStorage.setItem(LANG_KEY, l); } catch (e) {}
-  location.reload();
+const locale = () => LOCALE_BY_CODE[lang()] || "zh-Hant";
+const languageMode = () => {
+  try { return localStorage.getItem(LANGUAGE_MODE_KEY) === "fixed" ? "fixed" : "auto"; }
+  catch (e) { return "auto"; }
+};
+const languageContract = () => ({ locale: locale(), language_mode: languageMode() });
+const setLang = async (value, options = {}) => {
+  const next = normalizeCode(value) || autoLang();
+  const persistRemote = options.persistRemote !== false;
+  const reload = options.reload !== false;
+  try { localStorage.setItem(LANG_KEY, next); } catch (e) {}
+  try {
+    document.documentElement.setAttribute("data-lang", next);
+    document.documentElement.setAttribute("lang", LOCALE_BY_CODE[next]);
+  } catch (e) {}
+  if (persistRemote && window.W2 && window.W2.token && window.W2.token()) {
+    try {
+      await Promise.race([
+        window.W2.fetch("/api/runtime/preferences", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ language: LOCALE_BY_CODE[next], language_mode: languageMode() }),
+        }),
+        new Promise(resolve => setTimeout(resolve, 1500)),
+      ]);
+    } catch (e) {}
+  }
+  if (reload) location.reload();
+  return next;
 };
 
 /* ── 繁→簡 字級轉換(覆蓋本應用用字)── */
@@ -36,6 +70,7 @@ const EXTRA_T = "駕駛艙場評買潤與筆虧萬億項觀暫遲賣憑漲篩選
 const EXTRA_S = "驾驶舱场评买润与笔亏万亿项观暂迟卖凭涨筛选范围参约仅议担咨余订阅额详虚争费布间访识软准阶负责专属并骤况汇论户税御紧凑屉则许坏删周驻长闲业于驳将启该锁复样义获须内轻销闸枢占挂张适冻释过题创语径债龄贷捡垫摊银净几术从听缩导纬绪较响视败飞诉脏恒轮温触侧质畅变简废链签稳节赁劳并译声谈罚讼志谁备脚频滚历纯讯抢减双阵职毕托扑签协纵颜尽钥浏忆汇传闪择洁汉绕织辑枪铁鸡壳浅征挡离际练侦诊脉淀谨强折叠岛倾艺炼滤缓缀桥独残坞学钴烧觉杂鲜";
 for (let i = 0; i < EXTRA_T.length; i++) S_MAP[EXTRA_T[i]] = EXTRA_S[i];
 const CN_EXTRA = { "設置": "设置", "台賬": "台账", "臺賬": "台账", "軟體": "软件", "介面": "界面", "程式": "程序", "嗎": "吗" };
+const CN = { ...CN_EXTRA };
 const toSimp = (str) => {
   let out = "";
   for (const ch of String(str)) out += S_MAP[ch] || ch;
@@ -52,6 +87,8 @@ const EN = {
   "審計": "Audit", "設置": "Settings", "終端": "Terminal", "倉儲管理": "Warehouse",
   "刷新": "Refresh", "刷新數據": "Refresh data", "經典版": "Classic", "登出": "Sign out", "下載": "Download",
   "秘書": "Secretary", "公司秘書": "Company Secretary", "問秘書": "Ask Secretary",
+  "密鑰已簽發，AI 正在核對並準備安全卡": "Key issued · AI is verifying the result and preparing the secure card",
+  "簽發結果已核對，正在送達安全卡": "Issuance verified · delivering the secure card",
   // 秘書塢:上傳 / 語音
   "識別圖片中…": "Recognizing image…", "解析文件中…": "Parsing file…", "識別失敗": "Recognition failed",
   "上傳圖片或文件:圖片走視覺識別,Excel/CSV/JSON/SQLite/文本走內置引擎解析":
@@ -114,7 +151,7 @@ const EN = {
   "(含 30% 緩衝)。": "(incl. 30% buffer).",
   "直接吩咐秘書": "Tell the Secretary",
   "出庫領用": "Issue", "入庫上架": "Receive", "調撥 / 借用": "Transfer / Loan", "發起盤點": "Stocktake",
-  "2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.0 contract: pages are read-only; changes run through the Secretary with full audit.",
+  "2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.1 contract: pages are read-only; changes run through the Secretary with full audit.",
   "出庫「{name}」,請追問數量與領用班組後執行": "Issue \"{name}\" — ask me for quantity and requesting team, then execute",
   "「{name}」到貨了,請追問數量後入庫上架": "\"{name}\" has arrived — ask me for quantity, then receive and shelve it",
   "「{name}」需要調撥或借用,請追問去向和數量後辦理": "\"{name}\" needs transfer or loan — ask me for destination and quantity, then proceed",
@@ -134,7 +171,7 @@ const EN = {
   "分析並處置這條預警:{t},級別 {lv};建議「{s}」。給出方案,經我確認後執行。": "Analyse and resolve this alert: {t}, level {lv}; suggestion \"{s}\". Propose a plan and execute after my confirmation.",
   "待處理": "pending",
   // 橋接頁
-  "此模塊的 2.0 版式在排期中。": "The 2.0 layout for this module is on the roadmap.",
+  "此模塊的 2.1 版式在排期中。": "The 2.1 layout for this module is on the roadmap.",
   "功能在經典版一件不少,同一個後端,同一份數據。": "Every feature lives on in Classic — same backend, same data.",
   "在經典版打開": "Open in Classic: ",
   "關於{t}({d}):現在有什麼需要我處理的?": "About {t} ({d}): anything that needs my attention now?",
@@ -169,7 +206,11 @@ const EN = {
 const t = (s, vars) => {
   const L = lang();
   let out = String(s);
-  if (L === "en" && EN[s] != null) out = EN[s];
+  if (L === "en") {
+    if (EN[s] != null) out = EN[s];
+    else MISSING.en.add(String(s));
+  }
+  if (L === "cn" && CN[s] != null) out = CN[s];
   if (vars) for (const k in vars) out = out.split("{" + k + "}").join(vars[k]);
   if (L === "cn") out = toSimp(out);
   return out;
@@ -177,9 +218,27 @@ const t = (s, vars) => {
 
 // 各模塊頁文件自帶英文詞條,加載時註冊(避免並行改本文件)
 const addEN = (d) => Object.assign(EN, d);
+const addCN = (d) => Object.assign(CN, d);
+const addCatalog = (targetLocale, messages) => {
+  const code = normalizeCode(targetLocale);
+  if (code === "en") addEN(messages || {});
+  if (code === "cn") addCN(messages || {});
+};
+const MISSING = { en: new Set(), cn: new Set() };
+const missingKeys = targetLocale => [...(MISSING[normalizeCode(targetLocale)] || [])];
+const catalogStats = () => ({
+  en: { translated: Object.keys(EN).length, missing: MISSING.en.size },
+  cn: { overrides: Object.keys(CN).length, missing: MISSING.cn.size, fallback: "character-map" },
+});
 
 // 給 CSS 的語言鉤子(字體棧按語言切換)
-try { document.documentElement.setAttribute("data-lang", lang()); } catch (e) {}
+try {
+  document.documentElement.setAttribute("data-lang", lang());
+  document.documentElement.setAttribute("lang", locale());
+} catch (e) {}
 
-window.W2_LANG = { lang, setLang, t, toSimp, autoLang, addEN };
+window.W2_LANG = {
+  lang, locale, setLang, t, toSimp, autoLang, addEN, addCN, addCatalog,
+  languageMode, languageContract, missingKeys, catalogStats,
+};
 })();

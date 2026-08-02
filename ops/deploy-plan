@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Build a deterministic, change-aware Warehouse deployment plan.
+
+The planner does not decide whether business code is correct. It maps exact
+release changes into components and risk, then discovers relevant Python tests
+from the real import graph. Unknown files fail closed into the full backend
+suite. Both the local deploy client and the active server release use this
+same versioned contract.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import fnmatch
+import hashlib
+import json
+import shlex
+import subprocess
+from collections import defaultdict, deque
+from collections.abc import Iterable
+from pathlib import Path
+
+RISK_ORDER = {"low": 0, "normal": 1, "high": 2, "critical": 3}
+NON_RUNTIME_IMPACTS = {"ci_only", "docs_only", "tests_only"}
+PACKAGED_PREFIXES = ("backend/", "browser-runtime/", "frontend/", "infra/", "scripts/", "ops/", "docs/")
+PACKAGED_FILES = {".dockerignore", "compose.production.yaml", "README.md"}
+
+
+def _exclude_match(path: str, pattern: str) -> bool:
+    normalized = pattern.strip().removeprefix("./")
+    if not normalized:
+        return False
+    if normalized.endswith("/"):
+        directory = normalized.rstrip("/")
+        return path == directory or path.startswith(f"{directory}/") or f"/{directory}/" in f"/{path}/"
+    return fnmatch.fnmatchcase(path, normalized) or fnmatch.fnmatchcase(
+        Path(path).name, normalized
+    )
+
+
+def _is_packaged(root: Path, path: str) -> bool:
+    normalized = path.removeprefix("./")
+    if normalized not in PACKAGED_FILES and not normalized.startswith(PACKAGED_PREFIXES):
+        return False
+    excluded = False
+    exclude_file = root / "ops" / "deploy.exclude"
+    if exclude_file.is_file():
+        for raw_rule in exclude_file.read_text(encoding="utf-8").splitlines():
+            rule = raw_rule.strip()
+            if not rule or rule.startswith("#"):
+                continue
+            negated = rule.startswith("!")
+            if _exclude_match(normalized, rule.removeprefix("!")):
+                excluded = not negated
+    return not excluded
+
+
+def _manifest(path: Path | None) -> dict[str, str]:
+    if path is None or not path.is_file():
+        return {}
+    result: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        parts = raw_line.strip().split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts
+        normalized = name.lstrip("* ").removeprefix("./")
+        if normalized:
+            result[normalized] = digest
+    return result
+
+
+def _manifest_changes_from_maps(
+    before: dict[str, str], after: dict[str, str]
+) -> list[str]:
+    return sorted(
+        path
+        for path in before.keys() | after.keys()
+        if before.get(path) != after.get(path)
+    )
+
+
+def _manifest_changes(base: Path, candidate: Path) -> list[str]:
+    return _manifest_changes_from_maps(_manifest(base), _manifest(candidate))
+
+
+def _tree_manifest(root: Path) -> dict[str, str]:
+    """Hash the exact deployable tree for comparison with an active release."""
+    candidates = [root / item for item in PACKAGED_PREFIXES]
+    candidates.extend(root / item for item in PACKAGED_FILES)
+    result: dict[str, str] = {}
+    for candidate in candidates:
+        paths = candidate.rglob("*") if candidate.is_dir() else (candidate,)
+        for path in paths:
+            if not path.is_file() or path.is_symlink():
+                continue
+            relative = path.relative_to(root).as_posix()
+            if not _is_packaged(root, relative):
+                continue
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            result[relative] = digest.hexdigest()
+    return result
+
+
+def _git_changes(root: Path) -> list[str]:
+    commands = (
+        ["git", "diff", "--name-only", "HEAD", "--"],
+        ["git", "ls-files", "--others", "--exclude-standard"],
+    )
+    changed: set[str] = set()
+    for command in commands:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode not in {0, 128}:
+            raise SystemExit(completed.stderr.strip() or "git change discovery failed")
+        changed.update(line.strip() for line in completed.stdout.splitlines() if line.strip())
+    return sorted(path for path in changed if _is_packaged(root, path))
+
+
+def _module_for_path(path: Path, root: Path) -> str | None:
+    try:
+        relative = path.relative_to(root / "backend")
+    except ValueError:
+        return None
+    if relative.suffix != ".py":
+        return None
+    parts = list(relative.with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _imports(path: Path, module: str) -> set[str]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+    imported: set[str] = set()
+    package = module.split(".")[:-1]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            prefix = list(package)
+            if node.level:
+                prefix = prefix[: max(0, len(prefix) - node.level + 1)]
+            else:
+                prefix = []
+            base = ".".join([*prefix, *(node.module or "").split(".")]).strip(".")
+            if base:
+                imported.add(base)
+            for alias in node.names:
+                if alias.name != "*" and base:
+                    imported.add(f"{base}.{alias.name}")
+    return imported
+
+
+def _discover_python_tests(
+    root: Path,
+    changed: Iterable[str],
+    *,
+    max_tests: int,
+    max_fraction: float,
+) -> list[str]:
+    python_paths = sorted((root / "backend" / "app").rglob("*.py"))
+    test_paths = sorted((root / "backend" / "tests").glob("test_*.py"))
+    module_paths: dict[str, Path] = {}
+    for path in [*python_paths, *test_paths]:
+        module = _module_for_path(path, root)
+        if module:
+            module_paths[module] = path
+    reverse: dict[str, set[str]] = defaultdict(set)
+    for module, path in module_paths.items():
+        for dependency in _imports(path, module):
+            reverse[dependency].add(module)
+
+    seeds = {
+        module
+        for item in changed
+        if (module := _module_for_path(root / item, root)) is not None
+        and module.startswith("app.")
+    }
+    queue = deque(seeds)
+    reached = set(seeds)
+    while queue:
+        dependency = queue.popleft()
+        for importer in reverse.get(dependency, set()):
+            if importer not in reached:
+                reached.add(importer)
+                queue.append(importer)
+    selected = sorted(
+        str(module_paths[module].relative_to(root))
+        for module in reached
+        if module.startswith("tests.test_")
+    )
+    if selected and len(selected) > max(max_tests, int(len(test_paths) * max_fraction)):
+        return ["backend/tests"]
+    return selected
+
+
+def build_plan(root: Path, changed: list[str]) -> dict[str, object]:
+    changed = [item for item in changed if _is_packaged(root, item)]
+    policy = json.loads((root / "ops" / "deploy-impact.json").read_text())
+    default = dict(policy["default"])
+    selection = dict(policy.get("test_selection") or {})
+    max_tests = int(selection.get("max_tests", 24))
+    max_fraction = float(selection.get("max_fraction", 0.35))
+    if max_tests < 1 or not 0 < max_fraction <= 1:
+        raise SystemExit("deploy impact policy has invalid test-selection limits")
+    risk = "low"
+    impacts: set[str] = set()
+    tests: set[str] = set()
+    unmatched: list[str] = []
+    discover_python = False
+    explanations: list[dict[str, object]] = []
+
+    for path in sorted(dict.fromkeys(item.removeprefix("./") for item in changed)):
+        matched = next(
+            (
+                rule
+                for rule in policy.get("rules", [])
+                if fnmatch.fnmatchcase(path, str(rule.get("glob") or ""))
+            ),
+            None,
+        )
+        rule = dict(matched or default)
+        if matched is None:
+            unmatched.append(path)
+        candidate_risk = str(rule.get("risk") or "high")
+        if candidate_risk not in RISK_ORDER:
+            raise SystemExit(
+                f"deploy impact policy has invalid risk {candidate_risk!r} for {path}"
+            )
+        if RISK_ORDER.get(candidate_risk, 3) > RISK_ORDER.get(risk, 0):
+            risk = candidate_risk
+        rule_impacts = {str(item) for item in rule.get("impacts") or []}
+        rule_tests = {str(item) for item in rule.get("tests") or []}
+        impacts.update(rule_impacts)
+        tests.update(rule_tests)
+        discover_python = discover_python or bool(rule.get("discover_python_tests"))
+        explanations.append(
+            {
+                "path": path,
+                "rule": matched.get("glob") if matched else "<default>",
+                "risk": candidate_risk,
+                "impacts": sorted(rule_impacts),
+            }
+        )
+
+    if discover_python:
+        tests.update(
+            _discover_python_tests(
+                root,
+                changed,
+                max_tests=max_tests,
+                max_fraction=max_fraction,
+            )
+        )
+    if "backend/tests" in tests:
+        tests = {"backend/tests"}
+    runtime_impacts = impacts - NON_RUNTIME_IMPACTS
+    deploy_required = bool(runtime_impacts)
+    if not changed or not deploy_required:
+        mode = "none"
+    elif risk == "critical":
+        mode = "full"
+    elif risk == "high":
+        mode = "standard"
+    else:
+        mode = "quick"
+    if deploy_required and not tests:
+        tests.add("backend/tests/test_config.py")
+    return {
+        "schema": "warehouse.deploy-plan.v1",
+        "policy_version": policy.get("version"),
+        "changed_files": sorted(dict.fromkeys(changed)),
+        "changed_count": len(set(changed)),
+        "risk": risk,
+        "mode": mode,
+        "deploy_required": deploy_required,
+        "impacts": sorted(impacts),
+        "tests": sorted(tests),
+        "unmatched_files": unmatched,
+        "explanations": explanations,
+    }
+
+
+def _shell(plan: dict[str, object]) -> str:
+    impacts = {str(item) for item in plan["impacts"]}
+    values: dict[str, object] = {
+        "PLAN_SCHEMA": plan["schema"],
+        "PLAN_MODE": plan["mode"],
+        "PLAN_RISK": plan["risk"],
+        "PLAN_DEPLOY_REQUIRED": int(bool(plan["deploy_required"])),
+        "PLAN_CHANGED_COUNT": plan["changed_count"],
+        "PLAN_TESTS": ":".join(str(item) for item in plan["tests"]),
+        "PLAN_CHANGED_FILES": ":".join(str(item) for item in plan["changed_files"]),
+        "PLAN_UNMATCHED_FILES": ":".join(
+            str(item) for item in plan["unmatched_files"]
+        ),
+    }
+    for impact in (
+        "api",
+        "api_contract",
+        "auth",
+        "backup",
+        "browser",
+        "configuration",
+        "control_plane",
+        "dependencies",
+        "downloads",
+        "frontend",
+        "infrastructure",
+        "integration",
+        "migration",
+        "runtime_controller",
+        "storage",
+        "tenant_templates",
+        "unknown",
+    ):
+        values[f"PLAN_{impact.upper()}"] = int(impact in impacts)
+    return "\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--base-manifest", type=Path)
+    candidate = parser.add_mutually_exclusive_group()
+    candidate.add_argument("--candidate-manifest", type=Path)
+    candidate.add_argument("--candidate-root", type=Path)
+    parser.add_argument("--changed-file", action="append", default=[])
+    parser.add_argument("--format", choices=("json", "shell"), default="json")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    if args.base_manifest and not (args.candidate_manifest or args.candidate_root):
+        parser.error("--base-manifest requires a candidate manifest or root")
+    if not args.base_manifest and (args.candidate_manifest or args.candidate_root):
+        parser.error("candidate comparison requires --base-manifest")
+    if args.base_manifest and args.candidate_root:
+        changed = _manifest_changes_from_maps(
+            _manifest(args.base_manifest), _tree_manifest(args.candidate_root.resolve())
+        )
+    elif args.base_manifest and args.candidate_manifest:
+        changed = _manifest_changes(args.base_manifest, args.candidate_manifest)
+    elif args.changed_file:
+        changed = sorted(dict.fromkeys(args.changed_file))
+    else:
+        changed = _git_changes(root)
+    plan = build_plan(root, changed)
+    print(_shell(plan) if args.format == "shell" else json.dumps(plan, indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 公司總覽 — permission-scoped executive cockpit */
+/* WAREHOUSE 2.1 · 公司總覽 — permission-scoped executive cockpit */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;

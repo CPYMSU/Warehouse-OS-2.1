@@ -75,13 +75,39 @@ def _audit(
 
 
 def _warehouse(
-    session: Session, value: str | None, *, required: bool = True
+    session: Session,
+    value: str | None,
+    *,
+    required: bool = True,
+    default_if_missing: bool = False,
 ) -> dict[str, object] | None:
     if not value or not value.strip():
+        if default_if_missing:
+            row = (
+                session.execute(
+                    text(
+                        """
+                        SELECT id, code, name
+                        FROM warehouse.warehouses
+                        WHERE active
+                        ORDER BY created_at, name, code
+                        LIMIT 1
+                        """
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is not None:
+                return dict(row)
         if required:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="A warehouse name or code is required",
+                detail=(
+                    "No active warehouse is available"
+                    if default_if_missing
+                    else "A warehouse name or code is required"
+                ),
             )
         return None
     row = (
@@ -136,6 +162,90 @@ def _item(session: Session, value: str) -> dict[str, object]:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Item not found. Create the item before posting stock movement.",
         )
+    return dict(row)
+
+
+def _item_category(session: Session, value: object | None) -> dict[str, object] | None:
+    clean = str(value or "").strip()
+    if not clean:
+        return None
+    try:
+        category_id: UUID | None = UUID(clean)
+    except ValueError:
+        category_id = None
+    row = (
+        session.execute(
+            text(
+                """
+                SELECT id, category_code, name
+                FROM warehouse.item_categories
+                WHERE active
+                  AND (
+                    (CAST(:category_id AS uuid) IS NOT NULL AND id = CAST(:category_id AS uuid))
+                    OR lower(category_code) = lower(:value)
+                    OR lower(name) = lower(:value)
+                  )
+                ORDER BY name
+                LIMIT 1
+                """
+            ),
+            {"category_id": category_id, "value": clean},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Item category not found",
+        )
+    return dict(row)
+
+
+def _item_for_edit(
+    session: Session, *, item_id: object | None = None, name: object | None = None
+) -> dict[str, object]:
+    clean_id = str(item_id or "").strip()
+    clean_name = str(name or "").strip()
+    parsed_id: UUID | None = None
+    if clean_id:
+        try:
+            parsed_id = UUID(clean_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Item id must be a UUID",
+            ) from exc
+    if parsed_id is None and not clean_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Item id or name is required",
+        )
+    row = (
+        session.execute(
+            text(
+                """
+                SELECT id, item_code, name, model, unit, unit_price, category_id, active
+                FROM warehouse.items
+                WHERE (
+                    CAST(:item_id AS uuid) IS NOT NULL
+                    AND id = CAST(:item_id AS uuid)
+                  )
+                   OR (
+                    CAST(:item_id AS uuid) IS NULL
+                    AND lower(name) = lower(:name)
+                  )
+                ORDER BY active DESC, created_at
+                LIMIT 1
+                """
+            ),
+            {"item_id": parsed_id, "name": clean_name},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
     return dict(row)
 
 
@@ -800,6 +910,186 @@ def inventory_batches(actor: ActorContext, item_id: str) -> dict[str, object]:
     }
 
 
+def create_item(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
+    """Create tenant item master data used by every native stock operation."""
+    _require(actor, "settings.manage")
+    name = str(payload.get("item_name") or payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Item name is required"
+        )
+    if len(name) > 256:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Item name is too long",
+        )
+    unit = str(payload.get("unit") or "件").strip() or "件"
+    model = str(payload.get("spec_model") or payload.get("spec") or "").strip() or None
+    with tenant_session(actor.tenant_id) as session:
+        existing = session.execute(
+            text("SELECT id FROM warehouse.items WHERE lower(name) = lower(:name) AND active"),
+            {"name": name},
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An active item with this name already exists",
+            )
+        category = _item_category(
+            session, payload.get("category_id") or payload.get("category")
+        )
+        item_id = uuid4()
+        item_code = f"ITEM-{item_id.hex[:10].upper()}"
+        session.execute(
+            text(
+                """
+                INSERT INTO warehouse.items(
+                  id, tenant_id, category_id, item_code, name, model, unit
+                ) VALUES (
+                  :id, :tenant_id, :category_id, :item_code, :name, :model, :unit
+                )
+                """
+            ),
+            {
+                "id": item_id,
+                "tenant_id": actor.tenant_id,
+                "category_id": category["id"] if category else None,
+                "item_code": item_code,
+                "name": name,
+                "model": model,
+                "unit": unit,
+            },
+        )
+        _audit(
+            session,
+            actor,
+            "warehouse.item.created",
+            {"item_id": str(item_id), "item_code": item_code, "name": name},
+        )
+    return {
+        "ok": True,
+        "item": {
+            "id": str(item_id),
+            "code": item_code,
+            "name": name,
+            "model": model,
+            "unit": unit,
+            "category_id": str(category["id"]) if category else None,
+            "category": category["name"] if category else None,
+        },
+    }
+
+
+def update_item(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
+    """Update the native item master while preserving stock and ledger identity."""
+    _require(actor, "inventory.adjust", "settings.manage")
+    with tenant_session(actor.tenant_id) as session:
+        item = _item_for_edit(
+            session, item_id=payload.get("id"), name=payload.get("name")
+        )
+        new_name = str(payload.get("new_name") or item["name"]).strip()
+        unit = str(payload.get("unit") or item["unit"]).strip()
+        model_value = payload.get("spec")
+        model = item["model"] if model_value is None else str(model_value).strip() or None
+        price_value = payload.get("price")
+        if price_value is None:
+            unit_price = item["unit_price"]
+        else:
+            try:
+                unit_price = Decimal(str(price_value))
+            except (InvalidOperation, ValueError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="price must be a non-negative number",
+                ) from exc
+            if not unit_price.is_finite() or unit_price < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="price must be a non-negative number",
+                )
+        category_value = payload.get("category")
+        category = (
+            _item_category(session, category_value)
+            if category_value is not None
+            else {"id": item["category_id"]}
+        )
+        session.execute(
+            text(
+                """
+                UPDATE warehouse.items
+                SET name = :name,
+                    model = :model,
+                    unit = :unit,
+                    unit_price = :unit_price,
+                    category_id = :category_id,
+                    updated_at = now()
+                WHERE id = :item_id
+                """
+            ),
+            {
+                "item_id": item["id"],
+                "name": new_name,
+                "model": model,
+                "unit": unit,
+                "unit_price": unit_price,
+                "category_id": category["id"],
+            },
+        )
+        _audit(
+            session,
+            actor,
+            "warehouse.item.updated",
+            {"item_id": str(item["id"]), "name": new_name},
+        )
+    return {
+        "ok": True,
+        "item": {
+            "id": str(item["id"]),
+            "code": item["item_code"],
+            "name": new_name,
+            "model": model,
+            "unit": unit,
+            "unit_price": float(unit_price) if unit_price is not None else None,
+            "category_id": str(category["id"]) if category["id"] else None,
+        },
+    }
+
+
+def archive_item(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
+    """Archive item master data only when no stock remains."""
+    _require(actor, "inventory.adjust")
+    with tenant_session(actor.tenant_id) as session:
+        item = _item_for_edit(
+            session, item_id=payload.get("id"), name=payload.get("name")
+        )
+        stock = session.execute(
+            text(
+                """
+                SELECT COALESCE(SUM(quantity_on_hand), 0)
+                FROM warehouse.stock_lots
+                WHERE item_id = :item_id AND active
+                """
+            ),
+            {"item_id": item["id"]},
+        ).scalar_one()
+        if Decimal(str(stock)) > 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Item still has stock and cannot be archived",
+            )
+        session.execute(
+            text("UPDATE warehouse.items SET active = false, updated_at = now() WHERE id = :id"),
+            {"id": item["id"]},
+        )
+        _audit(
+            session,
+            actor,
+            "warehouse.item.archived",
+            {"item_id": str(item["id"]), "name": item["name"]},
+        )
+    return {"ok": True, "archived": True, "item_id": str(item["id"])}
+
+
 def create_inbound(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
     _require(actor, "inventory.inbound")
     request_id = str(payload.get("request_id") or "").strip() or None
@@ -823,7 +1113,11 @@ def create_inbound(actor: ActorContext, payload: dict[str, object]) -> dict[str,
             )
             if existing:
                 return {"ok": True, "existing": True, "order_no": existing["order_no"]}
-        warehouse = _warehouse(session, str(payload.get("warehouse") or ""))
+        warehouse = _warehouse(
+            session,
+            str(payload.get("warehouse") or ""),
+            default_if_missing=True,
+        )
         order_id = uuid4()
         order_no = _new_no("IN")
         session.execute(
@@ -857,13 +1151,34 @@ def create_inbound(actor: ActorContext, payload: dict[str, object]) -> dict[str,
             item = _item(session, str(raw_line.get("name") or ""))
             quantity = _decimal(raw_line.get("qty"))
             production_date = raw_line.get("production_date") or None
-            expires_at = None
-            if production_date and item["default_shelf_life_days"]:
-                expires_at = date.fromisoformat(str(production_date)) + timedelta(
-                    days=int(item["default_shelf_life_days"])
+            try:
+                production_day = (
+                    date.fromisoformat(str(production_date)) if production_date else None
                 )
+                explicit_expiry = raw_line.get("expire_at") or None
+                expires_at = (
+                    date.fromisoformat(str(explicit_expiry)) if explicit_expiry else None
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="production_date and expire_at must use YYYY-MM-DD",
+                ) from exc
+            shelf_life_days = raw_line.get("shelf_life_days")
+            if expires_at is None and production_day:
+                shelf_days = (
+                    int(shelf_life_days)
+                    if shelf_life_days is not None
+                    else item["default_shelf_life_days"]
+                )
+                if shelf_days:
+                    expires_at = production_day + timedelta(days=int(shelf_days))
             lot_id = uuid4()
-            batch_no = str(raw_line.get("batch_no") or f"{order_no}-{index:02d}")
+            batch_no = str(
+                raw_line.get("batch_no")
+                or raw_line.get("batch")
+                or f"{order_no}-{index:02d}"
+            )
             session.execute(
                 text(
                     """
@@ -882,7 +1197,7 @@ def create_inbound(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                     "item_id": item["id"],
                     "warehouse_id": warehouse["id"],
                     "batch_no": batch_no,
-                    "production_date": production_date,
+                    "production_date": production_day,
                     "expires_at": expires_at,
                     "quantity": quantity,
                 },
@@ -908,7 +1223,7 @@ def create_inbound(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                     "quantity": quantity,
                     "unit_cost": item["unit_price"],
                     "batch_no": batch_no,
-                    "production_date": production_date,
+                    "production_date": production_day,
                     "expires_at": expires_at,
                 },
             )

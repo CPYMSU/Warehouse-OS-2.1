@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
+import httpx
+
+from app.core.config import get_settings
+from app.core.security import create_access_token
 from app.terminal import legacy_catalog
 from app.terminal.catalog import (
     availability,
@@ -13,12 +20,21 @@ from app.terminal.catalog import (
     entry_by_tool_name,
     is_authorized,
 )
-from app.terminal.store import command_audit_writer, warehouse_reader
+from app.terminal.store import command_audit_writer
 
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
 
 _SECRET_PARTS = ("password", "secret", "token", "api_key", "credential", "passkey", "sql")
+
+
+class CommandAdapterError(RuntimeError):
+    """A target API rejected a structurally valid command request."""
+
+    def __init__(self, status_code: int, payload: object) -> None:
+        super().__init__(f"target API returned HTTP {status_code}")
+        self.status_code = status_code
+        self.payload = payload
 
 
 def _redacted_values(entry: Mapping[str, Any], values: Mapping[str, object]) -> dict[str, object]:
@@ -31,6 +47,88 @@ def _redacted_values(entry: Mapping[str, Any], values: Mapping[str, object]) -> 
         else:
             safe[key] = value
     return safe
+
+
+def _redacted_response(
+    entry: Mapping[str, Any],
+    response: Mapping[str, object],
+) -> dict[str, object]:
+    """Remove one-time credentials before an execution envelope is audited."""
+    secret_fields = {
+        str(field).strip().lower()
+        for field in (entry.get("secret_result_fields") or [])
+        if str(field).strip()
+    }
+
+    def visit(value: object, *, key: str = "", in_credentials: bool = False) -> object:
+        normalized = key.lower()
+        if (
+            normalized in secret_fields
+            or any(part in normalized for part in _SECRET_PARTS)
+            or (in_credentials and normalized == "value")
+        ):
+            return "[redacted]"
+        if isinstance(value, Mapping):
+            nested_credentials = in_credentials or normalized in {
+                "credential",
+                "credentials",
+            }
+            return {
+                str(child_key): visit(
+                    child_value,
+                    key=str(child_key),
+                    in_credentials=nested_credentials,
+                )
+                for child_key, child_value in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                visit(item, in_credentials=in_credentials)
+                for item in value
+            ]
+        return value
+
+    redacted = visit(response)
+    return dict(redacted) if isinstance(redacted, dict) else {}
+
+
+def _extract_one_time_credentials(
+    entry: Mapping[str, Any],
+    data: object,
+) -> tuple[object, list[dict[str, object]]]:
+    """Move declared secret fields into a transient UI-only envelope."""
+    if not isinstance(data, Mapping):
+        return data, []
+    safe_data = dict(data)
+    credentials: list[dict[str, object]] = []
+    for raw_field in entry.get("secret_result_fields") or []:
+        field = str(raw_field).strip()
+        value = safe_data.pop(field, None)
+        if not isinstance(value, str) or not value:
+            continue
+        credentials.append(
+            {
+                "field": field,
+                "kind": (
+                    "runtime_api_key"
+                    if field == "api_key"
+                    else field
+                ),
+                "value": value,
+                "label": safe_data.get("label") or "一次性憑證",
+                "key_id": safe_data.get("key_id"),
+                "key_hint": (
+                    safe_data.get("key_hint")
+                    or safe_data.get(f"{field}_hint")
+                ),
+                "tenant_slug": safe_data.get("tenant_slug"),
+                "scopes": list(safe_data.get("scopes") or []),
+                "expires_at": safe_data.get("expires_at"),
+                "note": safe_data.get("note")
+                or "明文只顯示這一次，請立即保存。",
+            }
+        )
+    return safe_data, credentials
 
 
 def _envelope(
@@ -67,28 +165,124 @@ def _envelope(
     return result
 
 
-def _actor_payload(actor: ActorContext) -> dict[str, object]:
+def _atomic_recovery_contract(
+    entry: Mapping[str, Any] | None,
+    values: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Describe the universal data-level recovery surface without prescribing a flow.
+
+    A failed domain adapter is evidence about one attempted action, not evidence that
+    the user's goal is impossible.  This packet lets Auto Runtime re-observe the
+    semantic world and, when the registered field is directly mutable, use the
+    generic data fabric.  It deliberately does not auto-select or auto-execute a
+    fallback: planning remains the model's responsibility.
+    """
+
+    semantic_contract = dict((entry or {}).get("semantic_contract") or {})
     return {
-        "authenticated": True,
-        "tenant": actor.tenant_slug,
-        "companies": [{"slug": actor.tenant_slug, "name": actor.tenant_name, "status": "active"}],
-        "user": actor.user_payload,
-        "permissions": sorted(actor.permissions),
-        "is_platform_owner": False,
-        "can_apply_company": actor.role_level >= 4,
-        "needs_setup": False,
+        "schema": "warehouse.atomic-recovery.v1",
+        "decision_owner": "auto_runtime",
+        "workflow_prescribed": False,
+        "failed_capability": (entry or {}).get("tool_name"),
+        "semantic_contract": semantic_contract,
+        "attempted_arguments": _redacted_values(entry or {}, values or {}),
+        "available_capabilities": [
+            {
+                "tool_name": "generic_data_observe",
+                "effect": "observe_related_world",
+            },
+            {
+                "tool_name": "generic_data_schema",
+                "effect": "inspect_registered_fields_relations_and_invariants",
+            },
+            {
+                "tool_name": "generic_data_query",
+                "effect": "read_registered_tenant_data",
+            },
+            {
+                "tool_name": "generic_data_mutate",
+                "effect": "preview_or_commit_registered_direct_fields",
+            },
+        ],
+        "constraints": [
+            "preserve_tenant_isolation",
+            "preserve_canonical_resource_identity",
+            "never_expose_or_rewrite_secret_material",
+            "never_assert_external_reality_from_a_database_write_alone",
+            "use_a_specialized_adapter_for_external_effects_or_immutable_evidence",
+        ],
     }
 
 
-def _dispatch(
-    entry: Mapping[str, Any], actor: ActorContext, values: Mapping[str, object]
+async def _dispatch_async(
+    entry: Mapping[str, Any],
+    actor: ActorContext,
+    values: Mapping[str, object],
+    *,
+    origin: str,
 ) -> object:
-    tool_name = str(entry["tool_name"])
-    if tool_name == "auth_me":
-        return _actor_payload(actor)
-    if tool_name == "warehouse_list":
-        return {"warehouses": warehouse_reader().list_active(actor.tenant_id)}
-    raise RuntimeError(f"active adapter is missing: {tool_name}")
+    """Invoke the registered API contract inside the current ASGI process."""
+
+    # Imported lazily because ``app.main`` imports the API router, which imports
+    # this executor.  At execution time application construction is complete.
+    from app.api.deps import internal_actor_scope
+    from app.main import app
+
+    method, path, body = legacy_catalog.build_request(dict(entry), dict(values))
+    settings = get_settings()
+    token = create_access_token(
+        settings=settings,
+        user_id=actor.user_id,
+        tenant_id=actor.tenant_id,
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Request-ID": str(uuid4()),
+        "X-Warehouse-Tool-Name": str(entry["tool_name"]),
+        "X-Warehouse-Execution-Origin": origin,
+    }
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    with internal_actor_scope(actor):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://warehouse.internal",
+            timeout=30.0,
+        ) as client:
+            response = await client.request(
+                str(method),
+                str(path),
+                headers=headers,
+                json=body,
+            )
+    if response.status_code == 204:
+        payload: object = None
+    else:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"text": response.text[:4000]}
+    if response.status_code >= 400:
+        raise CommandAdapterError(response.status_code, payload)
+    return payload
+
+
+def _dispatch(
+    entry: Mapping[str, Any],
+    actor: ActorContext,
+    values: Mapping[str, object],
+    *,
+    origin: str,
+) -> object:
+    coroutine = _dispatch_async(entry, actor, values, origin=origin)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+    # The public FastAPI handlers are synchronous and normally have no running
+    # loop.  This fallback keeps the executor safe for async unit/integration
+    # callers without nesting ``asyncio.run`` in their loop.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coroutine).result()
 
 
 def _audit(
@@ -107,7 +301,7 @@ def _audit(
         origin=origin,
         status=status,
         request={"arguments": _redacted_values(entry, values)},
-        response=response,
+        response=_redacted_response(entry, response),
     )
 
 
@@ -117,13 +311,15 @@ def _execute_entry(
     values: Mapping[str, object],
     *,
     origin: str,
+    enforce_actor_permissions: bool = True,
+    confirmation_verified: bool = False,
 ) -> dict[str, object]:
     started = perf_counter()
     command = str(entry["command"])
     tool_name = str(entry["tool_name"])
     writes = bool(entry["writes"])
     risk = str(entry["risk"])
-    if not is_authorized(dict(entry), actor.permissions):
+    if enforce_actor_permissions and not is_authorized(dict(entry), actor.permissions):
         envelope = _envelope(
             ok=False,
             command=command,
@@ -154,6 +350,7 @@ def _execute_entry(
                 "This command remains unavailable until its typed domain route, validation, "
                 "and tests are migrated."
             ),
+            data={"atomic_recovery": _atomic_recovery_contract(entry, values)},
             elapsed_ms=round((perf_counter() - started) * 1000),
         )
         execution_id = _audit(
@@ -162,14 +359,65 @@ def _execute_entry(
         envelope["execution_id"] = execution_id
         return envelope
 
-    # No mutation is enabled in the foundation.  This is intentionally a
-    # second line of defence if a future manifest edit marks a write active
-    # before a persistent confirmation workflow is registered.
-    if writes:
-        raise RuntimeError("an active write command requires a confirmation workflow")
+    confirmation = legacy_catalog.confirmation_contract(dict(entry))
+    if writes and confirmation["mode"] != "direct" and not confirmation_verified:
+        envelope = _envelope(
+            ok=False,
+            command=command,
+            tool_name=tool_name,
+            status="confirmation_required",
+            writes=writes,
+            risk=risk,
+            error="This command requires its registered confirmation workflow",
+            hint=(
+                f"confirmation mode: {confirmation['mode']}; "
+                f"adapter: {confirmation['adapter']}"
+            ),
+            data={
+                "confirmation_policy": confirmation,
+                "arguments": _redacted_values(entry, values),
+            },
+            elapsed_ms=round((perf_counter() - started) * 1000),
+        )
+        execution_id = _audit(
+            actor,
+            entry,
+            origin=origin,
+            status="confirmation_required",
+            values=values,
+            response=envelope,
+        )
+        envelope["execution_id"] = execution_id
+        return envelope
 
     try:
-        data = _dispatch(entry, actor, values)
+        data = _dispatch(entry, actor, values, origin=origin)
+    except CommandAdapterError as exc:
+        envelope = _envelope(
+            ok=False,
+            command=command,
+            tool_name=tool_name,
+            status="target_rejected",
+            writes=writes,
+            risk=risk,
+            data={
+                "http_status": exc.status_code,
+                "response": exc.payload,
+                "atomic_recovery": _atomic_recovery_contract(entry, values),
+            },
+            error=f"Target business API rejected the command (HTTP {exc.status_code})",
+            elapsed_ms=round((perf_counter() - started) * 1000),
+        )
+        execution_id = _audit(
+            actor,
+            entry,
+            origin=origin,
+            status="target_rejected",
+            values=values,
+            response=envelope,
+        )
+        envelope["execution_id"] = execution_id
+        return envelope
     except Exception as exc:  # pragma: no cover - exercised at the HTTP boundary
         envelope = _envelope(
             ok=False,
@@ -178,6 +426,7 @@ def _execute_entry(
             status="failed",
             writes=writes,
             risk=risk,
+            data={"atomic_recovery": _atomic_recovery_contract(entry, values)},
             error="Command adapter failed",
             elapsed_ms=round((perf_counter() - started) * 1000),
         )
@@ -192,6 +441,7 @@ def _execute_entry(
         envelope["execution_id"] = execution_id
         return envelope
 
+    safe_data, credentials = _extract_one_time_credentials(entry, data)
     envelope = _envelope(
         ok=True,
         command=command,
@@ -199,9 +449,11 @@ def _execute_entry(
         status="succeeded",
         writes=writes,
         risk=risk,
-        data=data,
+        data=safe_data,
         elapsed_ms=round((perf_counter() - started) * 1000),
     )
+    if credentials:
+        envelope["credentials"] = credentials
     execution_id = _audit(
         actor, entry, origin=origin, status="succeeded", values=values, response=envelope
     )
@@ -219,11 +471,11 @@ def _local_command(actor: ActorContext, line: str) -> dict[str, object] | None:
             status="succeeded",
             writes=False,
             risk="low",
-            data={"commands": command_catalogue(actor)},
+            data={"commands": command_catalogue(actor, include_unavailable=True)},
         )
     if normalized.startswith("capabilities"):
         query = normalized.removeprefix("capabilities").strip().lower()
-        commands = command_catalogue(actor)
+        commands = command_catalogue(actor, include_unavailable=True)
         if query:
             commands = [
                 item
@@ -263,6 +515,7 @@ def execute_cli_line(
             error=str(exc),
             usage=exc.usage,
             hint=exc.hint,
+            data={"atomic_recovery": _atomic_recovery_contract(None, {"line": line})},
         )
     return _execute_entry(entry, actor, values, origin=origin)
 
@@ -295,5 +548,160 @@ def execute_tool_call(
             error=str(exc),
             usage=exc.usage,
             hint=exc.hint,
+            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
         )
     return _execute_entry(entry, actor, values, origin="ai_tool")
+
+
+def execute_manual_action(
+    actor: ActorContext, tool_name: str, arguments: Mapping[str, object]
+) -> dict[str, object]:
+    """Run a schema-generated manual form through the shared command boundary."""
+    entry = entry_by_tool_name(tool_name)
+    if entry is None:
+        platform_entry = entry_by_tool_name(tool_name, platform=True)
+        if platform_entry is not None:
+            return _envelope(
+                ok=False,
+                command=str(platform_entry["command"]),
+                tool_name=tool_name,
+                status="requires_l11_governance",
+                writes=bool(platform_entry["writes"]),
+                risk=str(platform_entry["risk"]),
+                error="Platform actions cannot execute inside a company session",
+            )
+        return _envelope(
+            ok=False,
+            command="",
+            tool_name=tool_name,
+            status="unknown_tool",
+            writes=False,
+            risk="low",
+            error="Action is not registered in the shared capability catalogue",
+        )
+    try:
+        values = legacy_catalog.values_from_tool_args(entry, dict(arguments))
+    except legacy_catalog.CommandError as exc:
+        return _envelope(
+            ok=False,
+            command=str(entry["command"]),
+            tool_name=tool_name,
+            status="invalid_arguments",
+            writes=bool(entry["writes"]),
+            risk=str(entry["risk"]),
+            error=str(exc),
+            usage=exc.usage,
+            hint=exc.hint,
+            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
+        )
+    return _execute_entry(entry, actor, values, origin="manual_ui")
+
+
+def execute_runtime_tool_call(
+    actor: ActorContext,
+    tool_name: str,
+    arguments: Mapping[str, object],
+    *,
+    execution_context: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Execute an internally selected capability under the company AI identity.
+
+    The Runtime, unlike a human terminal session, may reason across the whole
+    current-company authority map.  This path therefore does not project the
+    current human's permission subset onto the AI.  It is intentionally not an
+    HTTP route: callers cannot manufacture this trusted decision boundary.
+    Adapter availability, typed validation, tenant RLS and audit recording
+    still apply unchanged.
+    """
+    entry = entry_by_tool_name(tool_name)
+    if entry is None:
+        platform_entry = entry_by_tool_name(tool_name, platform=True)
+        if platform_entry is not None:
+            return _envelope(
+                ok=False,
+                command=str(platform_entry["command"]),
+                tool_name=tool_name,
+                status="requires_l11_governance",
+                writes=bool(platform_entry["writes"]),
+                risk=str(platform_entry["risk"]),
+                error="The selected platform capability is not connected to this tenant Runtime",
+            )
+        return _envelope(
+            ok=False,
+            command="",
+            tool_name=tool_name,
+            status="unknown_tool",
+            writes=False,
+            risk="unknown",
+            error="Unknown capability gene",
+        )
+    try:
+        values = legacy_catalog.values_from_tool_args(entry, dict(arguments))
+    except ValueError as exc:
+        return _envelope(
+            ok=False,
+            command=str(entry["command"]),
+            tool_name=tool_name,
+            status="invalid_arguments",
+            writes=bool(entry["writes"]),
+            risk=str(entry["risk"]),
+            error=str(exc),
+            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
+        )
+    if tool_name == "generic_data_mutate" and execution_context:
+        if execution_context.get("run_id"):
+            values["body.run_id"] = execution_context["run_id"]
+        if execution_context.get("conversation_id"):
+            values["body.conversation_id"] = execution_context["conversation_id"]
+    return _execute_entry(
+        entry,
+        actor,
+        values,
+        origin="auto_runtime",
+        enforce_actor_permissions=False,
+    )
+
+
+def execute_confirmed_runtime_tool_call(
+    actor: ActorContext, tool_name: str, arguments: Mapping[str, object]
+) -> dict[str, object]:
+    """Execute one previously persisted and Passkey-confirmed Runtime action.
+
+    This entry point is deliberately not exposed as an HTTP route. The caller
+    must first bind and consume a one-time confirmation grant; typed catalogue
+    validation, tenant RLS, native API dispatch and redacted audit remain the
+    same as the ordinary Auto Runtime path.
+    """
+
+    entry = entry_by_tool_name(tool_name)
+    if entry is None:
+        return _envelope(
+            ok=False,
+            command="",
+            tool_name=tool_name,
+            status="unknown_tool",
+            writes=False,
+            risk="unknown",
+            error="Unknown capability gene",
+        )
+    try:
+        values = legacy_catalog.values_from_tool_args(entry, dict(arguments))
+    except (legacy_catalog.CommandError, ValueError) as exc:
+        return _envelope(
+            ok=False,
+            command=str(entry["command"]),
+            tool_name=tool_name,
+            status="invalid_arguments",
+            writes=bool(entry["writes"]),
+            risk=str(entry["risk"]),
+            error=str(exc),
+            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
+        )
+    return _execute_entry(
+        entry,
+        actor,
+        values,
+        origin="auto_runtime",
+        enforce_actor_permissions=False,
+        confirmation_verified=True,
+    )

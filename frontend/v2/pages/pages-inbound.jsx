@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 入庫 — Swiss 版式,真後端 */
+/* WAREHOUSE 2.1 · 入庫 — Swiss 版式,真後端 */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;
@@ -78,7 +78,7 @@ window.W2_LANG.addEN({
   "同源再入庫": "Repeat inbound",
   "跟進入庫單「{no}」的當前進度(審核/質檢/上架),需要推動就幫我催辦": "Follow up inbound order \"{no}\" (review / QC / put-away). If it is stuck, expedite it for me",
   "入庫單「{no}」的來源「{src}」又有一批到貨:若原單是採購,請核對原正式 PO 及剩餘可收數量後按 PO 收貨;若是內部流轉,才可參照原單來源與明細建新單": "Another batch arrived for inbound order \"{no}\" from \"{src}\". If the original was a purchase, verify the formal PO and remaining receivable quantity and receive against that PO; only internal movements may copy the prior source and lines.",
-  "2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.0 rule: pages are read-only; changes run through the secretary with confirmation and a full audit trail.",
+  "2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.1 rule: pages are read-only; changes run through the secretary with confirmation and a full audit trail.",
 });
 const { useState: _s, useMemo: _mm } = React;
 const { Icon: I, Btn: B, Tag: T, Label: LB, Empty: EM, Kpi, Meter, StackBar, Folio, Band, pad2, num } = W2;
@@ -179,7 +179,7 @@ const InbDrawer = ({ row, onClose }) => {
             </button>
           ))}
         </div>
-        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
       </div>
     </div>
   );
@@ -234,8 +234,8 @@ const Page = ({ boot }) => {
       <Folio no="03" en="INBOUND" title={t("入庫")}
         sub={t("本月 {m} 批 · 在管 {n} 張入庫單 · 頁面只讀,操作交秘書", { m: monthRows.length, n: rows.length })}
         right={<>
-          <B icon="doc" onClick={() => ask(t("之前有一批到貨漏登了,幫我補登入庫:若屬採購,必須先核對已完成工作流、已簽發 PO ID 與尚可收數量,不得用來源單位或自由成本補造採購入庫;內部調撥或退庫再追問到貨時間、來源與明細"))}>{t("補單")}</B>
-          <B icon="inbound" onClick={() => ask(regPrompt)}>{t("登記到貨")}</B>
+          <B icon="doc" onClick={() => W2.openBusinessAction("inbound_create")}>{t("補單")}</B>
+          <B icon="inbound" onClick={() => W2.openBusinessAction("inbound_create")}>{t("登記到貨")}</B>
           <B kind="primary" icon="sparkle" onClick={() => ask(t("入庫方面現在有什麼要處理的?把待審核、質檢中的單都列出來給我"))}>{t("問秘書")}</B>
         </>}/>
 

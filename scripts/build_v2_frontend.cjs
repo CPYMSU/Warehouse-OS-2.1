@@ -63,7 +63,7 @@ function buildTarget(outputName, files) {
     comments: false,
     filename: outputName.replace(/\.js$/, ".jsx"),
   }).code;
-  return `/* WAREHOUSE OS 2.0 · PRECOMPILED · sources-sha256:${digest} */\n${transformed}\n`;
+  return `/* WAREHOUSE OS 2.1 · PRECOMPILED · sources-sha256:${digest} */\n${transformed}\n`;
 }
 
 function main() {

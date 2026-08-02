@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 庫管中心 — virtual hub over the four canonical modules */
+/* WAREHOUSE 2.1 · 庫管中心 — virtual hub over the four canonical modules */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;

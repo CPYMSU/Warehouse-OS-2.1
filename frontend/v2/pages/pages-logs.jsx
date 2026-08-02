@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 審計日誌 — Swiss 版式,真後端 */
+/* WAREHOUSE 2.1 · 審計日誌 — Swiss 版式,真後端 */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;

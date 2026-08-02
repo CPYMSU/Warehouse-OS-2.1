@@ -54,8 +54,6 @@ export const collabSendMessage = (payload: Record<string, any>) =>
 export const collabMessageAct = (id: number | string, act: string) =>
   apiPost(`/api/collab/messages/${id}/${act}`, {});
 
-// ---- AI 秘書會話恢復 / 寫操作 ----
+// ---- AI 秘書會話恢復 ----
 export const assistantBootstrap = (messageLimit = 80) =>
   apiGet(`/api/assistant/bootstrap?message_limit=${messageLimit}`);
-export const agentConfirm = (id: string) => apiPost(`/api/agent/actions/${id}/confirm`, {});
-export const agentCancel = (id: string) => apiPost(`/api/agent/actions/${id}/cancel`, {});

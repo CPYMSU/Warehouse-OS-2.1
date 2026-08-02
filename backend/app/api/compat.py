@@ -8,9 +8,10 @@ PostgreSQL backend is rebuilt module by module.  This router has two jobs:
 * expose an explicit tenant-isolated compatibility projection for legacy
   read models that have not yet received their final domain schema.
 
-Missing compatibility documents return truthful empty states with
-``available=false``.  They never inject demonstration data or report a
-successful business operation that did not happen.
+Missing compatibility documents return truthful connected-empty states.  They
+never inject demonstration data or report a successful business operation that
+did not happen; ``empty=true`` distinguishes an available API with no records
+from an unavailable service.
 """
 
 from __future__ import annotations
@@ -27,14 +28,23 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import ActorContext, current_actor
 from app.db.session import database_is_available, tenant_session
+from app.services.auto_runtime import runtime_capability_map
+from app.services.digital_asset_hosting import (
+    asset_summary as native_digital_asset_summary,
+)
+from app.services.digital_asset_hosting import (
+    list_assets as native_digital_assets,
+)
 from app.services.task_center import (
     create_task,
+    get_task,
     list_tasks,
+    task_history,
     task_meta,
+    update_task,
     update_task_status,
 )
 from app.services.warehouse_operations import alerts_by_item
-from app.terminal.catalog import ai_capability_states, ai_tool_schemas
 
 router = APIRouter(tags=["frontend-compatibility"])
 
@@ -106,7 +116,10 @@ def _documents(
                        created_at, updated_at
                 FROM compatibility.documents
                 WHERE namespace = :namespace
-                  AND (:status_filter IS NULL OR payload->>'status' = :status_filter)
+                  AND (
+                    CAST(:status_filter AS text) IS NULL
+                    OR payload->>'status' = CAST(:status_filter AS text)
+                  )
                 ORDER BY updated_at DESC, document_key
                 LIMIT :limit
                 """
@@ -123,9 +136,7 @@ def _documents(
     output: list[dict[str, object]] = []
     for row in rows:
         payload = (
-            dict(row["payload"])
-            if isinstance(row["payload"], dict)
-            else {"value": row["payload"]}
+            dict(row["payload"]) if isinstance(row["payload"], dict) else {"value": row["payload"]}
         )
         payload.setdefault("id", str(row["id"]))
         payload.setdefault("document_key", row["document_key"])
@@ -258,7 +269,9 @@ def _integration_payload(
         or key == "secret_ref"
     }
     protected.setdefault("provider", provider)
-    protected.setdefault("configured", bool(protected.get("secret_ref") or protected.get("enabled")))
+    protected.setdefault(
+        "configured", bool(protected.get("secret_ref") or protected.get("enabled"))
+    )
     protected.setdefault("available", True)
     return _json_safe(protected)
 
@@ -285,6 +298,34 @@ def tasks_create(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     return create_task(actor, payload)
+
+
+@router.get("/api/tasks/{task_id}")
+def tasks_show(
+    task_id: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return get_task(actor, task_id)
+
+
+@router.get("/api/tasks/{task_id}/history")
+def tasks_history(
+    task_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    before_id: int | None = Query(default=None, ge=1),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return task_history(actor, task_id, limit=limit, before_id=before_id)
+
+
+@router.patch("/api/tasks/{task_id}")
+@router.post("/api/tasks/{task_id}/update")
+def tasks_update(
+    task_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return update_task(actor, task_id, payload)
 
 
 @router.patch("/api/tasks/{task_id}/status")
@@ -520,7 +561,7 @@ def ai_health(actor: ActorContext = Depends(current_actor)) -> dict[str, object]
         "database": "ready" if database_ready else "unavailable",
         "provider_configured": configured,
         "provider": provider.get("provider", "deepseek"),
-        "capability_states": ai_capability_states(),
+        "capability_map": runtime_capability_map(),
     }
 
 
@@ -590,8 +631,7 @@ def assistant_bootstrap(
         },
         "user": actor.user_payload,
         "conversations": ai_conversations(limit=100, actor=actor)["conversations"],
-        "tools": ai_tool_schemas(),
-        "capability_states": ai_capability_states(),
+        "capability_map": runtime_capability_map(),
         "messages": [],
         "message_limit": message_limit,
     }
@@ -623,11 +663,13 @@ def alerts(
 ) -> dict[str, object]:
     rows = _alert_rows(actor, limit=limit, status_filter=status_filter)
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "alerts": rows,
         "items": rows,
         "count": len(rows),
-        "reason": None if rows else "alerts_not_migrated_or_empty",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -673,7 +715,9 @@ def records_meta(actor: ActorContext = Depends(current_actor)) -> dict[str, obje
     types = sorted({str(row.get("type")) for row in rows if row.get("type")})
     statuses = sorted({str(row.get("status")) for row in rows if row.get("status")})
     base: dict[str, object] = {
-        "available": bool(stored or rows),
+        "available": True,
+        "empty": not (stored or rows),
+        "source": "compatibility",
         "types": types,
         "statuses": statuses,
         "record_types": types,
@@ -682,7 +726,7 @@ def records_meta(actor: ActorContext = Depends(current_actor)) -> dict[str, obje
     if stored:
         base.update(stored)
     if not stored and not rows:
-        base["reason"] = "records_not_migrated"
+        base["reason"] = "no_records"
     return _json_safe(base)
 
 
@@ -705,8 +749,14 @@ def records_search(
                     WHERE namespace = 'record'
                       AND status = 'active'
                       AND (:query = '' OR payload::text ILIKE '%' || :query || '%')
-                      AND (:record_type IS NULL OR payload->>'type' = :record_type)
-                      AND (:record_status IS NULL OR payload->>'status' = :record_status)
+                      AND (
+                        CAST(:record_type AS text) IS NULL
+                        OR payload->>'type' = CAST(:record_type AS text)
+                      )
+                      AND (
+                        CAST(:record_status AS text) IS NULL
+                        OR payload->>'status' = CAST(:record_status AS text)
+                      )
                     ORDER BY updated_at DESC
                     LIMIT :limit
                     """
@@ -724,9 +774,7 @@ def records_search(
     records: list[dict[str, object]] = []
     for row in rows:
         item = (
-            dict(row["payload"])
-            if isinstance(row["payload"], dict)
-            else {"value": row["payload"]}
+            dict(row["payload"]) if isinstance(row["payload"], dict) else {"value": row["payload"]}
         )
         item.setdefault("id", str(row["id"]))
         item.setdefault("document_key", row["document_key"])
@@ -736,11 +784,13 @@ def records_search(
         item.setdefault("updated_at", row["updated_at"])
         records.append(_json_safe(item))
     return {
-        "available": bool(records),
+        "available": True,
+        "empty": not records,
+        "source": "compatibility",
         "records": records,
         "items": records,
         "count": len(records),
-        "reason": None if records else "records_not_migrated_or_no_match",
+        "reason": None if records else "no_matching_records",
     }
 
 
@@ -762,10 +812,12 @@ def financial_assets(actor: ActorContext = Depends(current_actor)) -> dict[str, 
     with tenant_session(actor.tenant_id) as session:
         rows = _documents(session, "asset.financial", limit=1000)
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "assets": rows,
         "items": rows,
-        "reason": None if rows else "financial_assets_not_migrated",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -797,33 +849,50 @@ def financial_portfolio(actor: ActorContext = Depends(current_actor)) -> dict[st
         for key, value in sorted(allocation.items())
     ]
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "total_cost_cny": total_cost,
         "total_value_cny": total_value,
         "unrealized_pnl_cny": total_value - total_cost,
         "day_change_cny": _sum(rows, "day_change_cny"),
         "allocation": allocation_rows,
-        "reason": None if rows else "financial_assets_not_migrated",
+        "reason": None if rows else "no_records",
     }
 
 
 @router.get("/api/digital-assets")
 def digital_assets(
     limit: int = Query(default=300, ge=1, le=1000),
+    kind: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
+    native = native_digital_assets(
+        actor,
+        limit=limit,
+        kind=kind,
+        status_filter=status_filter,
+    )
+    if native["assets"]:
+        return native
     with tenant_session(actor.tenant_id) as session:
         rows = _documents(session, "asset.digital", limit=limit)
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "assets": rows,
         "items": rows,
-        "reason": None if rows else "digital_assets_not_migrated",
+        "reason": None if rows else "no_records",
     }
 
 
 @router.get("/api/digital-assets/summary")
 def digital_assets_summary(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
+    native = native_digital_asset_summary(actor)
+    if native["assets"]:
+        return native
     with tenant_session(actor.tenant_id) as session:
         stored = _document(session, "asset.digital.summary")
         assets = _documents(session, "asset.digital", limit=1000)
@@ -840,14 +909,16 @@ def digital_assets_summary(actor: ActorContext = Depends(current_actor)) -> dict
         listing_status = str(row.get("status") or "unknown")
         by_listing_status[listing_status] = by_listing_status.get(listing_status, 0) + 1
     return {
-        "available": bool(assets or listings),
+        "available": True,
+        "empty": not (assets or listings),
+        "source": "compatibility",
         "by_kind": [{"kind": key, "count": value} for key, value in sorted(by_kind.items())],
         "listings": [
             {"status": key, "count": value} for key, value in sorted(by_listing_status.items())
         ],
         "workspaces": sum(1 for row in assets if row.get("workspace")),
         "latest_valuation_total_cny": _sum(assets, "valuation_cny"),
-        "reason": None if assets or listings else "digital_assets_not_migrated",
+        "reason": None if assets or listings else "no_records",
     }
 
 
@@ -865,10 +936,12 @@ def digital_asset_listings(
             status_filter=status_filter,
         )
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "listings": rows,
         "items": rows,
-        "reason": None if rows else "digital_asset_listings_not_migrated",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -877,10 +950,12 @@ def digital_asset_common_market(actor: ActorContext = Depends(current_actor)) ->
     with tenant_session(actor.tenant_id) as session:
         rows = _documents(session, "asset.digital.common_listing", limit=500)
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "listings": rows,
         "items": rows,
-        "reason": None if rows else "common_market_not_migrated",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -892,17 +967,15 @@ def digital_asset_trades(
     with tenant_session(actor.tenant_id) as session:
         rows = _documents(session, "asset.digital.trade", limit=limit)
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "trades": rows,
         "items": rows,
         "total_amount_cny": _sum(rows, "amount_cny"),
-        "pending_acceptance": sum(
-            1 for row in rows if row.get("acceptance_status") == "pending"
-        ),
-        "disputed_count": sum(
-            1 for row in rows if row.get("acceptance_status") == "disputed"
-        ),
-        "reason": None if rows else "digital_asset_trades_not_migrated",
+        "pending_acceptance": sum(1 for row in rows if row.get("acceptance_status") == "pending"),
+        "disputed_count": sum(1 for row in rows if row.get("acceptance_status") == "disputed"),
+        "reason": None if rows else "no_records",
     }
 
 
@@ -926,12 +999,14 @@ def digital_asset_revenue(
             elif allocation.get("allocations"):
                 unpaid += 1
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "events": rows,
         "items": rows,
         "total_distributed_cny": distributed,
         "unpaid_allocations": unpaid,
-        "reason": None if rows else "digital_asset_revenue_not_migrated",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -1029,11 +1104,13 @@ def workflow_inbox(
     if domain:
         rows = [row for row in rows if row.get("domain") in (None, domain)]
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "tasks": rows,
         "items": rows,
         "count": len(rows),
-        "reason": None if rows else "workflow_inbox_not_migrated_or_empty",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -1047,11 +1124,13 @@ def _projection_list(
     with tenant_session(actor.tenant_id) as session:
         rows = _documents(session, namespace, limit=limit)
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         key: rows,
         "items": rows,
         "count": len(rows),
-        "reason": None if rows else f"{namespace.replace('.', '_')}_not_migrated",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -1072,7 +1151,21 @@ def tender_my_bids(actor: ActorContext = Depends(current_actor)) -> dict[str, ob
 
 @router.get("/api/tender/market")
 def tender_market(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
-    return _projection_list(actor, "tender.market", key="tenders")
+    market = _projection_list(actor, "tender.market", key="tenders")
+    market.update(
+        {
+            "market_scope": "warehouse_os_connected_companies",
+            "external_public_sources": {
+                "connected": False,
+                "coverage": [],
+            },
+            "screening": {
+                "performed": bool(market["count"]),
+                "reason": (None if market["count"] else "no_connected_platform_tenders_to_screen"),
+            },
+        }
+    )
+    return market
 
 
 @router.get("/api/b2b/relations")
@@ -1094,7 +1187,13 @@ def _single_projection(
     with tenant_session(actor.tenant_id) as session:
         stored = _document(session, namespace, document_key)
     if stored is None:
-        return _unavailable(module or namespace.replace(".", "_"), **(defaults or {}))
+        return {
+            "available": True,
+            "empty": True,
+            "source": "compatibility",
+            "reason": "no_records",
+            **(defaults or {}),
+        }
     public = _json_safe(stored)
     return {"available": True, **public}
 
@@ -1136,12 +1235,16 @@ def erp_cashflow(
 
 @router.get("/api/erp/gl/ap")
 def erp_ap(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
-    return _projection_list(actor, "erp.gl.ap", key="items")
+    result = _projection_list(actor, "erp.gl.ap", key="items")
+    result["by_party"] = []
+    return result
 
 
 @router.get("/api/erp/gl/ar")
 def erp_ar(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
-    return _projection_list(actor, "erp.gl.ar", key="items")
+    result = _projection_list(actor, "erp.gl.ar", key="items")
+    result["by_party"] = []
+    return result
 
 
 @router.get("/api/erp/gl/balance-sheet")
@@ -1179,11 +1282,13 @@ def erp_finance_events(
     if unposted is not None:
         rows = [row for row in rows if bool(row.get("unposted")) is unposted]
     return {
-        "available": bool(rows),
+        "available": True,
+        "empty": not rows,
+        "source": "compatibility",
         "events": rows,
         "items": rows,
         "count": len(rows),
-        "reason": None if rows else "erp_finance_events_not_migrated_or_empty",
+        "reason": None if rows else "no_records",
     }
 
 
@@ -1219,11 +1324,7 @@ def _audit_rows(
     limit: int,
     cli_only: bool,
 ) -> list[dict[str, object]]:
-    clause = (
-        "AND (event_type LIKE 'terminal.%' OR event_type LIKE 'cli.%')"
-        if cli_only
-        else ""
-    )
+    clause = "AND (event_type LIKE 'terminal.%' OR event_type LIKE 'cli.%')" if cli_only else ""
     with tenant_session(actor.tenant_id) as session:
         rows = (
             session.execute(

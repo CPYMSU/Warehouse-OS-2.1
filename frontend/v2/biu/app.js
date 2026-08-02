@@ -77,7 +77,7 @@
       code: "05", name: "協作櫃檯", secretary: "協作秘書", english: "COLLABORATION",
       displayName: "夏禾", manner: "活潑、敏捷，喜歡把空缺席位、玩家能力與案件需要配成小隊。",
       greeting: "嗨，我是夏禾。這裡不必單打獨鬥：說說你想做的工作和能投入的時間，我幫你找正在缺人的案件工作間。",
-      description: "尋找案件工作間、加入協作並前往 Warehouse 2.0 實時消息。",
+      description: "尋找案件工作間、加入協作並前往 Warehouse 2.1 實時消息。",
       prompts: ["我如何找到適合加入的案件工作間？", "加入協作前，應先說明哪些能力與利益衝突？"],
       actions: [{ key: "spaces", label: "展開協作工作間" }, { key: "messages", label: "前往互動消息" }],
     },
@@ -358,7 +358,7 @@
       setToken("");
       state.globalIdentityAuthenticated = false;
       resetSensitiveState();
-      connection("bad", "Warehouse 2.0 身份已失效");
+      connection("bad", "Warehouse 2.1 身份已失效");
     }
     return response;
   }
@@ -878,7 +878,7 @@
         || key(recommendation.entry_mode) !== entry
         || text(recommendation.org_unit_code) !== text(position.org_unit_code)
         || !text(recommendation.reason)
-      ) throw new Error("BIU 推薦與 Warehouse 2.0 實時職位不一致");
+      ) throw new Error("BIU 推薦與 Warehouse 2.1 實時職位不一致");
       seen.add(positionCode);
       return { recommendation, position };
     });
@@ -917,7 +917,7 @@
     const sequence = ++guideRequestSequence;
     const root = $("#guide-question-stage");
     $("#guide-previous").disabled = true;
-    guideLoading(root, "正在對照 Warehouse 2.0 職位目錄");
+    guideLoading(root, "正在對照 Warehouse 2.1 職位目錄");
     $("#guide-progress-label").textContent = "正在形成三個職位推薦";
     try {
       const data = await guideJson("/api/biu/guide/recommend", {
@@ -927,7 +927,7 @@
       if (sequence !== guideRequestSequence) return;
       if (!state.catalogReady) await loadCatalog();
       if (sequence !== guideRequestSequence) return;
-      if (!state.catalogReady) throw new Error("Warehouse 2.0 實時職位目錄尚未連線，無法確認推薦");
+      if (!state.catalogReady) throw new Error("Warehouse 2.1 實時職位目錄尚未連線，無法確認推薦");
       state.guideProfile = validateGuideProfile(data);
       state.guideRecommendations = liveGuideRecommendations(data);
       renderGuideResults();
@@ -1297,7 +1297,7 @@
     }
     const positions = state.positions.filter(guestEnabledPosition);
     if (!positions.length) {
-      root.innerHTML = `<div class="empty-state"><span>—</span><p>Warehouse 2.0 目前沒有啟用公開訪客席位。</p><a class="button" href="#roles" data-route="roles">查看完整職位目錄</a></div>`;
+      root.innerHTML = `<div class="empty-state"><span>—</span><p>Warehouse 2.1 目前沒有啟用公開訪客席位。</p><a class="button" href="#roles" data-route="roles">查看完整職位目錄</a></div>`;
       return;
     }
     root.innerHTML = `<div class="guest-seat-grid">${positions.map(position => `<button class="guest-seat-card" type="button" data-guest-position="${h(guestPositionCode(position))}"><span>${h(guestPositionCode(position))} · ${h(position.guest_access)}</span><h3>${h(first(position.position_name, guestPositionCode(position)))}<small>${h(position.position_name_en)}</small></h3><p>${h(position.summary)}</p><b>領取此訪客席位 →</b></button>`).join("")}</div>`;
@@ -1329,7 +1329,7 @@
         || capabilities.messages !== false
         || capabilities.protected_case_access !== false
         || guestPositionCode(returnedPosition) !== positionCode
-      ) throw new Error("Warehouse 2.0 訪客能力回應未通過安全檢查");
+      ) throw new Error("Warehouse 2.1 訪客能力回應未通過安全檢查");
       state.guestSeat = { session, position: returnedPosition };
       state.guestCapabilities = capabilities;
       state.guestCases = [];
@@ -1390,7 +1390,7 @@
     const root = $("#guest-case-list");
     if (!root || !state.guestSeat) return;
     if (!state.guestCases.length) {
-      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.0 目前沒有返回公開訪客案件。</p></div>`;
+      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.1 目前沒有返回公開訪客案件。</p></div>`;
       return;
     }
     root.innerHTML = state.guestCases.map(item => `<article class="case-card"><header><span>${h(first(item.case_no, guestCaseKey(item)))}</span><span>${h(first(item.difficulty, "PUBLIC"))}</span></header><h3>${h(first(item.title, "公開案件"))}</h3><p>${h(first(item.summary, "BIU 公開材料"))}</p><div class="guest-case-meta"><span>${h(first(item.matter_track, "CASEWORK"))}</span><span>${h(number(item.estimated_minutes))} MIN</span><span>${h(number(item.step_count))} STEPS</span></div><footer><button type="button" data-guest-case="${h(guestCaseKey(item))}">打開公開卷宗 →</button></footer></article>`).join("");
@@ -1552,8 +1552,8 @@
     if (!root) return;
     if (!state.catalogReady) {
       root.innerHTML = state.catalogError
-        ? `<div class="load-error" role="alert"><p>${h(state.catalogError)}</p><button class="button" type="button" data-retry-catalog>重新讀取 Warehouse 2.0 目錄</button></div>`
-        : `<div class="catalog-skeleton" aria-label="正在從 Warehouse 2.0 讀取職位"><span></span><span></span><span></span><span></span><span></span><span></span></div>`;
+        ? `<div class="load-error" role="alert"><p>${h(state.catalogError)}</p><button class="button" type="button" data-retry-catalog>重新讀取 Warehouse 2.1 目錄</button></div>`
+        : `<div class="catalog-skeleton" aria-label="正在從 Warehouse 2.1 讀取職位"><span></span><span></span><span></span><span></span><span></span><span></span></div>`;
       $("[data-retry-catalog]", root)?.addEventListener("click", loadCatalog);
       return;
     }
@@ -1634,7 +1634,7 @@
         ? "正式身份需經 BIU 內部任命；本頁只展示條件，不會直接授予職位。"
         : text(position.lock_reason, position.cta_label, "此職位目前不能由公開入口提交。");
     $("#join-explainer").innerHTML = (canRegister
-      ? `<b>${h(quick ? "快速建立身份" : ENTRY_LABELS[entry])}</b> · ${authenticatedApplication ? (quick ? "將以已驗證的 Warehouse 2.0 身份立即啟用此職位" : "將以已驗證的 Warehouse 2.0 身份提交職位申請") : (quick ? "在本頁建立身份後立即進入 BIU" : "將建立 Warehouse 2.0 全局身份並提交 BIU 職位")}；職位代碼 <code>${h(position.position_code)}</code>。${requirements.length ? `<ul>${requirements.map(item => `<li>${h(item)}</li>`).join("")}</ul>` : ""}`
+      ? `<b>${h(quick ? "快速建立身份" : ENTRY_LABELS[entry])}</b> · ${authenticatedApplication ? (quick ? "將以已驗證的 Warehouse 2.1 身份立即啟用此職位" : "將以已驗證的 Warehouse 2.1 身份提交職位申請") : (quick ? "在本頁建立身份後立即進入 BIU" : "將建立 Warehouse 2.1 全局身份並提交 BIU 職位")}；職位代碼 <code>${h(position.position_code)}</code>。${requirements.length ? `<ul>${requirements.map(item => `<li>${h(item)}</li>`).join("")}</ul>` : ""}`
       : `<b>${h(ENTRY_LABELS[entry] || entry)}</b> · ${h(lockedExplanation)}${requirements.length ? `<ul>${requirements.map(item => `<li>${h(item)}</li>`).join("")}</ul>` : ""}`) + guestBoundary;
     $("#join-fields").hidden = !canRegister;
     $("#role-submit").hidden = !canRegister;
@@ -1751,7 +1751,7 @@
       status.textContent = text(data.message, data.status_text, "身份已交由 BIU 處理。你可以使用相同帳號呈交身份。 ");
       form.querySelectorAll("input, textarea").forEach(field => { field.disabled = true; });
       submit.hidden = true;
-      toast("BIU 身份已提交至 Warehouse 2.0");
+      toast("BIU 身份已提交至 Warehouse 2.1");
     } catch (error) {
       if (error.status === 409 && !authenticatedApplication) {
         const username = String(fields.get("username") || "").trim();
@@ -1779,7 +1779,7 @@
     const status = $("#login-form-status");
     const submit = $("#login-submit");
     submit.disabled = true;
-    status.textContent = "正在由 Warehouse 2.0 驗證身份……";
+    status.textContent = "正在由 Warehouse 2.1 驗證身份……";
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
@@ -1795,7 +1795,7 @@
       /* The login response can describe another default tenant.  BIU never
          authorizes from that body: only its global token is accepted here. */
       const loginToken = text(object(payload.result).token, payload.token);
-      if (!loginToken) throw new Error("Warehouse 2.0 未返回身份憑證");
+      if (!loginToken) throw new Error("Warehouse 2.1 未返回身份憑證");
       assertAuthFence(loginFence);
       setToken(loginToken);
       const activationFence = authFence();
@@ -1817,7 +1817,7 @@
   }
 
   function resetSensitiveViews() {
-    $("#lobby-identity").innerHTML = `<span class="eyebrow">IDENTITY</span><strong>等待 Warehouse 2.0 身份</strong><small>尚未載入</small>`;
+    $("#lobby-identity").innerHTML = `<span class="eyebrow">IDENTITY</span><strong>等待 Warehouse 2.1 身份</strong><small>尚未載入</small>`;
     $("#practice-name").textContent = "—";
     $("#practice-department").textContent = "—";
     $("#case-list").innerHTML = "";
@@ -1903,7 +1903,7 @@
       const me = await tenantJson("/api/auth/me", { cache: "no-store" });
       assertAuthFence(sessionFence);
       if (me.authenticated !== true || me.tenant !== BIU_TENANT) {
-        throw new Error("此 Warehouse 2.0 身份尚未取得 BIU 有效成員資格");
+        throw new Error("此 Warehouse 2.1 身份尚未取得 BIU 有效成員資格");
       }
       assertAuthFence(sessionFence);
       const boot = await tenantJson("/api/bootstrap", { cache: "no-store" });
@@ -1929,7 +1929,7 @@
       const sessionError = error.message || "BIU 身份無法讀取";
       resetSensitiveState();
       state.sessionError = sessionError;
-      if (error.status === 401) connection("bad", "Warehouse 2.0 身份已失效");
+      if (error.status === 401) connection("bad", "Warehouse 2.1 身份已失效");
       else connection("bad", state.sessionError);
       if (required) throw error;
       return null;
@@ -2000,7 +2000,7 @@
     }
     state.globalIdentityAuthenticated = true;
     updateAuthUI();
-    connection("", "Warehouse 2.0 身份已變更 · 正在重新驗證 BIU");
+    connection("", "Warehouse 2.1 身份已變更 · 正在重新驗證 BIU");
     const user = await loadSession();
     if (sequence !== storageValidationSequence || event.newValue !== token()) return;
     if (user) activateRoute(state.route, { preserveScroll: true });
@@ -2268,7 +2268,7 @@
         actionId: actionKey.startsWith("command:") ? actionKey.slice("command:".length) : text(rawId),
         confirmationKey: `command_confirmation:${actionKey || text(rawId, clientRequestId())}`,
         title: text(action.title, payload.title, "需要正式確認"),
-        summary: text(action.summary, payload.summary, "此操作需要 Warehouse 2.0 的正式身份確認。"),
+        summary: text(action.summary, payload.summary, "此操作需要 Warehouse 2.1 的正式身份確認。"),
       };
     }
     return {
@@ -2276,7 +2276,7 @@
       actionId: "",
       confirmationKey: `generic_confirmation:${clientRequestId()}`,
       title: "需要正式確認",
-      summary: "這項操作沒有可供大廳安全執行的確認契約；請前往 Warehouse 2.0 正式確認。",
+      summary: "這項操作沒有可供大廳安全執行的確認契約；請前往 Warehouse 2.1 正式確認。",
     };
   }
 
@@ -2286,7 +2286,7 @@
     const status = key(message.confirmationStatus || "pending");
     const actionable = recordCreate && ["pending", "error"].includes(status);
     const statusText = ({
-      submitting: "正在送交 Warehouse 2.0…",
+      submitting: "正在送交 Warehouse 2.1…",
       completed: "檔案已建立",
       rejected: "提案已退回，沒有寫入",
       expired: "提案已失效，請重新請秘書建立",
@@ -2427,12 +2427,10 @@
       controller.abort();
     }, 60000) : null;
     try {
-      const context = { desk_id: runDeskId };
-      if (state.lobbyCaseId) context.case_id = Number(state.lobbyCaseId);
       await tenantAgentStream({
         text: prompt,
         conversation_id: state.lobbyConversations[runDeskId] || null,
-        biu_lobby_context: context,
+        surface: "biu",
       }, event => {
         if (runSequence !== state.lobbyRunSequence || state.lobbyDesk !== runDeskId) return;
         if (event.event === "run_start") {
@@ -2511,7 +2509,7 @@
     const root = $("#lobby-case-fields");
     const type = lobbyCaseTypes().find(item => String(item.id) === String($("#lobby-case-type").value));
     if (!type) {
-      root.innerHTML = `<p class="field-note">選擇類型後，這裡會顯示 Warehouse 2.0 定義的必填欄位。</p>`;
+      root.innerHTML = `<p class="field-note">選擇類型後，這裡會顯示 Warehouse 2.1 定義的必填欄位。</p>`;
       return;
     }
     const fields = array(type.fields);
@@ -2600,7 +2598,7 @@
     const requestId = state.lobbyCaseIdempotencyKey || clientRequestId();
     state.lobbyCaseIdempotencyKey = requestId;
     submit.disabled = true;
-    status.textContent = "正在由 Warehouse 2.0 驗證類型、權限與必填資料…";
+    status.textContent = "正在由 Warehouse 2.1 驗證類型、權限與必填資料…";
     try {
       const result = await tenantPost("/api/cases", {
         type_id: type.id,
@@ -2614,7 +2612,7 @@
       const created = object(result.case);
       if (!first(created.id, created.case_id)) throw new Error("建立接口未返回案件識別");
       state.lobbyCaseId = first(created.id, created.case_id);
-      appendLobbyTranscript("filing", { role: "assistant", text: `案件 ${text(created.case_no, created.id)} 已由結構化接案表單寫入 Warehouse 2.0。` });
+      appendLobbyTranscript("filing", { role: "assistant", text: `案件 ${text(created.case_no, created.id)} 已由結構化接案表單寫入 Warehouse 2.1。` });
       form.reset();
       state.lobbyCaseIdempotencyKey = null;
       $("#lobby-case-create").hidden = true;
@@ -2622,7 +2620,7 @@
       assertAuthFence(requestFence);
       populateLobbyCaseSelector();
       status.textContent = "";
-      toast("案件已建立並保存在 BIU Warehouse 2.0");
+      toast("案件已建立並保存在 BIU Warehouse 2.1");
     } catch (error) {
       if (sessionChanged(error)) return;
       status.textContent = `${error.message || "案件建立失敗"}。同一表單保留冪等識別；再次提交不會建立重複案件。`;
@@ -2661,7 +2659,7 @@
     const root = $("#case-list");
     if (!root) return;
     if (!state.cases.length) {
-      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.0 目前沒有返回你可閱讀的 BIU 案件。</p></div>`;
+      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.1 目前沒有返回你可閱讀的 BIU 案件。</p></div>`;
       return;
     }
     root.innerHTML = state.cases.map(item => `
@@ -2781,7 +2779,7 @@
     const root = $("#space-list");
     if (!root) return;
     if (!state.spaces.length) {
-      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.0 目前沒有返回可探索的 BIU 協作工作間。</p></div>`;
+      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.1 目前沒有返回可探索的 BIU 協作工作間。</p></div>`;
       return;
     }
     root.innerHTML = state.spaces.map(space => {
@@ -2896,7 +2894,7 @@
       const detail = await tenantJson(`/api/tasks/${encodeURIComponent(taskId)}/collaboration`);
       if (selectionSequence !== spaceSelectionSequence || String(state.selectedSpaceId) !== requestedTaskId) return;
       const capabilities = collabCapabilities(detail);
-      if (capabilities.can_read !== true) throw new Error("Warehouse 2.0 未授予此工作間的讀取權限");
+      if (capabilities.can_read !== true) throw new Error("Warehouse 2.1 未授予此工作間的讀取權限");
       const workspace = collabWorkspace(detail);
       const task = object(first(collabData(detail).task, workspace.task, {}));
       state.collaboration = detail;
@@ -2913,8 +2911,8 @@
         capabilities,
       });
       renderMessageSpaces();
-      $("#conversation-head").innerHTML = `<span class="eyebrow">WAREHOUSE 2.0 / LIVE</span><h2>${h(text(task.title, space && space.title, "協作工作間"))}</h2>`;
-      setMessageComposer(capabilities.can_send === true, capabilities.can_send === true ? "可發送 · 寫入 Warehouse 2.0" : "只讀 · 由工作間權限決定");
+      $("#conversation-head").innerHTML = `<span class="eyebrow">WAREHOUSE 2.1 / LIVE</span><h2>${h(text(task.title, space && space.title, "協作工作間"))}</h2>`;
+      setMessageComposer(capabilities.can_send === true, capabilities.can_send === true ? "可發送 · 寫入 Warehouse 2.1" : "只讀 · 由工作間權限決定");
       await loadMessages(taskId, selectionSequence, detail);
     } catch (error) {
       if (sessionChanged(error) || selectionSequence !== spaceSelectionSequence || String(state.selectedSpaceId) !== requestedTaskId) return;
@@ -2950,7 +2948,7 @@
   function renderMessages() {
     const root = $("#message-log");
     if (!state.messages.length) {
-      root.innerHTML = `<div class="empty-state"><span>0</span><p>此工作間目前沒有消息。第一則消息會直接保存在 Warehouse 2.0。</p></div>`;
+      root.innerHTML = `<div class="empty-state"><span>0</span><p>此工作間目前沒有消息。第一則消息會直接保存在 Warehouse 2.1。</p></div>`;
       return;
     }
     const userId = first(state.user.id, state.user.user_id);
@@ -3032,7 +3030,7 @@
     state.selectedCaseId = caseId;
     state.selectedCase = null;
     renderCourt();
-    $("#hearing-head").innerHTML = `<span class="case-no">SYNCING CASE</span><h2>正在讀取案件程序</h2><p>權限與版本鎖由 Warehouse 2.0 確認。</p>`;
+    $("#hearing-head").innerHTML = `<span class="case-no">SYNCING CASE</span><h2>正在讀取案件程序</h2><p>權限與版本鎖由 Warehouse 2.1 確認。</p>`;
     try {
       const data = await tenantJson(`/api/cases/${encodeURIComponent(caseId)}`);
       if (selectionSequence !== caseSelectionSequence || String(state.selectedCaseId) !== requestedCaseId) return;
@@ -3063,7 +3061,7 @@
   function renderCourt() {
     const item = state.selectedCase;
     if (!item) {
-      $("#hearing-head").innerHTML = `<span class="case-no">NO CASE</span><h2>請選擇一項案件</h2><p>案件標題與程序狀態將從 Warehouse 2.0 載入。</p>`;
+      $("#hearing-head").innerHTML = `<span class="case-no">NO CASE</span><h2>請選擇一項案件</h2><p>案件標題與程序狀態將從 Warehouse 2.1 載入。</p>`;
       $("#hearing-timeline").innerHTML = `<li class="placeholder"><span>—</span><p>尚無可顯示的程序記錄</p></li>`;
       $("#court-participants").innerHTML = `<div class="empty-state small"><p>選擇案件後載入</p></div>`;
       $("#evidence-list").innerHTML = `<div class="empty-state small"><p>選擇案件後顯示已登記附件與材料欄位</p></div>`;
@@ -3075,7 +3073,7 @@
     $("#hearing-head").innerHTML = `<span class="case-no">${h(first(item.case_no, item.id))} · ${h(first(item.status, "—"))}</span><h2>${h(first(item.title, "未命名案件"))}</h2><p>${h(first(item.type_name_snapshot, item.owner_unit_name, "BIU CASE"))}</p>${canProcess ? `<button class="text-button hearing-collab" type="button" id="hearing-collab">${collaborationTaskId != null ? "加入案件工作間 →" : "建立案件工作間 →"}</button>` : ""}`;
     $("#hearing-collab")?.addEventListener("click", openCaseCollaboration);
     const events = array(item.events);
-    $("#hearing-timeline").innerHTML = events.length ? events.map((event, index) => `<li><span>${String(index + 1).padStart(2, "0")}</span><div><h3>${h(ACTION_LABELS[event.event_type] || event.event_type || "程序記錄")}</h3>${event.message ? `<p>${h(event.message)}</p>` : ""}<time>${h(text(event.actor_name, event.actor_kind, "BIU"))} · ${h(formatDate(event.created_at))}${event.from_status && event.to_status ? ` · ${h(event.from_status)} → ${h(event.to_status)}` : ""}</time></div></li>`).join("") : `<li class="placeholder"><span>01</span><p>Warehouse 2.0 尚未返回程序記錄</p></li>`;
+    $("#hearing-timeline").innerHTML = events.length ? events.map((event, index) => `<li><span>${String(index + 1).padStart(2, "0")}</span><div><h3>${h(ACTION_LABELS[event.event_type] || event.event_type || "程序記錄")}</h3>${event.message ? `<p>${h(event.message)}</p>` : ""}<time>${h(text(event.actor_name, event.actor_kind, "BIU"))} · ${h(formatDate(event.created_at))}${event.from_status && event.to_status ? ` · ${h(event.from_status)} → ${h(event.to_status)}` : ""}</time></div></li>`).join("") : `<li class="placeholder"><span>01</span><p>Warehouse 2.1 尚未返回程序記錄</p></li>`;
     const rawParticipants = array(item.participants);
     const returnedParticipants = rawParticipants.map(participant => ({
       label: text(participant.position_name, participant.role_name, participant.participant_role, participant.role, "PARTICIPANT"),
@@ -3162,7 +3160,7 @@
       if (selectionSequence !== caseSelectionSequence || String(state.selectedCaseId) !== selectedCaseId) return;
       const task = object(result.task);
       const taskId = task.id;
-      if (taskId == null) throw new Error("Warehouse 2.0 未返回案件工作間識別碼");
+      if (taskId == null) throw new Error("Warehouse 2.1 未返回案件工作間識別碼");
       state.selectedCase = { ...item, collaboration_task: task };
       toast(result.created === true ? "案件工作間已建立" : "已加入案件工作間");
       spaceSelectionSequence += 1;
@@ -3197,7 +3195,7 @@
       return;
     }
     const assignees = array(state.caseMeta && state.caseMeta.assignees);
-    root.innerHTML = `<label><span>指派參與者</span><select id="court-assignee" required><option value="">請選擇 Warehouse 2.0 返回的參與者</option>${assignees.map(user => `<option value="${h(user.id)}"${Number(user.id) === Number(state.selectedCase && state.selectedCase.assignee_user_id) ? " selected" : ""}>${h(text(user.display_name, user.name, user.username, user.id))}</option>`).join("")}</select></label>`;
+    root.innerHTML = `<label><span>指派參與者</span><select id="court-assignee" required><option value="">請選擇 Warehouse 2.1 返回的參與者</option>${assignees.map(user => `<option value="${h(user.id)}"${Number(user.id) === Number(state.selectedCase && state.selectedCase.assignee_user_id) ? " selected" : ""}>${h(text(user.display_name, user.name, user.username, user.id))}</option>`).join("")}</select></label>`;
   }
 
   async function submitCourtAction(event) {
@@ -3216,7 +3214,7 @@
       if (action === "assign") {
         const assigneeId = $("#court-assignee") && $("#court-assignee").value;
         const assignee = array(state.caseMeta && state.caseMeta.assignees).find(user => String(user.id) === String(assigneeId));
-        if (!assignee) throw new Error("請選擇 Warehouse 2.0 返回的可指派參與者");
+        if (!assignee) throw new Error("請選擇 Warehouse 2.1 返回的可指派參與者");
         body.assignee_user_id = Number(assignee.id);
       }
       if (action === "resolve") {
@@ -3238,7 +3236,7 @@
       renderCourt();
       await loadCases().catch(() => {});
       if (selectionSequence === caseSelectionSequence && String(state.selectedCaseId) === submittedCaseId) {
-        toast("程序記錄已寫入 Warehouse 2.0");
+        toast("程序記錄已寫入 Warehouse 2.1");
       }
     } catch (error) {
       if (selectionSequence === caseSelectionSequence && String(state.selectedCaseId) === submittedCaseId) {
@@ -3286,7 +3284,7 @@
   function renderRecords() {
     const root = $("#archive-list");
     if (!state.records.length) {
-      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.0 目前沒有返回你可閱讀的 BIU 檔案。</p></div>`;
+      root.innerHTML = `<div class="empty-state"><span>0</span><p>Warehouse 2.1 目前沒有返回你可閱讀的 BIU 檔案。</p></div>`;
       return;
     }
     root.innerHTML = state.records.map(record => `<button class="archive-row${String(recordIdOf(record)) === String(recordIdOf(state.selectedRecord)) ? " active" : ""}" type="button" data-record-id="${h(recordIdOf(record))}"><span>${h(first(record.record_no, record.archive_no, record.id))}</span><h3>${h(first(record.title, record.name, "未命名檔案"))}</h3><small>${h(first(record.status, record.category_name_snapshot, "RECORD"))}</small><small>${h(formatDate(first(record.updated_at, record.created_at)))}</small></button>`).join("");
@@ -3299,7 +3297,7 @@
     const consolePanel = $("#record-console");
     consolePanel.hidden = false;
     state.selectedRecord = null;
-    $("#record-console-head").innerHTML = `<span class="eyebrow red">MASTER DOSSIER</span><h2 id="record-console-title">正在讀取檔案程序</h2><p>狀態、動作與時間線由 Warehouse 2.0 返回。</p>`;
+    $("#record-console-head").innerHTML = `<span class="eyebrow red">MASTER DOSSIER</span><h2 id="record-console-title">正在讀取檔案程序</h2><p>狀態、動作與時間線由 Warehouse 2.1 返回。</p>`;
     $("#record-event-list").innerHTML = "";
     $("#record-action-select").innerHTML = `<option value="">載入中</option>`;
     $("#record-action-select").disabled = true;
@@ -3310,7 +3308,7 @@
       const data = await tenantJson(`/api/records/${encodeURIComponent(recordId)}`);
       if (selectionSequence !== recordSelectionSequence) return;
       const record = recordFrom(data);
-      if (recordIdOf(record) == null) throw new Error("Warehouse 2.0 未返回檔案資料");
+      if (recordIdOf(record) == null) throw new Error("Warehouse 2.1 未返回檔案資料");
       if (String(recordIdOf(record)) !== requestedRecordId) throw new Error("檔案回應識別不一致");
       state.selectedRecord = record;
       renderRecordConsole();
@@ -3368,7 +3366,7 @@
         "程序記錄"
       );
       return `<li><span>${String(index + 1).padStart(2, "0")}</span><div><b>${h(eventLabel)}</b>${event.message ? `<p>${h(event.message)}</p>` : ""}<time>${h(text(event.actor_name, event.user_name, "BIU"))} · ${h(formatDate(first(event.created_at, event.occurred_at)))}</time></div></li>`;
-    }).join("") : `<li><span>01</span><div><b>Warehouse 2.0 尚未返回程序記錄</b></div></li>`;
+    }).join("") : `<li><span>01</span><div><b>Warehouse 2.1 尚未返回程序記錄</b></div></li>`;
     const select = $("#record-action-select");
     select.innerHTML = `<option value="">${actions.length ? "選擇可用動作" : "目前沒有可用動作"}</option>${actions.map(item => `<option value="${h(item.action)}">${h(item.label)}</option>`).join("")}`;
     select.disabled = !actions.length;
@@ -3383,7 +3381,7 @@
     const action = $("#record-action-select").value;
     const available = record ? recordActionModel(record).map(item => item.action) : [];
     if (!record || !available.includes(action)) return;
-    if (action === "archive" && !window.confirm("Warehouse 2.0 已將歸檔列為可用動作。確認將此卷宗歸檔？")) return;
+    if (action === "archive" && !window.confirm("Warehouse 2.1 已將歸檔列為可用動作。確認將此卷宗歸檔？")) return;
     const selectionSequence = recordSelectionSequence;
     const submittedRecordId = String(recordIdOf(record));
     const button = event.currentTarget.querySelector("button[type=submit]");
@@ -3409,7 +3407,7 @@
       if (
         selectionSequence === recordSelectionSequence
         && String(recordIdOf(state.selectedRecord)) === submittedRecordId
-      ) toast("檔案程序已寫入 Warehouse 2.0");
+      ) toast("檔案程序已寫入 Warehouse 2.1");
     } catch (error) {
       if (
         selectionSequence === recordSelectionSequence

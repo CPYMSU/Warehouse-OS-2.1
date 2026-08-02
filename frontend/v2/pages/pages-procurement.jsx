@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 採購招標 — Swiss 版式,真後端 */
+/* WAREHOUSE 2.1 · 採購招標 — Swiss 版式,真後端 */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;
@@ -122,6 +122,16 @@ window.W2_LANG.addEN({
   "代理委派": "Agent assignment", "招標公告": "Tender notice", "開標記錄": "Bid opening record",
   "評標報告": "Evaluation report", "中標結果": "Award result", "合同草稿": "Contract draft",
   "審批單": "Approval sheet", "簽章憑證": "Signature proof",
+  "附件公證": "Notarised attachment",
+  "上傳附件公證": "Upload notarised attachment",
+  "附件上傳中…": "Uploading attachment…",
+  "已公證 {n} 份": "{n} notarised file(s)",
+  "尚無附件": "No attachments yet",
+  "PDF、Word、Excel、圖片等，單檔上限 15MB；上傳後生成 SHA-256、版本鏈與伺服器簽章。": "PDF, Word, Excel, images and more, up to 15MB each. Uploads receive SHA-256, version chaining and a server signature.",
+  "驗證公證": "Verify notarisation",
+  "驗證中…": "Verifying…",
+  "公證有效": "Notarisation valid",
+  "公證驗證異常": "Notarisation verification failed",
   "流程拓撲": "Workflow topology",
   "{s} 階段 · {n} 節點 · 指派與流轉規則": "{s} stages · {n} nodes · assignment & routing rules",
   "秘書研判": "Secretary review",
@@ -143,9 +153,15 @@ window.W2_LANG.addEN({
   "流程模板由系統預置或管理員配置。先問秘書採購流程怎麼走也可以。": "Workflow templates are preset by the system or configured by an admin. You can also just ask the Secretary how procurement runs.",
   "載入中…": "Loading…",
   "直接吩咐秘書": "Tell the Secretary",
-  "2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.0 contract: pages are read-only; changes run through the Secretary with full audit.",
+  "2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.1 contract: pages are read-only; changes run through the Secretary with full audit.",
   "流程模板拓撲": "Template topology",
   "節點規則明細": "Node rules",
+  "節點指令集": "Node command set",
+  "已連結 {n} 項指令": "{n} linked command(s)",
+  "選擇指令後，系統會帶入目前流程、實例、待辦與業務單據中已知的欄位；未知欄位留給你補寫。": "Choose a command to prefill known fields from the workflow, instance, task and business record; unknown fields remain for you to complete.",
+  "填寫 · {label}": "Fill · {label}",
+  "此節點尚未配置指令集": "No command set is configured for this node",
+  "節點指令": "Node command",
   "拓撲載入中…": "Loading topology…",
   "去辦理": "Handle it now",
   "秘書研判此節點": "Secretary review of this node",
@@ -295,6 +311,44 @@ const { Icon: I, Btn: B, Tag: T, Label: LB, Empty: EM, Kpi, Folio, Band, pad2, n
 const ask = (p) => W2.openSecretary(p);
 
 const arr = (x) => (Array.isArray(x) ? x : []);
+const contextPathValue = (source, path) => {
+  if (!source || !path) return undefined;
+  let value = source;
+  for (const part of String(path).split(".")) {
+    if (value == null || (typeof value !== "object" && !Array.isArray(value))) return undefined;
+    value = value[part];
+  }
+  return value;
+};
+const commandArgumentsFor = (action, context) => {
+  const output = {
+    ...((action && action.arguments && typeof action.arguments === "object") ? action.arguments : {}),
+  };
+  Object.entries((action && action.bindings && typeof action.bindings === "object") ? action.bindings : {}).forEach(([name, paths]) => {
+    for (const path of arr(paths).length ? paths : [paths]) {
+      const value = contextPathValue(context, path);
+      if (value !== undefined && value !== null && value !== "") {
+        output[name] = value;
+        break;
+      }
+    }
+  });
+  return output;
+};
+const openNodeCommand = (node, action, commandContext) => {
+  if (!action || !action.tool_name) return;
+  const base = typeof commandContext === "function" ? commandContext(node) : commandContext;
+  const context = {
+    ...((base && typeof base === "object") ? base : {}),
+    node,
+  };
+  W2.openBusinessAction({
+    tool_name: action.tool_name,
+    arguments: commandArgumentsFor(action, context),
+    query: action.tool_name,
+    filter: "authorized",
+  });
+};
 const taskPasskeyActions = task => arr(task && (task.passkeyRequiredActions || task.passkey_required_actions)).map(String);
 const taskRequiresPasskey = (task, action) => taskPasskeyActions(task).includes(String(action));
 const taskAssignmentOccupants = task => arr(task && (task.assignmentOccupants || task.assignment_occupants))
@@ -339,7 +393,7 @@ const KIND_TONE = { approval: "plain", form: "plain", external_placeholder: "war
 const ASSIGN = { initiator: "發起人", user: "指定用戶", role: "指定角色", permission: "持有權限", dept_manager: "需求部門負責人", cost_center_owner: "成本中心負責人", from_context: "上下文字段", external_party: "外部環節" };
 const ACT = { start: "發起", activate: "激活", approve: "通過", reject: "駁回", reassign: "轉交", complete: "完成", submit: "提交", gateway: "分流", fork: "並行分叉", arrive: "到達匯聚", join_fire: "匯聚放行" };
 const ISTAT = { running: ["plain", "進行中", true], completed: ["ok", "已閉環", true], rejected: ["bad", "已駁回", true], cancelled: ["plain", "已取消", false], waiting: ["warn", "等待", true] };
-const ARTS = { batch_doc: "批復文件", procurement_doc: "採購文件", tender_plan: "採購計劃", agent_assignment: "代理委派", tender_notice: "招標公告", bid_opening_record: "開標記錄", eval_report: "評標報告", award_result: "中標結果", contract_draft: "合同草稿", approval_sheet: "審批單", signature_proof: "簽章憑證" };
+const ARTS = { batch_doc: "批復文件", procurement_doc: "採購文件", tender_plan: "採購計劃", agent_assignment: "代理委派", tender_notice: "招標公告", bid_opening_record: "開標記錄", eval_report: "評標報告", award_result: "中標結果", contract_draft: "合同草稿", approval_sheet: "審批單", signature_proof: "簽章憑證", node_attachment: "附件公證" };
 const kindLabel = (k) => t(KIND[k] || k || "節點");
 const artLabel = (k) => t(ARTS[k] || k || "—");
 const fsize = (n) => (n == null ? "—" : n < 1024 ? n + "B" : n < 1048576 ? (n / 1024).toFixed(1) + "KB" : (n / 1048576).toFixed(1) + "MB");
@@ -550,7 +604,7 @@ const TOPO_CSS = `
 const NOSET = new Set();
 let TOPO_UID = 0;
 /* 拓撲組件:done=墨底勾 / cur=紅描邊紅點 / act=紅色可點(inbox 有此 (instance,node) 才可辦)/ 其餘灰 */
-const WfTopo = ({ nodes, compact, done = NOSET, cur = NOSET, act = NOSET, todoByNode, onAct, onAsk, extraFacts }) => {
+const WfTopo = ({ nodes, compact, done = NOSET, cur = NOSET, act = NOSET, todoByNode, onAct, onAsk, onAttach, attachmentBusy, attachmentError, attachmentCounts, extraFacts, commandContext }) => {
   const [selKey, setSelKey] = _s("");
   const uid = _mm(() => "w2wf" + (++TOPO_UID) + "_", []);
   const topo = _mm(() => buildTopo(nodes, compact), [nodes, compact]);
@@ -569,7 +623,9 @@ const WfTopo = ({ nodes, compact, done = NOSET, cur = NOSET, act = NOSET, todoBy
       [t("通過後"), outs.length ? outs.map((o) => nm(o.to)).join(" / ") : t("流程完成")],
       [t("駁回退回"), rej ? nm(rej.to) : "—"],
       [t("材料"), arr(n.artifactKinds).length ? arr(n.artifactKinds).map(artLabel).join("、") : "—"],
+      [t("附件公證"), num(attachmentCounts && attachmentCounts[n.node_key]) ? t("已公證 {n} 份", { n: attachmentCounts[n.node_key] }) : t("尚無附件")],
       [t("SLA / 會簽"), extras || "—"],
+      [t("節點指令集"), arr(n.actions).length ? arr(n.actions).map((action) => action.tool_name).filter(Boolean).join(" / ") : t("此節點尚未配置指令集")],
     ];
     return extraFacts ? rows.concat(arr(extraFacts(n))) : rows;
   };
@@ -593,7 +649,7 @@ const WfTopo = ({ nodes, compact, done = NOSET, cur = NOSET, act = NOSET, todoBy
             const cls = ["w2wf-node", isDone && !isAct ? "w2wf-done" : "", isCur ? "w2wf-cur" : "", isAct ? "w2wf-can" : "", selKey === n.node_key ? "w2wf-sel" : ""].filter(Boolean).join(" ");
             const todo = todoByNode ? num(todoByNode[n.node_key]) : 0;
             return (
-              <g key={n.node_key} className={cls} onClick={() => { setSelKey(n.node_key); if (isAct && onAct) onAct(n); }}>
+              <g key={n.node_key} className={cls} onClick={() => setSelKey(n.node_key)}>
                 <title>{[(n.step_no == null ? "" : n.step_no + " · ") + (n.name || n.node_key), responsibilityText(n) || legacyAssignText(n)].filter(Boolean).join(" · ")}</title>
                 {p.gw ? (
                   <>
@@ -642,10 +698,35 @@ const WfTopo = ({ nodes, compact, done = NOSET, cur = NOSET, act = NOSET, todoBy
               </div>
             ))}
           </div>
-          <div className="row g8" style={{ marginTop: 12 }}>
+          <div className="row g8 wrap" style={{ marginTop: 12 }}>
+            {arr(sel.actions).map((action, index) => (
+              <B key={(action.tool_name || "command") + index} kind={index === 0 ? "primary" : undefined} size="sm"
+                icon={index === 0 ? "arrow" : "terminal"}
+                onClick={() => openNodeCommand(sel, action, commandContext)}>
+                {t("填寫 · {label}", { label: t(action.label || action.tool_name || t("節點指令")) })}
+              </B>
+            ))}
             {act.has(sel.node_key) && onAct && <B kind="red" size="sm" icon="check" onClick={() => onAct(sel)}>{t("去辦理")}</B>}
             {onAsk && <B size="sm" icon="sparkle" onClick={() => onAsk(sel)}>{t("秘書研判此節點")}</B>}
+            {onAttach && (
+              <label className="btn sm" style={{ cursor: attachmentBusy === sel.node_key ? "default" : "pointer", opacity: attachmentBusy === sel.node_key ? .6 : 1 }}>
+                <I name={attachmentBusy === sel.node_key ? "refresh" : "shield"} size={12}/>
+                {attachmentBusy === sel.node_key ? t("附件上傳中…") : t("上傳附件公證")}
+                <input type="file" style={{ display: "none" }} disabled={attachmentBusy === sel.node_key}
+                  accept=".pdf,.doc,.docx,.rtf,.odt,.xls,.xlsx,.ods,.csv,.ppt,.pptx,.odp,.txt,.md,.json,.xml,.png,.jpg,.jpeg,.webp,.tif,.tiff,.zip,.7z,.rar"
+                  onChange={(ev) => { const f = ev.target.files && ev.target.files[0]; ev.target.value = ""; if (f) onAttach(sel, f); }}/>
+              </label>
+            )}
           </div>
+          {onAttach ? <div className="muted" style={{ fontSize: 10.5, lineHeight: 1.55, marginTop: 8 }}>
+            {t("PDF、Word、Excel、圖片等，單檔上限 15MB；上傳後生成 SHA-256、版本鏈與伺服器簽章。")}
+          </div> : null}
+          {onAttach && attachmentError && attachmentError[sel.node_key] ? <div style={{ fontSize: 10.5, color: "var(--red)", lineHeight: 1.55, marginTop: 6 }}>
+            {attachmentError[sel.node_key]}
+          </div> : null}
+          {arr(sel.actions).length ? <div className="muted" style={{ fontSize: 10.5, lineHeight: 1.55, marginTop: 8 }}>
+            {t("選擇指令後，系統會帶入目前流程、實例、待辦與業務單據中已知的欄位；未知欄位留給你補寫。")}
+          </div> : null}
         </div>
       )}
     </>
@@ -713,7 +794,9 @@ const NodeResponsibilityConfig = ({ config, onChange, onSave, busy, error, notic
           <B kind="primary" size="sm" icon="check" disabled={busy || !nodes.length || !dirtyCount || hasIncompleteBinding} onClick={onSave}>{busy ? t("保存中…") : t("保存節點責任")}</B>
         </div>
       </div>
-      {nodes.length ? <WfTopo nodes={nodes} compact/> : null}
+      {nodes.length ? <WfTopo nodes={nodes} compact commandContext={{
+        workflow: { key: config && config.workflow_key },
+      }}/> : null}
       <div className="col" style={{ borderTop: "1px solid var(--hair)", marginTop: 14 }}>
         {nodes.map((node, index) => {
           const selectedDepartment = node.assignee_department_code || "";
@@ -809,6 +892,9 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
   const [upBusy, setUpBusy] = _s("");
   const [upErr, setUpErr] = _s({});
   const [dlErr, setDlErr] = _s({});
+  const [nodeAttachBusy, setNodeAttachBusy] = _s("");
+  const [nodeAttachErr, setNodeAttachErr] = _s({});
+  const [verifyState, setVerifyState] = _s({});
   _e(() => {
     let on = true;
     setD(null);
@@ -863,6 +949,26 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
     if (tk.comment) rows.push([t("意見"), tk.comment]);
     return rows;
   };
+  const nodeCommandContext = (node) => {
+    const openTask = arr(inbox).find((task) => task
+      && String(task.instance_id) === String(item.id)
+      && task.node_key === node.node_key
+      && (!task.status || ["pending", "in_progress"].indexOf(task.status) >= 0));
+    const task = openTask || wfState.latest[node.node_key] || {};
+    const mergedInstance = { ...item, ...inst };
+    const state = (mergedInstance.state && typeof mergedInstance.state === "object") ? mergedInstance.state : {};
+    return {
+      workflow: { key: mergedInstance.workflow_key || item.workflow_key },
+      instance: mergedInstance,
+      item,
+      task,
+      tender: {
+        id: state.tender_notice_id || mergedInstance.tender_notice_id,
+        notice_ref: state.tender_notice_ref || mergedInstance.tender_notice_ref,
+      },
+      contract: { id: state.contract_id || mergedInstance.contract_id },
+    };
+  };
   /* 靜默重取實例詳情(上傳後刷新材料,不清空抽屜)*/
   const refreshDetail = () => {
     W2.json("/api/wf/instances/" + item.id).then((x) => setD(x || {})).catch(() => {});
@@ -872,13 +978,13 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
     arr(map && map.nodes).forEach((n) => { if (n && n.node_key) m[n.node_key] = n; });
     return m;
   }, [map]);
-  /* 按(節點,材料類型)分組,取最高版本為當前 */
+  /* 一般節點附件按 attachment_key 分組；既有必需材料按(節點,材料類型)分組。 */
   const artGroups = _mm(() => {
     const gm = {};
     arr(d && d.artifacts).forEach((a) => {
       if (!a) return;
-      const gk = (a.node_key || "") + "\u0000" + (a.kind || "");
-      (gm[gk] || (gm[gk] = { node_key: a.node_key, kind: a.kind, rows: [] })).rows.push(a);
+      const logicalKey = a.attachment_key ? ("attachment\u0000" + a.attachment_key) : ("required\u0000" + (a.node_key || "") + "\u0000" + (a.kind || ""));
+      (gm[logicalKey] || (gm[logicalKey] = { node_key: a.node_key, kind: a.kind, attachment_key: a.attachment_key, rows: [] })).rows.push(a);
     });
     return Object.keys(gm).map((gk) => {
       const g = gm[gk];
@@ -887,6 +993,17 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
       g.count = g.rows.length;
       return g;
     });
+  }, [d]);
+  const attachmentCounts = _mm(() => {
+    const out = {}, seen = {};
+    arr(d && d.artifacts).forEach((a) => {
+      if (!a || !a.node_key) return;
+      const key = a.node_key + "\u0000" + (a.attachment_key || a.id);
+      if (seen[key]) return;
+      seen[key] = 1;
+      out[a.node_key] = num(out[a.node_key]) + 1;
+    });
+    return out;
   }, [d]);
   const curFileOf = (nk, kind) => {
     const g = artGroups.find((x) => x.node_key === nk && x.kind === kind);
@@ -927,12 +1044,31 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
       setUpBusy("");
     }
   };
+  const doNodeAttach = async (node, file) => {
+    if (!node || !node.node_key || !file) return;
+    const nodeKey = node.node_key;
+    setNodeAttachErr((p) => { const n = { ...p }; delete n[nodeKey]; return n; });
+    setNodeAttachBusy(nodeKey);
+    try {
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      fd.append("kind", "node_attachment");
+      const res = await W2.fetch("/api/wf/instances/" + encodeURIComponent(item.id) + "/nodes/" + encodeURIComponent(nodeKey) + "/attachments", { method: "POST", body: fd });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((j && (j.detail || j.error || j.message)) || (res.status === 413 ? t("上傳失敗:超過 15MB 上限") : res.status === 415 ? t("不支援此檔案格式") : res.status === 403 ? t("無權上傳") : t("上傳失敗")));
+      refreshDetail();
+    } catch (e) {
+      setNodeAttachErr((p) => ({ ...p, [nodeKey]: (e && e.message) || t("上傳失敗") }));
+    } finally {
+      setNodeAttachBusy("");
+    }
+  };
   const doDownload = async (a) => {
     const id = a && a.id;
     if (id == null) return;
     setDlErr((p) => { const n = { ...p }; delete n[id]; return n; });
     try {
-      const res = await W2.fetch("/api/wf/artifacts/" + id + "/download");
+      const res = await W2.fetch(a.download_url || ("/api/wf/artifacts/" + id + "/download"));
       if (!res.ok) throw new Error();
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -941,6 +1077,17 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
       URL.revokeObjectURL(url);
     } catch (e) {
       setDlErr((p) => ({ ...p, [id]: t("下載失敗") }));
+    }
+  };
+  const doVerify = async (a) => {
+    const id = a && a.id;
+    if (!id) return;
+    setVerifyState((p) => ({ ...p, [id]: { busy: true } }));
+    try {
+      const j = await W2.json(a.verify_url || ("/api/wf/node-attachments/" + id + "/verify"));
+      setVerifyState((p) => ({ ...p, [id]: { busy: false, verified: j.verified === true, checks: j.checks } }));
+    } catch (e) {
+      setVerifyState((p) => ({ ...p, [id]: { busy: false, verified: false } }));
     }
   };
   const facts = [
@@ -979,7 +1126,10 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
           ) : arr(map.nodes).length ? (
             <>
               <WfTopo nodes={map.nodes} compact done={wfState.done} cur={wfState.cur} act={wfState.act}
-                onAct={actNode} onAsk={askNode} extraFacts={nodeFacts}/>
+                onAct={actNode} onAsk={askNode} extraFacts={nodeFacts}
+                onAttach={doNodeAttach} attachmentBusy={nodeAttachBusy}
+                attachmentError={nodeAttachErr} attachmentCounts={attachmentCounts}
+                commandContext={nodeCommandContext}/>
               <div className="muted" style={{ fontSize: 10.5, marginTop: 6, lineHeight: 1.6 }}>{t("點節點看詳情;紅色節點輪到你,點擊直接交秘書辦理。")}</div>
             </>
           ) : (
@@ -1007,13 +1157,17 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
           )}
         </div>
 
-        {(artGroups.length || myUploads.length) ? (
+        {(
           <>
             <LB dim style={{ fontSize: 8.5, marginBottom: 8 }}>{t("已留存證明")}</LB>
             <div style={{ borderTop: "1px solid var(--hair)", paddingTop: 10, marginBottom: 18 }} className="col g10">
+              {!artGroups.length && !myUploads.length ? <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>
+                {t("尚無附件")} · {t("點選上方任意流程節點即可上傳附件公證。")}
+              </div> : null}
               {artGroups.map((g, gi) => {
                 const a = g.current || {};
                 const ver = num(a.version) || 1;
+                const verification = verifyState[a.id] || {};
                 if (artHasFile(a)) {
                   return (
                     <div key={a.id || gi} className="col g4">
@@ -1034,6 +1188,11 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
                       <div className="row g8 wrap" style={{ marginLeft: 20, alignItems: "baseline" }}>
                         {(a.file_seal != null && a.file_seal !== "") ? <T tone="plain"><I name="shield" size={10}/>{" " + t("鋼印 {seal}", { seal: a.file_seal })}</T> : null}
                         {a.file_sha256 ? <span className="mono muted" style={{ fontSize: 9.5, wordBreak: "break-all" }}>{String(a.file_sha256).slice(0, 12)}</span> : null}
+                        {a.verify_url ? <B size="sm" icon="shield" onClick={() => doVerify(a)} disabled={verification.busy}>
+                          {verification.busy ? t("驗證中…") : t("驗證公證")}
+                        </B> : null}
+                        {verification.busy !== true && verification.verified === true ? <T tone="ok">{t("公證有效")}</T> : null}
+                        {verification.busy !== true && verification.verified === false ? <T tone="bad">{t("公證驗證異常")}</T> : null}
                       </div>
                       {dlErr[a.id] ? <span style={{ marginLeft: 20, fontSize: 10.5, color: "var(--red)" }}>{dlErr[a.id]}</span> : null}
                     </div>
@@ -1075,7 +1234,7 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
               ) : null}
             </div>
           </>
-        ) : null}
+        )}
 
         <LB dim style={{ fontSize: 8.5, marginBottom: 8 }}>{t("直接吩咐秘書")}</LB>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -1088,7 +1247,7 @@ const InstDrawer = ({ item, wfName, inbox, onClose }) => {
             <I name="clipboard" size={14}/>{t("讓秘書登記材料")}
           </button>
         </div>
-        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
       </div>
     </div>
   );
@@ -1776,7 +1935,7 @@ const Page = ({ boot }) => {
             setTick((x) => x + 1);
           }}>{t("刷新")}</B>
           <B icon="search" onClick={() => ask(t("幫我做一輪詢價:請追問物資名稱、數量和意向供應商,整理成詢價單並跟進報價"))}>{t("詢價")}</B>
-          <B icon="plus" onClick={() => ask(t("我要發起一個採購或招標流程:請先建立或選擇真實 ERP 採購申請 ID,再追問流程類型;工作流必須綁定該採購主單,標題、金額、部門、預算、供應商和明細均以主單為準,不得建立孤立流程"))}>{t("發起流程")}</B>
+          <B icon="plus" onClick={() => W2.openBusinessAction("erp_purchase_create")}>{t("發起流程")}</B>
           <B kind="primary" icon="sparkle" onClick={() => ask(t("看看採購招標現在的待辦、流程阻塞和權限缺口,按優先級給我可執行的下一步"))}>{t("問秘書")}</B>
         </>}/>
 
@@ -1998,7 +2157,7 @@ const Page = ({ boot }) => {
           </div>
         ) : (
           <EM icon="doc" title={t("還沒有採購 / 招標流水")} sub={t("對秘書說「發起採購」,第一條流水就從這裡開始。")}
-            action={<B icon="plus" onClick={() => ask(t("我要發起一個採購或招標流程:請先建立或選擇真實 ERP 採購申請 ID,再追問流程類型;工作流必須綁定該採購主單,標題、金額、部門、預算、供應商和明細均以主單為準,不得建立孤立流程"))}>{t("發起第一個流程")}</B>}/>
+            action={<B icon="plus" onClick={() => W2.openBusinessAction("erp_purchase_create")}>{t("發起第一個流程")}</B>}/>
         )}
       </Band>
 
@@ -2031,6 +2190,7 @@ const Page = ({ boot }) => {
             ) : (
               <>
               <WfTopo nodes={mapNodes} todoByNode={todoByNode}
+                commandContext={{ workflow: { key: flowKey } }}
                 onAsk={(n) => ask(t("分析流程「{wf}」第 {step} 步「{node}」:處理要點、指派與權限規則、必需材料和下一步流轉", { wf: wfName(flowKey), step: n.step_no == null ? "—" : n.step_no, node: n.name || n.node_key || "—" }))}/>
               <LB dim style={{ padding: "20px 0 6px", borderBottom: "1px solid var(--hair)", marginTop: 10 }}>{t("節點規則明細")}</LB>
               {groups.map((g) => (
@@ -2048,6 +2208,7 @@ const Page = ({ boot }) => {
                           <span className="row g8 wrap" style={{ fontWeight: 650, fontSize: 13 }}>
                             {n.name || n.node_key || "—"}
                             {todo > 0 && <T tone="redinv">{t("待辦 {n}", { n: todo })}</T>}
+                            {arr(n.actions).length > 0 && <T tone="plain">{t("已連結 {n} 項指令", { n: arr(n.actions).length })}</T>}
                           </span>
                           <span className="muted num" style={{ fontSize: 10.5 }}>
                             {n.node_key || "—"}{" → "}{next ? (next.name || next.node_key) : t("流程完成")}
@@ -2065,7 +2226,13 @@ const Page = ({ boot }) => {
                             {[num(n.quorum) > 1 ? t("會簽 {n}", { n: n.quorum }) : "", arts.length ? t("材料 {n}", { n: arts.length }) : "", n.sla_hours ? t("SLA {n} 小時", { n: n.sla_hours }) : ""].filter(Boolean).join(" · ")}
                           </span>
                         </span>
-                        <B size="sm" icon="sparkle" onClick={() => ask(t("分析流程「{wf}」第 {step} 步「{node}」:處理要點、指派與權限規則、必需材料和下一步流轉", { wf: wfName(flowKey), step: n.step_no == null ? "—" : n.step_no, node: n.name || n.node_key || "—" }))}/>
+                        <div className="row g4" style={{ flexShrink: 0 }}>
+                          {arr(n.actions)[0] ? <B size="sm" kind="primary" icon="terminal"
+                            onClick={() => openNodeCommand(n, arr(n.actions)[0], { workflow: { key: flowKey } })}>
+                            {t("節點指令")}
+                          </B> : null}
+                          <B size="sm" icon="sparkle" onClick={() => ask(t("分析流程「{wf}」第 {step} 步「{node}」:處理要點、指派與權限規則、必需材料和下一步流轉", { wf: wfName(flowKey), step: n.step_no == null ? "—" : n.step_no, node: n.name || n.node_key || "—" }))}/>
+                        </div>
                       </div>
                     );
                   })}
@@ -2091,7 +2258,7 @@ const Page = ({ boot }) => {
       {/* D · 招標看板(買方 · 跨公司 B2B)*/}
       <Band no="D" title={t("招標看板")} sub={t("跨公司邀請制招標 · 密封投標 · 鋼印留痕")} delay={.25}
         right={<div className="row g8">
-          <B size="sm" icon="plus" onClick={() => ask(t("我要發起一次招標:請先追問真實 ERP 採購申請 ID 和綁定的招標工作流,核對當前節點允許建立招標;再追問邀請制或公開招標、需求與截標時間,只建立草稿,不得同一步發布"))}>{t("發起招標")}</B>
+          <B size="sm" icon="plus" onClick={() => W2.openBusinessAction("tender_create")}>{t("發起招標")}</B>
           <B size="sm" icon="sparkle" onClick={() => ask(t("把當前全部招標的狀態、投標和下一步該做什麼給我彙總"))}>{t("問秘書")}</B>
         </div>}>
         {rels != null && (
@@ -2138,7 +2305,7 @@ const Page = ({ boot }) => {
           </div>
         ) : (
           <EM icon="doc" title={t("還沒有招標公告")} sub={t("先建立真實 ERP 採購申請並啟動綁定的招標工作流;流程到建立招標節點後,再由這裡建立草稿。")}
-            action={<B icon="plus" onClick={() => ask(t("我要發起一次招標:請先追問真實 ERP 採購申請 ID 和綁定的招標工作流,核對當前節點允許建立招標;再追問邀請制或公開招標、需求與截標時間,只建立草稿,不得同一步發布"))}>{t("發起第一個招標")}</B>}/>
+            action={<B icon="plus" onClick={() => W2.openBusinessAction("tender_create")}>{t("發起第一個招標")}</B>}/>
         )}
       </Band>
 

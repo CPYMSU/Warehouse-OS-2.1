@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "test_selection": {
+    "max_tests": 24,
+    "max_fraction": 0.35
+  },
+  "default": {
+    "risk": "critical",
+    "impacts": ["api", "unknown", "integration"],
+    "tests": ["backend/tests"]
+  },
+  "rules": [
+    {
+      "glob": "backend/alembic/**",
+      "risk": "critical",
+      "impacts": ["api", "migration", "backup", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/pyproject.toml",
+      "risk": "critical",
+      "impacts": ["api", "dependencies", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/Dockerfile*",
+      "risk": "critical",
+      "impacts": ["api", "dependencies", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": ".dockerignore",
+      "risk": "critical",
+      "impacts": ["api", "browser", "dependencies", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "compose.production.yaml",
+      "risk": "critical",
+      "impacts": ["api", "infrastructure", "backup", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "infra/**",
+      "risk": "critical",
+      "impacts": ["api", "infrastructure", "backup", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/app/core/security.py",
+      "risk": "critical",
+      "impacts": ["api", "auth", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/app/core/config.py",
+      "risk": "critical",
+      "impacts": ["api", "configuration", "integration"],
+      "tests": ["backend/tests/test_config.py"]
+    },
+    {
+      "glob": "backend/app/api/deps.py",
+      "risk": "critical",
+      "impacts": ["api", "auth", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/app/api/full_stack_identity.py",
+      "risk": "critical",
+      "impacts": ["api", "auth", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/app/services/object_storage.py",
+      "risk": "high",
+      "impacts": ["api", "storage", "backup"],
+      "tests": ["backend/tests/test_digital_asset_hosting.py"]
+    },
+    {
+      "glob": "backend/app/services/digital_asset_hosting.py",
+      "risk": "high",
+      "impacts": ["api", "storage", "runtime_controller"],
+      "tests": ["backend/tests/test_digital_asset_hosting.py"]
+    },
+    {
+      "glob": "backend/app/runtime_controller.py",
+      "risk": "high",
+      "impacts": ["api", "runtime_controller"],
+      "tests": ["backend/tests/test_digital_asset_hosting.py"]
+    },
+    {
+      "glob": "backend/app/api/browser_runtime.py",
+      "risk": "high",
+      "impacts": ["api", "browser", "api_contract"],
+      "tests": ["backend/tests/test_browser_runtime.py"]
+    },
+    {
+      "glob": "browser-runtime/**",
+      "risk": "high",
+      "impacts": ["browser"],
+      "tests": ["backend/tests/test_browser_runtime.py"]
+    },
+    {
+      "glob": "ops/**",
+      "risk": "critical",
+      "impacts": ["api", "control_plane", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/app/templates/**",
+      "risk": "high",
+      "impacts": ["api", "tenant_templates"],
+      "tests": ["backend/tests/test_industry_blueprints.py"]
+    },
+    {
+      "glob": "backend/app/downloads/**",
+      "risk": "low",
+      "impacts": ["api", "downloads"],
+      "tests": ["backend/tests/test_digital_asset_downloads.py"]
+    },
+    {
+      "glob": "backend/app/api/**",
+      "risk": "normal",
+      "impacts": ["api", "api_contract"],
+      "tests": ["backend/tests/test_frontend_api_contract.py"],
+      "discover_python_tests": true
+    },
+    {
+      "glob": "backend/app/**",
+      "risk": "normal",
+      "impacts": ["api"],
+      "tests": [],
+      "discover_python_tests": true
+    },
+    {
+      "glob": "docs/digital-asset-custody-guide-2.1.zh-TW.md",
+      "risk": "low",
+      "impacts": ["api", "downloads"],
+      "tests": ["backend/tests/test_digital_asset_downloads.py"]
+    },
+    {
+      "glob": "frontend/**",
+      "risk": "normal",
+      "impacts": ["api", "frontend"],
+      "tests": ["backend/tests/test_frontend_api_contract.py"]
+    },
+    {
+      "glob": "scripts/build_v2_frontend.cjs",
+      "risk": "normal",
+      "impacts": ["api", "frontend"],
+      "tests": ["backend/tests/test_frontend_api_contract.py"]
+    },
+    {
+      "glob": "backend/README.md",
+      "risk": "low",
+      "impacts": ["docs_only"],
+      "tests": []
+    },
+    {
+      "glob": "backend/tests/**",
+      "risk": "low",
+      "impacts": ["tests_only"],
+      "tests": []
+    },
+    {
+      "glob": ".github/**",
+      "risk": "low",
+      "impacts": ["ci_only"],
+      "tests": []
+    },
+    {
+      "glob": "docs/**",
+      "risk": "low",
+      "impacts": ["docs_only"],
+      "tests": []
+    },
+    {
+      "glob": "README.md",
+      "risk": "low",
+      "impacts": ["docs_only"],
+      "tests": []
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-/* WAREHOUSE OS 2.0 · PERSONAL TASK
+/* WAREHOUSE OS 2.1 · PERSONAL TASK
    Mobile-first Swiss workspace shared by the standalone TASK route and Records. */
 (() => {
 const W2 = window.W2;
@@ -7968,6 +7968,7 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
   const space = collabWorkspace(detail);
   const capabilities = collabCapabilities(detail);
   const canRead = capabilities.can_read === true;
+  const canUseDocument = capabilities.can_use_document !== false;
   const realtime = useCollaborationRealtime({ taskId, tenant, enabled: canRead });
   const rtcAvailable = capabilities.rtc_available === true;
   const canJoinMeeting = capabilities.can_join_meeting === true && rtcAvailable;
@@ -8035,7 +8036,7 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
   const invitationId = viewerInvitation && first(viewerInvitation.id, viewerInvitation.invitation_id);
   const tabs = [
     ["overview", "概覽", "doc"],
-    ...(canRead ? [["document", "共編", "doc"]] : []),
+    ...(canRead && canUseDocument ? [["document", "共編", "doc"]] : []),
     ...(canRead ? [["members", "成員", "user"]] : []),
     ...(canJoinMeeting ? [["meeting", "影音會議", "camera"]] : []),
     ...(canRead ? [["chat", "聊天", "bell"]] : []),
@@ -8067,8 +8068,10 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
     };
   }, [canRead, taskId, workspaceReconcileDelay, load]);
   E(() => {
-    if ((["chat", "document", "members"].includes(tab) && !canRead) || (tab === "meeting" && !canJoinMeeting)) setTab("overview");
-  }, [tab, canRead, canJoinMeeting]);
+    if ((["chat", "members"].includes(tab) && !canRead)
+      || (tab === "document" && (!canRead || !canUseDocument))
+      || (tab === "meeting" && !canJoinMeeting)) setTab("overview");
+  }, [tab, canRead, canUseDocument, canJoinMeeting]);
   const onTabKeyDown = (event, index) => {
     let nextIndex = null;
     if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;

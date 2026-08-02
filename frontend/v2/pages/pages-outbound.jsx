@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 出庫 — Swiss 版式,真後端 */
+/* WAREHOUSE 2.1 · 出庫 — Swiss 版式,真後端 */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;
@@ -188,7 +188,7 @@ const OutDrawer = ({ o, onClose }) => {
             </button>
           ))}
         </div>
-        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
       </div>
     </div>
   );
@@ -239,8 +239,8 @@ const Page = ({ boot }) => {
       <Folio no="04" en="OUTBOUND" title={t("出庫")}
         sub={t("領用出庫 · 借用歸還 · 搶修綠色通道 · 頁面只讀,操作交秘書")}
         right={<>
-          <B icon="plus" onClick={() => ask(t("我要新建一張領用單,請逐項追問:用途(檢修/工程/搶修/借用/日常領用)、領用部門、關聯地點/項目、經辦人、物資明細(名稱/數量/單位),確認後執行出庫"))}>{t("新建領用單")}</B>
-          <B kind="red" icon="flame" onClick={() => ask(t("緊急搶修!走搶修綠色通道:請立刻追問故障類型與關聯地點,按預案清單快速出庫並標記為搶修,事後補全審批"))}>{t("緊急搶修出庫")}</B>
+          <B icon="plus" onClick={() => W2.openBusinessAction("outbound_create")}>{t("新建領用單")}</B>
+          <B kind="red" icon="flame" onClick={() => W2.openBusinessAction({ tool_name: "outbound_create", arguments: { urgent: true, use: "搶修" } })}>{t("緊急搶修出庫")}</B>
         </>}/>
 
       <div className="kpi-band">
@@ -324,7 +324,7 @@ const Page = ({ boot }) => {
             {!list.length && (orders.length
               ? <EM icon="search" title={t("當前篩選下沒有單據")} sub={t("換個關鍵詞或篩選,或直接問秘書「幫我找某張出庫單」。")}/>
               : <EM icon="outbound" title={t("還沒有出庫記錄")} sub={t("對秘書說「出庫 2 雙絕緣手套給檢修一班」,第一張單就會出現在這裡。")}
-                  action={<B size="sm" icon="sparkle" onClick={() => ask(t("我要新建一張領用單,請逐項追問:用途(檢修/工程/搶修/借用/日常領用)、領用部門、關聯地點/項目、經辦人、物資明細(名稱/數量/單位),確認後執行出庫"))}>{t("新建領用單")}</B>}/>)}
+                  action={<B size="sm" icon="plus" onClick={() => W2.openBusinessAction("outbound_create")}>{t("新建領用單")}</B>}/>)}
           </div>
           {sel && <OutDrawer o={sel} onClose={() => setSel(null)}/>}
         </div>

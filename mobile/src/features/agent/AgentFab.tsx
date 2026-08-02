@@ -1,4 +1,4 @@
-// 全局 AI 秘書 — 浮動按鈕 + 底部抽屜;NDJSON 流式逐步顯示;v1 的寫操作入口。
+// 全局 AI 秘書 — 浮動按鈕 + 底部抽屜；只作 Auto Runtime 的行動端表面。
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, Modal, ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -6,10 +6,10 @@ import { Sparkles, X, Send } from "lucide-react-native";
 import { currentToken, currentSlug, useAuth } from "../../store/auth";
 import { useI18n } from "../../i18n";
 import { streamNDJSON } from "../../api/stream";
-import { agentConfirm, agentCancel, assistantBootstrap } from "../../api/endpoints";
+import { assistantBootstrap } from "../../api/endpoints";
 import { C, R, Button } from "../../ui";
 
-type Msg = { role: "user" | "assistant"; text: string; steps?: any[]; cards?: any[] };
+type Msg = { role: "user" | "assistant"; text: string };
 
 export default function AgentFab({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
   const insets = useSafeAreaInsets();
@@ -80,15 +80,6 @@ export default function AgentFab({ open, setOpen }: { open: boolean; setOpen: (v
             text: String(message.content || ""),
             cards: [],
           }));
-        const actions = (payload?.confirmation_actions || []).map((action: any) => ({
-          ...action,
-          server_action: true,
-        }));
-        if (actions.length) history.push({
-          role: "assistant",
-          text: tRef.current("已恢復服務端確認狀態。手機端暫不執行 Passkey 高風險確認，請到 Warehouse 2.0 秘書完成。"),
-          cards: actions,
-        });
         setMsgs(history);
         setRestoreAvailability(true);
       })
@@ -177,7 +168,7 @@ export default function AgentFab({ open, setOpen }: { open: boolean; setOpen: (v
       && expectedIdentity === identityRef.current
     );
     setInput("");
-    setMsgs((m) => [...m, { role: "user", text }, { role: "assistant", text: "", steps: [], cards: [] }]);
+    setMsgs((m) => [...m, { role: "user", text }, { role: "assistant", text: "" }]);
     ++restoreGeneration.current;
     streamingRef.current = true;
     setStreaming(true);
@@ -194,23 +185,16 @@ export default function AgentFab({ open, setOpen }: { open: boolean; setOpen: (v
 
     try {
       streamCancelRef.current = streamNDJSON("/api/agent/run/stream",
-        { text, conversation_id: convId.current || undefined },
+        { text, conversation_id: convId.current || undefined, surface: "mobile" },
         {
         token: currentToken(), slug: currentSlug(),
         onEvent: (e) => {
           if (!isCurrentStream()) return;
           if (e.event === "run_start" && e.conversation_id) convId.current = e.conversation_id;
-          else if (e.event === "step_start") update((a) => ({ ...a, steps: [...(a.steps || []), { no: e.step_no, command: e.command, running: true }] }));
-          else if (e.event === "step") update((a) => ({ ...a, steps: (a.steps || []).map((s) => s.no === e.step_no ? { ...s, running: false, ok: e.ok, error: e.error } : s) }));
           else if (e.event === "final") update((a) => ({
             ...a,
             text: e.message || a.text,
-            cards: (e.cards || a.cards || []).map((card: any) =>
-              card?.action ? { ...card.action, server_action: true } : card),
           }));
-          else if (e.event === "action_request" || e.action_request) update((a) => ({
-            ...a,
-            cards: [...(a.cards || []), { ...(e.action_request || e), legacy_action: true }],
           }));
           setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 30);
         },
@@ -234,18 +218,6 @@ export default function AgentFab({ open, setOpen }: { open: boolean; setOpen: (v
       streamCancelRef.current = null;
       streamingRef.current = false;
       setStreaming(false);
-    }
-  };
-
-  const doConfirm = async (id: string, ok: boolean) => {
-    const expectedIdentity = identityRef.current;
-    try {
-      await (ok ? agentConfirm(id) : agentCancel(id));
-      if (expectedIdentity !== identityRef.current) return;
-      setMsgs((m) => [...m, { role: "assistant", text: ok ? t("✓ 已執行") : t("已取消") }]);
-    } catch (e: any) {
-      if (expectedIdentity !== identityRef.current) return;
-      setMsgs((m) => [...m, { role: "assistant", text: "⚠ " + (e?.message || "") }]);
     }
   };
 
@@ -284,8 +256,8 @@ export default function AgentFab({ open, setOpen }: { open: boolean; setOpen: (v
               )}
               {restoreReady && msgs.length === 0 && (
                 <View style={{ paddingTop: 30, alignItems: "center" }}>
-                  <Text style={{ color: C.ink3, fontSize: 13, textAlign: "center" }}>{t("用自然語言下達指令,例如:")}</Text>
-                  {[t("從中心庫借 5 副絕緣手套到搶修現場"), t("給供應商付款 2 萬"), t("把工單 WT-001 標記完成")].map((ex, i) => (
+                  <Text style={{ color: C.ink3, fontSize: 13, textAlign: "center" }}>{t("用自然語言描述想達到的業務結果,例如:")}</Text>
+                  {[t("幫我判斷本週哪些物資短缺風險最高"), t("整理目前採購目標與需要的證據"), t("分析工單堵塞的下一步")].map((ex, i) => (
                     <TouchableOpacity key={i} onPress={() => setInput(ex)} style={{ backgroundColor: C.surface, borderRadius: R.pill, paddingHorizontal: 14, paddingVertical: 8, marginTop: 8, borderWidth: 1, borderColor: C.line }}>
                       <Text style={{ color: C.blueDeep, fontSize: 13 }}>{ex}</Text>
                     </TouchableOpacity>
@@ -296,40 +268,13 @@ export default function AgentFab({ open, setOpen }: { open: boolean; setOpen: (v
                 <View key={i} style={{ alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
                   <View style={{ maxWidth: "86%", backgroundColor: m.role === "user" ? C.blue : C.surface, borderRadius: 14, padding: 12, borderWidth: m.role === "user" ? 0 : 1, borderColor: C.line }}>
                     {!!m.text && <Text style={{ color: m.role === "user" ? C.white : C.ink, fontSize: 14, lineHeight: 20 }}>{m.text}</Text>}
-                    {(m.steps || []).map((s, j) => (
-                      <View key={j} style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
-                        {s.running ? <ActivityIndicator size="small" color={C.ink3} /> : <Text style={{ color: s.ok ? C.ok : C.danger }}>{s.ok ? "✓" : "✗"}</Text>}
-                        <Text style={{ color: C.ink3, fontSize: 12 }} numberOfLines={1}>{s.command || ""}</Text>
-                      </View>
-                    ))}
-                    {(m.cards || []).filter((c) => c?.server_action).map((card, j) => (
-                      <View key={card.action_key || j} style={{ marginTop: 10, backgroundColor: C.warnSoft, borderRadius: 12, padding: 10 }}>
-                        <Text style={{ fontSize: 13, fontWeight: "700", color: C.ink }}>{card.title || t("已保存的確認操作")}</Text>
-                        <Text style={{ fontSize: 12, color: C.ink2, marginTop: 4 }}>
-                          {card.summary || String(card.status || "")}
-                        </Text>
-                        <Text style={{ fontSize: 11.5, color: C.ink3, marginTop: 7 }}>
-                          {t("此卡以唯讀方式恢復；請到 Warehouse 2.0 完成安全確認。")}
-                        </Text>
-                      </View>
-                    ))}
-                    {(m.cards || []).filter((c) => c?.legacy_action && c.id && c.status === "pending").map((card, j) => (
-                      <View key={j} style={{ marginTop: 10, backgroundColor: C.warnSoft, borderRadius: 12, padding: 10 }}>
-                        <Text style={{ fontSize: 13, fontWeight: "700", color: C.ink }}>{(card.cards?.[0]?.title) || t("需要確認")}</Text>
-                        {!!card.cards?.[0]?.summary && <Text style={{ fontSize: 12, color: C.ink2, marginTop: 4 }}>{card.cards[0].summary}</Text>}
-                        <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
-                          <Button title={t("確認執行")} onPress={() => doConfirm(card.id, true)} style={{ flex: 1, paddingVertical: 9 }} />
-                          <Button title={t("取消")} tone="ghost" onPress={() => doConfirm(card.id, false)} style={{ flex: 1, paddingVertical: 9 }} />
-                        </View>
-                      </View>
-                    ))}
                   </View>
                 </View>
               ))}
             </ScrollView>
 
             <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 8, padding: 12, paddingBottom: insets.bottom + 12, borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.surface }}>
-              <TextInput value={input} onChangeText={setInput} placeholder={t("輸入指令…")} placeholderTextColor={C.ink4} multiline
+              <TextInput value={input} onChangeText={setInput} placeholder={t("描述想達到的業務結果…")} placeholderTextColor={C.ink4} multiline
                 editable={restoreReady && !restoring && !streaming}
                 style={{ flex: 1, maxHeight: 100, backgroundColor: C.surface2, borderRadius: R.md, paddingHorizontal: 14, paddingVertical: 10, fontSize: 14.5, color: C.ink }} />
               <TouchableOpacity onPress={send} disabled={streaming || restoring || !restoreReady || !input.trim()}

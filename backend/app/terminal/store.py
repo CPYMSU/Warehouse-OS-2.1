@@ -19,6 +19,31 @@ from app.db.session import tenant_session
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
 
+COMMAND_EXECUTION_ORIGINS = frozenset(
+    {
+        "terminal",
+        "super_terminal",
+        "manual_ui",
+        "ai_tool",
+        "auto_runtime",
+    }
+)
+COMMAND_EXECUTION_STATUSES = frozenset(
+    {
+        "succeeded",
+        "failed",
+        "denied",
+        "awaiting_domain_adapter",
+        "invalid_contract",
+        "confirmation_required",
+        "target_rejected",
+        "invalid",
+        "invalid_arguments",
+        "unknown_tool",
+        "requires_l11_governance",
+    }
+)
+
 
 class WarehouseReader(Protocol):
     def list_active(self, tenant_id: UUID) -> list[dict[str, object]]: ...
@@ -68,6 +93,10 @@ class PostgreSQLCommandAuditWriter:
         request: Mapping[str, object],
         response: Mapping[str, object],
     ) -> str:
+        if origin not in COMMAND_EXECUTION_ORIGINS:
+            raise ValueError(f"Unsupported command execution origin: {origin}")
+        if status not in COMMAND_EXECUTION_STATUSES:
+            raise ValueError(f"Unsupported command execution status: {status}")
         execution_id = str(uuid4())
         payload = {
             "execution_id": execution_id,

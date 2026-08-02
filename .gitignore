@@ -15,6 +15,10 @@ __pycache__/
 postgres-data/
 
 # Local credentials and captured terminal output must never be committed.
+*.rtf
 GITHUB KEY.txt
 Vultr Key.rtf
+Password.rtf
+Test API.rtf
 Terminal Saved Output.txt
+frontend-api-contract-report.json

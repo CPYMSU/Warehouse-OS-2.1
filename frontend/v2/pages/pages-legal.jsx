@@ -1,4 +1,4 @@
-/* WAREHOUSE 2.0 · 法務 — Swiss 版式,真後端
+/* WAREHOUSE 2.1 · 法務 — Swiss 版式,真後端
    讀:/api/legal/overview(合同/證照/里程碑/印章/名單/匯總)
        /api/compliance/chain-check(鋼印全鏈完整性)
        /api/compliance/by-subject(單合同鋼印鏈)
@@ -53,7 +53,7 @@ window.W2_LANG.addEN({
   "起草封存": "Draft sealed", "審查通過": "Review passed", "用印": "Seal use", "簽署": "Signed",
   "直接吩咐秘書": "Tell the Secretary",
   "提交審查": "Submit review", "核驗鋼印": "Verify seals",
-  "2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.0 rule: read-only page; changes run via Secretary confirmation, fully audited.",
+  "2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。": "2.1 rule: read-only page; changes run via Secretary confirmation, fully audited.",
   "鋼印鏈完整性": "Seal-chain integrity",
   "哈希鏈 + HMAC 簽名": "Hash chain + HMAC signature",
   "全鏈核驗": "Verify full chain",
@@ -377,7 +377,7 @@ const ContractDrawer = ({ c, seals, onClose, onSign }) => {
             </button>
           ))}
         </div>
-        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.0 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
       </div>
     </div>
   );
@@ -473,7 +473,7 @@ const Page = () => {
         right={<>
           <B icon="refresh" onClick={() => { setD(null); setChain(null); setSealMap({}); setSel(null); load(); }}>{t("刷新")}</B>
           <B icon="doc" onClick={() => ask(pDraft())}>{t("起草合同")}</B>
-          <B kind="primary" icon="sparkle" onClick={() => ask(pNew())}>{t("新建合同")}</B>
+          <B kind="primary" icon="plus" onClick={() => W2.openBusinessAction("legal_contract_save")}>{t("新建合同")}</B>
         </>}/>
 
       <div className="kpi-band">
@@ -561,7 +561,7 @@ const Page = () => {
             {!list.length && (contracts.length
               ? <EM icon="search" title={t("當前篩選下沒有合同")} sub={t("換個篩選或關鍵詞,或直接問秘書「幫我找◯◯合同」。")}/>
               : <EM icon="doc" title={t("暫無合同")} sub={t("對秘書說「新建合同」即可登記第一份;或先讓秘書起草條款框架。")}
-                  action={<B size="sm" icon="sparkle" onClick={() => ask(pNew())}>{t("新建合同")}</B>}/>)}
+                  action={<B size="sm" icon="plus" onClick={() => W2.openBusinessAction("legal_contract_save")}>{t("新建合同")}</B>}/>)}
           </div>
           {sel && <ContractDrawer c={sel} seals={sel.id ? sealMap[sel.id] : []} onClose={() => setSel(null)} onSign={contract => setIdentityAction({ kind: "contract", target: contract })}/>}
         </div>

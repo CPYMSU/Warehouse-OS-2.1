@@ -1,5 +1,5 @@
 /* ============================================================
-   WAREHOUSE 2.0 · Passkey / WebAuthn browser adapter
+   WAREHOUSE 2.1 · Passkey / WebAuthn browser adapter
 
    The server remains authoritative for challenges, RP binding, user
    verification and replay prevention.  This module only converts the JSON
@@ -34,6 +34,8 @@
     "高風險操作缺少用途。": "The high-risk action is missing its purpose.",
     "二次驗證挑戰缺少 request_id。": "The step-up challenge is missing request_id.",
     "二次驗證沒有返回一次性授權憑證。": "Step-up verification did not return a one-time authorization token.",
+    "此帳號尚未在目前網站登記 Passkey；請先使用密碼登入，再到「安全與 Passkey」新增。": "No passkey is registered for this account on this site. Sign in with your password, then add one under Security & passkeys.",
+    "此帳號尚未在目前網站登記 Passkey；請先到「安全與 Passkey」新增。": "No passkey is registered for this account on this site. Add one under Security & passkeys.",
   };
   var translationsInstalled = false;
   function installTranslations() {
@@ -377,7 +379,7 @@
     });
     var data = await response.json().catch(function () { return {}; });
     if (!response.ok) {
-      var error = new Error(data.error || data.message || response.statusText || "Passkey request failed");
+      var error = new Error(data.error || data.message || data.detail || response.statusText || "Passkey request failed");
       error.status = response.status;
       error.data = data;
       throw error;

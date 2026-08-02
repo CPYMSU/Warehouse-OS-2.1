@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODE="${1:-smart}"
+HOST="${WAREHOUSE_DEPLOY_HOST:-207.148.120.30}"
+USER="${WAREHOUSE_DEPLOY_USER:-warehouse-deploy}"
+IDENTITY="${WAREHOUSE_DEPLOY_IDENTITY:-${HOME}/.ssh/warehouse_os_deploy_ed25519}"
+REMOTE_MANAGER="${WAREHOUSE_REMOTE_DEPLOY_MANAGER:-/usr/local/sbin/warehouse-deploy}"
+
+ssh_options=(
+  -i "${IDENTITY}"
+  -o BatchMode=yes
+  -o IdentitiesOnly=yes
+  -o StrictHostKeyChecking=yes
+  -o ConnectTimeout=15
+  -o ServerAliveInterval=20
+  -o ServerAliveCountMax=3
+)
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ops/deploy smart       # change-aware tests and evidence-driven server verification
+  ops/deploy quick       # frontend or low-risk application change
+  ops/deploy standard    # manually force the complete non-destructive suite
+  ops/deploy full        # disposable PG18 integration suite plus full server checks
+  ops/deploy status      # current release, slots and service health
+  ops/deploy runtime-status # Runtime Controller state and recent logs
+  ops/deploy api-logs    # active API slot recent logs
+  ops/deploy history     # recent deployment audit events
+  ops/deploy rollback    # atomically return to the previous healthy slot
+  ops/deploy storage-activate # verify HDD and additively copy legacy hosted objects
+  ops/deploy hosted-db-activate # start the isolated HDD PostgreSQL data plane
+  ops/deploy hosted-db-migrate  # migrate legacy workspace records after both slots are ready
+  ops/deploy backup-now         # back up and verify both PostgreSQL data planes
+
+Environment:
+  WAREHOUSE_DEPLOY_HOST
+  WAREHOUSE_DEPLOY_USER
+  WAREHOUSE_DEPLOY_IDENTITY
+EOF
+}
+
+fail() {
+  printf 'deploy error: %s\n' "$*" >&2
+  exit 1
+}
+
+remote() {
+  ssh "${ssh_options[@]}" "${USER}@${HOST}" "$@"
+}
+
+require_file() {
+  [[ -f "$1" ]] || fail "required file not found: $1"
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+case "${MODE}" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  status|runtime-status|api-logs|history|rollback)
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} ${MODE}"
+    exit 0
+    ;;
+  storage-activate)
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} activate-hosted-storage"
+    exit 0
+    ;;
+  hosted-db-activate)
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} activate-hosted-database"
+    exit 0
+    ;;
+  hosted-db-migrate)
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} migrate-hosted-databases"
+    exit 0
+    ;;
+  backup-now)
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} backup-now"
+    exit 0
+    ;;
+  smart|quick|standard|full)
+    ;;
+  *)
+    usage >&2
+    fail "unknown mode: ${MODE}"
+    ;;
+esac
+
+require_file "${IDENTITY}"
+require_command node
+require_command rsync
+require_command ssh
+require_command scp
+require_command shasum
+require_command python3
+
+deploy_started="${SECONDS}"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-deploy.XXXXXX")"
+stage_dir="${work_dir}/stage"
+
+cleanup() {
+  rm -rf "${work_dir}"
+}
+trap cleanup EXIT
+
+printf '==> local validation (%s)\n' "${MODE}"
+cd "${ROOT}"
+git diff --check
+
+PLAN_MODE="${MODE}"
+PLAN_RISK="manual"
+PLAN_DEPLOY_REQUIRED=1
+PLAN_TESTS=""
+PLAN_FRONTEND=1
+PLAN_INTEGRATION=0
+PLAN_CHANGED_COUNT=0
+PLAN_UNMATCHED_FILES=""
+PLAN_SOURCE="explicit"
+INSTALL_MODE="${MODE}"
+
+if [[ "${MODE}" == smart ]]; then
+  # The model is deterministic and versioned with the release. Unknown files
+  # fail closed to full verification instead of silently taking a fast lane.
+  active_manifest="${work_dir}/active-files.sha256"
+  if remote "sudo -n ${REMOTE_MANAGER} manifest" \
+    > "${active_manifest}" 2>/dev/null && [[ -s "${active_manifest}" ]]; then
+    eval "$(
+      ops/deploy-plan \
+        --base-manifest "${active_manifest}" \
+        --candidate-root "${ROOT}" \
+        --format shell
+    )"
+    PLAN_SOURCE="active_release"
+  else
+    if [[ "${WAREHOUSE_REQUIRE_ACTIVE_MANIFEST:-0}" == 1 ]]; then
+      fail "active release manifest is required but unavailable"
+    fi
+    eval "$(ops/deploy-plan --format shell)"
+    PLAN_SOURCE="git_fallback"
+    # The currently installed server manager may predate the smart contract.
+    # Bootstrap it through the conservative legacy lane selected above.
+    INSTALL_MODE="${PLAN_MODE}"
+  fi
+  printf '    plan: source=%s risk=%s lane=%s files=%s\n' \
+    "${PLAN_SOURCE}" "${PLAN_RISK}" "${PLAN_MODE}" "${PLAN_CHANGED_COUNT}"
+  if [[ -n "${PLAN_UNMATCHED_FILES}" ]]; then
+    printf '    unmatched (full verification): %s\n' "${PLAN_UNMATCHED_FILES}"
+  fi
+  if [[ "${PLAN_DEPLOY_REQUIRED}" != 1 ]]; then
+    printf '==> no runtime deployment required for the observed change set\n'
+    exit 0
+  fi
+fi
+
+phase_started="${SECONDS}"
+if [[ "${PLAN_FRONTEND}" == 1 || "${MODE}" != smart ]]; then
+  node scripts/build_v2_frontend.cjs
+fi
+if [[ "${MODE}" != smart ]]; then
+  node scripts/build_v2_frontend.cjs --check
+fi
+printf '    phase=frontend duration_seconds=%s\n' "$((SECONDS - phase_started))"
+
+phase_started="${SECONDS}"
+case "${MODE}" in
+  smart)
+    IFS=: read -r -a smart_tests <<< "${PLAN_TESTS}"
+    if [[ ${#smart_tests[@]} -eq 0 ]]; then
+      smart_tests=(backend/tests/test_config.py)
+    fi
+    if [[ "${PLAN_INTEGRATION}" == 1 ]]; then
+      verification_targets=()
+      for target in "${smart_tests[@]}"; do
+        verification_targets+=("${target#backend/}")
+      done
+      ops/run-full-verification "${verification_targets[@]}"
+    else
+      backend/.venv/bin/pytest -q "${smart_tests[@]}"
+    fi
+    ;;
+  quick)
+    backend/.venv/bin/pytest -q \
+      backend/tests/test_config.py \
+      backend/tests/test_frontend_api_contract.py
+    ;;
+  standard)
+    backend/.venv/bin/pytest -q backend/tests
+    ;;
+  full)
+    backend/.venv/bin/pytest -q backend/tests
+    ops/run-full-verification
+    ;;
+esac
+printf '    phase=tests duration_seconds=%s\n' "$((SECONDS - phase_started))"
+
+git_sha="$(git rev-parse --short=12 HEAD 2>/dev/null || printf 'no-git')"
+dirty="false"
+if ! git diff --quiet --ignore-submodules -- || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+  dirty="true"
+fi
+release_id="$(date -u +%Y%m%dT%H%M%SZ)-${git_sha}-${MODE}"
+package="${work_dir}/${release_id}.tar.gz"
+checksum_file="${package}.sha256"
+
+mkdir -p "${stage_dir}"
+rsync -a \
+  --exclude-from "${ROOT}/ops/deploy.exclude" \
+  "${ROOT}/backend" \
+  "${ROOT}/browser-runtime" \
+  "${ROOT}/frontend" \
+  "${ROOT}/infra" \
+  "${ROOT}/scripts" \
+  "${ROOT}/ops" \
+  "${ROOT}/docs" \
+  "${ROOT}/.dockerignore" \
+  "${ROOT}/compose.production.yaml" \
+  "${ROOT}/README.md" \
+  "${stage_dir}/"
+
+mkdir -p "${stage_dir}/.warehouse-release"
+(
+  cd "${stage_dir}"
+  find . -type f ! -path './.warehouse-release/*' -print | LC_ALL=C sort |
+    while IFS= read -r file; do shasum -a 256 "${file}"; done
+) > "${stage_dir}/.warehouse-release/files.sha256"
+
+cat > "${stage_dir}/.warehouse-release/manifest.env" <<EOF
+release_id=${release_id}
+mode=${MODE}
+install_mode=${INSTALL_MODE}
+planned_mode=${PLAN_MODE}
+plan_risk=${PLAN_RISK}
+plan_changed_count=${PLAN_CHANGED_COUNT}
+plan_source=${PLAN_SOURCE}
+git_sha=${git_sha}
+dirty=${dirty}
+built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+alembic_head=$(cd backend && .venv/bin/alembic heads | awk 'NR==1 {print $1}')
+frontend_bundle_sha256=$(shasum -a 256 frontend/v2/dist/app.bundle.js | awk '{print $1}')
+EOF
+
+COPYFILE_DISABLE=1 tar -C "${stage_dir}" -czf "${package}" .
+package_hash="$(shasum -a 256 "${package}" | awk '{print $1}')"
+printf '%s  %s\n' "${package_hash}" "$(basename "${package}")" > "${checksum_file}"
+
+printf '==> upload immutable release %s\n' "${release_id}"
+remote "mkdir -p /var/lib/warehouse-deploy/incoming"
+scp "${ssh_options[@]}" "${package}" "${checksum_file}" \
+  "${USER}@${HOST}:/var/lib/warehouse-deploy/incoming/"
+
+printf '==> server install and verification\n'
+remote "sudo -n ${REMOTE_MANAGER} install ${release_id} ${INSTALL_MODE}"
+printf '==> deployed %s in %ss\n' "${release_id}" "$((SECONDS - deploy_started))"
