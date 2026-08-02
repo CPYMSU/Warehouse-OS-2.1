@@ -7,9 +7,9 @@ from fastapi import APIRouter, Body, Depends, status
 from app.api import digital_assets as legacy
 from app.api.deps import ActorContext, current_actor
 from app.core.config import Settings, get_settings
+from app.services.digital_asset_hosting import create_asset as native_create_asset
+from app.services.digital_asset_hosting import create_workspace as native_create_workspace
 from app.services.digital_asset_hosting import (
-    create_asset as native_create_asset,
-    create_workspace as native_create_workspace,
     issue_workspace_key as native_issue_workspace_key,
 )
 from app.services.workspace_autonomy import provision_idempotently
