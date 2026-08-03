@@ -12,20 +12,20 @@ Warehouse OS 不應要求每一個欄位修改都有一條預先寫好的指令�
         ↓
 Auto Runtime：理解、觀察、主觀判斷、形成計畫
         ↓
-能力解析器：專用能力 / 通用資料能力 / 尚缺能力
+能力解析器：專用能力 / 公司 AI 資料庫 Runtime / 語義資料能力 / 尚缺能力
         ↓
 必要時取得 Action Keychain（授權信號，不代替 AI 執行）
         ↓
 AI 繼續執行一個或多個動作
         ↓
-原生業務適配器 或 通用資料網關
+原生業務適配器 / 公司 AI 資料庫 Runtime / 語義資料網關
         ↓
 PostgreSQL RLS / 交易 / 不變量 / 審計 / Outbox
         ↓
 AI 讀回結果、核對是否真正完成、決定下一步
 ```
 
-## 一、信任 AI，但不把資料庫交給提示詞
+## 一、信任 AI，讓資料庫成為 AI 可觀察與行動的真實世界
 
 ### AI 擁有的判斷
 
@@ -37,21 +37,25 @@ AI 讀回結果、核對是否真正完成、決定下一步
 - 自主判斷上下文展開深度；頂層只看能力地圖及當前目標，需要時才載入欄位、關係、
   歷史、文件與原始記錄。
 - 專用指令不存在時，可選擇通用資料操作，不必把「缺指令」誤判成「不能完成」。
+- 可按自己的判斷查看物理 schema、table、column、主外鍵、約束、索引、RLS policy、
+  欄位值與行資料，也可自主編寫參數化 SQL 完成查詢或寫入。
 
 ### 系統只保留的硬邊界
 
 - 一個公司 AI 永遠只進入一個 `tenant_id` 的 RLS 會話，不能選擇或切換實體資料庫。
-- AI 不能提交 DSN、schema、table、SQL、任意欄位名或另一公司的識別碼。
+- DSN、資料庫連線與公司 AI 身份由 Runtime 建立；schema、table、column、SQL 與資料值
+  都是 AI 可以觀察和使用的業務世界，不由服務器白名單替 AI 決定是否可看。
 - 外鍵、唯一性、金額平衡、狀態版本、必要欄位與資料型別由資料庫及領域交易保證。
-- 密鑰、Passkey、付款、權限根、正式過帳、外部部署等副作用必須經專用適配器；
-  這不是否定 AI 判斷，而是避免只改一個欄位卻漏掉其他交易與外部系統。
+- 若目標包含密鑰、Passkey、付款、權限根、正式過帳、外部部署等跨系統副作用，AI
+  應選擇真正能產生該副作用的能力；單獨一筆資料庫寫入只能證明資料庫效果，不能被
+  當成外部世界已完成的證據。
 - 所有讀寫都留下可關聯到對話、Runtime run、操作者與 AI 判斷依據的事件。
 
 硬邊界不包含一份「某職位只能按某按鈕」的寫死白名單。職位、權限、風險、責任人
-與公司規章作為 AI 的判斷證據存在；只有跨租戶、資料結構與憑證安全是不允許被推理
-覆蓋的不變量。
+與公司規章作為 AI 的判斷證據存在；只有公司身份、資料庫授權、交易完整性及外部
+副作用的真實執行是不允許被推理覆蓋的不變量。
 
-## 二、三層能力解析
+## 二、四層能力解析
 
 每個目標先由 AI 判斷應落入哪一層，程式不以大量 `if/else` 代替 AI 路由。
 
@@ -68,7 +72,20 @@ AI 讀回結果、核對是否真正完成、決定下一步
 原生能力的接口是交易邊界，不是 AI 的固定工作流程。AI 仍可自由選擇、組合、重試、
 補充資料或中止。
 
-### B. 通用資料能力
+### B. 公司 AI 資料庫 Runtime
+
+當專用指令缺失或 AI 判斷直接讀寫資料庫更清楚時，可自主選擇：
+
+- `database_catalog`：查看可見 schema、table、view、主鍵、估算行數與讀寫權限；
+- `database_schema`：展開表頭、型別、預設值、主外鍵、約束、索引及 RLS policy；
+- `database_query`：在資料庫強制只讀交易中執行 AI 編寫的 SQL，取得真實列名和行值；
+- `database_execute`：執行 AI 編寫的 SQL，使用 `RETURNING` 或自選驗證 SQL 讀回。
+
+是否使用、查哪些表、如何 join、是否直接寫入、是否先讀後寫，全部由 AI 根據目標、
+資料庫結構、公司規章及當前證據主觀判斷。Runtime 只提供公司 AI 身份、事務、資料庫
+錯誤、結果回傳與審計，不在程式內寫一套業務 SQL 路由樹。
+
+### C. 通用語義資料能力
 
 適合單一資源或一組可在同一交易中安全完成的結構化修改，例如：
 
@@ -77,10 +94,10 @@ AI 讀回結果、核對是否真正完成、決定下一步
 - 修改工作區的配置型欄位；
 - 建立或修正尚未有專用指令的普通業務記錄。
 
-AI 使用語義資源名及欄位 key，不接觸 SQL。資料網關解析成當前資料庫的物理存儲，
-因此未來更換 PostgreSQL、拆服務或引入其他儲存時，AI、前端及外部 API 的契約不變。
+AI 仍可選擇較穩定的語義資源名及欄位 key；這是另一種可用能力，不是限制 AI 只能
+走語義白名單。語義資料網關適合前端表單、跨存儲兼容及穩定外部 API。
 
-### C. 尚缺能力
+### D. 尚缺能力
 
 如果目標需要未知外部服務、無法表達的跨資源交易或尚未登記的資料語義，AI 應：
 
@@ -102,7 +119,7 @@ AI 使用語義資源名及欄位 key，不接觸 SQL。資料網關解析成當
 | `version` | 契約版本 |
 | `label` / `description` | 供人與 AI 理解 |
 | `storage_adapter` | `postgres_table`、`document_projection`、`remote_service` |
-| `storage_locator` | 僅服務器可讀的物理映射，永不傳給模型 |
+| `storage_locator` | 語義資源的物理映射；公司 AI 可透過 database catalog/schema 觀察 |
 | `identity_fields` | 可用 UUID、DMA 編號、workspace key 或名稱解析 |
 | `lifecycle` | 可用狀態及其語義 |
 | `active` | 是否可供 AI 解析與使用 |
@@ -118,7 +135,7 @@ AI 使用語義資源名及欄位 key，不接觸 SQL。資料網關解析成當
 | `sensitivity` | 普通、個資、機密、憑證等資訊標記 |
 | `semantic_description` | 欄位對業務的真實含義 |
 | `examples` | 少量正反例，幫助 AI 判斷 |
-| `storage_path` | 服務器內部映射，不暴露給模型 |
+| `storage_path` | 語義欄位的物理路徑；AI 可在需要時從物理 schema 交叉核對 |
 
 ### `app.resource_relations` 與 `app.resource_invariants`
 
@@ -134,12 +151,16 @@ AI 使用語義資源名及欄位 key，不接觸 SQL。資料網關解析成當
 
 ## 四、統一 Data API 2.1
 
-提供一組與物理資料庫解耦的接口，供前端、Auto Runtime、超級終端及外部工作區共同
-使用：
+提供一組統一入口，讓前端、Auto Runtime、超級終端及外部工作區同時使用穩定語義
+能力與 AI 可直接觀察的物理資料庫能力：
 
 ```http
 GET  /api/data/v2/resources
 GET  /api/data/v2/resources/{resource_key}/schema
+GET  /api/data/v2/database
+POST /api/data/v2/database/schema
+POST /api/data/v2/database/query
+POST /api/data/v2/database/execute
 POST /api/data/v2/query
 POST /api/data/v2/resolve
 POST /api/data/v2/mutations/preview
@@ -166,9 +187,9 @@ POST /api/data/v2/transactions/commit
 }
 ```
 
-網關必須完成：資源解析、型別驗證、欄位模式核對、關係及不變量檢查、樂觀鎖、交易、
-讀回核驗、RLS、敏感欄位遮罩、事件與 outbox。AI 不需要知道這些實作細節，但會收到
-可理解的預覽、衝突、驗證失敗與完成結果。
+語義網關完成資源解析、型別驗證、欄位模式核對、關係及不變量檢查、樂觀鎖與讀回
+核驗。資料庫 Runtime 則把真實表結構、行值、PostgreSQL 錯誤、`RETURNING` 及讀回
+結果交給 AI。兩條路都保留公司身份、交易和審計，但選哪一條由 AI 決定。
 
 `preview` 不等於固定要求確認。它是 AI 的觀察工具；AI 可根據差異、可逆性、目前使用者
 身分、公司規章及上下文，主觀決定直接 `commit`、取得授權、改計畫或詢問人。
@@ -279,8 +300,9 @@ AI 在每次行動前收到的是證據而不是結論：
 
 - 保留 `Auto Runtime`、能力 Atlas、L0-L6 多層上下文與公司 AI 身分。
 - 保留原生 FastAPI 路由優先的原則。
-- 將目前 `compatibility.documents` 的命令投影網關降為過渡適配器；新通用資料網關
-  直接依資源註冊表讀寫正式領域表，不能再把每個 API 只投影成 JSON 文件。
+- 停用 `compatibility.documents` 的通用命令投影執行器；專用兼容 API 可繼續管理其
+  明確命名空間，但缺少領域適配器的指令只能回報能力缺口。通用資料網關直接依資源
+  註冊表讀寫正式領域表，不能把每個 API 投影成 JSON 文件後宣稱業務已完成。
 - `terminal.command_executions` 繼續記專用指令；通用資料修改寫入
   `secretariat.data_mutations`，兩者以 `run_id` 和 `operation_id` 串成同一條時間線。
 - `secretariat.execution_keychains` 升級為多步驟 action envelope，卡片只授權，Runtime
@@ -299,6 +321,32 @@ AI 在每次行動前收到的是證據而不是結論：
 6. 讓業務操作拓撲及普通編輯表單由同一份 schema 自動生成。
 7. 逐步把 compatibility 投影升級到正式資源；依 capability gap 的真實使用量決定哪些
    操作值得提升成專用指令。
+
+保留的舊指令不需要為每條建立臨時 HTTP 路由。`terminal.adapters` 可把它顯式註冊到
+現有領域服務，但只有 tool name、舊 method/path、讀寫 effect、語義資源、核驗方式與
+handler 同時匹配時才會進入 `active`。第一批先接通 `inventory_list`、`ledger_list`、
+`category_list_tenant`、`db_schema`、`db_query` 五條只讀能力；它們分別由 warehouse
+正式表或 PostgreSQL catalog／只讀交易提供證據。第二批再接通 49 條只讀能力：組織、
+工作流版本、AI Run、記憶、知識、風險與個人畫像直接讀正式 PostgreSQL 表；檔案、事務、
+財務、協作、合規、資產與資料匯入則只讀明確命名、由服務端固定的 RLS 投影。投影讀取
+不會建立文件，查不到詳情時必須失敗；工作流預演會核對目前版本與運行中實例，只回傳
+預演雜湊而不發布。此批完成時為 266 Active、218 待接入、6 Retired。
+
+第三批完成剩餘 31 條專用讀取與 187 條寫入。保留能力的正式狀態寫入
+`business.entities`，不可變事件與冪等回執寫入 `business.events`；兩者在同一個租戶
+RLS 交易內完成版本檢查、狀態轉移、審計與回讀。method／path／effect／confirmation
+合同另以固定 SHA-256 鎖定，目錄漂移即失敗閉合。領域工作流與 Passkey 指令仍先走原有
+確認鏈；外部查詢只使用具名供應商，未配置時明確拒絕；沒有外部 receipt 時不得宣稱
+外部效果完成，隔離 Python runner 未配置時也不會在 API 進程執行不受信程式碼。
+天氣查詢先使用租戶明確配置，再使用有經緯度的啟用倉庫，不猜測地點；AI Run 詳情使用
+`runs list` 返回的 UUID，沒有記錄可逆步驟時 `runs undo` 明確拒絕且不改資料。註冊表另有
+可達性不變量：每條通用寫入必須具有建立／集合入口或確定性目標，避免指令雖為 Active，
+但第一次合法調用在結構上必定 `not found`。
+
+最終租戶目錄為 484 Active、0 待接入、6 Retired；已核驗註冊表共 272 條 adapter
+（85 read、187 write）。另有 22 條平台指令繼續由 L11 治理，不納入租戶 Active 數。
+Active 表示已掛載真實執行適配器，不表示每次呼叫必然成功：權限拒絕、待確認、版本
+衝突、業務約束、資料不存在或供應商未配置仍會如實返回。
 
 驗收時不以「接口返回 200」為完成，而以：AI 是否找到正確資源、是否完成真正資料
 變更、是否讀回核驗、是否保持公司隔離、是否留下可理解審計，以及無專用指令時是否

@@ -7,9 +7,9 @@ The API serves that exact file through `/api/digital-assets/guide` and
 invariants behind that public contract.
 
 Application authors should also use
-[`workspace-hosting-developer-standard-2.2.zh-TW.md`](workspace-hosting-developer-standard-2.2.zh-TW.md)
+[`workspace-hosting-developer-standard-2.3.zh-TW.md`](workspace-hosting-developer-standard-2.3.zh-TW.md)
 and its machine contract
-[`workspace-hosting-contract-2.2.json`](workspace-hosting-contract-2.2.json).
+[`workspace-hosting-contract-2.3.json`](workspace-hosting-contract-2.3.json).
 
 Warehouse OS 2.1 treats a custodied program as an asset with one or more
 application workspaces. It does not import the Warehouse 2.0 customer-runtime,
@@ -39,12 +39,29 @@ database, key, or site-publication contracts.
 |---|---|---|
 | Artifact storage | `content_addressed_local` | Working development adapter; immutable object key and server-computed SHA-256 |
 | Hosted application database | `warehouse_postgresql_hdd_data_api` | Dedicated PostgreSQL database and role on the HDD data plane; stable Data API remains unchanged |
+| Customer-owned application database | `external_postgresql` | Validated, encrypted external DSN; the default binding drives Runtime and relational Data API without exposing credentials |
 | Legacy portable database | `warehouse_postgresql_data_api` | SSD control-plane compatibility source retained read-only after verified migration |
 | Application runtime | `runtime_controller` | Durable queue, isolated build/runtime, health verification and route activation |
 
 Provider keys are control-plane contracts. A production object store or
 container runtime can replace a development provider without changing the
 public asset, workspace or data-plane API.
+
+Every workspace database consumer resolves the same `database_binding`.
+`is_default=true` selects the one binding injected into Runtime as
+`DATABASE_URL`. Managed bindings are platform-owned; `external_postgresql`
+bindings are customer-owned and store a complete DSN only as encrypted
+credential material. External connections require a bounded non-superuser role,
+TLS and a public address by default. Private addresses require a separately
+governed network connector.
+
+The workspace owner may instead select `workspace_managed` or `none` through
+`PUT /api/workspaces/v1/database/policy`. In `workspace_managed` mode the
+platform does not force a PostgreSQL binding or inject a platform DSN: the WAK
+may run MySQL, MongoDB, SQLite, another datastore, or no database through the
+restricted container/Compose fabric and workspace-owned named volumes. This is
+workspace-root authority, not host-root authority; host paths, Docker socket,
+privileged mode and other tenants remain unreachable.
 
 ## Permanent entry and storage quota
 
@@ -101,6 +118,9 @@ These routes use the authenticated company identity, never a workspace key.
 - `POST /api/workspaces/{workspace}/databases`
 - `POST /api/workspaces/{workspace}/database/migrate-hdd`
 - `GET /api/workspaces/{workspace}/database/schema`
+- `GET /api/workspaces/{workspace}/database/health`
+- `GET /api/workspaces/{workspace}/database/tables/{schema}/{table}/rows`
+- `PUT /api/workspaces/{workspace}/database/tables/{schema}/{table}/rows/{key}`
 - `GET /api/workspaces/{workspace}/data/{collection}`
 - `PUT /api/workspaces/{workspace}/data/{collection}/{record_key}`
 - `POST /api/workspaces/{workspace}/runtime`
@@ -133,7 +153,14 @@ Stable endpoints:
 - `PUT /api/workspaces/v1/runtime`
 - `POST /api/workspaces/v1/sources/upload`
 - `POST /api/workspaces/v1/deployments`
+- `POST /api/workspaces/v1/jobs`
+- `PUT /api/workspaces/v1/database/policy`
+- `GET /api/workspaces/v1/database/control`
+- `POST /api/workspaces/v1/database/reconcile`
 - `GET /api/workspaces/v1/database/schema`
+- `GET /api/workspaces/v1/database/health`
+- `GET /api/workspaces/v1/database/tables/{schema}/{table}/rows`
+- `PUT /api/workspaces/v1/database/tables/{schema}/{table}/rows/{key}`
 - `GET /api/workspaces/v1/data/{collection}`
 - `PUT /api/workspaces/v1/data/{collection}/{record_key}`
 - `GET /api/workspaces/v1/fabric/manifest`
@@ -146,8 +173,58 @@ stored token hash inside that tenant's RLS transaction; it never scans other
 companies' credential tables. Data writes support optimistic concurrency
 through `expected_version`; stale writes return HTTP 409.
 
-Runtime configuration accepts `auto`, `static`, `web`, `api`, `worker` and
-`agent`, plus `container` and `compose`. Detection reads the immutable source archive evidence and selects an
+The schema response contains both `collections` and real PostgreSQL `tables`.
+Collection endpoints remain the portable JSON document contract. Relational
+table endpoints operate only on readable tables and require exactly one primary
+key for writes; their opaque PostgreSQL row version is returned for optimistic
+concurrency. External providers expose relational tables but do not silently
+install the platform's `workspace_records` collection table.
+
+## Standalone database and browser gateway
+
+`POST /api/database-projects` creates an asset, a workspace and its managed
+database without requesting or deploying a Runtime. This is the product entry
+for a frontend hosted elsewhere, including GitHub Pages. It reuses the same
+`database_bindings`, quota and custody model as hosted applications.
+
+The AI Secretary uses the same native control plane through `dm db service
+list`, `dm db service create`, `dm db browser show`, `dm db browser configure`,
+and `dm db onboarding`. The onboarding command returns the SDK, guide, API map,
+public `dbp_` locator and key-delivery policy. It never copies PostgreSQL
+credentials into chat; a server-side `wak_` remains a separately confirmed,
+one-time secure delivery through the existing workspace-key command.
+
+Browser code must never receive a `wak_` key. An administrator enables the
+browser boundary with:
+
+- `GET /api/database-projects`
+- `GET|PUT /api/workspaces/{workspace}/database/browser-access`
+- `GET /api/workspaces/{workspace}/database/onboarding`
+- an exact HTTPS `allowed_origins` list;
+- deny-by-default collection rules using `deny`, `session`, or `owner` for
+  `read` and `write`;
+- a per-project database-backed request limit.
+
+The returned `dbp_` project key is a public signed locator, not a credential.
+An allowed browser origin exchanges it at
+`POST /api/database-gateway/v1/projects/{dbp}/sessions` for a revocable `wdb_`
+access token and rotating `wdr_` refresh token. Access tokens last 5–60 minutes;
+changing policy increments the project revision and invalidates existing access
+tokens. Disabling browser access revokes every refresh session.
+
+Browser collection CRUD is available at:
+
+- `GET /api/database-gateway/v1/projects/{dbp}/data/{collection}`
+- `GET|PUT|DELETE /api/database-gateway/v1/projects/{dbp}/data/{collection}/{key}`
+- `GET /api/database-gateway/v1/sdk.js`
+
+`owner` rules inject and atomically enforce the session subject in `owner_id`,
+including list, overwrite and delete checks. CORS is evaluated per project and
+exact origin. The browser gateway currently targets the managed collection Data
+API; customer-owned PostgreSQL remains a server-side Runtime/backend binding.
+
+Runtime configuration accepts `auto`, `static`, `web`, `api`, `worker`,
+`agent` and `job`, plus `container` and `compose`. Detection reads the immutable source archive evidence and selects an
 enabled database Runtime profile. It never creates a second workspace. Missing
 legacy storage bindings are repaired on the same workspace, but `ready` is
 persisted only after a create/write/fsync/read/delete probe succeeds.
@@ -159,6 +236,15 @@ verified archive cannot satisfy is rejected before the deployment queue is
 mutated. The response uses `source_runtime_mismatch` for an explicit invalid
 request and `runtime_contract_mismatch` when a lower-level stale component is
 detected; both include a safe corrective next action.
+
+`activate=false` creates and health-checks a release without changing the
+workspace's active deployment. A later explicit `/activate` performs the
+traffic switch. `POST /api/workspaces/v1/jobs` uses the same immutable source,
+read-only source mount and writable workspace data volume, waits for a bounded
+exit code, stores redacted logs, and never changes production traffic. A
+`database:admin` key may request a safe environment alias for the already
+bound database URL, so source-native Alembic/import commands do not require an
+operator to reveal or copy a DSN.
 
 ## Advanced Hosting Fabric
 
@@ -248,7 +334,9 @@ database-configured watermarks without revealing host paths or DSNs.
 The platform control PostgreSQL remains on SSD for identity, permission,
 audit, binding and quota metadata. User software records live in a second
 PostgreSQL 18 cluster whose PGDATA is mounted at
-`/mnt/warehouse-data/hosted/postgres-data`. Every workspace receives a
-dedicated database and non-privileged login role. Only the stable Data API can
+`/mnt/warehouse-data/hosted/postgres-data`. Every workspace using the
+`platform_managed` policy receives a dedicated database and non-privileged login role. Only the stable Data API can
 resolve the encrypted internal credential; people, frontends and Auto Runtime
-never receive a native DSN.
+never receive a native DSN. This paragraph describes the optional
+`platform_managed` provider, not a mandatory application architecture;
+`workspace_managed`, `external` and `none` remain valid policy modes.

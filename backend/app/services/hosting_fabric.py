@@ -31,6 +31,10 @@ from sqlalchemy import text
 from app.core.config import Settings
 from app.db.session import system_session, tenant_session
 from app.services import hosted_database
+from app.services.database_release import (
+    observe_database_release_gate,
+    workspace_database_policy,
+)
 from app.services.digital_asset_hosting import WORKSPACE_ALL_SCOPES, WorkspaceCredential
 from app.services.object_storage import HDD_PROVIDER_KEY, object_store_for_provider
 from app.services.source_packages import inspect_source_archive
@@ -433,10 +437,15 @@ def _validate_environment(spec: dict[str, object]) -> dict[str, object]:
     return {"component": str(spec.get("component") or "*"), "variables": clean}
 
 
-def _validate_secret(spec: dict[str, object]) -> tuple[dict[str, object], str]:
+def _validate_secret(
+    spec: dict[str, object], *, allow_database_url: bool = False
+) -> tuple[dict[str, object], str]:
     name = str(spec.get("name") or "").strip().upper()
     value = spec.get("value")
-    if not ENV_NAME_RE.fullmatch(name) or name in RESERVED_ENVIRONMENT:
+    if not ENV_NAME_RE.fullmatch(name) or (
+        name in RESERVED_ENVIRONMENT
+        and not (allow_database_url and name == "DATABASE_URL")
+    ):
         raise HTTPException(status_code=422, detail="Invalid or reserved secret name")
     if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 65_536:
         raise HTTPException(status_code=422, detail="Secret value must be 1-65536 bytes")
@@ -500,12 +509,12 @@ def _database_binding(session: object, credential: WorkspaceCredential) -> dict[
         session.execute(
             text(
                 """
-                SELECT b.*, c.secret_ciphertext
+                SELECT b.*, c.secret_ciphertext, c.credential_kind
                 FROM digital_asset.database_bindings AS b
                 LEFT JOIN digital_asset.database_credentials AS c
                   ON c.database_binding_id=b.id
                 WHERE b.workspace_id=:workspace_id AND b.status='ready'
-                ORDER BY b.created_at LIMIT 1
+                ORDER BY b.is_default DESC,b.created_at LIMIT 1
                 """
             ),
             {"workspace_id": credential.workspace_id},
@@ -513,9 +522,11 @@ def _database_binding(session: object, credential: WorkspaceCredential) -> dict[
         .mappings()
         .one_or_none()
     )
-    if row is None or str(row.get("provider_key")) != hosted_database.HDD_DATABASE_PROVIDER_KEY:
+    if row is None or str(row.get("provider_key")) not in (
+        hosted_database.POSTGRESQL_PROVIDER_KEYS
+    ):
         raise HTTPException(
-            status_code=409, detail="A ready dedicated HDD PostgreSQL database is required"
+            status_code=409, detail="A ready PostgreSQL workspace database is required"
         )
     return dict(row)
 
@@ -526,8 +537,13 @@ def _apply_secret(
     resource: dict[str, object],
     spec: dict[str, object],
     settings: Settings,
+    *,
+    allow_database_url: bool = False,
 ) -> dict[str, object]:
-    public, value = _validate_secret(spec)
+    public, value = _validate_secret(
+        spec,
+        allow_database_url=allow_database_url,
+    )
     name = str(public["name"])
     version = int(
         session.execute(
@@ -597,7 +613,8 @@ def _apply_migration(
     existing = (
         session.execute(
             text(
-                "SELECT checksum,status,applied_at FROM digital_asset.database_migration_history "
+                "SELECT id,checksum,status,applied_at,error "
+                "FROM digital_asset.database_migration_history "
                 "WHERE workspace_id=:workspace_id "
                 "AND database_binding_id=:database_id AND version=:version"
             ),
@@ -615,42 +632,147 @@ def _apply_migration(
             raise HTTPException(
                 status_code=409, detail="Migration version already has another checksum"
             )
-        return {
-            "version": version,
-            "checksum": checksum,
-            "idempotent_replay": True,
-            "applied_at": existing["applied_at"],
-        }
+        if str(existing["status"]) == "applied":
+            return {
+                "version": version,
+                "checksum": checksum,
+                "idempotent_replay": True,
+                "applied_at": existing["applied_at"],
+            }
+        history_id = existing["id"]
+        session.execute(
+            text(
+                "UPDATE digital_asset.database_migration_history "
+                "SET error='migration_started',applied_at=now() WHERE id=:id"
+            ),
+            {"id": history_id},
+        )
+    else:
+        history_id = uuid4()
+        session.execute(
+            text(
+                """
+                INSERT INTO digital_asset.database_migration_history(
+                  id,tenant_id,workspace_id,database_binding_id,version,checksum,
+                  statement_count,status,error,applied_by_credential_id
+                ) VALUES (
+                  :id,:tenant_id,:workspace_id,:database_id,:version,:checksum,
+                  1,'failed','migration_started',:credential_id
+                )
+                """
+            ),
+            {
+                "id": history_id,
+                "tenant_id": credential.tenant_id,
+                "workspace_id": credential.workspace_id,
+                "database_id": binding["id"],
+                "version": version,
+                "checksum": checksum,
+                "credential_id": credential.credential_id,
+            },
+        )
+    backup = (
+        session.execute(
+            text(
+                """
+                SELECT id,sha256,metadata,completed_at
+                FROM digital_asset.database_backups
+                WHERE workspace_id=:workspace_id
+                  AND database_binding_id=:database_id
+                  AND status='ready'
+                ORDER BY completed_at DESC NULLS LAST,created_at DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "workspace_id": credential.workspace_id,
+                "database_id": binding["id"],
+            },
+        )
+        .mappings()
+        .one_or_none()
+    )
+    backup_metadata = (
+        dict(backup["metadata"])
+        if backup is not None and isinstance(backup["metadata"], dict)
+        else {}
+    )
+    if (
+        backup is None
+        or not backup.get("sha256")
+        or not bool(backup_metadata.get("checksum_verified"))
+        or not bool(backup_metadata.get("restore_verified"))
+    ):
+        session.execute(
+            text(
+                "UPDATE digital_asset.database_migration_history "
+                "SET status='failed',error='verified_backup_required',applied_at=now() "
+                "WHERE id=:id"
+            ),
+            {"id": history_id},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "verified_database_backup_required",
+                "version": version,
+                "history_id": str(history_id),
+                "required_evidence": ["sha256", "checksum_verified", "restore_verified"],
+                "next_action": "create_logical_backup",
+            },
+        )
     try:
+        capability_evidence = hosted_database.reconcile_capabilities(
+            session, binding, settings=settings
+        )
         applied = hosted_database.execute_migration(
             session, binding, migration_sql=source, settings=settings
         )
-    except (ValueError, hosted_database.HostedDatabaseUnavailable) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        session.execute(
+            text(
+                "UPDATE digital_asset.database_migration_history "
+                "SET status='failed',error=:error,applied_at=now() WHERE id=:id"
+            ),
+            {"id": history_id, "error": f"{type(exc).__name__}: {exc}"[:4000]},
+        )
+        status_code = (
+            503
+            if isinstance(exc, hosted_database.HostedDatabaseUnavailable)
+            else 422
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "reason": "database_migration_failed",
+                "version": version,
+                "history_id": str(history_id),
+                "message": str(exc),
+            },
+        ) from exc
     session.execute(
         text(
             """
-            INSERT INTO digital_asset.database_migration_history(
-              id,tenant_id,workspace_id,database_binding_id,version,checksum,
-              statement_count,status,applied_by_credential_id
-            ) VALUES (
-              :id,:tenant_id,:workspace_id,:database_id,:version,:checksum,
-              :statement_count,'applied',:credential_id
-            )
+            UPDATE digital_asset.database_migration_history
+            SET statement_count=:statement_count,status='applied',error=NULL,applied_at=now()
+            WHERE id=:id
             """
         ),
         {
-            "id": uuid4(),
-            "tenant_id": credential.tenant_id,
-            "workspace_id": credential.workspace_id,
-            "database_id": binding["id"],
-            "version": version,
-            "checksum": checksum,
+            "id": history_id,
             "statement_count": applied["statement_count"],
-            "credential_id": credential.credential_id,
         },
     )
-    return {"version": version, "checksum": checksum, **applied, "idempotent_replay": False}
+    return {
+        "version": version,
+        "checksum": checksum,
+        "history_id": str(history_id),
+        "backup_id": str(backup["id"]),
+        "backup_sha256": str(backup["sha256"]),
+        "capabilities": capability_evidence,
+        **applied,
+        "idempotent_replay": False,
+    }
 
 
 def _backup_object_path(settings: Settings, object_key: str) -> Path:
@@ -694,31 +816,30 @@ def _apply_backup(
         }
         return "blocked", {"configured": False, "requested": requested}, error
     binding = _database_binding(session, credential)
+    if str(binding["provider_key"]) == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "external_database_backup_is_customer_managed",
+                "next_action": "use the external provider backup service",
+            },
+        )
     if operation == "create":
         backup_id = uuid4()
-        with tempfile.TemporaryDirectory(prefix="warehouse-db-backup-") as temporary:
-            dump = Path(temporary) / f"{backup_id}.dump"
-            result = hosted_database.backup_database(binding, dump, settings=settings)
-            store = object_store_for_provider(settings, HDD_PROVIDER_KEY)
-            with dump.open("rb") as stream:
-                stored = store.put_stream(
-                    tenant_id=credential.tenant_id,
-                    stream=stream,
-                    max_bytes=max(dump.stat().st_size, 1),
-                    expected_sha256=str(result["sha256"]),
-                )
         retention_days = max(1, min(int(spec.get("retention_days") or 30), 3650))
+        recovery_point = datetime.now(UTC)
+        label = str(spec.get("label") or f"backup-{recovery_point.isoformat()}")[:160]
         session.execute(
             text(
                 """
                 INSERT INTO digital_asset.database_backups(
                   id,tenant_id,workspace_id,database_binding_id,label,backup_kind,
-                  storage_provider,object_key,sha256,size_bytes,status,retention_until,
-                  metadata,created_by_credential_id,completed_at
+                  storage_provider,size_bytes,status,recovery_point,retention_until,
+                  metadata,created_by_credential_id
                 ) VALUES (
                   :id,:tenant_id,:workspace_id,:database_id,:label,'logical',
-                  :provider,:object_key,:sha256,:size,'ready',:retention,
-                  CAST(:metadata AS jsonb),:credential_id,now()
+                  :provider,0,'creating',:recovery_point,:retention,
+                  CAST(:metadata AS jsonb),:credential_id
                 )
                 """
             ),
@@ -727,16 +848,99 @@ def _apply_backup(
                 "tenant_id": credential.tenant_id,
                 "workspace_id": credential.workspace_id,
                 "database_id": binding["id"],
-                "label": str(spec.get("label") or f"backup-{datetime.now(UTC).isoformat()}")[:160],
-                "provider": stored.provider_key,
-                "object_key": stored.object_key,
-                "sha256": stored.sha256,
-                "size": stored.size_bytes,
-                "retention": datetime.now(UTC) + timedelta(days=retention_days),
-                "metadata": _canonical({"format": result["format"], "verified": True}),
+                "label": label,
+                "provider": HDD_PROVIDER_KEY,
+                "recovery_point": recovery_point,
+                "retention": recovery_point + timedelta(days=retention_days),
+                "metadata": _canonical(
+                    {
+                        "stage": "creating",
+                        "checksum_verified": False,
+                        "restore_verified": False,
+                    }
+                ),
                 "credential_id": credential.credential_id,
             },
         )
+        try:
+            with tempfile.TemporaryDirectory(prefix="warehouse-db-backup-") as temporary:
+                dump = Path(temporary) / f"{backup_id}.dump"
+                result = hosted_database.backup_database(binding, dump, settings=settings)
+                store = object_store_for_provider(settings, HDD_PROVIDER_KEY)
+                with dump.open("rb") as stream:
+                    stored = store.put_stream(
+                        tenant_id=credential.tenant_id,
+                        stream=stream,
+                        max_bytes=max(dump.stat().st_size, 1),
+                        expected_sha256=str(result["sha256"]),
+                    )
+            verification = dict(result["restore_verification"])
+            metadata = {
+                "format": result["format"],
+                "stage": "completed",
+                "checksum_verified": stored.sha256 == result["sha256"],
+                "restore_verified": bool(verification.get("verified")),
+                "restore_verification": verification,
+                "server_major": result["server_major"],
+                "server_version": result["server_version"],
+                "pg_dump_version": result["pg_dump_version"],
+                "pg_restore_version": result["pg_restore_version"],
+            }
+            if not metadata["checksum_verified"] or not metadata["restore_verified"]:
+                raise hosted_database.HostedDatabaseUnavailable(
+                    "Backup evidence did not satisfy checksum and restore gates"
+                )
+            session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.database_backups
+                    SET storage_provider=:provider,object_key=:object_key,sha256=:sha256,
+                        size_bytes=:size,status='ready',metadata=CAST(:metadata AS jsonb),
+                        completed_at=now()
+                    WHERE id=:id
+                    """
+                ),
+                {
+                    "id": backup_id,
+                    "provider": stored.provider_key,
+                    "object_key": stored.object_key,
+                    "sha256": stored.sha256,
+                    "size": stored.size_bytes,
+                    "metadata": _canonical(metadata),
+                },
+            )
+        except Exception as exc:
+            session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.database_backups
+                    SET status='failed',metadata=metadata || CAST(:failure AS jsonb),
+                        completed_at=now()
+                    WHERE id=:id
+                    """
+                ),
+                {
+                    "id": backup_id,
+                    "failure": _canonical(
+                        {
+                            "stage": "failed",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:1200],
+                            "checksum_verified": False,
+                            "restore_verified": False,
+                        }
+                    ),
+                },
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "reason": "database_backup_failed",
+                    "backup_id": str(backup_id),
+                    "message": str(exc),
+                    "retryable": True,
+                },
+            ) from exc
         return (
             "succeeded",
             {
@@ -746,7 +950,8 @@ def _apply_backup(
                 "destination": "local",
                 "sha256": stored.sha256,
                 "size_bytes": stored.size_bytes,
-                "recovery_point": datetime.now(UTC).isoformat(),
+                "recovery_point": recovery_point.isoformat(),
+                "verification": metadata,
             },
             None,
         )
@@ -772,8 +977,53 @@ def _apply_backup(
     path = _backup_object_path(settings, str(backup["object_key"]))
     if not path.is_file():
         raise HTTPException(status_code=409, detail="Backup object is unavailable")
-    result = hosted_database.restore_database(
-        binding, path, expected_sha256=str(backup["sha256"]), settings=settings
+    session.execute(
+        text("UPDATE digital_asset.database_backups SET status='restoring' WHERE id=:id"),
+        {"id": backup_id},
+    )
+    try:
+        result = hosted_database.restore_database(
+            binding, path, expected_sha256=str(backup["sha256"]), settings=settings
+        )
+    except Exception as exc:
+        session.execute(
+            text(
+                "UPDATE digital_asset.database_backups SET status='failed',"
+                "metadata=metadata || CAST(:failure AS jsonb),completed_at=now() WHERE id=:id"
+            ),
+            {
+                "id": backup_id,
+                "failure": _canonical(
+                    {
+                        "restore_failed_at": datetime.now(UTC).isoformat(),
+                        "restore_error_type": type(exc).__name__,
+                        "restore_error": str(exc)[:1200],
+                    }
+                ),
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "reason": "database_restore_failed",
+                "backup_id": str(backup_id),
+                "message": str(exc),
+            },
+        ) from exc
+    session.execute(
+        text(
+            "UPDATE digital_asset.database_backups SET status='ready',"
+            "metadata=metadata || CAST(:restored AS jsonb),completed_at=now() WHERE id=:id"
+        ),
+        {
+            "id": backup_id,
+            "restored": _canonical(
+                {
+                    "last_restore_verified": True,
+                    "last_restored_at": datetime.now(UTC).isoformat(),
+                }
+            ),
+        },
     )
     return (
         "succeeded",
@@ -1085,11 +1335,16 @@ def apply_fabric_resource(
     resource_key = str(payload.get("resource_key") or spec.get("name") or kind).strip()
     execute = payload.get("execute") is not False
     with tenant_session(credential.tenant_id) as session:
-        _workspace(session, credential)
+        workspace = _workspace(session, credential)
+        database_policy = workspace_database_policy(workspace.get("config"))
+        allow_database_url = str(database_policy["mode"]) == "workspace_managed"
         driver = _driver(session, kind)
         credential.require(str(driver["required_scope"]))
         if kind == "secret":
-            public, _value = _validate_secret(spec)
+            public, _value = _validate_secret(
+                spec,
+                allow_database_url=allow_database_url,
+            )
             desired = public
             resource_key = str(public["name"])
         elif kind == "environment":
@@ -1121,9 +1376,10 @@ def apply_fabric_resource(
             }
             resource_key = hostname
         elif kind == "database_migration":
+            normalized_sql = str(spec.get("sql") or "").strip()
             desired = {
                 "version": str(spec.get("version") or "")[:120],
-                "checksum": hashlib.sha256(str(spec.get("sql") or "").encode()).hexdigest(),
+                "checksum": hashlib.sha256(normalized_sql.encode()).hexdigest(),
             }
             resource_key = str(desired["version"] or resource_key)
         elif kind == "repository":
@@ -1214,7 +1470,14 @@ def apply_fabric_resource(
             }
         try:
             if kind == "secret":
-                observed = _apply_secret(session, credential, resource, spec, settings)
+                observed = _apply_secret(
+                    session,
+                    credential,
+                    resource,
+                    spec,
+                    settings,
+                    allow_database_url=allow_database_url,
+                )
                 status, error = "succeeded", None
             elif kind == "database_migration":
                 observed = _apply_migration(session, credential, spec, settings)
@@ -1316,7 +1579,8 @@ def observe_fabric(credential: WorkspaceCredential) -> dict[str, object]:
             for row in session.execute(
                 text(
                     "SELECT id,label,backup_kind,sha256,size_bytes,status,recovery_point,"
-                    "retention_until,created_at FROM digital_asset.database_backups "
+                    "retention_until,metadata,created_at,completed_at "
+                    "FROM digital_asset.database_backups "
                     "WHERE workspace_id=:workspace_id ORDER BY created_at DESC"
                 ),
                 {"workspace_id": credential.workspace_id},
@@ -1330,6 +1594,249 @@ def observe_fabric(credential: WorkspaceCredential) -> dict[str, object]:
         "secrets": secrets,
         "backups": backups,
         "secret_plaintext_exposed": False,
+    }
+
+
+def set_workspace_database_policy(
+    credential: WorkspaceCredential,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Choose who owns the workspace database lifecycle without deleting data."""
+
+    credential.require("database:admin")
+    mode = str(payload.get("mode") or "").strip().lower()
+    allowed = {"platform_managed", "external", "workspace_managed", "none"}
+    if mode not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail={"reason": "invalid_database_policy", "allowed_modes": sorted(allowed)},
+        )
+    with tenant_session(credential.tenant_id) as session:
+        workspace = _workspace(session, credential)
+        binding = (
+            session.execute(
+                text(
+                    """
+                    SELECT id,provider_key,status,logical_name
+                    FROM digital_asset.database_bindings
+                    WHERE workspace_id=:workspace_id AND is_default
+                    ORDER BY created_at LIMIT 1
+                    """
+                ),
+                {"workspace_id": credential.workspace_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        provider = str(binding.get("provider_key") or "") if binding is not None else ""
+        if mode == "platform_managed" and provider not in {
+            hosted_database.HDD_DATABASE_PROVIDER_KEY,
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "managed_postgresql_binding_required",
+                    "next_action": "provision_or_select_managed_database",
+                },
+            )
+        if mode == "external" and provider != hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "external_database_binding_required",
+                    "next_action": "register_external_database_binding",
+                },
+            )
+        config = dict(workspace.get("config") or {})
+        before = workspace_database_policy(config)
+        config["database_policy"] = {
+            "mode": mode,
+            "selected_by_credential_id": str(credential.credential_id),
+            "selected_at": datetime.now(UTC).isoformat(),
+        }
+        session.execute(
+            text(
+                """
+                UPDATE digital_asset.workspaces
+                SET config=CAST(:config AS jsonb),revision=revision+1,updated_at=now()
+                WHERE id=:workspace_id
+                """
+            ),
+            {
+                "workspace_id": credential.workspace_id,
+                "config": _canonical(config),
+            },
+        )
+        after = workspace_database_policy(config)
+        release_gate = observe_database_release_gate(session, credential.workspace_id)
+    return {
+        "ok": True,
+        "workspace_id": str(credential.workspace_id),
+        "before": before,
+        "policy": after,
+        "release_gate": _json_safe(release_gate),
+        "existing_database_binding_retained": binding is not None,
+        "database_credentials_exposed": False,
+        "workspace_boundary": {
+            "source_read_only": True,
+            "runtime_and_data_writable": True,
+            "host_and_other_workspaces_visible": False,
+            "compose_services_and_named_volumes_allowed": True,
+        },
+    }
+
+
+def workspace_database_control(
+    credential: WorkspaceCredential,
+    settings: Settings,
+    *,
+    reconcile: bool = False,
+) -> dict[str, object]:
+    """Expose the complete, auditable database control surface to workspace keys."""
+
+    credential.require("database:admin" if reconcile else "infra:read")
+    with tenant_session(credential.tenant_id) as session:
+        workspace = _workspace(session, credential)
+        database_policy = workspace_database_policy(workspace.get("config"))
+        binding_row = (
+            session.execute(
+                text(
+                    """
+                    SELECT b.*,c.secret_ciphertext,c.credential_kind
+                    FROM digital_asset.database_bindings AS b
+                    LEFT JOIN digital_asset.database_credentials AS c
+                      ON c.database_binding_id=b.id
+                    WHERE b.workspace_id=:workspace_id
+                    ORDER BY b.is_default DESC,b.created_at
+                    LIMIT 1
+                    """
+                ),
+                {"workspace_id": credential.workspace_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if binding_row is None:
+            raise HTTPException(status_code=404, detail="Workspace database not found")
+        binding = dict(binding_row)
+        capability_evidence: dict[str, object] | None = None
+        if reconcile:
+            if str(binding.get("status") or "") != "ready":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "database_binding_not_ready",
+                        "database_binding_id": str(binding["id"]),
+                        "status": binding.get("status"),
+                    },
+                )
+            try:
+                capability_evidence = hosted_database.reconcile_capabilities(
+                    session,
+                    binding,
+                    settings=settings,
+                )
+            except hosted_database.HostedDatabaseUnavailable as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "reason": "database_capability_reconciliation_failed",
+                        "message": str(exc),
+                        "retryable": True,
+                    },
+                ) from exc
+
+        health: dict[str, object]
+        if str(binding.get("status") or "") == "ready":
+            try:
+                health = hosted_database.binding_health(
+                    session,
+                    binding,
+                    settings=settings,
+                )
+            except hosted_database.HostedDatabaseUnavailable as exc:
+                health = {
+                    "reachable": False,
+                    "reason": "database_unavailable",
+                    "message": str(exc),
+                    "retryable": True,
+                    "credentials_exposed": False,
+                }
+        else:
+            health = {
+                "reachable": False,
+                "reason": "database_binding_not_ready",
+                "binding_status": binding.get("status"),
+                "retryable": True,
+                "credentials_exposed": False,
+            }
+
+        current = dict(
+            session.execute(
+                text(
+                    """
+                    SELECT id,logical_name,provider_key,status,ownership_mode,
+                           database_ref,role_ref,runtime_role_ref,
+                           capabilities,config,actual_size_bytes,size_measured_at,
+                           created_at,updated_at
+                    FROM digital_asset.database_bindings
+                    WHERE id=:binding_id
+                    """
+                ),
+                {"binding_id": binding["id"]},
+            )
+            .mappings()
+            .one()
+        )
+        migration_history = [
+            _json_safe(dict(row))
+            for row in session.execute(
+                text(
+                    """
+                    SELECT id,version,checksum,statement_count,status,error,applied_at
+                    FROM digital_asset.database_migration_history
+                    WHERE workspace_id=:workspace_id
+                      AND database_binding_id=:binding_id
+                    ORDER BY applied_at,version
+                    """
+                ),
+                {
+                    "workspace_id": credential.workspace_id,
+                    "binding_id": binding["id"],
+                },
+            ).mappings()
+        ]
+        release_gate = observe_database_release_gate(session, credential.workspace_id)
+
+    scopes = set(credential.scopes)
+    return {
+        "ok": bool(health.get("reachable")),
+        "workspace_id": str(credential.workspace_id),
+        "key_kind": credential.key_kind,
+        "database_policy": database_policy,
+        "reconcile_performed": reconcile,
+        "database": _json_safe(current),
+        "health": _json_safe(health),
+        "capability_evidence": _json_safe(capability_evidence),
+        "release_gate": _json_safe(release_gate),
+        "migration_history": migration_history,
+        "authorized_operations": {
+            "observe": "infra:read" in scopes,
+            "reconcile_capabilities": "database:admin" in scopes,
+            "create_or_restore_backup": "backup:write" in scopes,
+            "apply_migration": "database:admin" in scopes,
+            "deploy_or_activate": "deploy:write" in scopes,
+        },
+        "control_surface": {
+            "reconcile": "POST /api/workspaces/v1/database/reconcile",
+            "backup_or_restore": "POST /api/workspaces/v1/fabric/resources kind=backup",
+            "migration": (
+                "POST /api/workspaces/v1/fabric/resources kind=database_migration"
+            ),
+            "deployment": "POST /api/workspaces/v1/deployments",
+            "release_observation": "GET /api/workspaces/v1/database/control",
+        },
+        "credentials_exposed": False,
     }
 
 

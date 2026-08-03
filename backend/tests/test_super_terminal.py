@@ -5,17 +5,32 @@ from uuid import UUID
 
 from fastapi.testclient import TestClient
 
+from app.api import capability_gateway
 from app.api.deps import ActorContext, current_actor
 from app.main import app
+from app.services import (
+    database_runtime,
+    legacy_capability_runtime,
+    legacy_read_runtime,
+    warehouse_operations,
+)
+from app.services.legacy_capability_runtime import SUPPORTED_CAPABILITY_TOOLS
 from app.terminal import executor, legacy_catalog
+from app.terminal.adapters import verified_adapter_snapshot
 from app.terminal.catalog import (
     ai_capability_candidates,
     ai_capability_gene_index,
     ai_capability_genes,
+    availability,
     platform_entries,
     tenant_entries,
 )
-from app.terminal.gateway import gateway_contract_ready, match_contract
+from app.terminal.gateway import (
+    ContractMatch,
+    execute_gateway_contract,
+    gateway_contract_ready,
+    match_contract,
+)
 
 RESEARCH_TOOLS = {
     entry["tool_name"]
@@ -52,19 +67,16 @@ def _client(monkeypatch) -> TestClient:
 
 
 def test_imported_catalogue_has_complete_legacy_command_counts() -> None:
-    assert len(tenant_entries()) == 486
+    assert len(tenant_entries()) == 495
     assert len(platform_entries()) == 22
-    assert len({entry["tool_name"] for entry in tenant_entries()}) == 486
+    assert len({entry["tool_name"] for entry in tenant_entries()}) == 495
 
 
 def test_retired_contracts_are_excluded_from_model_discovery() -> None:
     retired_tool = "digital_market_site_publish"
+    assert retired_tool not in {item["tool_name"] for item in ai_capability_gene_index()}
     assert retired_tool not in {
-        item["tool_name"] for item in ai_capability_gene_index()
-    }
-    assert retired_tool not in {
-        item["tool_name"]
-        for item in ai_capability_candidates("發布站點文件", limit=50)
+        item["tool_name"] for item in ai_capability_candidates("發布站點文件", limit=50)
     }
     assert ai_capability_genes([retired_tool]) == []
 
@@ -79,19 +91,29 @@ def test_terminal_advertises_complete_catalogue_with_truthful_states(monkeypatch
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert len(names) == 486
-    assert response.json()["total"] == 486
+    assert len(names) == 495
+    assert response.json()["total"] == 495
     assert response.json()["executable"] > 2
     states = {item["command"]: item for item in response.json()["commands"]}
     assert states["whoami"]["availability"] == "active"
     assert states["warehouse list"]["allowed"] is True
     assert states["inv list"]["availability"] == "active"
     assert states["inv list"]["allowed"] is True
+    assert states["inv list"]["execution_kind"] == "verified_adapter"
+    assert states["inv list"]["adapter"] == "verified_registry"
     assert states["dm site publish"]["availability"] == "retired_2_0"
     assert states["dm site publish"]["allowed"] is False
-    assert status["tenant_command_count"] == 486
+    for command in (
+        "dm db service list",
+        "dm db service create",
+        "dm db browser show",
+        "dm db browser configure",
+        "dm db onboarding",
+    ):
+        assert states[command]["availability"] == "active"
+    assert status["tenant_command_count"] == 495
     assert status["platform_command_count"] == 22
-    assert status["active_tenant_command_count"] == 480
+    assert status["active_tenant_command_count"] == 489
     assert status["retired_tenant_command_count"] == 6
     assert status["awaiting_domain_adapter_count"] == 0
     assert status["invalid_contract_count"] == 0
@@ -125,12 +147,19 @@ def test_human_and_ai_paths_share_the_same_command_adapter(monkeypatch) -> None:
     assert ai.json()["status"] == "succeeded"
     assert ai.json()["tool_name"] == human.json()["tool_name"] == "warehouse_list"
     assert ai.json()["data"] == human.json()["data"]
-    assert len(tools.json()["tools"]) == 502
-    assert len(tools.json()["capability_states"]) == 502
+    assert len(tools.json()["tools"]) == 511
+    assert len(tools.json()["capability_states"]) == 511
     assert tools.json()["catalogue_scope"] == "global_command_metadata"
     assert tools.json()["data_scope"] == "current_tenant_only"
     states = {item["tool_name"]: item for item in tools.json()["capability_states"]}
     assert states["inventory_list"]["availability"] == "active"
+    assert states["inventory_list"]["execution_kind"] == "verified_adapter"
+    assert states["database_catalog"]["availability"] == "active"
+    assert states["database_schema"]["availability"] == "active"
+    assert states["database_query"]["availability"] == "active"
+    assert states["database_execute"]["availability"] == "active"
+    assert states["digital_market_database_project_create"]["availability"] == "active"
+    assert states["digital_market_database_onboarding"]["availability"] == "active"
     assert states["p_owner_grant"]["availability"] == "requires_l11_governance"
     assert "digital_market_site_publish" not in states
 
@@ -156,6 +185,175 @@ def test_failed_capability_exposes_optional_atomic_recovery(monkeypatch) -> None
     assert "generic_data_observe" in {
         item["tool_name"] for item in recovery["available_capabilities"]
     }
+    assert {
+        "database_catalog",
+        "database_schema",
+        "database_query",
+        "database_execute",
+    }.issubset({item["tool_name"] for item in recovery["available_capabilities"]})
+
+
+def test_verified_inventory_adapter_executes_canonical_service(monkeypatch) -> None:
+    monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
+    monkeypatch.setattr(
+        warehouse_operations,
+        "inventory_list_payload",
+        lambda _actor, *, category=None: {
+            "source": "warehouse.inventory_balance",
+            "category": category,
+            "items": [{"itemId": "I-1", "stock": 8}],
+            "effect_verified": True,
+        },
+    )
+
+    result = executor.execute_tool_call(
+        _actor(),
+        "inventory_list",
+        {"category": "safety_tool"},
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["data"] == {
+        "source": "warehouse.inventory_balance",
+        "category": "safety_tool",
+        "items": [{"itemId": "I-1", "stock": 8}],
+        "effect_verified": True,
+    }
+
+
+def test_verified_adapter_registry_covers_the_complete_retained_runtime() -> None:
+    snapshot = verified_adapter_snapshot()
+
+    assert snapshot["count"] == 272
+    assert snapshot["read_count"] == 85
+    assert snapshot["write_count"] == 187
+    assert set(snapshot["tool_names"]) == (
+        legacy_read_runtime.SUPPORTED_LEGACY_READS
+        | SUPPORTED_CAPABILITY_TOOLS
+        | {
+            "category_list_tenant",
+            "db_query",
+            "db_schema",
+            "inventory_list",
+            "ledger_list",
+        }
+    )
+
+
+def test_every_generic_retained_write_has_a_creation_or_target_path() -> None:
+    special_handlers = {
+        "agent_run_undo",
+        "db_exec",
+        "inventory_reset",
+        "profile_reset",
+        "record_cli_key_issue",
+        "script_run",
+        "user_add",
+    }
+    target_destinations = set(legacy_capability_runtime._ENTITY_KEY_DESTINATIONS)
+    unreachable: list[str] = []
+    for entry in legacy_catalog.COMMANDS:
+        tool_name = str(entry["tool_name"])
+        if tool_name not in legacy_capability_runtime.SUPPORTED_WRITE_TOOLS:
+            continue
+        if tool_name in special_handlers:
+            continue
+        creates_or_targets_collection = (
+            legacy_capability_runtime._is_create(tool_name)
+            or legacy_capability_runtime._is_upsert(tool_name)
+            or tool_name in legacy_capability_runtime._COLLECTION_OPERATIONS
+        )
+        parameter_destinations = {
+            str(parameter.get("dest") or "") for parameter in entry.get("params") or []
+        }
+        if not creates_or_targets_collection and not (
+            target_destinations & parameter_destinations
+        ):
+            unreachable.append(tool_name)
+
+    assert unreachable == []
+
+
+def test_retained_read_adapter_executes_explicit_read_runtime(monkeypatch) -> None:
+    actor = ActorContext(
+        **{
+            **_actor().__dict__,
+            "permissions": frozenset({"records.config.manage"}),
+        }
+    )
+    monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
+    monkeypatch.setattr(
+        legacy_read_runtime,
+        "execute_legacy_read",
+        lambda tool_name, _actor, values, *, origin: {
+            "tool_name": tool_name,
+            "query": values["query.q"],
+            "origin": origin,
+            "effect_verified": True,
+        },
+    )
+
+    result = executor.execute_tool_call(
+        actor,
+        "record_type_resolve",
+        {"q": "人員檔案", "limit": 6},
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["data"] == {
+        "tool_name": "record_type_resolve",
+        "query": "人員檔案",
+        "origin": "ai_tool",
+        "effect_verified": True,
+    }
+
+
+def test_retained_read_projection_registry_is_complete() -> None:
+    assert legacy_read_runtime.SUPPORTED_LEGACY_READS == (
+        frozenset(legacy_read_runtime.PROJECTION_READS) | legacy_read_runtime.CUSTOM_READS
+    )
+    assert len(legacy_read_runtime.PROJECTION_READS) == 31
+    assert len(legacy_read_runtime.CUSTOM_READS) == 18
+
+
+def test_original_verified_read_adapters_remain_registered() -> None:
+    snapshot = verified_adapter_snapshot()
+
+    assert {
+        "read_count": snapshot["read_count"],
+        "write_count": snapshot["write_count"],
+    } == {"read_count": 85, "write_count": 187}
+    assert {
+        "category_list_tenant",
+        "db_query",
+        "db_schema",
+        "inventory_list",
+        "ledger_list",
+    }.issubset(snapshot["tool_names"])
+
+
+def test_retained_db_reader_permission_reaches_verified_adapter(monkeypatch) -> None:
+    actor = ActorContext(
+        **{
+            **_actor().__dict__,
+            "permissions": frozenset({"cli.db.read"}),
+        }
+    )
+    monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
+    monkeypatch.setattr(
+        database_runtime,
+        "legacy_database_schema",
+        lambda _actor, payload: {
+            "legacy_command": "db_schema",
+            "domain": payload["domain"],
+            "effect_verified": True,
+        },
+    )
+
+    result = executor.execute_tool_call(actor, "db_schema", {"domain": "warehouse"})
+
+    assert result["status"] == "succeeded"
+    assert result["data"]["domain"] == "warehouse"
 
 
 def test_manual_buttons_are_generated_from_the_complete_shared_catalogue(monkeypatch) -> None:
@@ -168,8 +366,8 @@ def test_manual_buttons_are_generated_from_the_complete_shared_catalogue(monkeyp
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
     payload = response.json()
-    assert payload["total"] == 508
-    assert payload["tenant_total"] == 486
+    assert payload["total"] == 517
+    assert payload["tenant_total"] == 495
     assert payload["platform_total"] == 22
     actions = {item["tool_name"]: item for item in payload["actions"]}
     assert actions["warehouse_list"]["manual_execution"] == "execute"
@@ -185,6 +383,9 @@ def test_manual_buttons_are_generated_from_the_complete_shared_catalogue(monkeyp
         == legacy_catalog.tool_schema(item_entry)["function"]["parameters"]
     )
     assert actions["p_owner_grant"]["manual_execution"] == "unavailable"
+    assert actions["digital_market_database_project_create"]["manual_execution"] == "unavailable"
+    assert actions["digital_market_database_project_create"]["confirmation_required"] is True
+    assert actions["digital_market_database_onboarding"]["manual_execution"] == "unavailable"
     assert actions["research_file_diff"]["command"] == "research file diff"
     assert actions["research_upload_contract"]["command"] == "research upload contract"
     assert actions["research_file_versions"]["command"] == "research file versions"
@@ -194,6 +395,38 @@ def test_manual_buttons_are_generated_from_the_complete_shared_catalogue(monkeyp
     assert actions["research_file_diff"]["category"] == "research"
     assert actions["research_project_list"]["authorized"] is False
     assert actions["research_project_list"]["manual_execution"] == "unavailable"
+
+
+def test_digital_asset_topology_actions_share_one_ready_permission_boundary(
+    monkeypatch,
+) -> None:
+    actor = ActorContext(
+        **{
+            **_actor().__dict__,
+            "permissions": frozenset({"asset_mgmt.manage"}),
+        }
+    )
+    app.dependency_overrides[current_actor] = lambda: actor
+    monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
+    client = TestClient(app)
+    try:
+        response = client.get("/api/business/actions")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    actions = {item["tool_name"]: item for item in response.json()["actions"]}
+    topology_tools = (
+        "digital_market_create",
+        "digital_market_workspace_create",
+        "digital_market_assess",
+        "digital_market_listing_create",
+    )
+    rows = [actions[tool_name] for tool_name in topology_tools]
+    assert all("asset_mgmt.manage" in row["permission_any"] for row in rows)
+    assert all(row["available"] is True for row in rows)
+    assert all(row["authorized"] is True for row in rows)
+    assert all(row["manual_execution"] == "execute" for row in rows)
 
 
 def test_runtime_skills_exposes_the_complete_uncached_research_catalogue(
@@ -207,15 +440,14 @@ def test_runtime_skills_exposes_the_complete_uncached_research_catalogue(
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
-    research_items = [
-        item for item in response.json()["skills"] if item["category"] == "research"
-    ]
+    research_items = [item for item in response.json()["skills"] if item["category"] == "research"]
     research_skills = {item["skill_id"] for item in research_items}
     assert research_skills == RESEARCH_TOOLS
     assert len(research_skills) == 40
-    assert next(
-        item for item in research_items if item["skill_id"] == "research_cli_show"
-    )["name"] == "research cli show"
+    assert (
+        next(item for item in research_items if item["skill_id"] == "research_cli_show")["name"]
+        == "research cli show"
+    )
 
 
 def test_manual_button_executes_with_its_own_audited_origin(monkeypatch) -> None:
@@ -253,7 +485,7 @@ def test_manual_button_executes_with_its_own_audited_origin(monkeypatch) -> None
     assert audited[0]["origin"] == "manual_ui"
 
 
-def test_all_tenant_command_contracts_resolve_through_the_shared_gateway() -> None:
+def test_every_non_retired_transport_contract_has_a_business_adapter() -> None:
     samples: dict[str, object] = {
         "str": "sample",
         "int": 1,
@@ -279,12 +511,80 @@ def test_all_tenant_command_contracts_resolve_through_the_shared_gateway() -> No
         matched = match_contract(method, parsed.path, tool_name=entry["tool_name"])
         assert matched is not None, entry["tool_name"]
         assert matched.entry["tool_name"] == entry["tool_name"]
+    states = [availability(entry) for entry in tenant_entries()]
+    assert states.count("active") == 489
+    assert states.count("awaiting_domain_adapter") == 0
+    assert states.count("retired_2_0") == 6
 
 
-def test_no_generic_sql_super_api_is_exposed() -> None:
+def test_retained_http_contract_uses_the_shared_execution_boundary(monkeypatch) -> None:
+    monkeypatch.setattr(
+        capability_gateway,
+        "execute_api_contract",
+        lambda actor, entry, values, *, origin: {
+            "ok": True,
+            "status": "succeeded",
+            "tool_name": entry["tool_name"],
+            "values": dict(values),
+            "origin": origin,
+        },
+    )
+    monkeypatch.setattr(
+        capability_gateway,
+        "current_actor",
+        lambda **_kwargs: _actor(),
+    )
+    client = _client(monkeypatch)
+    try:
+        response = client.post(
+            "/api/digital-assets/68/assess",
+            headers={"X-Warehouse-Tool-Name": "digital_market_assess"},
+            json={},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "ok": True,
+        "status": "succeeded",
+        "tool_name": "digital_market_assess",
+        "values": {"path.id": "68"},
+        "origin": "api",
+    }
+
+
+def test_legacy_projection_executor_is_permanently_fail_closed() -> None:
+    entry = next(item for item in tenant_entries() if item["tool_name"] == "digital_market_assess")
+
+    result = execute_gateway_contract(
+        _actor(),
+        ContractMatch(entry=entry, path_params={"id": "68"}),
+        body={"claim": "completed"},
+        origin="auto_runtime",
+    )
+
+    assert result == {
+        "ok": False,
+        "available": False,
+        "status": "awaiting_domain_adapter",
+        "reason": "transitional_projection_disabled",
+        "tool_name": "digital_market_assess",
+        "execution_kind": "capability_gap",
+        "origin": "auto_runtime",
+        "transitional_projection_authoritative": False,
+    }
+
+
+def test_database_runtime_is_company_scoped_not_a_platform_admin_escape() -> None:
     paths = TestClient(app).get("/openapi.json").json()["paths"]
     assert "/api/admin/sql" not in paths
     assert "/api/platform/admin/sql" not in paths
+    assert "/api/data/v2/database" in paths
+    assert "/api/data/v2/database/schema" in paths
+    assert "/api/data/v2/database/query" in paths
+    assert "/api/data/v2/database/execute" in paths
     assert "/api/ai/tools/{tool_name}/execute" in paths
     assert "/api/business/actions" in paths
     assert "/api/business/actions/{tool_name}/execute" in paths

@@ -349,6 +349,7 @@ def expand_capability_domains(
             "family": str(gene.get("command") or "").split(maxsplit=1)[0],
             "description": str(gene["description"])[:220],
             "availability": gene["availability"],
+            "execution_kind": gene.get("execution_kind"),
             "mode": (
                 "write_confirmation"
                 if gene["confirmation_required"]

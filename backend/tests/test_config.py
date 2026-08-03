@@ -1,4 +1,7 @@
+import pytest
+
 from app.core.config import Settings
+from app.services import hosted_database
 
 
 def test_settings_accepts_comma_separated_cors_origins() -> None:
@@ -32,6 +35,23 @@ def test_hosted_storage_roots_keep_hdd_data_and_ssd_code_separate(tmp_path) -> N
     assert settings.asset_storage_root != settings.asset_code_ssd_root
     assert settings.hosted_runtime_data_root.name == "hdd-runtime"
     assert settings.hosted_database_root.name == "hdd-databases"
+
+
+def test_external_database_defaults_block_private_hosts_and_plaintext_tls() -> None:
+    settings = Settings()
+
+    with pytest.raises(ValueError, match="private or reserved"):
+        hosted_database._external_url(  # noqa: SLF001 - verifies the provider boundary
+            "postgresql://app:secret@127.0.0.1:5432/app?sslmode=require",
+            settings,
+        )
+
+    local_settings = Settings(external_database_allow_private_hosts=True)
+    with pytest.raises(ValueError, match="TLS cannot be disabled"):
+        hosted_database._external_url(  # noqa: SLF001 - verifies the provider boundary
+            "postgresql://app:secret@127.0.0.1:5432/app?sslmode=disable",
+            local_settings,
+        )
 
 
 def test_settings_accepts_comma_separated_webauthn_origins() -> None:

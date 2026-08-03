@@ -362,6 +362,129 @@ backup_now() {
     "${control_checksum%.sha256}" "${hosted_snapshot}"
 }
 
+workspace_database_operation() {
+  local operation="$1" asset_no="$2" slot api_container
+  [[ "${operation}" =~ ^(inspect|capabilities|backup)$ ]] \
+    || fail "invalid workspace database operation"
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "workspace database operation requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    "workspace-${operation}" "${asset_no}"
+}
+
+workspace_database_migrate_source() {
+  local asset_no="$1" source_path="$2" version="$3" slot api_container
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  [[ "${source_path}" =~ ^[A-Za-z0-9_.@/+\ -]{1,240}$ && "${source_path}" == *.sql ]] \
+    || fail "invalid source migration path"
+  [[ "${version}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ ]] \
+    || fail "invalid migration version"
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "workspace database migration requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-migrate-source "${asset_no}" "${source_path}" "${version}"
+}
+
+workspace_deploy_latest() {
+  local asset_no="$1" slot api_container
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  slot="$(active_slot)"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-deploy "${asset_no}"
+}
+
+workspace_accept() {
+  local asset_no="$1" deployment_id="$2" expected_modules="$3" expected_resources="$4"
+  local slot api_container
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  [[ "${deployment_id}" =~ ^[0-9a-f-]{36}$ ]] \
+    || fail "invalid deployment id"
+  [[ "${expected_modules}" =~ ^[0-9]{1,4}$ && "${expected_resources}" =~ ^[0-9]{1,6}$ ]] \
+    || fail "invalid acceptance counts"
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "workspace acceptance requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-accept "${asset_no}" "${deployment_id}" \
+    "${expected_modules}:${expected_resources}"
+}
+
+workspace_activate() {
+  local asset_no="$1" deployment_id="$2" slot api_container
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  [[ "${deployment_id}" =~ ^[0-9a-f-]{36}$ ]] \
+    || fail "invalid deployment id"
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "workspace activation requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-activate "${asset_no}" "${deployment_id}"
+}
+
+workspace_environment() {
+  local asset_no="$1" name="$2" value="$3" slot api_container
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  [[ "${name}" =~ ^[A-Z][A-Z0-9_]{0,79}$ ]] \
+    || fail "invalid Runtime environment name"
+  [[ "${value}" =~ ^[A-Za-z0-9_./:@+-]{1,512}$ ]] \
+    || fail "invalid Runtime environment value"
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "workspace environment requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-environment "${asset_no}" "${name}" "${value}"
+}
+
+workspace_stage_python() {
+  local asset_no="$1" source_version_id="$2" slot api_container
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "workspace Python staging requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-stage-python "${asset_no}" "${source_version_id}"
+}
+
+workspace_job() {
+  local asset_no="$1" source_version_id="$2" job_kind="$3" slot api_container
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  [[ "${source_version_id}" =~ ^[0-9a-f-]{36}$ ]] \
+    || fail "invalid source version id"
+  [[ "${job_kind}" =~ ^(alembic-upgrade|catalog-import)$ ]] \
+    || fail "invalid workspace job"
+  slot="$(active_slot)"
+  [[ -n "${slot}" ]] || fail "workspace job requires an active slot"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-job "${asset_no}" "${source_version_id}" "${job_kind}"
+}
+
+workspace_source_read() {
+  local asset_no="$1" source_path="$2" slot api_container
+  [[ "${asset_no}" =~ ^DMA-[A-Z0-9-]{8,80}$ ]] \
+    || fail "invalid digital asset number"
+  [[ "${source_path}" =~ ^[A-Za-z0-9_.@/+-]{1,240}$ ]] \
+    || fail "invalid source path"
+  case "${source_path}" in
+    *.ini|*.json|*.md|*.py|*.sql|*.toml|*.txt) ;;
+    *) fail "unsupported source text type" ;;
+  esac
+  slot="$(active_slot)"
+  api_container="warehouse-os-api-${slot}"
+  docker exec "${api_container}" python -m app.hosted_database_cli \
+    workspace-source-read "${asset_no}" "${source_path}"
+}
+
 quick_guard() {
   local candidate="$1"
   [[ -L "${CURRENT}" ]] || fail "quick deploy requires an existing immutable release"
@@ -1128,6 +1251,51 @@ case "${command}" in
   backup-now)
     [[ "$#" -eq 1 ]] || fail "backup-now takes no arguments"
     backup_now
+    ;;
+  workspace-database)
+    [[ "$#" -eq 3 ]] \
+      || fail "usage: warehouse-deploy workspace-database inspect|capabilities|backup ASSET_NO"
+    workspace_database_operation "$2" "$3"
+    ;;
+  workspace-database-migrate-source)
+    [[ "$#" -eq 4 ]] \
+      || fail "usage: warehouse-deploy workspace-database-migrate-source ASSET_NO SOURCE_PATH VERSION"
+    workspace_database_migrate_source "$2" "$3" "$4"
+    ;;
+  workspace-deploy-latest)
+    [[ "$#" -eq 2 ]] \
+      || fail "usage: warehouse-deploy workspace-deploy-latest ASSET_NO"
+    workspace_deploy_latest "$2"
+    ;;
+  workspace-accept)
+    [[ "$#" -eq 5 ]] \
+      || fail "usage: warehouse-deploy workspace-accept ASSET_NO DEPLOYMENT_ID EXPECTED_MODULES EXPECTED_RESOURCES"
+    workspace_accept "$2" "$3" "$4" "$5"
+    ;;
+  workspace-activate)
+    [[ "$#" -eq 3 ]] \
+      || fail "usage: warehouse-deploy workspace-activate ASSET_NO DEPLOYMENT_ID"
+    workspace_activate "$2" "$3"
+    ;;
+  workspace-environment)
+    [[ "$#" -eq 4 ]] \
+      || fail "usage: warehouse-deploy workspace-environment ASSET_NO NAME VALUE"
+    workspace_environment "$2" "$3" "$4"
+    ;;
+  workspace-stage-python)
+    [[ "$#" -eq 3 ]] \
+      || fail "usage: warehouse-deploy workspace-stage-python ASSET_NO SOURCE_VERSION_ID"
+    workspace_stage_python "$2" "$3"
+    ;;
+  workspace-job)
+    [[ "$#" -eq 4 ]] \
+      || fail "usage: warehouse-deploy workspace-job ASSET_NO SOURCE_VERSION_ID JOB_KIND"
+    workspace_job "$2" "$3" "$4"
+    ;;
+  workspace-source-read)
+    [[ "$#" -eq 3 ]] \
+      || fail "usage: warehouse-deploy workspace-source-read ASSET_NO SOURCE_PATH"
+    workspace_source_read "$2" "$3"
     ;;
   benchmark-data-disk)
     [[ "$#" -eq 1 ]] || fail "benchmark-data-disk takes no arguments"

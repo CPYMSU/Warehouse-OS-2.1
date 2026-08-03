@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dm.py 2.3.2 — Warehouse OS 智能數字資產託管客戶端。
+"""dm.py 2.5.0 — Warehouse OS 智能數字資產託管客戶端。
 
 這個版本只呼叫 Warehouse OS 2.1 原生端點：
   GET /api/workspaces/v1/info
@@ -12,6 +12,8 @@
   PUT  /api/workspaces/v1/runtime
   POST /api/workspaces/v1/storage/probe
   POST /api/workspaces/v1/deployments
+  POST /api/workspaces/v1/jobs
+  GET|PUT /api/workspaces/v1/database/control|policy
   GET  /api/workspaces/v1/deployments[/{id}]
   GET  /api/hosting/v2/manifest
   GET  /api/hosting/v2/requirements
@@ -40,7 +42,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2.3.2"
+VERSION = "2.5.0"
 DEFAULT_BASE = "__WAREHOUSE_BASE__"
 
 
@@ -367,7 +369,7 @@ def _parser() -> argparse.ArgumentParser:
     runtime_subcommands = runtime_commands.add_subparsers(dest="runtime_command", required=True)
     runtime_subcommands.add_parser("show", help="查看目前 Runtime、組件與存儲狀態")
     runtime_set = runtime_subcommands.add_parser(
-        "set", help="設定 static/web/api/worker/agent/container/compose，可同時提交部署"
+        "set", help="設定 static/web/api/worker/agent/job/container/compose，可同時提交部署"
     )
     runtime_set.add_argument(
         "--type",
@@ -379,6 +381,7 @@ def _parser() -> argparse.ArgumentParser:
             "api",
             "worker",
             "agent",
+            "job",
             "container",
             "compose",
         ),
@@ -399,6 +402,10 @@ def _parser() -> argparse.ArgumentParser:
     runtime_set.add_argument("--port", type=int, help="容器內 HTTP 端口")
     runtime_set.add_argument("--command", dest="container_command", help="覆寫容器啟動命令")
     runtime_set.add_argument("--deploy", action="store_true")
+    runtime_set.add_argument(
+        "--no-activate", dest="activate", action="store_false", default=True,
+        help="建置並驗證，但不切換正式流量",
+    )
     runtime_set.add_argument("--idempotency-key")
 
     storage_commands = commands.add_parser("storage", help="檢查工作區實際存儲")
@@ -420,16 +427,54 @@ def _parser() -> argparse.ArgumentParser:
     deploy_request.add_argument("--source", dest="source_version_id")
     deploy_request.add_argument("--component")
     deploy_request.add_argument("--entrypoint")
+    deploy_request.add_argument("--build-command")
     deploy_request.add_argument("--start-command")
     deploy_request.add_argument("--health-path")
     deploy_request.add_argument("--profile", dest="runtime_profile")
     deploy_request.add_argument("--idempotency-key")
+    deploy_request.add_argument(
+        "--no-activate", dest="activate", action="store_false", default=True,
+        help="建立測試部署並保持目前 active 版本",
+    )
     deploy_status = deploy_subcommands.add_parser("status", help="查看部署狀態")
     deploy_status.add_argument("deployment_id", nargs="?")
     deploy_logs = deploy_subcommands.add_parser("logs", help="查看部署事件與日誌")
     deploy_logs.add_argument("deployment_id")
     deploy_activate = deploy_subcommands.add_parser("activate", help="切換到既有 healthy 版本")
     deploy_activate.add_argument("deployment_id")
+    deploy_accept = deploy_subcommands.add_parser(
+        "accept", help="依源碼契約私網驗收 staged 版本"
+    )
+    deploy_accept.add_argument("deployment_id")
+
+    job = commands.add_parser("job", help="執行不切換流量的受限一次性源碼任務")
+    job.add_argument("--source", dest="source_version_id", required=True)
+    job_selector = job.add_mutually_exclusive_group(required=True)
+    job_selector.add_argument("--name", dest="job_name", help="manifest 聲明的 lifecycle job")
+    job_selector.add_argument("--command", help="工作區邊界內的顯式一次性命令")
+    job.add_argument("--component", default="job")
+    job.add_argument("--runtime", help="例如 python3.12 或 node20")
+    job.add_argument("--profile", dest="runtime_profile")
+    job.add_argument("--entrypoint")
+    job.add_argument("--build-command")
+    job.add_argument("--database-url-env")
+    job.add_argument(
+        "--database-access",
+        choices=("none", "runtime", "migration"),
+        help="顯式命令的資料庫身份；聲明式 Job 由 manifest 決定",
+    )
+    job.add_argument("--timeout", dest="timeout_seconds", type=int, default=1200)
+    job.add_argument("--idempotency-key")
+
+    database = commands.add_parser("database", help="管理工作區資料庫生命週期策略與證據")
+    database_subcommands = database.add_subparsers(dest="database_command", required=True)
+    database_subcommands.add_parser("control", help="查看綁定、能力、備份、遷移與發布閘門")
+    database_subcommands.add_parser("reconcile", help="重新核驗平台代管資料庫能力")
+    database_policy = database_subcommands.add_parser("policy", help="選擇資料庫生命週期模式")
+    database_policy.add_argument(
+        "mode",
+        choices=("platform_managed", "external", "workspace_managed", "none"),
+    )
 
     agent_commands = commands.add_parser("agent", help="讓終端 AI 使用單一智能託管會話完成部署")
     agent_subcommands = agent_commands.add_subparsers(dest="agent_command", required=True)
@@ -654,6 +699,7 @@ def main() -> None:
                     "port": args.port,
                     "command": args.container_command,
                     "deploy": args.deploy,
+                    "activate": args.activate,
                     "idempotency_key": args.idempotency_key,
                 }.items()
                 if value is not None
@@ -661,6 +707,45 @@ def main() -> None:
             result = client.request("PUT", "/api/workspaces/v1/runtime", payload=runtime_payload)
     elif args.command == "storage":
         result = client.request("POST", "/api/workspaces/v1/storage/probe")
+    elif args.command == "database":
+        if args.database_command == "control":
+            result = client.request("GET", "/api/workspaces/v1/database/control")
+        elif args.database_command == "reconcile":
+            result = client.request("POST", "/api/workspaces/v1/database/reconcile")
+        else:
+            result = client.request(
+                "PUT",
+                "/api/workspaces/v1/database/policy",
+                payload={"mode": args.mode},
+            )
+    elif args.command == "job":
+        job_payload = {
+            key: value
+            for key, value in {
+                "source_version_id": args.source_version_id,
+                "job": args.job_name,
+                "command": args.command,
+                "component": args.component,
+                "runtime": args.runtime,
+                "runtime_profile": args.runtime_profile,
+                "entrypoint": args.entrypoint,
+                "build_command": args.build_command,
+                "database_url_env": args.database_url_env,
+                "database_access": args.database_access,
+                "timeout_seconds": args.timeout_seconds,
+            }.items()
+            if value is not None
+        }
+        result = client.request(
+            "POST",
+            "/api/workspaces/v1/jobs",
+            payload=job_payload,
+            headers=(
+                {"Idempotency-Key": args.idempotency_key}
+                if args.idempotency_key
+                else None
+            ),
+        )
     elif args.deploy_command == "request":
         deployment_payload = {
             key: value
@@ -668,10 +753,12 @@ def main() -> None:
                 "source_version_id": args.source_version_id,
                 "component": args.component,
                 "entrypoint": args.entrypoint,
+                "build_command": args.build_command,
                 "start_command": args.start_command,
                 "health_path": args.health_path,
                 "runtime_profile": args.runtime_profile,
                 "idempotency_key": args.idempotency_key,
+                "activate": args.activate,
             }.items()
             if value is not None
         }
@@ -688,9 +775,12 @@ def main() -> None:
     elif args.deploy_command == "logs":
         deployment_id = urllib.parse.quote(args.deployment_id, safe="")
         result = client.request("GET", f"/api/workspaces/v1/deployments/{deployment_id}/logs")
-    else:
+    elif args.deploy_command == "activate":
         deployment_id = urllib.parse.quote(args.deployment_id, safe="")
         result = client.request("POST", f"/api/workspaces/v1/deployments/{deployment_id}/activate")
+    else:
+        deployment_id = urllib.parse.quote(args.deployment_id, safe="")
+        result = client.request("POST", f"/api/workspaces/v1/deployments/{deployment_id}/accept")
     _show(result)
 
 

@@ -356,7 +356,7 @@ def _rows_for_inventory(session: Session) -> list[dict[str, object]]:
             SELECT i.id AS item_id, i.item_code, i.name, i.model, i.unit,
                    i.safe_quantity, i.unit_price, i.supplier_name, i.critical,
                    i.perishable, i.required_storage_condition, c.id AS category_id,
-                   c.name AS category_name, c.requires_return,
+                   c.category_code, c.name AS category_name, c.requires_return,
                    w.id AS warehouse_id, w.name AS warehouse_name,
                    COALESCE(SUM(l.quantity_on_hand), 0) AS stock,
                    MIN(l.expires_at) FILTER (WHERE l.quantity_on_hand > 0) AS expires_at,
@@ -401,6 +401,7 @@ def _rows_for_inventory(session: Session) -> list[dict[str, object]]:
                     "model": row["model"] or "—",
                     "unit": row["unit"],
                     "categoryId": str(row["category_id"]) if row["category_id"] else "",
+                    "categoryCode": row["category_code"] or "",
                     "category": row["category_name"] or "—",
                     "stock": _float(row["stock"]),
                     "safe": _float(safe),
@@ -838,6 +839,154 @@ def bootstrap_warehouse_payload(actor: ActorContext) -> dict[str, object]:
         "ALERTS": [],
         "FAULT_TYPES": [],
         "WAREHOUSE_HUB": hub,
+    }
+
+
+def inventory_list_payload(
+    actor: ActorContext,
+    *,
+    category: object | None = None,
+) -> dict[str, object]:
+    """Return canonical inventory balances for one tenant and optional category."""
+
+    with tenant_session(actor.tenant_id) as session:
+        rows = _rows_for_inventory(session)
+    category_filter = str(category or "").strip().casefold()
+    if category_filter:
+        rows = [
+            row
+            for row in rows
+            if category_filter
+            in {
+                str(row.get("categoryId") or "").casefold(),
+                str(row.get("categoryCode") or "").casefold(),
+                str(row.get("category") or "").casefold(),
+            }
+        ]
+    return {
+        "ok": True,
+        "source": "warehouse.inventory_balance",
+        "scope": "current_tenant_rls",
+        "category": str(category) if category not in (None, "") else None,
+        "inventory": rows,
+        "items": rows,
+        "count": len(rows),
+        "effect_verified": True,
+    }
+
+
+def item_categories_payload(actor: ActorContext) -> dict[str, object]:
+    """Return active canonical item categories with live item counts."""
+
+    with tenant_session(actor.tenant_id) as session:
+        rows = (
+            session.execute(
+                text(
+                    """
+                    SELECT c.id, c.category_code, c.name, c.requires_return,
+                           COUNT(i.id) FILTER (WHERE i.active) AS item_count
+                    FROM warehouse.item_categories AS c
+                    LEFT JOIN warehouse.items AS i
+                      ON i.tenant_id = c.tenant_id AND i.category_id = c.id
+                    WHERE c.active
+                    GROUP BY c.id
+                    ORDER BY c.name, c.category_code
+                    """
+                )
+            )
+            .mappings()
+            .all()
+        )
+    categories = [
+        {
+            "id": str(row["id"]),
+            "code": row["category_code"],
+            "name": row["name"],
+            "requires_return": bool(row["requires_return"]),
+            "item_count": int(row["item_count"] or 0),
+        }
+        for row in rows
+    ]
+    return {
+        "ok": True,
+        "source": "warehouse.item_category",
+        "scope": "current_tenant_rls",
+        "categories": categories,
+        "items": categories,
+        "count": len(categories),
+        "effect_verified": True,
+    }
+
+
+def stock_ledger_payload(
+    actor: ActorContext,
+    *,
+    category: object,
+    limit: int = 1000,
+) -> dict[str, object]:
+    """Return the canonical stock movement ledger for one category."""
+
+    category_filter = str(category or "").strip()
+    if not category_filter:
+        raise HTTPException(status_code=422, detail="category must not be empty")
+    bounded_limit = max(1, min(int(limit), 2000))
+    with tenant_session(actor.tenant_id) as session:
+        rows = (
+            session.execute(
+                text(
+                    """
+                    SELECT l.id, l.occurred_at, l.movement_type, l.quantity_delta,
+                           l.source_type, l.source_id,
+                           i.id AS item_id, i.item_code, i.name AS item_name, i.unit,
+                           c.id AS category_id, c.category_code, c.name AS category_name,
+                           w.id AS warehouse_id, w.code AS warehouse_code,
+                           w.name AS warehouse_name,
+                           loc.id AS location_id, loc.location_code
+                    FROM warehouse.stock_ledger AS l
+                    JOIN warehouse.items AS i
+                      ON i.tenant_id = l.tenant_id AND i.id = l.item_id
+                    LEFT JOIN warehouse.item_categories AS c
+                      ON c.tenant_id = i.tenant_id AND c.id = i.category_id
+                    LEFT JOIN warehouse.warehouses AS w
+                      ON w.tenant_id = l.tenant_id AND w.id = l.warehouse_id
+                    LEFT JOIN warehouse.warehouse_locations AS loc
+                      ON loc.tenant_id = l.tenant_id AND loc.id = l.location_id
+                    WHERE lower(COALESCE(c.category_code, '')) = lower(:category)
+                       OR lower(COALESCE(c.name, '')) = lower(:category)
+                       OR CAST(c.id AS text) = :category
+                    ORDER BY l.occurred_at DESC, l.id DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"category": category_filter, "limit": bounded_limit},
+            )
+            .mappings()
+            .all()
+        )
+    entries = [
+        {
+            **dict(row),
+            "id": str(row["id"]),
+            "source_id": str(row["source_id"]) if row["source_id"] else None,
+            "item_id": str(row["item_id"]),
+            "category_id": str(row["category_id"]) if row["category_id"] else None,
+            "warehouse_id": str(row["warehouse_id"]) if row["warehouse_id"] else None,
+            "location_id": str(row["location_id"]) if row["location_id"] else None,
+            "quantity_delta": _float(row["quantity_delta"]),
+            "occurred_at": _iso(row["occurred_at"]),
+        }
+        for row in rows
+    ]
+    return {
+        "ok": True,
+        "source": "warehouse.stock_ledger",
+        "scope": "current_tenant_rls",
+        "category": category_filter,
+        "ledger": entries,
+        "entries": entries,
+        "items": entries,
+        "count": len(entries),
+        "effect_verified": True,
     }
 
 

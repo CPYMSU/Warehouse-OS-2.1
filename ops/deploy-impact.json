@@ -83,10 +83,19 @@
       "tests": ["backend/tests/test_digital_asset_hosting.py"]
     },
     {
-      "glob": "backend/app/runtime_controller.py",
+      "glob": "backend/app/runtime_controller*.py",
       "risk": "high",
       "impacts": ["api", "runtime_controller"],
-      "tests": ["backend/tests/test_digital_asset_hosting.py"]
+      "tests": ["backend/tests/test_runtime_controller_docker_engine.py"]
+    },
+    {
+      "glob": "backend/app/services/hosted_database.py",
+      "risk": "high",
+      "impacts": ["api", "runtime_controller", "storage"],
+      "tests": [
+        "backend/tests/test_digital_asset_hosting.py",
+        "backend/tests/test_runtime_controller_docker_engine.py"
+      ]
     },
     {
       "glob": "backend/app/api/browser_runtime.py",

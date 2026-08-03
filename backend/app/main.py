@@ -4,7 +4,7 @@ from mimetypes import guess_type
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +16,7 @@ from app.api.browser_runtime import router as browser_runtime_router
 from app.api.capability_gateway import router as capability_gateway_router
 from app.api.compat import router as compatibility_router
 from app.api.confirmation_actions import router as confirmation_actions_router
+from app.api.database_browser_gateway import router as database_browser_gateway_router
 from app.api.digital_assets import router as digital_asset_router
 from app.api.error_diagnostics import install_error_diagnostics
 from app.api.full_stack import router as full_stack_router
@@ -37,6 +38,8 @@ from app.api.workspace_company_compat import router as workspace_company_compat_
 from app.api.workspace_provision_compat import router as workspace_provision_compat_router
 from app.api.workspace_v1_compat import router as workspace_v1_compat_router
 from app.core.config import get_settings
+from app.services.database_browser_gateway import origin_is_allowed
+from app.terminal.readiness import configure_native_capability_routes
 
 # Keep the original modules as stable extension points. Their runtime globals are
 # upgraded, so existing dependency overrides and plugins still reach the new
@@ -79,6 +82,36 @@ async def request_id(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def database_gateway_cors(request: Request, call_next):
+    """Apply the configured exact-origin policy to browser database routes."""
+
+    prefix = "/api/database-gateway/v1/projects/"
+    origin = request.headers.get("origin")
+    if not request.url.path.startswith(prefix) or not origin:
+        return await call_next(request)
+    project_key = request.url.path.removeprefix(prefix).split("/", 1)[0]
+    allowed = origin_is_allowed(project_key, origin, settings=settings)
+    if request.method == "OPTIONS":
+        if not allowed:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Browser origin is not allowed"},
+            )
+        response: Response = Response(status_code=204)
+    else:
+        response = await call_next(request)
+    if allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin.rstrip("/")
+        response.headers["Access-Control-Allow-Methods"] = "GET, PUT, POST, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Authorization, Content-Type, X-Request-ID"
+        )
+        response.headers["Access-Control-Max-Age"] = "600"
+        response.headers["Vary"] = "Origin"
+    return response
+
+
 @app.get("/health", tags=["system"])
 def liveness() -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "warehouse-os-api"})
@@ -99,6 +132,7 @@ app.include_router(intelligent_hosting_compat_router)
 # a compatibility route can never shadow a security-sensitive implementation.
 app.include_router(shield_router)
 app.include_router(browser_runtime_router)
+app.include_router(database_browser_gateway_router)
 app.include_router(confirmation_actions_router)
 app.include_router(full_stack_router)
 app.include_router(router)
@@ -108,6 +142,10 @@ app.include_router(intelligent_hosting_router)
 app.include_router(generic_data_router)
 app.include_router(research_router)
 app.include_router(task_collaboration_router)
+# Capability discovery remains complete, but executable readiness is derived
+# only from concrete routes mounted up to this point.  The catch-all gateway
+# below is a transport compatibility surface and must never activate a gene.
+configure_native_capability_routes(app)
 app.include_router(capability_gateway_router)
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -16,6 +17,10 @@ from sqlalchemy import text
 
 from app.core.config import Settings, get_settings
 from app.db.session import system_session, tenant_session
+from app.services.database_release import (
+    observe_database_release_gate,
+    workspace_database_policy,
+)
 from app.services.digital_asset_hosting import (
     HDD_POOL_KEY,
     LOCAL_PROVIDER_KEYS,
@@ -31,6 +36,10 @@ from app.services.digital_asset_hosting import (
     _workspace_row,
     workspace_entry_url,
 )
+from app.services.hosting_compatibility import (
+    declared_lifecycle_job,
+    manifest_runtime_defaults,
+)
 from app.services.object_storage import (
     HDD_PROVIDER_KEY,
     SSD_PROVIDER_KEY,
@@ -41,9 +50,92 @@ from app.services.object_storage import (
 from app.services.source_packages import SourceArchive, inspect_source_archive
 
 WORKSPACE_RUNTIME_TYPES = frozenset(
-    {"auto", "static", "web", "api", "worker", "agent", "container", "compose"}
+    {"auto", "static", "web", "api", "worker", "agent", "job", "container", "compose"}
 )
 DeploymentReference = UUID | int
+
+
+def _hosting_manifest(signals: dict[str, object]) -> dict[str, object] | None:
+    manifest = signals.get("hosting_manifest")
+    return dict(manifest) if isinstance(manifest, dict) else None
+
+
+def _manifest_runtime_intent(
+    payload: dict[str, object],
+    signals: dict[str, object],
+) -> dict[str, object]:
+    """Apply source-declared defaults while preserving explicit caller intent."""
+
+    manifest = _hosting_manifest(signals)
+    if manifest is None:
+        effective = dict(payload)
+        effective.pop("compatibility_contract", None)
+        effective.pop("lifecycle_job", None)
+        return effective
+    effective = manifest_runtime_defaults(manifest)
+    effective.update(
+        {
+            key: value
+            for key, value in payload.items()
+            if value not in (None, "")
+            and not (key in {"runtime_type", "type"} and value == "auto")
+        }
+    )
+    deployment = (
+        manifest.get("deployment") if isinstance(manifest.get("deployment"), dict) else {}
+    )
+    if bool(deployment.get("require_acceptance_before_activation")):
+        effective["activate"] = False
+    effective["compatibility_contract"] = manifest
+    return effective
+
+
+def _require_manifest_database_policy(
+    workspace: dict[str, object],
+    manifest: dict[str, object] | None,
+) -> None:
+    if manifest is None:
+        return
+    data = manifest.get("data") if isinstance(manifest.get("data"), dict) else {}
+    declared = str(data.get("database_policy") or "platform_managed")
+    observed = str(workspace_database_policy(workspace.get("config"))["mode"])
+    if declared != observed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "hosting_database_policy_mismatch",
+                "declared_policy": declared,
+                "workspace_policy": observed,
+                "next_action": "align_workspace_database_policy_or_upload_new_source",
+            },
+        )
+
+
+def _acceptance_ready_for_activation(deployment: dict[str, object]) -> bool:
+    requested = (
+        deployment.get("requested_config")
+        if isinstance(deployment.get("requested_config"), dict)
+        else {}
+    )
+    contract = (
+        requested.get("compatibility_contract")
+        if isinstance(requested.get("compatibility_contract"), dict)
+        else {}
+    )
+    deployment_contract = (
+        contract.get("deployment") if isinstance(contract.get("deployment"), dict) else {}
+    )
+    if not bool(deployment_contract.get("require_acceptance_before_activation")):
+        return True
+    result = deployment.get("result") if isinstance(deployment.get("result"), dict) else {}
+    acceptance = (
+        result.get("acceptance") if isinstance(result.get("acceptance"), dict) else {}
+    )
+    return bool(acceptance.get("accepted")) and (
+        str(acceptance.get("source_version_id")) == str(deployment.get("source_version_id"))
+    ) and (
+        str(acceptance.get("contract_digest")) == str(contract.get("contract_digest"))
+    )
 
 
 def _deployment_reference_params(reference: DeploymentReference) -> dict[str, object]:
@@ -641,6 +733,7 @@ def register_workspace_source(
                 "artifact_id": str(artifact_id),
                 "sha256": stored.sha256,
                 "credential_id": str(credential.credential_id),
+                "hosting_contract": archive.signals.get("hosting_contract"),
             },
             tenant_id=credential.tenant_id,
         )
@@ -664,7 +757,8 @@ def list_workspace_sources(credential: WorkspaceCredential) -> dict[str, object]
                 text(
                     """
                 SELECT v.*, ar.id AS artifact_id, ar.filename, ar.content_type,
-                       ar.size_bytes, ar.storage_provider, ar.storage_pool_key, ar.state
+                       ar.size_bytes, ar.storage_provider, ar.storage_pool_key, ar.state,
+                       ar.verification
                 FROM digital_asset.asset_versions AS v
                 JOIN digital_asset.artifacts AS ar
                   ON ar.version_id=v.id AND ar.storage_role='code'
@@ -691,6 +785,14 @@ def list_workspace_sources(credential: WorkspaceCredential) -> dict[str, object]
                 "state": row["state"],
             }
         )
+        verification = row.get("verification") if isinstance(row.get("verification"), dict) else {}
+        archive = (
+            verification.get("archive")
+            if isinstance(verification.get("archive"), dict)
+            else {}
+        )
+        signals = archive.get("signals") if isinstance(archive.get("signals"), dict) else {}
+        item["hosting_contract"] = _json_safe(signals.get("hosting_contract"))
         sources.append(item)
     return {"ok": True, "sources": sources, "count": len(sources)}
 
@@ -818,7 +920,7 @@ def _source_signals(source: dict[str, object] | None, settings: Settings) -> dic
     )
     archive = verification.get("archive") if isinstance(verification.get("archive"), dict) else {}
     signals = archive.get("signals") if isinstance(archive.get("signals"), dict) else None
-    if signals is not None:
+    if signals is not None and "hosting_manifest" in signals:
         return dict(signals)
     for store in object_store_read_candidates(settings, str(source["storage_provider"])):
         path = store.path_for(str(source["object_key"]))
@@ -864,7 +966,7 @@ def _resolve_runtime_contract(
     if requested_type not in WORKSPACE_RUNTIME_TYPES:
         raise HTTPException(
             status_code=422,
-            detail=("runtime_type must be auto/static/web/api/worker/agent/container/compose"),
+            detail=("runtime_type must be auto/static/web/api/worker/agent/job/container/compose"),
         )
     requested_profile = str(payload.get("runtime_profile") or "").strip()
     requested_runtime = str(payload.get("runtime") or "").strip().lower()
@@ -895,7 +997,7 @@ def _resolve_runtime_contract(
             family = "static"
         elif requested_type in {"container", "compose"}:
             family = "container"
-        elif requested_type in {"api", "worker", "agent"}:
+        elif requested_type in {"api", "worker", "agent", "job"}:
             family = (
                 "python"
                 if signals.get("python_source")
@@ -967,7 +1069,7 @@ def _resolve_runtime_contract(
         )
     if requested_type == "static" and family != "static":
         raise HTTPException(status_code=422, detail="Static hosting requires a static profile")
-    if requested_type in {"api", "worker", "agent"} and family == "static":
+    if requested_type in {"api", "worker", "agent", "job"} and family == "static":
         raise HTTPException(status_code=422, detail=f"{requested_type} requires Python or Node")
     if not requested_profile:
         profile = (
@@ -1001,6 +1103,9 @@ def configure_workspace_runtime(
         workspace = _workspace_row(session, credential.workspace_id, lock=True)
         source = _verified_source(session, workspace, payload.get("source_version_id"))
         signals = _source_signals(source, settings)
+        payload = _manifest_runtime_intent(payload, signals)
+        manifest = _hosting_manifest(signals)
+        _require_manifest_database_policy(workspace, manifest)
         runtime_type, profile = _resolve_runtime_contract(session, payload, signals)
         family = str(profile["runtime_family"])
         kind = {
@@ -1009,6 +1114,7 @@ def configure_workspace_runtime(
             "api": "backend",
             "worker": "worker",
             "agent": "agent",
+            "job": "worker",
             "container": "backend",
             "compose": "backend",
         }[runtime_type]
@@ -1018,6 +1124,8 @@ def configure_workspace_runtime(
             "worker": "worker",
             "agent": "agent",
         }[kind]
+        if runtime_type == "job":
+            default_name = "job"
         component_name = str(payload.get("component") or default_name).strip()
         if not component_name or len(component_name) > 80:
             raise HTTPException(status_code=422, detail="Invalid component name")
@@ -1039,7 +1147,15 @@ def configure_workspace_runtime(
             if kind == "worker"
             else ["agent.py", "agent.js", "main.py", "index.js"]
             if kind == "agent"
-            else ["app.py", "main.py", "server.py", "server.js", "index.js"]
+            else [
+                "app.py",
+                "main.py",
+                "server.py",
+                "asgi.py",
+                "wsgi.py",
+                "server.js",
+                "index.js",
+            ]
         )
         detected_entrypoint = next(
             (
@@ -1072,9 +1188,19 @@ def configure_workspace_runtime(
                 "route_service",
                 "port",
                 "command",
+                "activate",
+                "execution_mode",
+                "database_url_env",
+                "database_access",
+                "lifecycle_job",
+                "compatibility_contract",
+                "timeout_seconds",
             )
             if payload.get(key) not in (None, "")
         }
+        if runtime_type == "job":
+            component_config["execution_mode"] = "job"
+            component_config["activate"] = False
         component = (
             session.execute(
                 text(
@@ -1123,7 +1249,9 @@ def configure_workspace_runtime(
             str(payload.get("runtime_type") or payload.get("type") or "auto").strip().lower()
         )
         runtime_selection = (
-            "explicit"
+            "declared"
+            if manifest is not None
+            else "explicit"
             if requested_type != "auto"
             or payload.get("runtime_profile") not in (None, "")
             or payload.get("runtime") not in (None, "")
@@ -1156,6 +1284,9 @@ def configure_workspace_runtime(
                 "runtime_profile": profile["profile_key"],
                 "component": component_name,
                 "source_version_id": str(source["id"]) if source else None,
+                "hosting_contract_digest": (
+                    manifest.get("contract_digest") if manifest is not None else None
+                ),
             },
             tenant_id=credential.tenant_id,
         )
@@ -1167,6 +1298,16 @@ def configure_workspace_runtime(
             "runtime_family": family,
             "selection": config["runtime_selection"],
             "signals": signals,
+            "compatibility": (
+                {
+                    "declared": True,
+                    "schema": manifest.get("schema"),
+                    "contract_digest": manifest.get("contract_digest"),
+                    "deployment": manifest.get("deployment"),
+                }
+                if manifest is not None
+                else {"declared": False, "selection": "platform_detected"}
+            ),
         },
         "component": _json_safe(dict(component)),
         "source_version_id": str(source["id"]) if source else None,
@@ -1183,6 +1324,10 @@ def configure_workspace_runtime(
                 "runtime_profile": profile["profile_key"],
                 "entrypoint": entrypoint,
                 "health_path": payload.get("health_path"),
+                "activate": payload.get("activate"),
+                "execution_mode": payload.get("execution_mode"),
+                "database_url_env": payload.get("database_url_env"),
+                "timeout_seconds": payload.get("timeout_seconds"),
                 **component_config,
             },
             idempotency_key=str(
@@ -1195,6 +1340,82 @@ def configure_workspace_runtime(
     return result
 
 
+def resolve_declared_workspace_job(
+    credential: WorkspaceCredential,
+    payload: dict[str, object],
+    settings: Settings,
+) -> dict[str, object]:
+    """Resolve a named, source-declared lifecycle job without trusting caller commands."""
+
+    credential.require("deploy:write")
+    name = str(payload.get("job") or "").strip().lower()
+    if not name:
+        raise HTTPException(status_code=422, detail="A declared lifecycle job name is required")
+    with tenant_session(credential.tenant_id) as session:
+        workspace = _workspace_row(session, credential.workspace_id, lock=False)
+        source = _verified_source(session, workspace, payload.get("source_version_id"))
+        if source is None:
+            raise HTTPException(status_code=409, detail="A verified source version is required")
+        signals = _source_signals(source, settings)
+        manifest = _hosting_manifest(signals)
+        _require_manifest_database_policy(workspace, manifest)
+    if manifest is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "hosting_manifest_required",
+                "message": "Named lifecycle jobs require warehouse.hosting.json",
+            },
+        )
+    job = declared_lifecycle_job(manifest, name)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "reason": "declared_lifecycle_job_not_found",
+                "job": name,
+                "available": [
+                    item.get("name")
+                    for item in (manifest.get("lifecycle") or {}).get("jobs", [])
+                    if isinstance(item, dict)
+                ],
+            },
+        )
+    database_access = str(job.get("database_access") or "none")
+    if database_access != "none":
+        credential.require("database:admin")
+    runtime = manifest.get("runtime") if isinstance(manifest.get("runtime"), dict) else {}
+    resolved = {
+        "source_version_id": str(source["id"]),
+        "runtime_type": "job",
+        "runtime": job.get("runtime") or runtime.get("runtime"),
+        "runtime_profile": job.get("runtime_profile") or runtime.get("runtime_profile"),
+        "component": f"job-{name}",
+        "entrypoint": job.get("entrypoint") or runtime.get("entrypoint"),
+        "build_command": job.get("build_command") or runtime.get("build_command"),
+        "start_command": job["command"],
+        "database_access": database_access,
+        "database_url_env": job.get("database_url_env"),
+        "timeout_seconds": job["timeout_seconds"],
+        "execution_mode": "job",
+        "activate": False,
+        "lifecycle_job": {
+            "name": name,
+            "contract_digest": manifest["contract_digest"],
+            "required_before_activation": bool(job.get("required_before_activation")),
+        },
+        "compatibility_contract": manifest,
+    }
+    resolved.update(
+        {
+            key: value
+            for key, value in payload.items()
+            if key in {"runtime", "runtime_profile"} and value not in (None, "")
+        }
+    )
+    return {key: value for key, value in resolved.items() if value not in (None, "")}
+
+
 def request_workspace_deployment(
     credential: WorkspaceCredential,
     payload: dict[str, object],
@@ -1203,6 +1424,24 @@ def request_workspace_deployment(
     settings: Settings | None = None,
 ) -> dict[str, object]:
     credential.require("deploy:write")
+    if payload.get("database_url_env") not in (None, ""):
+        credential.require("database:admin")
+    execution_mode = str(payload.get("execution_mode") or "service").strip().lower()
+    if execution_mode not in {"service", "job"}:
+        raise HTTPException(status_code=422, detail="execution_mode must be service or job")
+    database_url_env = str(payload.get("database_url_env") or "").strip()
+    if database_url_env and not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
+        raise HTTPException(status_code=422, detail="database_url_env must be a safe env name")
+    try:
+        timeout_seconds = int(payload.get("timeout_seconds") or 1200)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="timeout_seconds must be an integer") from exc
+    if not 30 <= timeout_seconds <= 7200:
+        raise HTTPException(status_code=422, detail="timeout_seconds must be between 30 and 7200")
+    activate_value = payload.get("activate")
+    activate_requested = (
+        True if activate_value is None else bool(activate_value)
+    ) and execution_mode != "job"
     settings = settings or get_settings()
     key = str(idempotency_key or payload.get("idempotency_key") or "").strip() or None
     if key and len(key) > 200:
@@ -1289,7 +1528,15 @@ def request_workspace_deployment(
             raise HTTPException(
                 status_code=409, detail="A verified hosted source version is required"
             )
-        profile_key = _runtime_profile(session, dict(component), payload.get("runtime_profile"))
+        signals = _source_signals(dict(source), settings)
+        manifest = _hosting_manifest(signals)
+        _require_manifest_database_policy(workspace, manifest)
+        manifest_defaults = manifest_runtime_defaults(manifest)
+        profile_key = _runtime_profile(
+            session,
+            dict(component),
+            payload.get("runtime_profile") or manifest_defaults.get("runtime_profile"),
+        )
         profile_family = session.execute(
             text(
                 "SELECT runtime_family FROM platform.runtime_profiles "
@@ -1297,11 +1544,74 @@ def request_workspace_deployment(
             ),
             {"profile_key": profile_key},
         ).scalar_one()
-        signals = _source_signals(dict(source), settings)
         runtime_intent = {
             **(component.get("config") if isinstance(component.get("config"), dict) else {}),
+            **manifest_defaults,
             **{key: value for key, value in payload.items() if value not in (None, "")},
         }
+        if manifest is not None:
+            runtime_intent["compatibility_contract"] = manifest
+        else:
+            runtime_intent.pop("compatibility_contract", None)
+            runtime_intent.pop("lifecycle_job", None)
+        declared_deployment = (
+            manifest.get("deployment")
+            if manifest is not None and isinstance(manifest.get("deployment"), dict)
+            else {}
+        )
+        if bool(declared_deployment.get("require_acceptance_before_activation")):
+            activate_requested = False
+        database_url_env = str(runtime_intent.get("database_url_env") or "").strip()
+        if database_url_env:
+            credential.require("database:admin")
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
+                raise HTTPException(
+                    status_code=422,
+                    detail="database_url_env must be a safe env name",
+                )
+        database_access = str(
+            runtime_intent.get("database_access")
+            or (
+                "migration"
+                if execution_mode == "job" and database_url_env
+                else "runtime"
+                if database_url_env
+                else "none"
+            )
+        ).strip().lower()
+        if database_access not in {"none", "runtime", "migration"}:
+            raise HTTPException(
+                status_code=422,
+                detail="database_access must be none, runtime, or migration",
+            )
+        if execution_mode != "job" and database_access == "migration":
+            raise HTTPException(
+                status_code=422,
+                detail="Migration database access is restricted to one-shot jobs",
+            )
+        lifecycle_job = runtime_intent.get("lifecycle_job")
+        if lifecycle_job is not None:
+            lifecycle_job = lifecycle_job if isinstance(lifecycle_job, dict) else {}
+            lifecycle_name = str(lifecycle_job.get("name") or "")
+            declared_job = declared_lifecycle_job(manifest, lifecycle_name)
+            job_matches_contract = bool(
+                execution_mode == "job"
+                and manifest is not None
+                and declared_job is not None
+                and lifecycle_job.get("contract_digest") == manifest.get("contract_digest")
+                and str(runtime_intent.get("start_command") or "")
+                == str(declared_job.get("command") or "")
+                and database_access == str(declared_job.get("database_access") or "none")
+                and (database_url_env or None) == declared_job.get("database_url_env")
+            )
+            if not job_matches_contract:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "reason": "lifecycle_job_contract_mismatch",
+                        "job": lifecycle_name,
+                    },
+                )
         if not _source_supports_runtime_family(signals, str(profile_family), runtime_intent):
             recommended_type, recommended_profile = _resolve_runtime_contract(
                 session, {"runtime_type": "auto"}, signals
@@ -1345,6 +1655,13 @@ def request_workspace_deployment(
             "build_command": payload.get("build_command") or component.get("build_command"),
             "start_command": payload.get("start_command") or component.get("start_command"),
             "health_path": payload.get("health_path"),
+            "activate": activate_requested,
+            "execution_mode": execution_mode,
+            "database_url_env": database_url_env or None,
+            "database_access": database_access,
+            "lifecycle_job": runtime_intent.get("lifecycle_job"),
+            "compatibility_contract": runtime_intent.get("compatibility_contract"),
+            "timeout_seconds": timeout_seconds,
             **{
                 key: (
                     payload.get(key)
@@ -1710,6 +2027,46 @@ def activate_workspace_deployment(
             raise HTTPException(
                 status_code=409, detail="Only a healthy deployment can be activated"
             )
+        deployment_result = (
+            deployment.get("result") if isinstance(deployment.get("result"), dict) else {}
+        )
+        if str(deployment_result.get("execution_mode") or "service") == "job":
+            raise HTTPException(status_code=409, detail="A one-shot job cannot receive traffic")
+        requested_config = deployment.get("requested_config")
+        requested_config = requested_config if isinstance(requested_config, dict) else {}
+        compatibility_contract = requested_config.get("compatibility_contract")
+        compatibility_contract = (
+            compatibility_contract if isinstance(compatibility_contract, dict) else {}
+        )
+        deployment_contract = (
+            compatibility_contract.get("deployment")
+            if isinstance(compatibility_contract.get("deployment"), dict)
+            else {}
+        )
+        if bool(deployment_contract.get("require_acceptance_before_activation")):
+            if not _acceptance_ready_for_activation(dict(deployment)):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "deployment_acceptance_required",
+                        "deployment_id": str(deployment["id"]),
+                        "contract_digest": compatibility_contract.get("contract_digest"),
+                        "next_action": (
+                            f"POST /api/workspaces/v1/deployments/{deployment['id']}/accept"
+                        ),
+                    },
+                )
+        database_release = observe_database_release_gate(
+            session, credential.workspace_id
+        )
+        if not bool(database_release["ready"]):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "database_release_gate_blocked",
+                    "database_release": _json_safe(database_release),
+                },
+            )
         resolved_id = UUID(str(deployment["id"]))
         session.execute(
             text(
@@ -1720,6 +2077,20 @@ def activate_workspace_deployment(
                 """
             ),
             {"deployment_id": resolved_id, "workspace_id": credential.workspace_id},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE digital_asset.deployments
+                SET result=result || jsonb_build_object(
+                  'activation_requested', true,
+                  'activation_deferred', false,
+                  'activated_at', now()
+                )
+                WHERE id=:deployment_id
+                """
+            ),
+            {"deployment_id": resolved_id},
         )
         sequence = int(
             session.execute(
@@ -1747,7 +2118,12 @@ def activate_workspace_deployment(
                 ),
             },
         )
-    return {"ok": True, "deployment": _deployment_public(dict(deployment)), "active": True}
+    return {
+        "ok": True,
+        "deployment": _deployment_public(dict(deployment)),
+        "database_release": _json_safe(database_release),
+        "active": True,
+    }
 
 
 def active_workspace_runtime(tenant_slug: str, workspace_key: str) -> dict[str, object] | None:

@@ -37,6 +37,7 @@ def test_python_import_graph_selects_dependant_tests() -> None:
     assert plan["mode"] == "quick"
     assert plan["risk"] == "normal"
     assert "backend/tests/test_auto_runtime.py" in plan["tests"]
+    assert all(" 2." not in path for path in plan["tests"])
     assert plan["deploy_required"] is True
 
 
@@ -47,6 +48,18 @@ def test_migration_change_escalates_to_full_integration() -> None:
     assert plan["risk"] == "critical"
     assert {"backup", "integration", "migration"}.issubset(plan["impacts"])
     assert plan["tests"] == ["backend/tests"]
+
+
+def test_runtime_controller_base_and_database_provider_restart_controller() -> None:
+    plan = _plan(
+        "backend/app/runtime_controller_base.py",
+        "backend/app/services/hosted_database.py",
+    )
+
+    assert plan["mode"] == "standard"
+    assert plan["risk"] == "high"
+    assert {"api", "runtime_controller", "storage"}.issubset(plan["impacts"])
+    assert "backend/tests/test_runtime_controller_docker_engine.py" in plan["tests"]
 
 
 def test_non_runtime_change_stops_before_packaging() -> None:

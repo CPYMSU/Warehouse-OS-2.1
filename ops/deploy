@@ -35,6 +35,17 @@ Usage:
   ops/deploy hosted-db-activate # start the isolated HDD PostgreSQL data plane
   ops/deploy hosted-db-migrate  # migrate legacy workspace records after both slots are ready
   ops/deploy backup-now         # back up and verify both PostgreSQL data planes
+  ops/deploy workspace-db-inspect ASSET_NO
+  ops/deploy workspace-db-capabilities ASSET_NO
+  ops/deploy workspace-db-backup ASSET_NO
+  ops/deploy workspace-db-migrate-source ASSET_NO SOURCE_PATH VERSION
+  ops/deploy workspace-deploy-latest ASSET_NO
+  ops/deploy workspace-accept ASSET_NO DEPLOYMENT_ID EXPECTED_MODULES EXPECTED_RESOURCES
+  ops/deploy workspace-activate ASSET_NO DEPLOYMENT_ID
+  ops/deploy workspace-environment ASSET_NO NAME VALUE
+  ops/deploy workspace-stage-python ASSET_NO SOURCE_VERSION_ID
+  ops/deploy workspace-job ASSET_NO SOURCE_VERSION_ID alembic-upgrade|catalog-import
+  ops/deploy workspace-source-read ASSET_NO SOURCE_PATH
 
 Environment:
   WAREHOUSE_DEPLOY_HOST
@@ -89,6 +100,75 @@ case "${MODE}" in
   backup-now)
     require_file "${IDENTITY}"
     remote "sudo -n ${REMOTE_MANAGER} backup-now"
+    exit 0
+    ;;
+  workspace-db-inspect|workspace-db-capabilities|workspace-db-backup)
+    [[ "$#" -eq 2 ]] || fail "${MODE} requires ASSET_NO"
+    require_file "${IDENTITY}"
+    operation="${MODE#workspace-db-}"
+    remote "sudo -n ${REMOTE_MANAGER} workspace-database ${operation} $2"
+    exit 0
+    ;;
+  workspace-db-migrate-source)
+    [[ "$#" -eq 4 ]] || fail "workspace-db-migrate-source requires ASSET_NO SOURCE_PATH VERSION"
+    require_file "${IDENTITY}"
+    printf -v remote_command 'sudo -n %q workspace-database-migrate-source %q %q %q' \
+      "${REMOTE_MANAGER}" "$2" "$3" "$4"
+    remote "${remote_command}"
+    exit 0
+    ;;
+  workspace-deploy-latest)
+    [[ "$#" -eq 2 ]] || fail "workspace-deploy-latest requires ASSET_NO"
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} workspace-deploy-latest $2"
+    exit 0
+    ;;
+  workspace-accept)
+    [[ "$#" -eq 5 ]] \
+      || fail "workspace-accept requires ASSET_NO DEPLOYMENT_ID EXPECTED_MODULES EXPECTED_RESOURCES"
+    [[ "$4" =~ ^[0-9]{1,4}$ && "$5" =~ ^[0-9]{1,6}$ ]] \
+      || fail "workspace-accept counts must be non-negative integers"
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} workspace-accept $2 $3 $4 $5"
+    exit 0
+    ;;
+  workspace-activate)
+    [[ "$#" -eq 3 ]] || fail "workspace-activate requires ASSET_NO DEPLOYMENT_ID"
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} workspace-activate $2 $3"
+    exit 0
+    ;;
+  workspace-environment)
+    [[ "$#" -eq 4 ]] || fail "workspace-environment requires ASSET_NO NAME VALUE"
+    [[ "$3" =~ ^[A-Z][A-Z0-9_]{0,79}$ ]] \
+      || fail "workspace-environment NAME is invalid"
+    require_file "${IDENTITY}"
+    printf -v remote_command 'sudo -n %q workspace-environment %q %q %q' \
+      "${REMOTE_MANAGER}" "$2" "$3" "$4"
+    remote "${remote_command}"
+    exit 0
+    ;;
+  workspace-stage-python)
+    [[ "$#" -eq 3 ]] || fail "workspace-stage-python requires ASSET_NO SOURCE_VERSION_ID"
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} workspace-stage-python $2 $3"
+    exit 0
+    ;;
+  workspace-job)
+    [[ "$#" -eq 4 ]] \
+      || fail "workspace-job requires ASSET_NO SOURCE_VERSION_ID JOB_KIND"
+    [[ "$4" =~ ^(alembic-upgrade|catalog-import)$ ]] \
+      || fail "workspace-job JOB_KIND must be alembic-upgrade or catalog-import"
+    require_file "${IDENTITY}"
+    remote "sudo -n ${REMOTE_MANAGER} workspace-job $2 $3 $4"
+    exit 0
+    ;;
+  workspace-source-read)
+    [[ "$#" -eq 3 ]] || fail "workspace-source-read requires ASSET_NO SOURCE_PATH"
+    require_file "${IDENTITY}"
+    printf -v remote_command 'sudo -n %q workspace-source-read %q %q' \
+      "${REMOTE_MANAGER}" "$2" "$3"
+    remote "${remote_command}"
     exit 0
     ;;
   smart|quick|standard|full)

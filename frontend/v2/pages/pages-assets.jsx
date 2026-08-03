@@ -1,16 +1,46 @@
 /* WAREHOUSE 2.1 · 資產 — Swiss 版式,真後端
-   駕駛艙子集:金融資產組合(/api/assets + /api/assets/portfolio)
-   + 數字資產托管(/api/digital-assets + /api/digital-assets/summary)
-   + 數字資產市場(/api/digital-assets/listings|trades|revenue)。
-   頁面只讀;接入/評估/記交易/上架/購買/分潤全部交秘書。 */
+   五個同級平面:金融資產、數字資產、數據資產、資料庫服務、交易中心。
+   資料庫服務同時呈現獨立服務與應用附屬資料庫,但絕不向頁面返回秘密。
+   點擊表單與 AI 共用同一後端能力契約、權限、治理確認和審計。 */
 (() => {
 const W2 = window.W2;
 const { t } = window.W2_LANG;
 window.W2_LANG.addEN({
   "資產": "Assets",
   "金融資產組合 + 數字資產托管與市場 · 頁面只讀,接入交易上架全交秘書": "Financial portfolio + digital asset custody & market · read-only page, onboarding, trades & listings via the Secretary",
-  // 三區子導航
-  "金融資產": "Financial assets", "數字資產": "Digital assets", "交易中心": "Trading center",
+  // 五區子導航
+  "金融資產": "Financial assets", "數字資產": "Digital assets", "數據資產": "Data assets",
+  "資料庫服務": "Database services", "交易中心": "Trading center",
+  "數據成為服務 · 隔離、規則、API 與接入都可驗證": "Data becomes a service · isolation, rules, APIs and onboarding stay verifiable",
+  "資料成為可治理、可版本化與可交付的資產": "Data becomes a governed, versioned and deliverable asset",
+  "獨立服務與應用附屬資料庫共享同一托管平面": "Standalone and application databases share one custody plane",
+  "數據資產登記冊": "Data asset register", "資料庫服務登記冊": "Database service register",
+  "登記數據資產": "Register data asset", "申請資料庫": "Request database",
+  "服務總數": "Services", "運行正常": "Healthy", "瀏覽器接入": "Browser access", "已用容量": "Storage used",
+  "獨立資料庫": "Standalone database", "應用附屬": "Application database", "需要處理": "Needs attention",
+  "全部服務": "All services", "服務類型": "Service type", "Provider": "Provider",
+  "隔離模式": "Isolation", "Browser": "Browser", "Origins": "Origins", "容量": "Storage",
+  "未配置": "Not configured", "已啟用": "Enabled", "已停用": "Disabled", "正常": "Healthy",
+  "資料庫服務載入中…": "Loading database services…", "資料庫服務載入失敗": "Database services failed to load",
+  "重新載入": "Reload", "尚未申請資料庫服務": "No database services yet",
+  "獨立前端或應用都可以共用平台托管資料庫；規則預設全部拒絕。": "External frontends and hosted apps can both use managed databases; rules deny everything by default.",
+  "資料庫詳情": "Database details", "資料結構": "Data structure", "安全邊界": "Security boundary",
+  "接入資料": "Integration", "集合": "Collections", "實體表": "Physical tables",
+  "允許來源": "Allowed origins", "預設規則": "Default rule", "規則版本": "Policy revision",
+  "每分鐘限流": "Requests per minute", "Access Token": "Access token", "Refresh Session": "Refresh session",
+  "公開專案定位符": "Public project locator", "JavaScript SDK": "JavaScript SDK", "Quickstart": "Quickstart",
+  "複製": "Copy", "已複製": "Copied", "取得接入包": "Get onboarding bundle", "調整安全規則": "Change security rules",
+  "規劃資料結構": "Plan data structure", "查看接入說明": "View integration guide",
+  "規則預設全部拒絕": "Rules deny everything by default", "不需要 Runtime": "No Runtime required",
+  "關聯 Runtime": "Runtime attached", "憑證不會顯示在頁面": "Credentials are never shown on this page",
+  "結構讀取中…": "Loading structure…", "結構暫不可用": "Structure unavailable",
+  "尚無集合": "No collections", "尚無實體表": "No physical tables",
+  "筆記錄": "records", "個來源": "origins", "規則": "Rules", "版本": "Versions",
+  "托管數據": "Hosted data", "讓 AI 設計": "Design with AI",
+  "權屬、版本與交付全程留痕": "Rights, versions and delivery remain fully auditable",
+  "工作區與資料庫保持關聯但不混為同一資產": "Workspaces and databases stay linked without being collapsed into one asset",
+  "尚未登記數據資產": "No data assets registered",
+  "數據集、文件與知識資料會在這裡形成獨立的權屬與版本登記。": "Datasets, files and knowledge materials form their own rights and version register here.",
   "總成本": "Total cost", "今日波動": "Day change", "回報率": "Return",
   "托管資產": "Assets in custody", "托管工作區": "Hosted workspaces", "估值總額": "Valuation total", "已上架": "Listed",
   "累計分潤": "Total allocated", "待跟進": "To follow up", "{n} 筆": "{n} trades",
@@ -115,6 +145,7 @@ window.W2_LANG.addEN({
   "對秘書說「幫我接入第一個數字資產」,開通工作區或登記現有能力即可開始。": "Tell the Secretary \"onboard my first digital asset\" — provision a workspace or register an existing capability to get started.",
   "讓秘書接入": "Onboard via Secretary",
   "我要接入一個新的數字資產:請先問我是要開通托管工作區(網頁+專屬數據庫+API Key)還是登記已有的數據/軟件/模型能力,追問項目名稱、資產類型和一句話說明。核心代碼默認 HDD,不要額外追問;只有我明確要求時才選 SSD,所有托管資料固定 HDD": "I want to onboard a digital asset: ask whether this is a hosted workspace or an existing capability, then ask for name, kind and summary. Default core code to HDD without an extra question; use SSD only when I explicitly request it. All hosted data stays on HDD.",
+  "我要單獨申請一個托管資料庫服務,不部署 Runtime。請追問專案名稱、GitHub Pages 或其他前端的精確 HTTPS Origin,以及哪些集合需要 session 或 owner 讀寫;規則預設全部拒絕。確認後使用原生 dm db service create 指令建立,再用 dm db onboarding 把 SDK、API、公開 dbp_ 和接入步驟整理給我;不要把 wak_ 或資料庫密碼交給對話或瀏覽器。": "I want a standalone managed database without deploying a Runtime. Ask for the project name, the exact HTTPS origin of GitHub Pages or another frontend, and which collections need session or owner read/write; deny everything by default. After confirmation use the native dm db service create command, then use dm db onboarding to give me the SDK, APIs, public dbp_ locator and setup steps; never expose a wak_ key or database password to chat or the browser.",
   "幫我評估數字資產「{name}」(#{id}):出 AI 評估報告,講清等級、分數、關鍵證據、風險旗標和建議定價區間": "Assess digital asset \"{name}\" (#{id}): produce the AI assessment report and explain the grade, score, key evidence, risk flags and suggested price range.",
   "把數字資產「{name}」(#{id})上架到市場:先出 AI 評估與合規預審,再和我確定權益類型、定價與份額,確認後上架": "List digital asset \"{name}\" (#{id}) on the market: run the AI assessment and compliance pre-check first, then agree right type, pricing and units with me, and list it after my confirmation.",
   "看看數字資產「{name}」(#{id})的訪問與收入情況:站點訪問、接口調用、成交與收益分潤都查一遍,匯總成結論講給我": "Show me the traffic and revenue of digital asset \"{name}\" (#{id}): check site visits, API calls, trades and revenue distributions, and summarize the conclusions for me.",
@@ -136,10 +167,55 @@ window.W2_LANG.addEN({
   "成交 #{id}「{a}」《{ti}》× {u},買方 {c},金額 {amt}:請查交付與驗收狀態,需要我跟進的列出來": "Trade #{id} \"{a}\" listing \"{ti}\" × {u}, buyer {c}, amount {amt}: check delivery and acceptance status and list anything I need to follow up.",
   "收益事件 #{id}({a},{ty},{amt}):請帶出分潤明細與支付狀態,未付的列出應付名單": "Revenue event #{id} ({a}, {ty}, {amt}): show the distribution breakdown and payment status, and list unpaid payees.",
   "我要登記一筆數字資產收益並分潤:請追問是哪個資產、金額、收益來源,登記後把每位持有人的分潤明細列給我": "I want to record a digital asset revenue event and distribute it: ask me which asset, the amount and the source, then register it and show each holder's share.",
+  // 點擊操作與 AI 共用的能力契約
+  "常用操作": "Common actions", "點擊操作與 AI 共用同一份能力契約": "Clicks and AI share one capability contract",
+  "填寫操作": "Open form", "AI 協助": "AI assist", "當前對象": "Current object", "先選擇登記冊對象": "Select a register object first",
+  "能力同步中": "Syncing", "能力狀態未知": "Unknown", "沒有使用權限": "Locked", "後端能力未就緒": "Unavailable", "需要治理確認": "Confirm", "可以直接執行": "Write", "只讀操作": "Read",
+  "表單與 AI 會使用相同的 tool_name、參數 Schema、權限、確認與審計。": "Forms and AI use the same tool_name, parameter schema, permissions, confirmations and audit trail.",
+  "建立資產主檔": "Create asset record", "把資產加入可治理的登記冊。": "Add an asset to the governed register.",
+  "記錄買入": "Record purchase", "用所選資產預填交易對象。": "Prefill the selected asset as the trade target.",
+  "記錄分紅": "Record dividend", "把派息寫入資產與財務台賬。": "Post a dividend to the asset and finance ledgers.",
+  "分析所選資產": "Analyze selected asset", "讀取可復算的行情與風險分析。": "Read reproducible market and risk analysis.",
+  "刷新資產行情": "Refresh asset quotes", "刷新全部資產的公開行情與價格快照。": "Refresh public quotes and price snapshots for all assets.",
+  "登記數字資產": "Register digital asset", "建立數字資產身份與權屬入口。": "Create a digital asset identity and rights entry.",
+  "附加交付物": "Attach deliverable", "把源碼、資料集或交付物附加到所選資產。": "Attach source, data or a deliverable to the selected asset.",
+  "建立托管工作區": "Create workspace", "為所選資產建立永久入口與托管空間。": "Create a permanent route and workspace for the selected asset.",
+  "評估所選資產": "Assess selected asset", "基於可驗證事實生成鋼印評估。": "Generate a sealed assessment from verifiable facts.",
+  "建立市場上架": "Create market listing", "為所選資產建立權益、價格與份額條款。": "Create rights, pricing and unit terms for the selected asset.",
+  "登記數據資產主檔": "Register data asset", "以 data 類型建立獨立的數據資產。": "Create an independent asset with the data kind.",
+  "新增資料版本": "Add data version", "為所選數據資產留下版本與交付證據。": "Add version and delivery evidence to the selected data asset.",
+  "記錄托管事件": "Record custody event", "保存入庫、更新或驗真的托管證據。": "Record deposit, update or verification custody evidence.",
+  "交付資料包": "Deliver data package", "把資料集或交付物附加到所選資產。": "Attach a dataset or deliverable to the selected asset.",
+  "申請獨立資料庫": "Request standalone database", "不部署 Runtime，預設全部拒絕。": "No Runtime; deny all access by default.",
+  "刷新服務清單": "Refresh service list", "讀取目前可管理的資料庫服務。": "Read the managed database service inventory.",
+  "配置瀏覽器接入": "Configure browser access", "以精確 HTTPS Origin 與集合規則配置所選服務。": "Configure the selected service with exact HTTPS origins and collection rules.",
+  "讀取資料結構": "Read data structure", "讀取所選服務的集合結構與記錄數。": "Read collection structure and record counts for the selected service.",
+  "生成安全接入包": "Generate onboarding bundle", "整理 SDK、API、公開 dbp_ 與接入步驟。": "Prepare SDK, APIs, public dbp_ locator and integration steps.",
+  "瀏覽共同市場": "Browse common market", "查看全平台公開在售資產。": "Read public listings across the platform.",
+  "建立購買意向": "Create purchase intent", "選擇上架並填寫買方與份數。": "Choose a listing and enter buyer details and units.",
+  "查看訂單台賬": "View order ledger", "查看意向、覆核、受理與結算狀態。": "Read intent, review, acceptance and settlement states.",
+  "查看成交台賬": "View trade ledger", "核對成交、驗收與結算憑證。": "Review trades, acceptance and settlement vouchers.",
+  "登記收益分潤": "Record revenue distribution", "登記收益或成本並生成分潤台賬。": "Record revenue or cost and generate its distribution ledger.",
 });
 const { useState: _s, useEffect: _e, useMemo: _mm } = React;
 const { Icon: I, Btn: B, Tag: T, Label: LB, Empty: EM, Kpi, StackBar, Folio, Band, pad2, num } = W2;
 const ask = (p) => W2.openSecretary(p);
+const cleanActionArgs = value => Object.fromEntries(Object.entries(value || {}).filter(([, item]) => item !== undefined && item !== null && item !== ""));
+const openTypedAction = (toolName, argumentsValue = {}) => W2.openBusinessAction({
+  tool_name: toolName,
+  arguments: cleanActionArgs(argumentsValue),
+  query: toolName,
+  filter: "authorized",
+});
+const safeAssistantArgs = value => Object.fromEntries(Object.entries(cleanActionArgs(value)).filter(([name]) => !/(password|secret|token|api.?key|credential|passkey|sql)/i.test(name)));
+const assistTypedAction = (toolName, label, argumentsValue = {}) => {
+  const known = safeAssistantArgs(argumentsValue);
+  const knownText = Object.keys(known).length ? JSON.stringify(known) : "{}";
+  W2.openSecretary(
+    `我要完成「${label}」。目標原生能力是 ${toolName}，已知安全參數是 ${knownText}。請嚴格按照與點擊表單相同的 ${toolName} Schema 逐項追問缺失字段，說明權限與確認要求；取得確認後只使用這個 tool_name 執行並回報審計結果。不得向對話索取或輸出密碼、Token、wak_ 或其他秘密。`,
+    { display_text: `AI · ${label}` },
+  );
+};
 
 /* ── 格式化(防禦性:任何字段可缺) ── */
 const fin = (v) => v != null && Number.isFinite(Number(v));
@@ -183,10 +259,8 @@ const wsLinkLabel = (ws) => String((ws && (ws.site_status || ws.latest_deploymen
   : "開啟托管頁";
 const mbfmt = (bytes) => fin(bytes) ? Math.round(Number(bytes) / 1048576).toLocaleString("zh-CN") + " MB" : "—";
 const wsStorage = (ws) => {
-  const profile = ws && ws.storage && typeof ws.storage === "object" ? ws.storage : {};
-  const code = profile.code && typeof profile.code === "object" ? profile.code : {};
-  const database = String((ws && ws.database_medium) || "hdd").toUpperCase();
-  return `${t("核心代碼")} ${String(code.medium || "hdd").toUpperCase()} · ${t("托管資料")} HDD · ${t("數據庫")} ${database}`;
+  const total = fin(ws && ws.total_bytes) ? ws.total_bytes : ws && ws.storage_used_bytes;
+  return `${t("核心代碼")} ${mbfmt(ws && ws.code_bytes)} · Runtime ${mbfmt(ws && ws.runtime_bytes)} · DATA ${mbfmt(ws && ws.data_bytes)} · ${t("數據庫")} ${mbfmt(ws && ws.database_bytes)} · ${t("總計")} ${mbfmt(total)}`;
 };
 
 /* ── 金融資產抽屜 ── */
@@ -194,14 +268,14 @@ const AssetDrawer = ({ a, onClose }) => {
   const sym = a.symbol || t("未填代碼");
   const watch = !!a.watch_only;
   const acts = watch ? [
-    ["inbound", "轉為持倉", t("「{name}」是觀察倉,我想登記買入轉為持倉:請追問數量、成交價、手續費、賬戶和日期後執行", { name: a.name })],
-    ["scan", "補代碼 / 行情", t("「{name}」缺代碼或行情,請搜索候選代碼讓我確認,然後刷新現價、匯率和漲跌幅", { name: a.name })],
-    ["sparkle", "深度解讀", t("請對「{name}」({sym})做深度解讀:先查最新行情與走勢,再跑量化與風險分析,用人話講結論和風險", { name: a.name, sym })],
+    ["inbound", "轉為持倉", "asset_buy", { id: a.id }],
+    ["scan", "補代碼 / 行情", "asset_refresh", {}],
+    ["sparkle", "深度解讀", "asset_analyze", { id: a.id }],
   ] : [
-    ["inbound", "記買入", t("我買入了「{name}」({sym}),請追問數量、成交價/總額、手續費、支付賬戶和日期,然後登記並記賬", { name: a.name, sym })],
-    ["outbound", "記賣出", t("我賣出了「{name}」({sym}),請追問數量、成交價/總額、手續費、收款賬戶和日期,計算已實現盈虧並記賬", { name: a.name, sym })],
-    ["wallet", "記分紅", t("「{name}」有分紅/派息,請追問金額、稅費、到賬賬戶和日期,登記並記賬", { name: a.name })],
-    ["sparkle", "深度解讀", t("請對「{name}」({sym})做深度解讀:先查最新行情與走勢,再跑量化與風險分析,用人話講結論和風險", { name: a.name, sym })],
+    ["inbound", "記買入", "asset_buy", { id: a.id }],
+    ["outbound", "記賣出", "asset_sell", { id: a.id }],
+    ["wallet", "記分紅", "asset_dividend", { id: a.id }],
+    ["sparkle", "深度解讀", "asset_analyze", { id: a.id }],
   ];
   const cells = [
     [t("持有數量"), watch ? "—" : nfmt(a.quantity)],
@@ -239,15 +313,15 @@ const AssetDrawer = ({ a, onClose }) => {
             <span className="num muted" style={{ fontSize: 11 }}>{qtime(a.last_quote_at)}</span>
           </div>
         )}
-        <LB dim style={{ fontSize: 8.5, marginBottom: 8 }}>{t("直接吩咐秘書")}</LB>
+        <LB dim style={{ fontSize: 8.5, marginBottom: 8 }}>{t("填寫操作")}</LB>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          {acts.map(([icon, label, prompt]) => (
-            <button key={label} className="btn" style={{ height: 40, justifyContent: "flex-start", fontSize: 12.5 }} onClick={() => ask(prompt)}>
+          {acts.map(([icon, label, tool, argumentsValue]) => (
+            <button key={label} className="btn" style={{ height: 40, justifyContent: "flex-start", fontSize: 12.5 }} onClick={() => openTypedAction(tool, argumentsValue)}>
               <I name={icon} size={14}/>{t(label)}
             </button>
           ))}
         </div>
-        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("表單與 AI 會使用相同的 tool_name、參數 Schema、權限、確認與審計。")}</div>
       </div>
     </div>
   );
@@ -302,12 +376,12 @@ const DigitalDrawer = ({ a, assess, onClose }) => {
     [t("更新"), (a.updated_at || "").slice(0, 10) || "—"],
   ];
   const acts = [
-    ["scan", "評估資產", t("幫我評估數字資產「{name}」(#{id}):出 AI 評估報告,講清等級、分數、關鍵證據、風險旗標和建議定價區間", { name: a.name || "—", id: a.id ?? "—" })],
-    ["trend", "上架到市場", t("把數字資產「{name}」(#{id})上架到市場:先出 AI 評估與合規預審,再和我確定權益類型、定價與份額,確認後上架", { name: a.name || "—", id: a.id ?? "—" })],
-    ["chart", "訪問與收入", t("看看數字資產「{name}」(#{id})的訪問與收入情況:站點訪問、接口調用、成交與收益分潤都查一遍,匯總成結論講給我", { name: a.name || "—", id: a.id ?? "—" })],
+    ["scan", "評估資產", "digital_market_assess", { id: a.id }],
+    ["trend", "上架到市場", "digital_market_listing_create", { id: a.id }],
+    ["chart", "訪問與收入", "digital_market_revenues", { asset: a.id }],
     ws
-      ? ["cpu", "工作區控制台", t("打開數字資產「{name}」的托管工作區({ws}):匯報站點、數據庫與 API Key 狀態,然後問我要做什麼(部署網頁/建表/查數/改數)再逐步執行", { name: a.name || "—", ws: ws.workspace_key || "—" })]
-      : ["pkg", "開通托管工作區", t("幫我為數字資產「{name}」(#{id})開通托管工作區:網頁+專屬數據庫+API Key,開通後把客戶接入步驟整理給我", { name: a.name || "—", id: a.id ?? "—" })],
+      ? ["cpu", "取得接入包", "digital_market_database_onboarding", { workspace: ws.workspace_key }]
+      : ["pkg", "開通托管工作區", "digital_market_workspace_create", { id: a.id }],
   ];
   return (
     <div className="drawer">
@@ -394,23 +468,279 @@ const DigitalDrawer = ({ a, assess, onClose }) => {
             <span className="ink2" style={{ fontSize: 12, lineHeight: 1.6 }}>{a.summary}</span>
           </div>
         )}
-        <LB dim style={{ fontSize: 8.5, marginBottom: 8 }}>{t("直接吩咐秘書")}</LB>
+        <LB dim style={{ fontSize: 8.5, marginBottom: 8 }}>{t("填寫操作")}</LB>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          {acts.map(([icon, label, prompt]) => (
-            <button key={label} className="btn" style={{ height: 40, justifyContent: "flex-start", fontSize: 12.5 }} onClick={() => ask(prompt)}>
+          {acts.map(([icon, label, tool, argumentsValue]) => (
+            <button key={label} className="btn" style={{ height: 40, justifyContent: "flex-start", fontSize: 12.5 }} onClick={() => openTypedAction(tool, argumentsValue)}>
               <I name={icon} size={14}/>{t(label)}
             </button>
           ))}
         </div>
-        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("2.1 約定:頁面只讀,改動經秘書確認執行,全程留痕。")}</div>
+        <div className="muted" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.6 }}>{t("表單與 AI 會使用相同的 tool_name、參數 Schema、權限、確認與審計。")}</div>
       </div>
     </div>
   );
 };
 
-/* ── 09 · 資產:內部三區(金融資產 / 數字資產 / 交易中心)── */
-const TABS = [["fin", "金融資產"], ["dig", "數字資產"], ["trade", "交易中心"]];
-const tabInit = () => { try { const v = sessionStorage.getItem("w2_assets_tab"); return TABS.some(([id]) => id === v) ? v : "fin"; } catch (e) { return "fin"; } };
+const databaseType = project => project && project.service_kind === "standalone_database"
+  ? "獨立資料庫" : "應用附屬";
+const databaseReady = project => String(project && project.database && project.database.status || "").toLowerCase() === "ready";
+const databaseWorkspaceKey = project => project && project.workspace && project.workspace.workspace_key || "";
+const databaseName = project => project && project.asset && project.asset.name
+  || project && project.database && project.database.logical_name || "—";
+const databaseBrowser = project => project && project.browser_project || null;
+const databaseRules = project => databaseBrowser(project) && databaseBrowser(project).rules || {
+  default: { read: "deny", write: "deny" }, collections: {},
+};
+const databaseRuleLabel = rule => `${String(rule && rule.read || "deny").toUpperCase()} / ${String(rule && rule.write || "deny").toUpperCase()}`;
+
+/* ── 可操作的 Swiss 流程拓撲
+   階段與操作不再重複呈現；字段、權限、確認和執行仍以
+   /api/business/actions 返回的唯一後端契約為準。 */
+const ASSET_ACTION_SPECS = {
+  fin: [
+    { tool: "asset_add", label: "建立資產主檔", note: "把資產加入可治理的登記冊。" },
+    { tool: "asset_refresh", label: "刷新資產行情", note: "刷新全部資產的公開行情與價格快照。" },
+    { tool: "asset_analyze", label: "分析所選資產", note: "讀取可復算的行情與風險分析。", context: true, args: item => ({ id: item && item.id }) },
+    { tool: "asset_buy", label: "記錄買入", note: "用所選資產預填交易對象。", context: true, args: item => ({ id: item && item.id }) },
+  ],
+  dig: [
+    { tool: "digital_market_create", label: "登記數字資產", note: "建立數字資產身份與權屬入口。" },
+    { tool: "digital_market_workspace_create", label: "建立托管工作區", note: "為所選資產建立永久入口與托管空間。", context: true, args: item => ({ id: item && (item.uuid || item.id || item.asset_no) }) },
+    { tool: "digital_market_assess", label: "評估所選資產", note: "基於可驗證事實生成鋼印評估。", context: true, args: item => ({ id: item && item.id }) },
+    { tool: "digital_market_listing_create", label: "建立市場上架", note: "為所選資產建立權益、價格與份額條款。", context: true, args: item => ({ id: item && item.id }) },
+  ],
+  data: [
+    { tool: "digital_market_create", label: "登記數據資產主檔", note: "以 data 類型建立獨立的數據資產。", args: () => ({ kind: "data" }) },
+    { tool: "digital_market_version_add", label: "新增資料版本", note: "為所選數據資產留下版本與交付證據。", context: true, args: item => ({ id: item && (item.uuid || item.id || item.asset_no) }) },
+    { tool: "digital_market_custody", label: "記錄托管事件", note: "保存入庫、更新或驗真的托管證據。", context: true, args: item => ({ id: item && item.id }) },
+    { tool: "digital_market_upload", label: "交付資料包", note: "把資料集或交付物附加到所選資產。", context: true, args: item => ({ id: item && (item.uuid || item.id || item.asset_no), type: "dataset" }) },
+  ],
+  db: [
+    { tool: "digital_market_database_project_create", label: "申請獨立資料庫", note: "不部署 Runtime，預設全部拒絕。", args: () => ({ rules: { default: { read: "deny", write: "deny" }, collections: {} } }) },
+    { tool: "digital_market_console", label: "讀取資料結構", note: "讀取所選服務的集合結構與記錄數。", context: true, args: project => ({ workspace: databaseWorkspaceKey(project) }) },
+    { tool: "digital_market_database_browser_configure", label: "配置瀏覽器接入", note: "以精確 HTTPS Origin 與集合規則配置所選服務。", context: true, args: project => {
+      const browser = databaseBrowser(project) || {};
+      return {
+        workspace: databaseWorkspaceKey(project),
+        enabled: !!browser.enabled,
+        "allowed-origins": browser.allowed_origins || [],
+        rules: databaseRules(project),
+        "access-ttl": browser.access_token_ttl_seconds,
+        "refresh-days": browser.refresh_session_ttl_days,
+        "rate-limit": browser.rate_limit_per_minute,
+      };
+    } },
+    { tool: "digital_market_database_onboarding", label: "生成安全接入包", note: "整理 SDK、API、公開 dbp_ 與接入步驟。", context: true, args: project => ({ workspace: databaseWorkspaceKey(project) }) },
+  ],
+  trade: [
+    { tool: "digital_market_common", label: "瀏覽共同市場", note: "查看全平台公開在售資產。" },
+    { tool: "digital_market_order_create", label: "建立購買意向", note: "選擇上架並填寫買方與份數。" },
+    { tool: "digital_market_orders", label: "查看訂單台賬", note: "查看意向、覆核、受理與結算狀態。" },
+    { tool: "digital_market_trades", label: "查看成交台賬", note: "核對成交、驗收與結算憑證。" },
+    { tool: "digital_market_revenue_record", label: "登記收益分潤", note: "登記收益或成本並生成分潤台賬。" },
+  ],
+};
+const actionContextLabel = (plane, item) => {
+  if (!item) return "";
+  if (plane === "fin") return [item.name, item.symbol].filter(Boolean).join(" / ");
+  if (plane === "db") return `${databaseName(item)} / ${databaseWorkspaceKey(item)}`;
+  return [item.name, item.asset_no].filter(Boolean).join(" / ");
+};
+const actionVisualState = (meta, loading, error) => {
+  if (loading) return ["sync", "能力同步中"];
+  if (error || !meta) return ["unknown", "能力狀態未知"];
+  if (meta.authorized === false) return ["locked", "沒有使用權限"];
+  if (meta.available === false) return ["unavailable", "後端能力未就緒"];
+  if (meta.manual_execution === "unavailable") return ["unknown", "能力狀態未知"];
+  if (meta.confirmation_required || meta.manual_execution === "governed_confirmation") return ["confirm", "需要治理確認"];
+  return meta.writes ? ["write", "可以直接執行"] : ["read", "只讀操作"];
+};
+const AssetOperationTopology = ({ plane, flow, catalogue, loading, error, context }) => {
+  const specs = ASSET_ACTION_SPECS[plane] || [];
+  const actions = catalogue && Array.isArray(catalogue.actions) ? catalogue.actions : [];
+  const byTool = Object.fromEntries(actions.map(action => [action.tool_name, action]));
+  const contextLabel = actionContextLabel(plane, context);
+  return <section className={`asset-action-index aai-${plane}`} data-testid="asset-operation-topology" aria-label={t("資產流程拓撲")}>
+    <header>
+      <div><span>SWISS ACTION TOPOLOGY</span><h2>{t("資產流程拓撲")}</h2></div>
+      <p>{t("點擊操作與 AI 共用同一份能力契約")}</p>
+      <code>{catalogue && catalogue.catalogue_revision ? `REV ${catalogue.catalogue_revision}` : "SCHEMA / PERMISSION / AUDIT"}</code>
+    </header>
+    <div className="asset-action-grid" style={{ "--asset-flow-count": specs.length }}>
+      {specs.map((spec, index) => {
+        const stage = flow[index] || [pad2(index + 1), "ACTION", spec.label];
+        const meta = byTool[spec.tool];
+        const [state, stateLabel] = actionVisualState(meta, loading, error);
+        const argumentsValue = cleanActionArgs(spec.args ? spec.args(context) : {});
+        const needsContext = !!spec.context && !context;
+        const locked = !!meta && (meta.available === false || meta.authorized === false || meta.manual_execution === "unavailable");
+        return <article key={spec.tool} className={`asset-action-card state-${state}`} data-testid={`asset-action-card-${spec.tool}`}>
+          <div className="asset-action-card-top">
+            <em>{stage[0]}</em><div><strong>{stage[1]}</strong><small>{t(stage[2])}</small></div><span>{state.toUpperCase()}</span><b>{t(stateLabel)}</b>
+          </div>
+          <code>{meta && meta.command || spec.tool}</code>
+          <h3>{t(spec.label)}</h3>
+          <p>{t(spec.note)}</p>
+          {(needsContext || contextLabel) && <div className={`asset-action-context${needsContext ? " is-empty" : ""}`}>
+            <span>{t(needsContext ? "先選擇登記冊對象" : "當前對象")}</span>
+            <strong>{needsContext ? "—" : contextLabel}</strong>
+          </div>}
+          <footer>
+            <button type="button" disabled={locked || needsContext} data-testid={`asset-action-manual-${spec.tool}`}
+              onClick={() => openTypedAction(spec.tool, argumentsValue)}>{t("填寫操作")} ↗</button>
+            <button type="button" className="is-ai" disabled={locked} data-testid={`asset-action-ai-${spec.tool}`}
+              onClick={() => assistTypedAction(spec.tool, t(spec.label), argumentsValue)}><I name="sparkle" size={11}/>{t("AI 協助")}</button>
+          </footer>
+        </article>;
+      })}
+    </div>
+  </section>;
+};
+
+const DatabaseDrawer = ({ project, onClose }) => {
+  const workspaceKey = databaseWorkspaceKey(project);
+  const browser = databaseBrowser(project);
+  const [detail, setDetail] = _s({ loading: true, health: null, schema: null, onboarding: null, errors: [] });
+  const [copied, setCopied] = _s("");
+  _e(() => {
+    let disposed = false;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    setDetail({ loading: true, health: null, schema: null, onboarding: null, errors: [] });
+    Promise.allSettled([
+      W2.json(`/api/workspaces/${encodeURIComponent(workspaceKey)}/database/health`, controller ? { signal: controller.signal } : undefined),
+      W2.json(`/api/workspaces/${encodeURIComponent(workspaceKey)}/database/schema`, controller ? { signal: controller.signal } : undefined),
+      W2.json(`/api/workspaces/${encodeURIComponent(workspaceKey)}/database/onboarding`, controller ? { signal: controller.signal } : undefined),
+    ]).then(results => {
+      if (disposed) return;
+      const value = index => results[index].status === "fulfilled" ? results[index].value : null;
+      setDetail({
+        loading: false,
+        health: value(0),
+        schema: value(1),
+        onboarding: value(2),
+        errors: results.map((result, index) => result.status === "rejected" ? index : null).filter(index => index != null),
+      });
+    });
+    return () => { disposed = true; if (controller) controller.abort(); };
+  }, [workspaceKey]);
+  const schema = detail.schema || {};
+  const collections = Array.isArray(schema.collections) ? schema.collections : [];
+  const tables = Array.isArray(schema.tables) ? schema.tables : [];
+  const onboarding = detail.onboarding || {};
+  const publicKey = browser && browser.project_key || onboarding.keys && onboarding.keys.public_project_key || "";
+  const sdk = browser && browser.sdk_url || onboarding.files && onboarding.files[0] && onboarding.files[0].url || "";
+  const quickstart = onboarding.quickstart || "";
+  const rules = databaseRules(project);
+  const ruleRows = Object.entries(rules.collections || {});
+  const health = detail.health && detail.health.health || null;
+  const reachable = health ? health.reachable !== false : databaseReady(project);
+  const copy = async (kind, value) => {
+    if (!value || !navigator.clipboard || !navigator.clipboard.writeText) return;
+    try {
+      await navigator.clipboard.writeText(String(value));
+      setCopied(kind);
+      setTimeout(() => setCopied(current => current === kind ? "" : current), 1600);
+    } catch (e) {}
+  };
+  const openOnboarding = () => openTypedAction("digital_market_database_onboarding", { workspace: workspaceKey });
+  const openRules = () => openTypedAction("digital_market_database_browser_configure", {
+    workspace: workspaceKey,
+    enabled: !!(browser && browser.enabled),
+    "allowed-origins": browser && browser.allowed_origins || [],
+    rules,
+    "access-ttl": browser && browser.access_token_ttl_seconds,
+    "refresh-days": browser && browser.refresh_session_ttl_days,
+    "rate-limit": browser && browser.rate_limit_per_minute,
+  });
+  const askSchema = () => ask(`請為資料庫服務「${databaseName(project)}」(${workspaceKey})規劃業務資料結構：先追問用途，再提出集合、字段、owner_id、索引與 deny/session/owner 規則方案；目前只做設計，不要把未確認的結構當成已建立。`);
+  return (
+    <aside className="drawer database-drawer" data-testid="database-service-drawer" aria-label={t("資料庫詳情")}>
+      <header className="database-drawer-head">
+        <div className="row spread g8">
+          <div className="row g6">
+            <T tone={reachable ? "ok" : "bad"} dot>{t(reachable ? "正常" : "需要處理")}</T>
+            <T tone="plain">{t(databaseType(project))}</T>
+          </div>
+          <button className="btn ghost sm" onClick={onClose} title="Esc"><I name="x" size={13}/></button>
+        </div>
+        <h3>{databaseName(project)}</h3>
+        <code>{workspaceKey} · {project.database && project.database.logical_name || "—"}</code>
+      </header>
+      <div className="database-drawer-body">
+        <section className="database-detail-grid">
+          <div><LB dim>{t("Provider")}</LB><strong>{project.database && project.database.provider || "—"}</strong></div>
+          <div><LB dim>{t("隔離模式")}</LB><strong>{project.database && project.database.isolation_mode || "—"}</strong></div>
+          <div><LB dim>{t("容量")}</LB><strong>{mbfmt(project.database && project.database.actual_size_bytes)}</strong></div>
+          <div><LB dim>{t("運行狀態")}</LB><strong>{project.workspace && project.workspace.runtime_status || t("不需要 Runtime")}</strong></div>
+        </section>
+
+        <section className="database-drawer-section">
+          <div className="row spread g8"><LB red>{t("安全邊界")}</LB><T tone={browser && browser.enabled ? "ok" : "plain"}>{t(browser && browser.enabled ? "已啟用" : "已停用")}</T></div>
+          <div className="database-origin-list">
+            {browser && browser.allowed_origins && browser.allowed_origins.length
+              ? browser.allowed_origins.map(origin => <code key={origin}>{origin}</code>)
+              : <span className="muted">{t("未配置")}</span>}
+          </div>
+          <div className="database-rule-list">
+            <div><strong>*</strong><span>{t("預設規則")}</span><code>{databaseRuleLabel(rules.default)}</code></div>
+            {ruleRows.map(([collection, rule]) => <div key={collection}><strong>{collection}</strong><span>{t("規則")}</span><code>{databaseRuleLabel(rule)}</code></div>)}
+          </div>
+          {browser && <div className="database-policy-meta">
+            <span>{t("規則版本")} <b>{browser.revision}</b></span>
+            <span>{t("每分鐘限流")} <b>{browser.rate_limit_per_minute}</b></span>
+            <span>{t("Access Token")} <b>{Math.round(Number(browser.access_token_ttl_seconds || 0) / 60)}m</b></span>
+          </div>}
+        </section>
+
+        <section className="database-drawer-section">
+          <div className="row spread g8"><LB red>{t("資料結構")}</LB>{detail.loading && <span className="muted">{t("結構讀取中…")}</span>}</div>
+          {!detail.loading && detail.errors.includes(1) && <div className="database-inline-error">{t("結構暫不可用")}</div>}
+          {!detail.loading && !detail.errors.includes(1) && <>
+            <div className="database-structure-block"><span>{t("集合")}</span><b>{collections.length}</b></div>
+            <div className="database-chip-list">
+              {collections.length ? collections.map(item => <span key={item.name}><b>{item.name}</b><small>{nfmt(item.records, 0)} {t("筆記錄")}</small></span>) : <em>{t("尚無集合")}</em>}
+            </div>
+            <div className="database-structure-block"><span>{t("實體表")}</span><b>{tables.length}</b></div>
+            <div className="database-chip-list">
+              {tables.length ? tables.map(item => <span key={item.table || item.name}><b>{item.table || item.name}</b><small>{item.kind || item.relation_kind || "TABLE"}</small></span>) : <em>{t("尚無實體表")}</em>}
+            </div>
+          </>}
+        </section>
+
+        <section className="database-drawer-section">
+          <LB red>{t("接入資料")}</LB>
+          <div className="database-copy-row"><span>{t("公開專案定位符")}</span><code>{publicKey || "—"}</code>{publicKey && <button onClick={() => copy("key", publicKey)}>{t(copied === "key" ? "已複製" : "複製")}</button>}</div>
+          <div className="database-copy-row"><span>{t("JavaScript SDK")}</span>{sdk ? <a href={sdk} target="_blank" rel="noopener noreferrer">{sdk}</a> : <code>—</code>}{sdk && <button onClick={() => copy("sdk", sdk)}>{t(copied === "sdk" ? "已複製" : "複製")}</button>}</div>
+          {quickstart && <pre className="database-quickstart">{quickstart}</pre>}
+          <div className="database-secret-note"><I name="shield" size={13}/>{t("憑證不會顯示在頁面")}</div>
+        </section>
+
+        <div className="database-drawer-actions">
+          <button className="btn" onClick={askSchema}><I name="table" size={13}/>{t("規劃資料結構")}</button>
+          <button className="btn" onClick={openRules}><I name="shield" size={13}/>{t("調整安全規則")}</button>
+          <button className="btn primary" onClick={openOnboarding}><I name="pkg" size={13}/>{t("取得接入包")}</button>
+        </div>
+        <p className="muted database-readonly-note">{t("表單與 AI 會使用相同的 tool_name、參數 Schema、權限、確認與審計。")}</p>
+      </div>
+    </aside>
+  );
+};
+
+/* ── 09 · 資產:五個同級、可深連結的資產平面 ── */
+const TABS = [["fin", "金融資產"], ["dig", "數字資產"], ["data", "數據資產"], ["db", "資料庫服務"], ["trade", "交易中心"]];
+const TAB_PLANES = { fin: "financial", dig: "digital", data: "data", db: "database", trade: "trading" };
+const PLANE_TABS = Object.fromEntries(Object.entries(TAB_PLANES).map(([tab, plane]) => [plane, tab]));
+const tabFromHash = () => {
+  try {
+    const query = String(location.hash || "").split("?")[1] || "";
+    const plane = new URLSearchParams(query).get("plane");
+    if (plane && PLANE_TABS[plane]) return PLANE_TABS[plane];
+    const stored = sessionStorage.getItem("w2_assets_tab");
+    return TABS.some(([id]) => id === stored) ? stored : "fin";
+  } catch (e) { return "fin"; }
+};
+const tabInit = () => tabFromHash();
 
 const Page = ({ boot }) => {
   const [assets, setAssets] = _s(null);      // /api/assets → {assets:[]}
@@ -424,8 +754,37 @@ const Page = ({ boot }) => {
   const [scope, setScope] = _s("all");
   const [sel, setSel] = _s(null);
   const [dsel, setDsel] = _s(null);
+  const [dbProjects, setDbProjects] = _s(null);
+  const [dbLoading, setDbLoading] = _s(false);
+  const [dbError, setDbError] = _s("");
+  const [dbsel, setDbsel] = _s(null);
+  const [dbScope, setDbScope] = _s("all");
+  const [dbReload, setDbReload] = _s(0);
+  const [actionCatalogue, setActionCatalogue] = _s(null);
+  const [actionCatalogueLoading, setActionCatalogueLoading] = _s(true);
+  const [actionCatalogueError, setActionCatalogueError] = _s("");
   const [tab, setTabRaw] = _s(tabInit);
-  const setTab = (id) => { setTabRaw(id); setSel(null); setDsel(null); try { sessionStorage.setItem("w2_assets_tab", id); } catch (e) {} };
+  const setTab = (id, updateHash = true) => {
+    if (!TABS.some(([candidate]) => candidate === id)) return;
+    setTabRaw(id); setSel(null); setDsel(null); setDbsel(null);
+    try { sessionStorage.setItem("w2_assets_tab", id); } catch (e) {}
+    if (updateHash) {
+      const query = String(location.hash || "").split("?")[1] || "";
+      const params = new URLSearchParams(query);
+      params.set("plane", TAB_PLANES[id]);
+      const next = `#/assets?${params.toString()}`;
+      if (location.hash !== next) location.hash = next;
+    }
+  };
+
+  _e(() => {
+    const syncTabFromHash = () => {
+      const next = tabFromHash();
+      if (next !== tab) setTab(next, false);
+    };
+    window.addEventListener("hashchange", syncTabFromHash);
+    return () => window.removeEventListener("hashchange", syncTabFromHash);
+  }, [tab]);
 
   _e(() => {
     W2.json("/api/assets").then(d => setAssets((d && d.assets) || [])).catch(() => setAssets([]));
@@ -443,7 +802,7 @@ const Page = ({ boot }) => {
     W2.json("/api/digital-assets/common-market").then(d => setCommonListings((d && d.listings) || [])).catch(() => setCommonListings([]));
     W2.json("/api/digital-assets/trades?limit=50").then(d => setTrades(d || {})).catch(() => setTrades({}));
     W2.json("/api/digital-assets/revenue?limit=50").then(d => setRev(d || {})).catch(() => setRev({}));
-    const h = (e) => { if (e.key === "Escape") { setSel(null); setDsel(null); } };
+    const h = (e) => { if (e.key === "Escape") { setSel(null); setDsel(null); setDbsel(null); } };
     window.addEventListener("keydown", h);
     window.addEventListener("w2-agent-complete", loadDigitalAssets);
     return () => {
@@ -451,6 +810,55 @@ const Page = ({ boot }) => {
       window.removeEventListener("w2-agent-complete", loadDigitalAssets);
     };
   }, []);
+
+  _e(() => {
+    let disposed = false;
+    const loadActionCatalogue = () => {
+      setActionCatalogueLoading(true);
+      setActionCatalogueError("");
+      W2.json("/api/business/actions", { cache: "no-store" }).then(data => {
+        if (!disposed) setActionCatalogue(data && typeof data === "object" ? data : null);
+      }).catch(error => {
+        if (!disposed) setActionCatalogueError(error && error.message || t("能力狀態未知"));
+      }).finally(() => { if (!disposed) setActionCatalogueLoading(false); });
+    };
+    loadActionCatalogue();
+    window.addEventListener("w2-business-action-complete", loadActionCatalogue);
+    return () => {
+      disposed = true;
+      window.removeEventListener("w2-business-action-complete", loadActionCatalogue);
+    };
+  }, []);
+
+  _e(() => {
+    if (tab !== "db") return undefined;
+    let disposed = false;
+    let controller = null;
+    const loadDatabaseProjects = () => {
+      if (controller) controller.abort();
+      controller = typeof AbortController === "function" ? new AbortController() : null;
+      setDbLoading(true);
+      setDbError("");
+      W2.json("/api/database-projects?limit=500", controller ? { signal: controller.signal } : undefined).then(data => {
+        if (disposed) return;
+        const projects = data && Array.isArray(data.projects) ? data.projects : [];
+        setDbProjects(projects);
+        setDbsel(current => current
+          ? projects.find(item => databaseWorkspaceKey(item) === databaseWorkspaceKey(current)) || null
+          : current);
+      }).catch(error => {
+        if (disposed || error && error.name === "AbortError") return;
+        setDbError(error && error.message || t("資料庫服務載入失敗"));
+      }).finally(() => { if (!disposed) setDbLoading(false); });
+    };
+    loadDatabaseProjects();
+    window.addEventListener("w2-agent-complete", loadDatabaseProjects);
+    return () => {
+      disposed = true;
+      if (controller) controller.abort();
+      window.removeEventListener("w2-agent-complete", loadDatabaseProjects);
+    };
+  }, [tab, dbReload]);
 
   const all = assets || [];
   const P = pf || {};
@@ -486,8 +894,10 @@ const Page = ({ boot }) => {
     .map((s, i) => ({ value: num(s.value_cny), color: W2.CHART_COLORS[i % W2.CHART_COLORS.length], label: t(TYPE_L[s.type] || s.label || s.type || "其他"), pct: s.pct })), [pf]);
 
   /* ── 數字資產 · 托管:登記冊 + summary 小計 ── */
-  const dRows = das || [];
-  const DS = dsum || {};
+  const hostedAssetRows = das || [];
+  const isStandaloneDatabaseAsset = asset => asset && asset.metadata && asset.metadata.service_kind === "standalone_database";
+  const dataRows = hostedAssetRows.filter(asset => asset && asset.asset_kind === "data" && !isStandaloneDatabaseAsset(asset));
+  const dRows = hostedAssetRows.filter(asset => asset && asset.asset_kind !== "data" && !isStandaloneDatabaseAsset(asset));
   /* 資產列表本身不帶評估;由市場上架行的 assessment(按 asset_id)反推,無則「未評估」 */
   const assessMap = _mm(() => {
     const m = {};
@@ -495,15 +905,31 @@ const Page = ({ boot }) => {
     return m;
   }, [listings]);
   const dAssess = (a) => (a && a.assessment) || assessMap[a && a.id] || null;
-  const dSumAssets = Array.isArray(DS.by_kind) ? DS.by_kind.reduce((s, x) => s + (Number(x && x.count) || 0), 0) : null;
-  const dSumListed = Array.isArray(DS.listings) ? Number((DS.listings.find(x => x && x.status === "listed") || {}).count || 0) : null;
   const gradeDist = _mm(() => {
     const c = {};
-    (das || []).forEach(a => { const g = (dAssess(a) || {}).grade; if (g) c[g] = (c[g] || 0) + 1; });
+    dRows.forEach(a => { const g = (dAssess(a) || {}).grade; if (g) c[g] = (c[g] || 0) + 1; });
     return ["A", "B", "C", "D"].filter(g => c[g]).map(g => g + "×" + c[g]).join(" · ");
   }, [das, listings]);
-  const hasDSum = dSumAssets != null || fin(DS.workspaces) || (fin(DS.latest_valuation_total_cny) && Number(DS.latest_valuation_total_cny) > 0);
-  const onboardPrompt = () => W2.openBusinessAction("digital_market_create");
+  const digitalWorkspaces = dRows.filter(asset => asset && asset.workspace).length;
+  const digitalValuation = dRows.reduce((total, asset) => total + Number(asset && asset.latest_valuation && asset.latest_valuation.valuation_cny || 0), 0);
+  const digitalListed = dRows.filter(asset => asset && (asset.status === "listed" || num(asset.listings_count) > 0)).length;
+  const dataVersions = dataRows.reduce((total, asset) => total + Number(asset && asset.version_count || 0), 0);
+  const dataHosted = dataRows.filter(asset => asset && asset.workspace).length;
+  const dataValuation = dataRows.reduce((total, asset) => total + Number(asset && asset.latest_valuation && asset.latest_valuation.valuation_cny || 0), 0);
+  const dbRows = dbProjects || [];
+  const dbFiltered = dbRows.filter(project => dbScope === "all"
+    || dbScope === "standalone" && project.service_kind === "standalone_database"
+    || dbScope === "attached" && project.service_kind !== "standalone_database"
+    || dbScope === "attention" && !databaseReady(project));
+  const dbHealthy = dbRows.filter(databaseReady).length;
+  const dbBrowserEnabled = dbRows.filter(project => databaseBrowser(project) && databaseBrowser(project).enabled).length;
+  const dbBytes = dbRows.reduce((total, project) => total + Number(project && project.database && project.database.actual_size_bytes || 0), 0);
+  const onboardPrompt = () => openTypedAction("digital_market_create");
+  const onboardDataPrompt = () => openTypedAction("digital_market_create", { kind: "data" });
+  const standaloneDatabaseAction = () => openTypedAction("digital_market_database_project_create", {
+    rules: { default: { read: "deny", write: "deny" }, collections: {} },
+  });
+  const standaloneDatabasePrompt = () => ask(t("我要單獨申請一個托管資料庫服務,不部署 Runtime。請追問專案名稱、GitHub Pages 或其他前端的精確 HTTPS Origin,以及哪些集合需要 session 或 owner 讀寫;規則預設全部拒絕。確認後使用原生 dm db service create 指令建立,再用 dm db onboarding 把 SDK、API、公開 dbp_ 和接入步驟整理給我;不要把 wak_ 或資料庫密碼交給對話或瀏覽器。"));
 
   const askListing = (l, buy) => {
     const ref = l.ref || l.asset_no || l.id || "—";
@@ -513,59 +939,46 @@ const Page = ({ boot }) => {
       : t("共同市場上架《{title}》(引用 {ref},賣方 {seller},資產「{a}」,{r},單價 {p}):請鎖定這一筆跨公司上架,調出可見檔案與 AI 評估,幫我判斷值不值得買", { title: l.title || "—", ref, seller, a: l.asset_name || "—", r: t(RIGHT_L[l.listing_type] || l.listing_type || "—"), p: fin(l.price_cny) ? cny(l.price_cny) : t("面議") }));
   };
 
-  const folioRight = tab === "fin" ? (<>
-    <B icon="plus" onClick={() => W2.openBusinessAction("asset_add")}>{t("記一筆交易")}</B>
-    <B kind="primary" icon="sparkle" onClick={() => ask(t("資產這塊現在有什麼要我拍板的?組合異動、缺代碼缺行情的資產、市場待處理訂單和待付分潤都列出來"))}>{t("問秘書")}</B>
-  </>) : tab === "dig" ? (<>
-    <B icon="plus" onClick={onboardPrompt}>{t("接入新資產")}</B>
-    <B kind="primary" icon="sparkle" onClick={() => ask(t("資產這塊現在有什麼要我拍板的?組合異動、缺代碼缺行情的資產、市場待處理訂單和待付分潤都列出來"))}>{t("問秘書")}</B>
-  </>) : (<>
-    <B icon="plus" onClick={() => W2.openBusinessAction("digital_market_revenue_record")}>{t("記一筆收益")}</B>
-    <B kind="primary" icon="sparkle" onClick={() => ask(t("資產這塊現在有什麼要我拍板的?組合異動、缺代碼缺行情的資產、市場待處理訂單和待付分潤都列出來"))}>{t("問秘書")}</B>
-  </>);
-  const tabCount = { fin: all.length, dig: dRows.length, trade: live.length };
+  const assetDecisionPrompt = () => ask(t("資產這塊現在有什麼要我拍板的?組合異動、缺代碼缺行情的資產、市場待處理訂單和待付分潤都列出來"));
+  const databaseDecisionPrompt = () => ask("請檢查目前所有資料庫服務：列出不健康、未配置精確 HTTPS Origin、規則仍全部 deny 或需要接入的項目；只匯報可驗證狀態，不要顯示 wak_、瀏覽器 Token 或資料庫密碼。");
+  const folioRight = {
+    fin: <><B icon="plus" onClick={() => W2.openBusinessAction("asset_add")}>{t("記一筆交易")}</B><B kind="primary" icon="sparkle" onClick={assetDecisionPrompt}>{t("問秘書")}</B></>,
+    dig: <><B icon="plus" onClick={onboardPrompt}>{t("接入新資產")}</B><B kind="primary" icon="sparkle" onClick={assetDecisionPrompt}>{t("問秘書")}</B></>,
+    data: <><B icon="plus" onClick={onboardDataPrompt}>{t("登記數據資產")}</B><B kind="primary" icon="sparkle" onClick={() => ask("請檢查目前的數據資產：按權屬、版本、托管、品質與可交付性列出需要我決定的項目。")}>{t("問秘書")}</B></>,
+    db: <><B icon="plus" onClick={standaloneDatabaseAction}>{t("申請資料庫")}</B><B kind="primary" icon="sparkle" onClick={databaseDecisionPrompt}>{t("問秘書")}</B></>,
+    trade: <><B icon="plus" onClick={() => W2.openBusinessAction("digital_market_revenue_record")}>{t("記一筆收益")}</B><B kind="primary" icon="sparkle" onClick={assetDecisionPrompt}>{t("問秘書")}</B></>,
+  }[tab];
+  const tabCount = { fin: all.length, dig: dRows.length, data: dataRows.length, db: dbProjects === null ? "—" : dbRows.length, trade: live.length };
   const sectionMeta = {
     fin: ["09.1", "FINANCIAL ASSETS", "金融資產", "持倉與行情在同一資本平面,交易與記賬全程留痕"],
     dig: ["09.2", "DIGITAL CUSTODY", "數字資產", "權屬、工作區、估值與市場在同一托管平面"],
-    trade: ["09.3", "TRADING CENTRE", "交易中心", "條款、驗收、結算與分潤在同一交易平面"],
+    data: ["09.3", "DATA ASSETS", "數據資產", "資料成為可治理、可版本化與可交付的資產"],
+    db: ["09.4", "DATABASE SERVICES", "資料庫服務", "獨立服務與應用附屬資料庫共享同一托管平面"],
+    trade: ["09.5", "TRADING CENTRE", "交易中心", "條款、驗收、結算與分潤在同一交易平面"],
   }[tab];
-  const poster = tab === "fin" ? {
-    index: "CAPITAL / POSITION", label: "MARKET VALUE", value: mvV, unit: mvU,
-    lines: ["CAPITAL", "IN", "MOTION."],
-    sideLabel: "UNREALIZED P/L", sideValue: pnlV, sideTitle: t("浮動盈虧"),
-    sideCopy: t("持倉 {h} 項 · 觀察 {w} 項", { h: holdings.length, w: watching.length }),
-    action: () => W2.openBusinessAction("asset_add"), actionLabel: t("記一筆交易"),
-  } : tab === "dig" ? {
-    index: "RIGHTS / CUSTODY", label: "HOSTED OBJECTS", value: dSumAssets != null ? dSumAssets : dRows.length, unit: t("項"),
-    lines: ["CUSTODY", "BECOMES", "VALUE."],
-    sideLabel: "WORKSPACES", sideValue: fin(DS.workspaces) ? DS.workspaces : "—", sideTitle: t("托管工作區"),
-    sideCopy: t("確權 → 托管 → 評估 → 上架 · 站點與數據庫由平台托管"),
-    action: onboardPrompt, actionLabel: t("接入新資產"),
-  } : {
-    index: "TERMS / SETTLEMENT", label: "LIVE MARKET", value: live.length, unit: t("檔"),
-    lines: ["TERMS", "BECOME", "TRUST."],
-    sideLabel: "FOLLOW-UP", sideValue: followUpKnown ? followUp : "—", sideTitle: t("待跟進"),
-    sideCopy: followUpKnown && followUp > 0
-      ? t("待驗收 {n} · 待付分潤 {m}", { n: pendingTrades, m: unpaidDist })
-      : t("全部妥當"),
-    action: () => W2.openBusinessAction("digital_market_revenue_record"), actionLabel: t("記一筆收益"),
-  };
-  const flow = tab === "fin" ? [
-    ["01", "REGISTER", "登記"], ["02", "QUOTE", "行情"], ["03", "DECIDE", "決策"], ["04", "POST", "記賬"],
-  ] : tab === "dig" ? [
-    ["01", "RIGHTS", "確權"], ["02", "CUSTODY", "托管"], ["03", "ASSESS", "評估"], ["04", "LIST", "上架"],
-  ] : [
-    ["01", "DISCOVER", "發現"], ["02", "TERMS", "條款"], ["03", "ACCEPT", "驗收"], ["04", "SETTLE", "結算"], ["05", "DISTRIBUTE", "分潤"],
-  ];
+  const poster = {
+    fin: { index: "CAPITAL / POSITION", label: "MARKET VALUE", value: mvV, unit: mvU, lines: ["CAPITAL", "IN", "MOTION."], sideLabel: "UNREALIZED P/L", sideValue: pnlV, sideTitle: t("浮動盈虧"), sideCopy: t("持倉 {h} 項 · 觀察 {w} 項", { h: holdings.length, w: watching.length }), action: () => W2.openBusinessAction("asset_add"), actionLabel: t("記一筆交易") },
+    dig: { index: "RIGHTS / CUSTODY", label: "HOSTED OBJECTS", value: dRows.length, unit: t("項"), lines: ["CUSTODY", "BECOMES", "VALUE."], sideLabel: "WORKSPACES", sideValue: digitalWorkspaces, sideTitle: t("托管工作區"), sideCopy: t("確權 → 托管 → 評估 → 上架 · 站點與數據庫由平台托管"), action: onboardPrompt, actionLabel: t("接入新資產") },
+    data: { index: "DATA / EVIDENCE", label: "DATA OBJECTS", value: dataRows.length, unit: t("項"), lines: ["DATA", "BECOMES", "EVIDENCE."], sideLabel: "VERSIONS", sideValue: dataVersions, sideTitle: t("版本"), sideCopy: t("資料成為可治理、可版本化與可交付的資產"), action: onboardDataPrompt, actionLabel: t("登記數據資產") },
+    db: { index: "DATA / SERVICE", label: "DATABASES", value: dbProjects === null ? "—" : dbRows.length, unit: t("項"), lines: ["DATA", "BECOMES", "SERVICE."], sideLabel: "BROWSER READY", sideValue: dbProjects === null ? "—" : dbBrowserEnabled, sideTitle: t("瀏覽器接入"), sideCopy: t("數據成為服務 · 隔離、規則、API 與接入都可驗證"), action: standaloneDatabaseAction, actionLabel: t("申請資料庫") },
+    trade: { index: "TERMS / SETTLEMENT", label: "LIVE MARKET", value: live.length, unit: t("檔"), lines: ["TERMS", "BECOME", "TRUST."], sideLabel: "FOLLOW-UP", sideValue: followUpKnown ? followUp : "—", sideTitle: t("待跟進"), sideCopy: followUpKnown && followUp > 0 ? t("待驗收 {n} · 待付分潤 {m}", { n: pendingTrades, m: unpaidDist }) : t("全部妥當"), action: () => W2.openBusinessAction("digital_market_revenue_record"), actionLabel: t("記一筆收益") },
+  }[tab];
+  const flow = {
+    fin: [["01", "REGISTER", "登記"], ["02", "QUOTE", "行情"], ["03", "DECIDE", "決策"], ["04", "POST", "記賬"]],
+    dig: [["01", "RIGHTS", "確權"], ["02", "CUSTODY", "托管"], ["03", "ASSESS", "評估"], ["04", "LIST", "上架"]],
+    data: [["01", "REGISTER", "登記"], ["02", "VERSION", "版本"], ["03", "GOVERN", "治理"], ["04", "DELIVER", "交付"]],
+    db: [["01", "PROVISION", "申請"], ["02", "MODEL", "資料結構"], ["03", "GOVERN", "安全邊界"], ["04", "CONNECT", "接入資料"]],
+    trade: [["01", "DISCOVER", "發現"], ["02", "TERMS", "條款"], ["03", "ACCEPT", "驗收"], ["04", "SETTLE", "結算"], ["05", "DISTRIBUTE", "分潤"]],
+  }[tab];
 
   return (<div className={`assets-poster-page assets-poster-${tab}${tab === "dig" ? " assets-poster-digital" : ""}`}>
     <Folio no={sectionMeta[0]} en={sectionMeta[1]} title={t(sectionMeta[2])}
       sub={t(sectionMeta[3])}
       right={folioRight}/>
 
-    <div className="subnav asset-poster-nav rise" style={{ animationDelay: ".03s" }}>
+    <div className="subnav asset-poster-nav rise" data-testid="asset-plane-navigation" style={{ animationDelay: ".03s" }}>
       {TABS.map(([id, label], i) => (
-        <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>
+        <button key={id} data-asset-plane={TAB_PLANES[id]} aria-pressed={tab === id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>
           <span className="sn-no">{pad2(i + 1)}</span>{t(label)}
           <span className="sn-count">{tabCount[id]}</span>
         </button>
@@ -593,17 +1006,8 @@ const Page = ({ boot }) => {
       </aside>
     </section>
 
-    <section className={`asset-flow-topology aft-${tab}`} aria-label={t("資產流程拓撲")}>
-      <header>
-        <div><span>SWISS ACTION TOPOLOGY</span><strong>{t("資產流程拓撲")}</strong></div>
-        <code>{t("同一份能力契約")}</code>
-      </header>
-      <nav style={{ "--asset-flow-count": flow.length }}>
-        {flow.map(([no, en, label]) => <article key={no}>
-          <em>{no}</em><i aria-hidden="true"/><b>{en}</b><span>{t(label)}</span>
-        </article>)}
-      </nav>
-    </section>
+    <AssetOperationTopology plane={tab} flow={flow} catalogue={actionCatalogue} loading={actionCatalogueLoading}
+      error={actionCatalogueError} context={tab === "fin" ? sel : tab === "dig" || tab === "data" ? dsel : tab === "db" ? dbsel : null}/>
 
     {/* ═══ 一 · 金融資產 ═══ */}
     {tab === "fin" && (<>
@@ -685,15 +1089,13 @@ const Page = ({ boot }) => {
                       <td onClick={e => e.stopPropagation()}>
                         <div className="row g4">
                           <button className="btn sm" style={{ padding: "0 9px" }} title={t("記買入")}
-                            onClick={() => ask(watch
-                              ? t("「{name}」是觀察倉,我想登記買入轉為持倉:請追問數量、成交價、手續費、賬戶和日期後執行", { name: a.name })
-                              : t("我買入了「{name}」({sym}),請追問數量、成交價/總額、手續費、支付賬戶和日期,然後登記並記賬", { name: a.name, sym }))}>{t("買")}</button>
+                            onClick={() => openTypedAction("asset_buy", { id: a.id })}>{t("買")}</button>
                           {!watch && <button className="btn sm" style={{ padding: "0 9px" }} title={t("記賣出")}
-                            onClick={() => ask(t("我賣出了「{name}」({sym}),請追問數量、成交價/總額、手續費、收款賬戶和日期,計算已實現盈虧並記賬", { name: a.name, sym }))}>{t("賣")}</button>}
+                            onClick={() => openTypedAction("asset_sell", { id: a.id })}>{t("賣")}</button>}
                           {!watch && <button className="btn sm" style={{ padding: "0 9px" }} title={t("記分紅")}
-                            onClick={() => ask(t("「{name}」有分紅/派息,請追問金額、稅費、到賬賬戶和日期,登記並記賬", { name: a.name }))}>{t("息")}</button>}
+                            onClick={() => openTypedAction("asset_dividend", { id: a.id })}>{t("息")}</button>}
                           <button className="btn sm" style={{ padding: "0 8px" }} title={t("深度解讀")}
-                            onClick={() => ask(t("請對「{name}」({sym})做深度解讀:先查最新行情與走勢,再跑量化與風險分析,用人話講結論和風險", { name: a.name, sym }))}><I name="sparkle" size={12}/></button>
+                            onClick={() => openTypedAction("asset_analyze", { id: a.id })}><I name="chart" size={12}/></button>
                         </div>
                       </td>
                     </tr>
@@ -713,22 +1115,22 @@ const Page = ({ boot }) => {
     {/* ═══ 二 · 數字資產(托管登記冊)═══ */}
     {tab === "dig" && (<>
     <div className="kpi-band asset-section-metrics">
-      <Kpi label={t("托管資產")} value={dSumAssets != null ? dSumAssets : dRows.length} unit={t("項")} delay={0}
+      <Kpi label={t("托管資產")} value={dRows.length} unit={t("項")} delay={0}
         foot={gradeDist
           ? <span className="muted num" style={{ fontSize: 11.5 }}>{t("評估分佈 {d}", { d: gradeDist })}</span>
           : <span className="muted" style={{ fontSize: 11.5 }}>{t("未評估")}</span>}/>
-      <Kpi label={t("托管工作區")} value={fin(DS.workspaces) ? DS.workspaces : "—"} unit={t("個")} delay={.05}
+      <Kpi label={t("托管工作區")} value={digitalWorkspaces} unit={t("個")} delay={.05}
         foot={<span className="muted" style={{ fontSize: 11.5 }}>{t("確權 → 托管 → 評估 → 上架 · 站點與數據庫由平台托管").split(" · ")[0]}</span>}/>
-      <Kpi label={t("估值總額")} value={kfmt(DS.latest_valuation_total_cny)[0]} unit={kfmt(DS.latest_valuation_total_cny)[1]} delay={.1}
-        foot={<span className="muted num" style={{ fontSize: 11.5 }}>{fin(DS.latest_valuation_total_cny) && Number(DS.latest_valuation_total_cny) > 0 ? cny(DS.latest_valuation_total_cny) : "—"}</span>}/>
-      <Kpi label={t("已上架")} value={dSumListed != null ? dSumListed : "—"} unit={t("檔")} delay={.15}
+      <Kpi label={t("估值總額")} value={kfmt(digitalValuation)[0]} unit={kfmt(digitalValuation)[1]} delay={.1}
+        foot={<span className="muted num" style={{ fontSize: 11.5 }}>{digitalValuation > 0 ? cny(digitalValuation) : "—"}</span>}/>
+      <Kpi label={t("已上架")} value={digitalListed} unit={t("檔")} delay={.15}
         foot={ownLive.length
           ? <span className="muted" style={{ fontSize: 11.5 }}>{t("本公司在售 {n} 檔", { n: ownLive.length })}</span>
           : <button className="tag inv" style={{ cursor: "pointer" }} onClick={() => ask(t("我想把一項數字資產上架交易:請列出已登記資產讓我選,先出 AI 評估與合規預審,再和我確定權益類型與定價,確認後上架"))}>{t("讓秘書上架 →")}</button>}/>
     </div>
 
     <Band no="01" title={t("數字資產 · 托管")} sub={t("確權 → 托管 → 評估 → 上架 · 站點與數據庫由平台托管")} delay={.1}
-      right={<B size="sm" icon="plus" onClick={onboardPrompt}>{t("接入新資產")}</B>}>
+      right={<div className="row g8"><B size="sm" icon="table" onClick={standaloneDatabaseAction}>{t("申請資料庫")}</B><B size="sm" icon="plus" onClick={onboardPrompt}>{t("接入新資產")}</B></div>}>
       {!dRows.length ? (
         <EM icon="cpu" title={t("還沒有托管的數字資產")} sub={t("對秘書說「幫我接入第一個數字資產」,開通工作區或登記現有能力即可開始。")}
           action={<B icon="sparkle" size="sm" onClick={onboardPrompt}>{t("讓秘書接入")}</B>}/>
@@ -787,11 +1189,11 @@ const Page = ({ boot }) => {
                     </div>
                     <footer onClick={e => e.stopPropagation()}>
                       <button type="button" title={t("評估資產")}
-                        onClick={() => ask(t("幫我評估數字資產「{name}」(#{id}):出 AI 評估報告,講清等級、分數、關鍵證據、風險旗標和建議定價區間", { name: a.name || "—", id: a.id ?? "—" }))}><span>01</span>{t("評估資產")}</button>
+                        onClick={() => openTypedAction("digital_market_assess", { id: a.id })}><span>01</span>{t("評估資產")}</button>
                       <button type="button" title={t("上架到市場")}
-                        onClick={() => ask(t("把數字資產「{name}」(#{id})上架到市場:先出 AI 評估與合規預審,再和我確定權益類型、定價與份額,確認後上架", { name: a.name || "—", id: a.id ?? "—" }))}><span>02</span>{t("上架到市場")}</button>
+                        onClick={() => openTypedAction("digital_market_listing_create", { id: a.id })}><span>02</span>{t("上架到市場")}</button>
                       <button type="button" title={t("訪問與收入")}
-                        onClick={() => ask(t("看看數字資產「{name}」(#{id})的訪問與收入情況:站點訪問、接口調用、成交與收益分潤都查一遍,匯總成結論講給我", { name: a.name || "—", id: a.id ?? "—" }))}><span>03</span>{t("訪問與收入")} ↗</button>
+                        onClick={() => openTypedAction("digital_market_revenues", { asset: a.id })}><span>03</span>{t("訪問與收入")} ↗</button>
                     </footer>
                   </article>
                 );
@@ -804,7 +1206,117 @@ const Page = ({ boot }) => {
     </Band>
     </>)}
 
-    {/* ═══ 三 · 交易中心(市場 + 成交 + 分潤)═══ */}
+    {/* ═══ 三 · 數據資產(治理 + 版本 + 交付)═══ */}
+    {tab === "data" && (<>
+    <div className="kpi-band asset-section-metrics">
+      <Kpi label={t("數據資產")} value={dataRows.length} unit={t("項")} delay={0}
+        foot={<span className="muted" style={{ fontSize: 11.5 }}>{t("資料成為可治理、可版本化與可交付的資產")}</span>}/>
+      <Kpi label={t("版本")} value={dataVersions} unit={t("項")} delay={.05}
+        foot={<span className="muted" style={{ fontSize: 11.5 }}>{t("權屬、版本與交付全程留痕")}</span>}/>
+      <Kpi label={t("托管數據")} value={dataHosted} unit={t("個")} delay={.1}
+        foot={<span className="muted" style={{ fontSize: 11.5 }}>{t("工作區與資料庫保持關聯但不混為同一資產")}</span>}/>
+      <Kpi label={t("估值總額")} value={kfmt(dataValuation)[0]} unit={kfmt(dataValuation)[1]} delay={.15}
+        foot={<span className="muted num" style={{ fontSize: 11.5 }}>{dataValuation > 0 ? cny(dataValuation) : "—"}</span>}/>
+    </div>
+
+    <Band no="01" title={t("數據資產登記冊")} sub={t("數據集、文件與知識資料會在這裡形成獨立的權屬與版本登記。")} delay={.1}
+      right={<B size="sm" icon="plus" onClick={onboardDataPrompt}>{t("登記數據資產")}</B>}>
+      {!dataRows.length ? (
+        <EM icon="table" title={t("尚未登記數據資產")} sub={t("數據集、文件與知識資料會在這裡形成獨立的權屬與版本登記。")}
+          action={<B icon="sparkle" size="sm" onClick={onboardDataPrompt}>{t("讓 AI 設計")}</B>}/>
+      ) : (
+        <div className={`data-asset-layout${dsel ? " has-selection" : ""}`}>
+          <div className="data-asset-register-scroll">
+            <table className="tbl2 data-asset-register-table">
+              <thead><tr>
+                <th style={{ width: 34 }}>#</th><th>{t("資產")}</th><th>{t("狀態")}</th><th>{t("版本")}</th><th>{t("托管")}</th><th>{t("估值")}</th><th>{t("更新")}</th><th>{t("詳情")}</th>
+              </tr></thead>
+              <tbody>{dataRows.map((a, i) => {
+                const ws = a.workspace || null;
+                const val = a.latest_valuation;
+                const selected = dsel && String(dsel.id) === String(a.id);
+                return <tr key={a.id || i} className={selected ? "on" : ""} onClick={() => setDsel(a)}>
+                  <td className="num muted">{pad2(i + 1)}</td>
+                  <td><div className="col g4"><strong>{a.name || "—"}</strong><code>{a.asset_no || "—"}</code></div></td>
+                  <td><T tone={a.status === "archived" ? "plain" : "ok"}>{t(DSTATUS_L[a.status] || a.status || "—")}</T></td>
+                  <td className="num">{nfmt(a.version_count, 0)}</td>
+                  <td><div className="col g4"><strong>{ws ? t("托管中") : t("未托管")}</strong><code>{ws && ws.workspace_key || "—"}</code></div></td>
+                  <td className="num">{val && fin(val.valuation_cny) ? cny(val.valuation_cny) : "—"}</td>
+                  <td className="num muted">{((a.updated_at || a.created_at) || "").slice(0, 10) || "—"}</td>
+                  <td><button className="btn sm" type="button" onClick={event => { event.stopPropagation(); setDsel(a); }}>{t("詳情")} ↗</button></td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div>
+          {dsel && <DigitalDrawer a={dsel} assess={dAssess(dsel)} onClose={() => setDsel(null)}/>}
+        </div>
+      )}
+    </Band>
+    </>)}
+
+    {/* ═══ 四 · 資料庫服務(獨立服務 + 應用附屬)═══ */}
+    {tab === "db" && (<>
+    <div className="kpi-band asset-section-metrics">
+      <Kpi label={t("服務總數")} value={dbProjects === null ? "—" : dbRows.length} unit={t("項")} delay={0}
+        foot={<span className="muted" style={{ fontSize: 11.5 }}>{t("獨立服務與應用附屬資料庫共享同一托管平面")}</span>}/>
+      <Kpi label={t("運行正常")} value={dbProjects === null ? "—" : dbHealthy} unit={t("項")} delay={.05}
+        foot={dbProjects !== null && dbHealthy === dbRows.length ? <T tone="ok" dot>{t("全部妥當")}</T> : <span className="muted">{t("需要處理")}</span>}/>
+      <Kpi label={t("瀏覽器接入")} value={dbProjects === null ? "—" : dbBrowserEnabled} unit={t("項")} delay={.1}
+        foot={<span className="muted" style={{ fontSize: 11.5 }}>{t("規則預設全部拒絕")}</span>}/>
+      <Kpi label={t("已用容量")} value={dbProjects === null ? "—" : mbfmt(dbBytes)} unit="" delay={.15}
+        foot={<span className="muted" style={{ fontSize: 11.5 }}>POSTGRESQL · TENANT ISOLATED</span>}/>
+    </div>
+
+    <Band no="01" title={t("資料庫服務登記冊")} sub={t("獨立前端或應用都可以共用平台托管資料庫；規則預設全部拒絕。")} delay={.1}
+      right={<div className="row g8"><div className="seg database-service-filter">
+        {[["all", "全部服務"], ["standalone", "獨立資料庫"], ["attached", "應用附屬"], ["attention", "需要處理"]].map(([id, label]) =>
+          <button key={id} className={dbScope === id ? "on" : ""} onClick={() => { setDbScope(id); setDbsel(null); }}>{t(label)}</button>)}
+      </div><B size="sm" icon="plus" onClick={standaloneDatabaseAction}>{t("申請資料庫")}</B></div>}>
+      {dbError && <div className="database-load-state is-error" role="alert">
+        <div><strong>{t("資料庫服務載入失敗")}</strong><span>{dbError}</span></div>
+        <button className="btn sm" onClick={() => setDbReload(value => value + 1)}><I name="refresh" size={12}/>{t("重新載入")}</button>
+      </div>}
+      {!dbError && dbLoading && dbProjects === null && <div className="database-load-state"><I name="refresh" size={14}/><span>{t("資料庫服務載入中…")}</span></div>}
+      {!dbError && dbProjects !== null && !dbRows.length && (
+        <EM icon="table" title={t("尚未申請資料庫服務")} sub={t("獨立前端或應用都可以共用平台托管資料庫；規則預設全部拒絕。")}
+          action={<B icon="plus" size="sm" onClick={standaloneDatabaseAction}>{t("申請資料庫")}</B>}/>
+      )}
+      {!dbError && dbProjects !== null && !!dbRows.length && (
+        <div className={`database-service-layout${dbsel ? " has-selection" : ""}`}>
+          <div className="database-register-scroll">
+            <table className="tbl2 database-service-table">
+              <thead><tr>
+                <th style={{ width: 34 }}>#</th><th>{t("資料庫服務")}</th><th>{t("服務類型")}</th><th>{t("運行狀態")}</th><th>{t("Provider")}</th><th>{t("容量")}</th><th>{t("Browser")}</th><th>{t("Origins")}</th><th>{t("詳情")}</th>
+              </tr></thead>
+              <tbody>{dbFiltered.map((project, i) => {
+                const browser = databaseBrowser(project);
+                const selected = dbsel && databaseWorkspaceKey(dbsel) === databaseWorkspaceKey(project);
+                return <tr key={databaseWorkspaceKey(project) || i} className={selected ? "on" : ""} onClick={() => setDbsel(project)}>
+                  <td className="num muted">{pad2(i + 1)}</td>
+                  <td><div className="col g4"><strong>{databaseName(project)}</strong><code>{databaseWorkspaceKey(project)}</code></div></td>
+                  <td><T tone="plain">{t(databaseType(project))}</T></td>
+                  <td><T tone={databaseReady(project) ? "ok" : "bad"} dot>{t(databaseReady(project) ? "正常" : "需要處理")}</T></td>
+                  <td><div className="col g4"><strong>{project.database && project.database.provider || "—"}</strong><code>{project.database && project.database.isolation_mode || "—"}</code></div></td>
+                  <td className="num">{mbfmt(project.database && project.database.actual_size_bytes)}</td>
+                  <td><T tone={browser && browser.enabled ? "ok" : "plain"}>{t(browser && browser.enabled ? "已啟用" : "已停用")}</T></td>
+                  <td className="num">{browser && browser.allowed_origins ? browser.allowed_origins.length : 0}</td>
+                  <td><button className="btn sm" type="button" onClick={event => { event.stopPropagation(); setDbsel(project); }}>{t("詳情")} ↗</button></td>
+                </tr>;
+              })}</tbody>
+            </table>
+            {!dbFiltered.length && (
+              <EM icon="search" title={t("當前篩選下沒有資產")} sub={t("換個範圍,或直接吩咐秘書。")}/>
+            )}
+          </div>
+          {dbsel && (
+            <DatabaseDrawer project={dbsel} onClose={() => setDbsel(null)}/>
+          )}
+        </div>
+      )}
+    </Band>
+    </>)}
+
+    {/* ═══ 五 · 交易中心(市場 + 成交 + 分潤)═══ */}
     {tab === "trade" && (<>
     <div className="kpi-band asset-section-metrics">
       <Kpi label={t("共同市場在售")} value={live.length} unit={t("檔")} delay={0}
@@ -866,7 +1378,7 @@ const Page = ({ boot }) => {
                     <td>
                       <div className="row g4">
                         <button className="btn sm" onClick={() => askListing(l, false)}>{t("詳情")}</button>
-                        <button className="btn sm" onClick={() => askListing(l, true)}><I name="sparkle" size={11}/>{t("購買")}</button>
+                        <button className="btn sm" onClick={() => openTypedAction("digital_market_order_create", { listing: l.id })}><I name="inbound" size={11}/>{t("購買")}</button>
                       </div>
                     </td>
                   </tr>
@@ -880,7 +1392,7 @@ const Page = ({ boot }) => {
 
     <Band no="02" title={t("成交與分潤")}
       sub={fin(trades && trades.total_amount_cny) && Number(trades.total_amount_cny) > 0 ? t("累計 {v}", { v: cny(trades.total_amount_cny) }) : null} delay={.25}
-      right={<B size="sm" icon="plus" onClick={() => ask(t("我要登記一筆數字資產收益並分潤:請追問是哪個資產、金額、收益來源,登記後把每位持有人的分潤明細列給我"))}>{t("記一筆收益")}</B>}>
+      right={<B size="sm" icon="plus" onClick={() => openTypedAction("digital_market_revenue_record")}>{t("記一筆收益")}</B>}>
       <div className="settlement-register" style={{ display: "grid", gridTemplateColumns: "1.15fr 1fr", gap: 0 }}>
         <div style={{ paddingRight: 28 }}>
           <div className="row spread" style={{ borderBottom: "2px solid var(--rule)", paddingBottom: 8 }}>

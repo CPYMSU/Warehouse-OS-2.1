@@ -9,6 +9,7 @@ __pycache__/
 *.rtf
 *.dump
 *.dump.sha256
+* 2.*
 .env
 .env.*
 .venv/

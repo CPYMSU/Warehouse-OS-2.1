@@ -1,10 +1,12 @@
-# Warehouse OS《託管應用技術要求 2.2》
+# Warehouse OS《託管應用技術要求 2.3》
 
 文件狀態：正式技術契約<br>
-契約識別：warehouse.hosting-application.v2.2<br>
+契約識別：warehouse.hosting-application.v2.3<br>
 適用範圍：數字資產工作區、官方 dm.py、AI 秘書、自動化部署程序
 
 這份標準定義「應用交付什麼」以及「平台保證什麼」。它不是特定框架教學。符合契約的 Python、Node.js、靜態網站、容器或 Compose 專案，應能由同一套 CLI、API 與 AI 秘書流程反覆部署並取得可驗證結果。
+
+2.3 是向後相容的增量契約：平台仍接受 `warehouse.hosting-application.v2.2` manifest；只有需要聲明 lifecycle Job、資料庫身份分離或候選 acceptance 的專案才必須使用 v2.3。舊 manifest 不會因平台升級而失效。
 
 ## 01 · 最小交付契約
 
@@ -17,7 +19,7 @@
 5. 把源碼視為唯讀，把持久資料寫入 /workspace/data。
 6. 依賴、執行時版本、建置與啟動命令必須可重現。
 7. 機密只從環境變數或平台 Secret 取得，不得寫入源碼、日誌或回應。
-8. 資料庫連線只讀取 DATABASE_URL；遷移必須可重入、可追蹤並具失敗邊界。
+8. 使用平台／外部綁定時從 DATABASE_URL 讀取連線；工作區自管模式可使用自己的安全環境變數與資料引擎。遷移必須可重入、可追蹤並具失敗邊界。
 9. 收到終止信號後停止接收新工作、完成短任務並正常退出。
 
 平台只有在「進程運行、健康檢查通過、公開路由驗證成功」三項事實同時成立時，才能把部署標記為 ready。
@@ -28,7 +30,7 @@
 
 ~~~json
 {
-  "schema": "warehouse.hosting-application.v2.2",
+  "schema": "warehouse.hosting-application.v2.3",
   "runtime": {
     "type": "api",
     "runtime": "python3.12",
@@ -40,10 +42,32 @@
   },
   "data": {
     "persistent_path": "/workspace/data",
-    "database_url_env": "DATABASE_URL"
+    "database_policy": "platform_managed",
+    "runtime_database_url_env": "DATABASE_URL",
+    "migration_database_url_env": "APP_MIGRATION_DATABASE_URL"
+  },
+  "lifecycle": {
+    "jobs": [{
+      "name": "migrate",
+      "command": "alembic upgrade head",
+      "database_access": "migration",
+      "required_before_activation": true
+    }]
+  },
+  "acceptance": {
+    "required_before_activation": true,
+    "http": [{
+      "name": "health",
+      "path": "/healthz",
+      "expected_status": 200
+    }],
+    "database": {"context": {}, "counts": []}
   },
   "deployment": {
-    "activate_when_healthy": true
+    "strategy": "staged",
+    "activate_when_healthy": false,
+    "retain_previous": true,
+    "require_acceptance_before_activation": true
   }
 }
 ~~~
@@ -73,6 +97,7 @@
 - 必須能辨識建置輸出目錄，例如 dist、build 或 public。
 - 路由回退、快取策略和資產相對路徑應顯式設定。
 - 不得把 Workspace Key 或其他 Secret 編譯進瀏覽器資產。
+- 外部靜態網站需要直接存取平台資料時，只能使用已配置精確 Origin 與 deny-by-default 規則的 Browser Data Gateway；`dbp_` 是公開定位符，瀏覽器資料權限來自短效 `wdb_`，不得以 `wak_` 取代。
 
 ### Container
 
@@ -109,9 +134,12 @@
 |---|---|
 | 已解封的源碼 | 唯讀；每個 source_version 不可變 |
 | /workspace/data | 工作區持久資料，可寫 |
+| /workspace/data/.runtime/python/&lt;digest&gt;/venv | Python 依賴虛擬環境，可寫且按建置摘要隔離 |
 | 系統臨時目錄 | 可寫但不保證跨部署保存 |
 | DATABASE_URL | 平台資料庫連線，由環境注入 |
 | Workspace Key | 控制面認證；不應提供給應用前端 |
+
+資料庫策略有四種：`platform_managed` 由平台建立並注入 PostgreSQL、`external` 注入已驗證外部 PostgreSQL、`workspace_managed` 由工作區 Compose／Secret 自行選擇任何資料引擎、`none` 不使用資料庫。前兩者的 `DATABASE_URL` 由預設 `database_binding` 解析且應用不得覆蓋；後兩者不強制 PostgreSQL，也不啟用平台 PostgreSQL 發布閘門。
 
 應用不能依賴目前工作目錄恰好等於源碼根目錄；路徑應以應用根目錄或平台變數解析。
 
@@ -123,6 +151,55 @@
 4. 大表操作應分批，並聲明逾時、鎖定和回復策略。
 5. 原生 SQL 必須使用驅動可接受的執行介面；含 JSON 冒號的 SQL 不應被誤解析為綁定參數。
 6. 不把密碼、完整連線字串或個資輸出到 migration 日誌。
+7. 可用 `POST /api/workspaces/v1/jobs` 執行 Alembic、catalog import 或初始化命令；任務只掛載唯讀源碼與該工作區可寫資料卷，成功不切換正式流量。
+
+### 06A · 資料庫身份分離
+
+- 一般服務只能取得 Runtime DSN；該角色不得是資料庫 owner，也不得具有 `SUPERUSER`、`BYPASSRLS`、`CREATEDB`、`CREATEROLE` 或角色成員資格。
+- `database_access: migration` 只允許出現在一次性 lifecycle Job；平台將 owner DSN 注入該 Job 聲明的環境變數，Job 完成後不保留。
+- `database_access: runtime` 的一次性 Job 使用與線上服務相同的最小權限角色，適合 RLS 資料導入或相容性檢查。
+- 應用不得以 Web 啟動命令取得 migration DSN，也不得把遷移藏在長時間服務的 import 階段。
+
+### 06B · 聲明式發布生命週期
+
+`lifecycle.jobs` 可聲明 migration、seed、catalog import 或索引初始化。每個 Job 必須有唯一名稱、固定命令、資料庫身份、逾時和 `required_before_activation`。使用者可執行：
+
+~~~text
+python3 dm.py job --source <SOURCE_VERSION_ID> --name migrate
+~~~
+
+平台把成功證據綁定到 source version、hosting contract digest 與 Job deployment；其他源碼版本的成功記錄不能滿足本次門禁。
+
+### 06C · 公開事實與資料庫事實的雙層驗收
+
+`acceptance.http` 只允許對候選私網地址執行有界 GET，可檢查 HTTP 狀態、JSON 值或 JSON 陣列長度。`acceptance.database.counts` 只允許安全的 relation count 與等值 filter，不接受任意 SQL；查詢固定使用 Runtime 角色並套用 `acceptance.database.context` 聲明的 RLS session setting。
+
+~~~json
+{
+  "acceptance": {
+    "required_before_activation": true,
+    "http": [{
+      "name": "modules",
+      "path": "/api/v1/modules",
+      "operator": "length_equals",
+      "expected": 8
+    }],
+    "database": {
+      "context": {
+        "app.tenant_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "counts": [{
+        "name": "resources",
+        "schema": "catalog",
+        "relation": "learning_resources",
+        "expected": 2
+      }]
+    }
+  }
+}
+~~~
+
+資料庫總量與公開 API 可見量是不同事實；internal／sensitive 資料不應為了通過公開驗收而降級分類。執行 `python3 dm.py deploy accept <DEPLOYMENT_ID>` 後，只有 source、contract digest、HTTP、必要 Job 與資料庫事實全部相符，`deploy activate` 才能切流。
 
 ## 07 · 安全與供應鏈
 
@@ -149,12 +226,14 @@ Warehouse OS 託管控制面必須：
 2. 在服務端驗證上傳雜湊及安全解封。
 3. 將 source_version 設為不可變並留下操作與部署譜系。
 4. 根據來源 digest 重用可信依賴快取，不混用未知版本。
-5. 注入 PORT、DATABASE_URL、工作區路徑及已授權 Secret。
+5. 注入 PORT、工作區路徑、已授權 Secret，以及資料庫策略允許時的 DATABASE_URL。
 6. 以唯讀源碼和可寫資料卷啟動隔離進程。
-7. 執行健康檢查，再驗證公開入口確實路由至該部署。
-8. 只有通過全部門檻才啟用；失敗時保留前一個健康版本。
-9. 回傳階段、證據、錯誤代碼和經遮罩的日誌，不用籠統的成功訊息取代事實。
-10. 健康檢查必須包含實際寫入探針；僅存在配置或資料列不等於儲存可用。
+7. 僅把 migration owner 身份注入聲明式一次性 Job；一般服務與 Runtime Job 使用最小權限角色。
+8. 在候選私網地址執行 manifest 聲明的 HTTP 驗收，並以 Runtime 角色核對 RLS 範圍內資料庫事實。
+9. 將驗收證據綁定到 source version、contract digest 和 deployment，拒絕沿用其他版本的成功結果。
+10. 只有通過必要 Job、健康、驗收與資料庫門檻才啟用；失敗時保留前一個健康版本。
+11. 回傳階段、證據、錯誤代碼和經遮罩的日誌，不用籠統的成功訊息取代事實。
+12. 健康檢查必須包含實際寫入探針；僅存在配置或資料列不等於儲存可用。
 
 ## 10 · 上線前檢查表
 
@@ -166,6 +245,9 @@ Warehouse OS 託管控制面必須：
 - [ ] 持久寫入只進入 /workspace/data 或平台資料庫
 - [ ] Secret 未進入源碼、前端資產與日誌
 - [ ] migration 可重入，失敗不接流量
+- [ ] Runtime 與 migration 使用不同資料庫身份，Web 服務拿不到 owner DSN
+- [ ] 必要 lifecycle Job 的成功證據屬於本次 source 與 contract digest
+- [ ] acceptance 同時區分公開可見量和 RLS 範圍內資料庫總量
 - [ ] 子路徑、靜態資產和登入回調已測試
 - [ ] SIGTERM 可正常退出
 - [ ] 公開入口回應包含正確的部署證據
