@@ -1468,7 +1468,8 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
     monkeypatch,
 ) -> None:
     migration_url = os.environ["WAREHOUSE_MIGRATION_DATABASE_URL"]
-    admin_url = make_url(migration_url).set(drivername="postgresql", database="postgres")
+    admin_source = os.environ.get("WAREHOUSE_HOSTED_DATABASE_ADMIN_URL", migration_url)
+    admin_url = make_url(admin_source).set(drivername="postgresql", database="postgres")
     settings = Settings(
         hosted_database_admin_url=SecretStr(admin_url.render_as_string(hide_password=False)),
         integration_secret="hosted-database-test-secret-" + "x" * 32,

@@ -54,6 +54,7 @@ jobs:
       WAREHOUSE_REQUIRE_ACTIVE_MANIFEST: "1"
       WAREHOUSE_TEST_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os
       WAREHOUSE_TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:local-only-migration-change-me@127.0.0.1:5432/warehouse_os
+      WAREHOUSE_TEST_HOSTED_DATABASE_ADMIN_URL: postgresql+psycopg://warehouse_admin:local-only-change-me@127.0.0.1:5432/postgres
 
     services:
       postgres:
