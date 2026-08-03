@@ -27,8 +27,8 @@ jobs:
       WAREHOUSE_DEPLOY_HOST: ${{ vars.WAREHOUSE_DEPLOY_HOST }}
       WAREHOUSE_DEPLOY_USER: ${{ vars.WAREHOUSE_DEPLOY_USER }}
       WAREHOUSE_REMOTE_DEPLOY_MANAGER: ${{ vars.WAREHOUSE_REMOTE_DEPLOY_MANAGER }}
-      WAREHOUSE_DEPLOY_IDENTITY: ${{ runner.temp }}/warehouse-ssh/id_ed25519
-      WAREHOUSE_HOSTING_MATRIX_LOG: ${{ runner.temp }}/hosting-matrix.log
+      WAREHOUSE_DEPLOY_IDENTITY: ${{ github.workspace }}/.warehouse-ssh/id_ed25519
+      WAREHOUSE_HOSTING_MATRIX_LOG: ${{ github.workspace }}/hosting-matrix.log
 
     steps:
       - name: Check out verification request
@@ -61,7 +61,7 @@ jobs:
           : "${WAREHOUSE_REMOTE_DEPLOY_MANAGER:?production variable is required}"
           : "${DEPLOY_SSH_KEY:?production secret is required}"
           : "${DEPLOY_KNOWN_HOSTS:?production secret is required}"
-          install -d -m 0700 "${RUNNER_TEMP}/warehouse-ssh" "${HOME}/.ssh"
+          install -d -m 0700 "${WAREHOUSE_DEPLOY_IDENTITY%/*}" "${HOME}/.ssh"
           printf '%s\n' "${DEPLOY_SSH_KEY}" > "${WAREHOUSE_DEPLOY_IDENTITY}"
           printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
           chmod 0600 "${WAREHOUSE_DEPLOY_IDENTITY}" "${HOME}/.ssh/known_hosts"
@@ -148,6 +148,6 @@ jobs:
           path: |
             ${{ runner.temp }}/production-status.txt
             ${{ runner.temp }}/production-status-final.txt
-            ${{ runner.temp }}/hosting-matrix.log
+            ${{ env.WAREHOUSE_HOSTING_MATRIX_LOG }}
           if-no-files-found: ignore
           retention-days: 30

@@ -16,6 +16,17 @@ on:
       - "README.md"
       - ".github/workflows/production-deploy.yml"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Deployment verification lane
+        required: true
+        default: smart
+        type: choice
+        options:
+          - smart
+          - quick
+          - standard
+          - full
 
 permissions:
   contents: read
@@ -36,7 +47,10 @@ jobs:
       WAREHOUSE_DEPLOY_HOST: ${{ vars.WAREHOUSE_DEPLOY_HOST }}
       WAREHOUSE_DEPLOY_USER: ${{ vars.WAREHOUSE_DEPLOY_USER }}
       WAREHOUSE_REMOTE_DEPLOY_MANAGER: ${{ vars.WAREHOUSE_REMOTE_DEPLOY_MANAGER }}
-      WAREHOUSE_DEPLOY_IDENTITY: ${{ runner.temp }}/warehouse-ssh/id_ed25519
+      # The runner context is not available while GitHub validates job-level
+      # env. github.workspace is, and the restricted key is removed with the
+      # ephemeral runner after the job.
+      WAREHOUSE_DEPLOY_IDENTITY: ${{ github.workspace }}/.warehouse-ssh/id_ed25519
       WAREHOUSE_REQUIRE_ACTIVE_MANIFEST: "1"
       WAREHOUSE_TEST_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os
       WAREHOUSE_TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:local-only-migration-change-me@127.0.0.1:5432/warehouse_os
@@ -90,7 +104,7 @@ jobs:
           : "${WAREHOUSE_REMOTE_DEPLOY_MANAGER:?production variable is required}"
           : "${DEPLOY_SSH_KEY:?production secret is required}"
           : "${DEPLOY_KNOWN_HOSTS:?production secret is required}"
-          install -d -m 0700 "${RUNNER_TEMP}/warehouse-ssh" "${HOME}/.ssh"
+          install -d -m 0700 "${WAREHOUSE_DEPLOY_IDENTITY%/*}" "${HOME}/.ssh"
           printf '%s\n' "${DEPLOY_SSH_KEY}" > "${WAREHOUSE_DEPLOY_IDENTITY}"
           printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
           chmod 0600 "${WAREHOUSE_DEPLOY_IDENTITY}" "${HOME}/.ssh/known_hosts"
@@ -194,9 +208,14 @@ jobs:
         env:
           WAREHOUSE_ENVIRONMENT: test
           WAREHOUSE_JWT_SECRET: github-actions-test-secret-with-32-characters
+          DEPLOY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'smart' }}
         run: |
           set -Eeuo pipefail
-          ops/deploy smart 2>&1 | tee "${RUNNER_TEMP}/deployment.log"
+          case "${DEPLOY_MODE}" in
+            smart|quick|standard|full) ;;
+            *) echo "Unsupported deployment mode: ${DEPLOY_MODE}" >&2; exit 2 ;;
+          esac
+          ops/deploy "${DEPLOY_MODE}" 2>&1 | tee "${RUNNER_TEMP}/deployment.log"
 
       - name: Verify the public production endpoint
         if: steps.plan.outputs.deploy_required == 'true'
