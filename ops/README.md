@@ -39,17 +39,26 @@ The benchmark command is pinned to the initialized filesystem UUID and performs
 one bounded 1 GiB direct-I/O sequential write/read test before removing its
 temporary file.
 
-`smart` is the default release lane. It compares the exact candidate tree with
-the active server manifest, discovers affected tests through the Python import
-graph and lets the trusted server planner independently confirm the lane.
-Unknown changes fail closed to `full`. Explicit `quick`, `standard` and `full`
-remain available as operator overrides.
+`smart` is the default local release lane. It compares the exact candidate tree
+with the active server manifest, discovers affected tests through the Python
+import graph and lets the trusted server planner independently confirm the
+required safety checks. Unknown changes receive the conservative server lane.
+Explicit `quick`, `standard` and `full` remain local operator commands.
 
 ## GitHub production deployment
 
-`.github/workflows/production-deploy.yml` runs the same `smart` contract for
-every deployable push to `main` and for manual dispatches. The `production`
-GitHub Environment must define:
+GitHub automation is deliberately small because complete verification runs
+locally before a Draft PR is created:
+
+- `.github/workflows/backend-contract.yml` only compiles Python sources, checks
+  shell syntax, verifies the committed frontend bundles and parses one sample
+  deployment plan. It does not start PostgreSQL, install the backend, run
+  pytest or build a Compose stack.
+- `.github/workflows/production-deploy.yml` repeats the basic checks, packages
+  the immutable release and invokes the restricted production deployment
+  channel for each deployable push to `main` or manual dispatch.
+
+The `production` GitHub Environment must define:
 
 ```text
 Variables:
@@ -62,20 +71,14 @@ Secrets:
   WAREHOUSE_DEPLOY_KNOWN_HOSTS
 ```
 
-The workflow refuses stale queued commits, serializes production changes,
-requires the active manifest, uses a disposable PostgreSQL 18 service for full
-integration verification and uploads the plan plus deployment log as evidence.
-The SSH key remains the same restricted, no-PTY deployment identity; it does
-not grant a general server shell or access to production secrets.
-
-The disposable database uses separate migration and application identities;
-the runner refuses an application role with `SUPERUSER` or `BYPASSRLS`. CI
-environments that provide a database must set both
-`WAREHOUSE_TEST_DATABASE_URL` (restricted application role) and
-`WAREHOUSE_TEST_MIGRATION_DATABASE_URL` (schema owner), plus
-`WAREHOUSE_TEST_HOSTED_DATABASE_ADMIN_URL` for disposable workspace database
-and role provisioning. The hosted-database administrator is used only inside
-the disposable CI PostgreSQL service and is never forwarded to production.
+The deployment workflow refuses stale queued commits, serializes production
+changes and requires the active manifest. `WAREHOUSE_DEPLOY_LOCAL_VALIDATION`
+is fixed to `basic`, so GitHub never selects or runs the standard/full pytest
+lanes or `ops/run-full-verification`. The impact plan is used only to skip
+non-runtime changes and to tell the trusted server which backup and health
+checks are required. The SSH key remains the same restricted, no-PTY
+deployment identity; it does not grant a general server shell or access to
+production secrets.
 
 Each deploy uploads a checksummed archive, verifies every file, builds a tagged
 image and starts the inactive API slot. Nginx switches only after candidate

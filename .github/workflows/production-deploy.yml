@@ -16,17 +16,6 @@ on:
       - "README.md"
       - ".github/workflows/production-deploy.yml"
   workflow_dispatch:
-    inputs:
-      mode:
-        description: Deployment verification lane
-        required: true
-        default: smart
-        type: choice
-        options:
-          - smart
-          - quick
-          - standard
-          - full
 
 permissions:
   contents: read
@@ -37,9 +26,9 @@ concurrency:
 
 jobs:
   deploy:
-    name: Plan, verify and deploy
+    name: Basic check and deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     environment:
       name: production
       url: https://bonfirework.org
@@ -47,30 +36,11 @@ jobs:
       WAREHOUSE_DEPLOY_HOST: ${{ vars.WAREHOUSE_DEPLOY_HOST }}
       WAREHOUSE_DEPLOY_USER: ${{ vars.WAREHOUSE_DEPLOY_USER }}
       WAREHOUSE_REMOTE_DEPLOY_MANAGER: ${{ vars.WAREHOUSE_REMOTE_DEPLOY_MANAGER }}
-      # The runner context is not available while GitHub validates job-level
-      # env. github.workspace is, and the restricted key is removed with the
-      # ephemeral runner after the job.
       WAREHOUSE_DEPLOY_IDENTITY: ${{ github.workspace }}/.warehouse-ssh/id_ed25519
       WAREHOUSE_REQUIRE_ACTIVE_MANIFEST: "1"
-      WAREHOUSE_TEST_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os
-      WAREHOUSE_TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:local-only-migration-change-me@127.0.0.1:5432/warehouse_os
-      WAREHOUSE_TEST_HOSTED_DATABASE_ADMIN_URL: postgresql+psycopg://warehouse_admin:local-only-change-me@127.0.0.1:5432/postgres
-
-    services:
-      postgres:
-        image: pgvector/pgvector:0.8.5-pg18
-        env:
-          POSTGRES_DB: warehouse_os
-          POSTGRES_USER: warehouse_admin
-          POSTGRES_PASSWORD: local-only-change-me
-          POSTGRES_INITDB_ARGS: --data-checksums
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U warehouse_admin -d warehouse_os"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
+      # GitHub only checks syntax and committed frontend output. Complete and
+      # integration verification belongs to the local pre-Draft workflow.
+      WAREHOUSE_DEPLOY_LOCAL_VALIDATION: basic
 
     steps:
       - name: Check out the triggering revision
@@ -111,7 +81,7 @@ jobs:
           chmod 0600 "${WAREHOUSE_DEPLOY_IDENTITY}" "${HOME}/.ssh/known_hosts"
           ssh-keygen -y -f "${WAREHOUSE_DEPLOY_IDENTITY}" >/dev/null
 
-      - name: Build the active-release impact plan
+      - name: Check whether a runtime deployment is needed
         if: steps.freshness.outputs.current == 'true'
         id: plan
         shell: bash
@@ -135,15 +105,11 @@ jobs:
             --format json > "${plan_json}"
           echo "deploy_required=$(jq -r '.deploy_required' "${plan_json}")" \
             >> "${GITHUB_OUTPUT}"
-          echo "mode=$(jq -r '.mode' "${plan_json}")" >> "${GITHUB_OUTPUT}"
-          echo "risk=$(jq -r '.risk' "${plan_json}")" >> "${GITHUB_OUTPUT}"
           {
-            echo "### Production impact plan"
-            jq -r '"- Mode: `\(.mode)`\n- Risk: `\(.risk)`\n- Changed files: `\(.changed_count)`\n- Deploy required: `\(.deploy_required)`"' \
+            echo "### Basic production deployment"
+            jq -r '"- Runtime deployment required: `\(.deploy_required)`\n- Changed files: `\(.changed_count)`\n- Server risk: `\(.risk)`"' \
               "${plan_json}"
-            echo ""
-            echo "Tests selected from the real import graph:"
-            jq -r '.tests[]? | "- `\(.)`"' "${plan_json}"
+            echo "- GitHub validation: \`basic\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up Python
@@ -151,8 +117,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/pyproject.toml
 
       - name: Set up Node.js
         if: steps.plan.outputs.deploy_required == 'true'
@@ -160,63 +124,22 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install deployment and backend dependencies
+      - name: Install packaging tools
         if: steps.plan.outputs.deploy_required == 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libdigest-sha-perl rsync postgresql-client
+          sudo apt-get install -y --no-install-recommends libdigest-sha-perl rsync
           python -m venv backend/.venv
-          backend/.venv/bin/pip install -e 'backend[dev]'
+          backend/.venv/bin/pip install --disable-pip-version-check 'alembic>=1.14,<2'
 
-      - name: Initialize the disposable PostgreSQL identities
+      - name: Run the basic check and deploy
         if: steps.plan.outputs.deploy_required == 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
-          backend/.venv/bin/python - <<'PY'
-          import psycopg
-
-          with psycopg.connect(
-              "postgresql://warehouse_admin:local-only-change-me@127.0.0.1:5432/warehouse_os",
-              autocommit=True,
-          ) as connection:
-              with connection.cursor() as cursor:
-                  cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                  cursor.execute(
-                      "CREATE ROLE warehouse_migrator LOGIN NOSUPERUSER NOCREATEDB "
-                      "NOCREATEROLE NOINHERIT NOREPLICATION "
-                      "PASSWORD 'local-only-migration-change-me'"
-                  )
-                  cursor.execute(
-                      "CREATE ROLE warehouse_os LOGIN NOSUPERUSER NOCREATEDB "
-                      "NOCREATEROLE NOINHERIT NOREPLICATION "
-                      "PASSWORD 'local-only-change-me'"
-                  )
-                  cursor.execute("REVOKE CREATE ON DATABASE warehouse_os FROM PUBLIC")
-                  cursor.execute(
-                      "GRANT CONNECT, TEMPORARY ON DATABASE warehouse_os "
-                      "TO warehouse_migrator, warehouse_os"
-                  )
-                  cursor.execute("GRANT CREATE ON DATABASE warehouse_os TO warehouse_migrator")
-                  cursor.execute("CREATE SCHEMA app AUTHORIZATION warehouse_migrator")
-          PY
-
-      - name: Run evidence-driven deployment
-        if: steps.plan.outputs.deploy_required == 'true'
-        shell: bash
-        env:
-          WAREHOUSE_ENVIRONMENT: test
-          WAREHOUSE_JWT_SECRET: github-actions-test-secret-with-32-characters
-          DEPLOY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'smart' }}
-        run: |
-          set -Eeuo pipefail
-          case "${DEPLOY_MODE}" in
-            smart|quick|standard|full) ;;
-            *) echo "Unsupported deployment mode: ${DEPLOY_MODE}" >&2; exit 2 ;;
-          esac
-          ops/deploy "${DEPLOY_MODE}" 2>&1 | tee "${RUNNER_TEMP}/deployment.log"
+          ops/deploy smart
 
       - name: Verify the public production endpoint
         if: steps.plan.outputs.deploy_required == 'true'
@@ -232,14 +155,3 @@ jobs:
           steps.freshness.outputs.current == 'true' &&
           steps.plan.outputs.deploy_required == 'false'
         run: echo "No runtime-impacting changes; production remains unchanged."
-
-      - name: Upload deployment evidence
-        if: always() && steps.freshness.outputs.current == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-deployment-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/deploy-plan.json
-            ${{ runner.temp }}/deployment.log
-          if-no-files-found: ignore
-          retention-days: 14

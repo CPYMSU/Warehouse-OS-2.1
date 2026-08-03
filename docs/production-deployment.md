@@ -74,9 +74,9 @@ ops/deploy hosted-db-migrate
 - `smart` compares the candidate tree with the active release manifest. A
   versioned impact policy establishes security and migration guardrails, while
   the Python reverse-import graph discovers the tests affected by application
-  code. Documentation-only changes stop locally; unknown files fail closed to
-  `full`. The server independently recomputes the plan with the trusted active
-  planner and refuses a candidate whose local verification lane was weaker.
+  code. Documentation-only changes stop locally; unknown files receive the
+  conservative server lane. The server independently recomputes the plan with
+  the trusted active planner.
 - `quick` rebuilds the frontend and runs contract tests. The server refuses it
   if migrations, dependencies, infrastructure, authentication, security,
   configuration, or tenant templates changed.
@@ -106,19 +106,23 @@ total timeout.
 
 ## GitHub Actions deployment
 
-Pushes to `main` can use `.github/workflows/production-deploy.yml`. The job is
-bound to the `production` GitHub Environment, accepts only the restricted
-deployment identity and runs with read-only repository permissions. It refuses
-stale queued revisions, serializes production releases and requires the live
-server manifest; a missing server observation is an error rather than a
-Git-based no-op fallback.
+Only two small workflows run automatically. Pull requests run syntax,
+generated-frontend and deployment-planner checks with a five-minute ceiling.
+They do not install application dependencies, start PostgreSQL, run pytest or
+build a Compose stack. Pushes to `main` use
+`.github/workflows/production-deploy.yml`, which is bound to the `production`
+GitHub Environment, accepts only the restricted deployment identity and runs
+with read-only repository permissions.
 
-The runner produces the same versioned impact plan as a local deployment,
-starts a disposable PostgreSQL 18 service when verification is required, then
-calls `ops/deploy smart`. The active server recomputes the plan before any
-backup, image build or traffic switch. GitHub retains the JSON plan and deploy
-log for 14 days, while the server remains the authority for health, rollback
-and deployment audit events.
+The deployment job refuses stale queued revisions, serializes production
+releases and requires the live server manifest. It fixes
+`WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic`, so GitHub performs only Python
+compilation, shell parsing, committed frontend-bundle verification, packaging
+and deployment. Standard/full pytest and disposable-database verification are
+local pre-Draft responsibilities and are never selected by GitHub. The active
+server remains responsible for checksummed extraction, required backups,
+candidate health, database revision, blue/green switching, public smoke and
+automatic traffic restoration on failure.
 
 ## Hosted-data disk activation
 
