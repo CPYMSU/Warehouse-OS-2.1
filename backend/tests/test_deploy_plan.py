@@ -71,7 +71,10 @@ def test_active_manifest_can_be_compared_with_candidate_tree(tmp_path: Path) -> 
     (root / "ops").mkdir(parents=True)
     (root / "frontend" / "v2").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "ops" / "deploy-impact.json", root / "ops")
-    (root / "ops" / "deploy.exclude").write_text("*.log\n", encoding="utf-8")
+    (root / "ops" / "deploy.exclude").write_text(
+        "*.log\nbackend/warehouse_os_api.egg-info/\n",
+        encoding="utf-8",
+    )
     (root / "frontend" / "v2" / "app.jsx").write_text(
         "export const version = 2;\n", encoding="utf-8"
     )
@@ -86,7 +89,8 @@ def test_active_manifest_can_be_compared_with_candidate_tree(tmp_path: Path) -> 
                 root / "ops" / "deploy-impact.json",
                 root / "ops" / "deploy.exclude",
             )
-        ),
+        )
+        + f"{'a' * 64}  ./backend/warehouse_os_api.egg-info/PKG-INFO\n",
         encoding="utf-8",
     )
 

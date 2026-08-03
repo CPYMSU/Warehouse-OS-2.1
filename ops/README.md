@@ -72,7 +72,10 @@ The disposable database uses separate migration and application identities;
 the runner refuses an application role with `SUPERUSER` or `BYPASSRLS`. CI
 environments that provide a database must set both
 `WAREHOUSE_TEST_DATABASE_URL` (restricted application role) and
-`WAREHOUSE_TEST_MIGRATION_DATABASE_URL` (schema owner).
+`WAREHOUSE_TEST_MIGRATION_DATABASE_URL` (schema owner), plus
+`WAREHOUSE_TEST_HOSTED_DATABASE_ADMIN_URL` for disposable workspace database
+and role provisioning. The hosted-database administrator is used only inside
+the disposable CI PostgreSQL service and is never forwarded to production.
 
 Each deploy uploads a checksummed archive, verifies every file, builds a tagged
 image and starts the inactive API slot. Nginx switches only after candidate
