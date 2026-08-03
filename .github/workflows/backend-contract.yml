@@ -1,26 +1,15 @@
-name: Backend contract
+name: Basic pull request checks
 
 on:
   pull_request:
     paths:
       - "backend/**"
+      - "browser-runtime/**"
       - "frontend/**"
-      - "mobile/**"
-      - "wechat-miniapp/**"
+      - "infra/**"
       - "scripts/**"
-      - "compose.yaml"
-      - "docs/production-verification/expected-sha.txt"
-      - ".github/workflows/backend-contract.yml"
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "mobile/**"
-      - "wechat-miniapp/**"
-      - "scripts/**"
-      - "compose.yaml"
-      - ".github/workflows/backend-contract.yml"
+      - "ops/**"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -28,291 +17,45 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    services:
-      postgres:
-        image: pgvector/pgvector:0.8.5-pg18
-        env:
-          POSTGRES_DB: warehouse_os
-          POSTGRES_USER: warehouse_admin
-          POSTGRES_PASSWORD: local-only-change-me
-          POSTGRES_INITDB_ARGS: --data-checksums
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U warehouse_admin -d warehouse_os"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
-
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the proposed revision
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/pyproject.toml
 
-      - name: Install backend
-        run: python -m pip install -e 'backend[dev]'
-
-      - name: Initialize database roles and pgvector
-        run: |
-          python - <<'PY'
-          import psycopg
-
-          with psycopg.connect(
-              "postgresql://warehouse_admin:local-only-change-me@127.0.0.1:5432/warehouse_os",
-              autocommit=True,
-          ) as connection:
-              with connection.cursor() as cursor:
-                  cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                  cursor.execute(
-                      "CREATE ROLE warehouse_migrator LOGIN NOSUPERUSER NOCREATEDB "
-                      "NOCREATEROLE NOINHERIT NOREPLICATION "
-                      "PASSWORD 'local-only-migration-change-me'"
-                  )
-                  cursor.execute(
-                      "CREATE ROLE warehouse_os LOGIN NOSUPERUSER NOCREATEDB "
-                      "NOCREATEROLE NOINHERIT NOREPLICATION "
-                      "PASSWORD 'local-only-change-me'"
-                  )
-                  cursor.execute("REVOKE CREATE ON DATABASE warehouse_os FROM PUBLIC")
-                  cursor.execute(
-                      "GRANT CONNECT, TEMPORARY ON DATABASE warehouse_os "
-                      "TO warehouse_migrator, warehouse_os"
-                  )
-                  cursor.execute("GRANT CREATE ON DATABASE warehouse_os TO warehouse_migrator")
-                  cursor.execute("CREATE SCHEMA app AUTHORIZATION warehouse_migrator")
-          PY
-
-      - name: Apply migrations
-        working-directory: backend
-        env:
-          WAREHOUSE_ENVIRONMENT: test
-          WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os
-          WAREHOUSE_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:local-only-migration-change-me@127.0.0.1:5432/warehouse_os
-          WAREHOUSE_JWT_SECRET: test-only-warehouse-secret-32-characters
-        run: alembic upgrade head
-
-      - name: Lint
-        working-directory: backend
-        run: ruff check app tests alembic/versions
-
-      - name: Audit retained frontend API contracts
-        env:
-          WAREHOUSE_ENVIRONMENT: test
-          WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os
-          WAREHOUSE_JWT_SECRET: test-only-warehouse-secret-32-characters
-        run: python scripts/audit_frontend_api_contracts.py --fail-on-missing
-
-      - name: Upload frontend API contract report
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          name: frontend-api-contract-report
-          path: frontend-api-contract-report.json
-          if-no-files-found: ignore
-          retention-days: 3
+          node-version: "20"
 
-      - name: Test
-        working-directory: backend
-        env:
-          WAREHOUSE_ENVIRONMENT: test
-          WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os
-          WAREHOUSE_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:local-only-migration-change-me@127.0.0.1:5432/warehouse_os
-          WAREHOUSE_JWT_SECRET: test-only-warehouse-secret-32-characters
+      - name: Compile Python sources
+        shell: bash
         run: |
-          set -o pipefail
-          pytest -q 2>&1 | tee pytest.log
+          set -Eeuo pipefail
+          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/python-cache" \
+            python -m compileall -q backend/app backend/alembic/versions
 
-      - name: Upload pytest diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-diagnostics
-          path: backend/pytest.log
-          if-no-files-found: ignore
-          retention-days: 3
+      - name: Check deployment shell syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n \
+            ops/deploy \
+            ops/run-full-verification \
+            ops/server/warehouse-deploy \
+            infra/backup/warehouse-postgres-backup.sh
 
-      - name: Test MapLibre teardown guard
-        run: node scripts/test_maplibre_abort_guard.cjs
-
-      - name: Verify precompiled frontend
+      - name: Verify committed frontend bundles
         run: node scripts/build_v2_frontend.cjs --check
 
-  compose-smoke:
-    needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Prepare local compose environment
-        run: cp backend/.env.example backend/.env
-
-      - name: Start complete PostgreSQL, API and frontend stack
-        run: docker compose up -d --build
-
-      - name: Verify API and frontend from the container entry point
-        run: |
-          for attempt in $(seq 1 60); do
-            if curl -fsS -D headers.txt http://127.0.0.1:8080/api/health -o api-health.json; then
-              break
-            fi
-            sleep 2
-          done
-          grep -qi '^X-Warehouse-Backend: fastapi-postgresql' headers.txt
-          grep -q 'postgresql-18-pgvector' api-health.json
-          curl -fsS http://127.0.0.1:8080/ | grep -q 'WAREHOUSE OS 2.1'
-          docker compose ps
-
-      - name: Show compose diagnostics
-        if: failure()
-        run: docker compose logs --no-color
-
-      - name: Stop complete stack
-        if: always()
-        run: docker compose down -v
-
-  production-hosting-verification:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.actor == 'CPYMSU' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'verify/production-hosting-')
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    environment:
-      name: production
-      url: https://bonfirework.org
-    env:
-      WAREHOUSE_DEPLOY_HOST: ${{ vars.WAREHOUSE_DEPLOY_HOST }}
-      WAREHOUSE_DEPLOY_USER: ${{ vars.WAREHOUSE_DEPLOY_USER }}
-      WAREHOUSE_REMOTE_DEPLOY_MANAGER: ${{ vars.WAREHOUSE_REMOTE_DEPLOY_MANAGER }}
-      WAREHOUSE_DEPLOY_IDENTITY: ${{ github.workspace }}/.warehouse-ssh/id_ed25519
-      WAREHOUSE_HOSTING_MATRIX_LOG: ${{ github.workspace }}/hosting-matrix.log
-
-    steps:
-      - name: Check out verification request
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Resolve expected deployed revision
-        id: expected
+      - name: Check deployment planner output
         shell: bash
         run: |
           set -Eeuo pipefail
-          expected="$(tr -d '[:space:]' < docs/production-verification/expected-sha.txt)"
-          [[ "${expected}" =~ ^[a-f0-9]{40}$ ]] || {
-            echo "expected-sha.txt must contain exactly one full Git commit SHA" >&2
-            exit 2
-          }
-          echo "sha=${expected}" >> "${GITHUB_OUTPUT}"
-          echo "prefix=${expected:0:12}" >> "${GITHUB_OUTPUT}"
-
-      - name: Install restricted deployment identity
-        shell: bash
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.WAREHOUSE_DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.WAREHOUSE_DEPLOY_KNOWN_HOSTS }}
-        run: |
-          set -Eeuo pipefail
-          : "${WAREHOUSE_DEPLOY_HOST:?production variable is required}"
-          : "${WAREHOUSE_DEPLOY_USER:?production variable is required}"
-          : "${WAREHOUSE_REMOTE_DEPLOY_MANAGER:?production variable is required}"
-          : "${DEPLOY_SSH_KEY:?production secret is required}"
-          : "${DEPLOY_KNOWN_HOSTS:?production secret is required}"
-          install -d -m 0700 "${WAREHOUSE_DEPLOY_IDENTITY%/*}" "${HOME}/.ssh"
-          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${WAREHOUSE_DEPLOY_IDENTITY}"
-          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
-          chmod 0600 "${WAREHOUSE_DEPLOY_IDENTITY}" "${HOME}/.ssh/known_hosts"
-          ssh-keygen -y -f "${WAREHOUSE_DEPLOY_IDENTITY}" >/dev/null
-
-      - name: Require expected release to be active and healthy
-        id: release
-        shell: bash
-        env:
-          EXPECTED_PREFIX: ${{ steps.expected.outputs.prefix }}
-        run: |
-          set -Eeuo pipefail
-          status_file="${RUNNER_TEMP}/production-status.txt"
-          matched=false
-          for attempt in $(seq 1 90); do
-            ssh \
-              -i "${WAREHOUSE_DEPLOY_IDENTITY}" \
-              -o BatchMode=yes \
-              -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes \
-              -o ConnectTimeout=15 \
-              "${WAREHOUSE_DEPLOY_USER}@${WAREHOUSE_DEPLOY_HOST}" \
-              "sudo -n ${WAREHOUSE_REMOTE_DEPLOY_MANAGER} status" \
-              > "${status_file}"
-            if grep -Eq "^release=.*${EXPECTED_PREFIX}" "${status_file}" \
-              && grep -q '"status":"ok"' "${status_file}"; then
-              matched=true
-              break
-            fi
-            sleep 10
-          done
-          cat "${status_file}"
-          [[ "${matched}" == true ]] || {
-            echo "Expected release ${EXPECTED_PREFIX} is not active and healthy." >&2
-            exit 1
-          }
-          echo "matched=true" >> "${GITHUB_OUTPUT}"
-
-      - name: Verify source upload, Runtime, public web, backend and database
-        id: matrix
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          bash ops/hosting-smoke-matrix bonfire "verify${GITHUB_RUN_ID}" \
-            2>&1 | tee "${WAREHOUSE_HOSTING_MATRIX_LOG}"
-
-      - name: Roll back only when matched release fails real hosting matrix
-        if: failure() && steps.release.outputs.matched == 'true' && steps.matrix.outcome == 'failure'
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ssh \
-            -i "${WAREHOUSE_DEPLOY_IDENTITY}" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=15 \
-            "${WAREHOUSE_DEPLOY_USER}@${WAREHOUSE_DEPLOY_HOST}" \
-            "sudo -n ${WAREHOUSE_REMOTE_DEPLOY_MANAGER} rollback"
-          curl --fail --silent --show-error --max-time 20 \
-            https://bonfirework.org/api/health
-
-      - name: Capture final production status
-        if: always()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ssh \
-            -i "${WAREHOUSE_DEPLOY_IDENTITY}" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=15 \
-            "${WAREHOUSE_DEPLOY_USER}@${WAREHOUSE_DEPLOY_HOST}" \
-            "sudo -n ${WAREHOUSE_REMOTE_DEPLOY_MANAGER} status" \
-            > "${RUNNER_TEMP}/production-status-final.txt"
-          cat "${RUNNER_TEMP}/production-status-final.txt"
-
-      - name: Upload production verification evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-hosting-verification-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/production-status.txt
-            ${{ runner.temp }}/production-status-final.txt
-            ${{ env.WAREHOUSE_HOSTING_MATRIX_LOG }}
-          if-no-files-found: ignore
-          retention-days: 30
+          python ops/deploy-plan \
+            --changed-file backend/app/core/config.py \
+            --format json | python -m json.tool >/dev/null

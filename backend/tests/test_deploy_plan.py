@@ -115,3 +115,21 @@ def test_active_manifest_can_be_compared_with_candidate_tree(tmp_path: Path) -> 
     assert plan["changed_files"] == ["frontend/v2/app.jsx"]
     assert plan["mode"] == "quick"
     assert "frontend" in plan["impacts"]
+
+
+def test_github_automation_is_basic_and_has_no_full_suite() -> None:
+    workflows = REPO_ROOT / ".github" / "workflows"
+    production = (workflows / "production-deploy.yml").read_text(encoding="utf-8")
+    pull_request = (workflows / "backend-contract.yml").read_text(encoding="utf-8")
+    automatic = f"{production}\n{pull_request}"
+
+    assert "WAREHOUSE_DEPLOY_LOCAL_VALIDATION: basic" in production
+    assert "services:" not in automatic
+    assert "pytest" not in automatic
+    assert "docker compose" not in automatic
+    assert "run-full-verification" not in production
+    assert "hosting-smoke-matrix" not in automatic
+    assert sorted(path.name for path in workflows.glob("*.yml")) == [
+        "backend-contract.yml",
+        "production-deploy.yml",
+    ]

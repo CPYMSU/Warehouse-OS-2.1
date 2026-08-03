@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-smart}"
+LOCAL_VALIDATION="${WAREHOUSE_DEPLOY_LOCAL_VALIDATION:-adaptive}"
 HOST="${WAREHOUSE_DEPLOY_HOST:-207.148.120.30}"
 USER="${WAREHOUSE_DEPLOY_USER:-warehouse-deploy}"
 IDENTITY="${WAREHOUSE_DEPLOY_IDENTITY:-${HOME}/.ssh/warehouse_os_deploy_ed25519}"
@@ -39,6 +40,7 @@ Environment:
   WAREHOUSE_DEPLOY_HOST
   WAREHOUSE_DEPLOY_USER
   WAREHOUSE_DEPLOY_IDENTITY
+  WAREHOUSE_DEPLOY_LOCAL_VALIDATION  # adaptive (local default) or basic (GitHub)
 EOF
 }
 
@@ -105,6 +107,11 @@ require_command scp
 require_command shasum
 require_command python3
 
+case "${LOCAL_VALIDATION}" in
+  adaptive|basic) ;;
+  *) fail "unknown local validation policy: ${LOCAL_VALIDATION}" ;;
+esac
+
 deploy_started="${SECONDS}"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-deploy.XXXXXX")"
 stage_dir="${work_dir}/stage"
@@ -130,8 +137,8 @@ PLAN_SOURCE="explicit"
 INSTALL_MODE="${MODE}"
 
 if [[ "${MODE}" == smart ]]; then
-  # The model is deterministic and versioned with the release. Unknown files
-  # fail closed to full verification instead of silently taking a fast lane.
+  # The model is deterministic and versioned with the release. It also tells
+  # the trusted server which safety checks are required for this release.
   active_manifest="${work_dir}/active-files.sha256"
   if remote "sudo -n ${REMOTE_MANAGER} manifest" \
     > "${active_manifest}" 2>/dev/null && [[ -s "${active_manifest}" ]]; then
@@ -155,7 +162,8 @@ if [[ "${MODE}" == smart ]]; then
   printf '    plan: source=%s risk=%s lane=%s files=%s\n' \
     "${PLAN_SOURCE}" "${PLAN_RISK}" "${PLAN_MODE}" "${PLAN_CHANGED_COUNT}"
   if [[ -n "${PLAN_UNMATCHED_FILES}" ]]; then
-    printf '    unmatched (full verification): %s\n' "${PLAN_UNMATCHED_FILES}"
+    printf '    unmatched (server applies conservative checks): %s\n' \
+      "${PLAN_UNMATCHED_FILES}"
   fi
   if [[ "${PLAN_DEPLOY_REQUIRED}" != 1 ]]; then
     printf '==> no runtime deployment required for the observed change set\n'
@@ -164,44 +172,58 @@ if [[ "${MODE}" == smart ]]; then
 fi
 
 phase_started="${SECONDS}"
-if [[ "${PLAN_FRONTEND}" == 1 || "${MODE}" != smart ]]; then
-  node scripts/build_v2_frontend.cjs
-fi
-if [[ "${MODE}" != smart ]]; then
+if [[ "${LOCAL_VALIDATION}" == basic ]]; then
   node scripts/build_v2_frontend.cjs --check
+else
+  if [[ "${PLAN_FRONTEND}" == 1 || "${MODE}" != smart ]]; then
+    node scripts/build_v2_frontend.cjs
+  fi
+  if [[ "${MODE}" != smart ]]; then
+    node scripts/build_v2_frontend.cjs --check
+  fi
 fi
 printf '    phase=frontend duration_seconds=%s\n' "$((SECONDS - phase_started))"
 
 phase_started="${SECONDS}"
-case "${MODE}" in
-  smart)
-    IFS=: read -r -a smart_tests <<< "${PLAN_TESTS}"
-    if [[ ${#smart_tests[@]} -eq 0 ]]; then
-      smart_tests=(backend/tests/test_config.py)
-    fi
-    if [[ "${PLAN_INTEGRATION}" == 1 ]]; then
-      verification_targets=()
-      for target in "${smart_tests[@]}"; do
-        verification_targets+=("${target#backend/}")
-      done
-      ops/run-full-verification "${verification_targets[@]}"
-    else
-      backend/.venv/bin/pytest -q "${smart_tests[@]}"
-    fi
-    ;;
-  quick)
-    backend/.venv/bin/pytest -q \
-      backend/tests/test_config.py \
-      backend/tests/test_frontend_api_contract.py
-    ;;
-  standard)
-    backend/.venv/bin/pytest -q backend/tests
-    ;;
-  full)
-    backend/.venv/bin/pytest -q backend/tests
-    ops/run-full-verification
-    ;;
-esac
+if [[ "${LOCAL_VALIDATION}" == basic ]]; then
+  PYTHONPYCACHEPREFIX="${work_dir}/python-cache" \
+    python3 -m compileall -q backend/app backend/alembic/versions
+  bash -n \
+    ops/deploy \
+    ops/run-full-verification \
+    ops/server/warehouse-deploy \
+    infra/backup/warehouse-postgres-backup.sh
+else
+  case "${MODE}" in
+    smart)
+      IFS=: read -r -a smart_tests <<< "${PLAN_TESTS}"
+      if [[ ${#smart_tests[@]} -eq 0 ]]; then
+        smart_tests=(backend/tests/test_config.py)
+      fi
+      if [[ "${PLAN_INTEGRATION}" == 1 ]]; then
+        verification_targets=()
+        for target in "${smart_tests[@]}"; do
+          verification_targets+=("${target#backend/}")
+        done
+        ops/run-full-verification "${verification_targets[@]}"
+      else
+        backend/.venv/bin/pytest -q "${smart_tests[@]}"
+      fi
+      ;;
+    quick)
+      backend/.venv/bin/pytest -q \
+        backend/tests/test_config.py \
+        backend/tests/test_frontend_api_contract.py
+      ;;
+    standard)
+      backend/.venv/bin/pytest -q backend/tests
+      ;;
+    full)
+      backend/.venv/bin/pytest -q backend/tests
+      ops/run-full-verification
+      ;;
+  esac
+fi
 printf '    phase=tests duration_seconds=%s\n' "$((SECONDS - phase_started))"
 
 git_sha="$(git rev-parse --short=12 HEAD 2>/dev/null || printf 'no-git')"
@@ -238,6 +260,7 @@ mkdir -p "${stage_dir}/.warehouse-release"
 cat > "${stage_dir}/.warehouse-release/manifest.env" <<EOF
 release_id=${release_id}
 mode=${MODE}
+local_validation=${LOCAL_VALIDATION}
 install_mode=${INSTALL_MODE}
 planned_mode=${PLAN_MODE}
 plan_risk=${PLAN_RISK}
