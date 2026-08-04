@@ -19,7 +19,13 @@
     {
       "glob": "backend/pyproject.toml",
       "risk": "critical",
-      "impacts": ["api", "dependencies", "integration"],
+      "impacts": ["api", "research_executor", "dependencies", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/Dockerfile.research-executor",
+      "risk": "critical",
+      "impacts": ["research_executor", "dependencies", "integration"],
       "tests": ["backend/tests"]
     },
     {
@@ -83,10 +89,19 @@
       "tests": ["backend/tests/test_digital_asset_hosting.py"]
     },
     {
-      "glob": "backend/app/runtime_controller.py",
+      "glob": "backend/app/runtime_controller*.py",
       "risk": "high",
       "impacts": ["api", "runtime_controller"],
-      "tests": ["backend/tests/test_digital_asset_hosting.py"]
+      "tests": ["backend/tests/test_runtime_controller_docker_engine.py"]
+    },
+    {
+      "glob": "backend/app/services/hosted_database.py",
+      "risk": "high",
+      "impacts": ["api", "runtime_controller", "storage"],
+      "tests": [
+        "backend/tests/test_digital_asset_hosting.py",
+        "backend/tests/test_runtime_controller_docker_engine.py"
+      ]
     },
     {
       "glob": "backend/app/api/browser_runtime.py",
@@ -103,7 +118,7 @@
     {
       "glob": "ops/**",
       "risk": "critical",
-      "impacts": ["api", "control_plane", "integration"],
+      "impacts": ["control_plane", "integration"],
       "tests": ["backend/tests"]
     },
     {

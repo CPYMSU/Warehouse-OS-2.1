@@ -51,8 +51,8 @@ def test_manifest_is_a_single_machine_contract_for_terminal_ai() -> None:
     assert [item["name"] for item in manifest["downloads"]] == [
         "dm.py",
         "dm-guide.md",
-        "workspace-hosting-developer-standard-2.2.zh-TW.md",
-        "workspace-hosting-contract-2.2.json",
+        "workspace-hosting-developer-standard-2.3.zh-TW.md",
+        "workspace-hosting-contract-2.3.json",
     ]
 
 
@@ -156,7 +156,10 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert kit.status_code == 200
     assert cli.status_code == 200
     assert 'DEFAULT_BASE = "http://testserver"' in cli.text
-    assert 'VERSION = "2.3.2"' in cli.text
+    assert 'VERSION = "2.6.0"' in cli.text
+    assert "/api/workspaces/v1/usage" in cli.text
+    assert 'commands.add_parser("job"' in cli.text
+    assert 'commands.add_parser("database"' in cli.text
     assert '"fabric"' in cli.text
     assert 'source_subcommands.add_parser("pull"' in cli.text
     assert '"/api/hosting/v2/sessions"' in cli.text
@@ -168,9 +171,9 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert "給終端 AI：優先使用智能託管接口" in guide.text
     assert "/api/hosting/v2/manifest" in guide.text
     assert requirements.status_code == 200
-    assert requirements.json()["version"] == "2.2"
+    assert requirements.json()["version"] == "2.3"
     assert standard.status_code == 200
-    assert standard.text.startswith("# Warehouse OS《託管應用技術要求 2.2》")
+    assert standard.text.startswith("# Warehouse OS《託管應用技術要求 2.3》")
     assert contract.status_code == 200
     assert contract.json()["example_manifest"]["runtime"]["health_path"] == ("/healthz")
 

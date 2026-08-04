@@ -1,0 +1,5 @@
+services:
+  api:
+    environment:
+      WAREHOUSE_SHIELD_AGENT_HOST: host.docker.internal
+      WAREHOUSE_SHIELD_AGENT_PORT: "18091"

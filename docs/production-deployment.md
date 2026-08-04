@@ -106,23 +106,30 @@ total timeout.
 
 ## GitHub Actions deployment
 
-Only two small workflows run automatically. Pull requests run syntax,
-generated-frontend and deployment-planner checks with a five-minute ceiling.
-They do not install application dependencies, start PostgreSQL, run pytest or
-build a Compose stack. Pushes to `main` use
-`.github/workflows/production-deploy.yml`, which is bound to the `production`
-GitHub Environment, accepts only the restricted deployment identity and runs
-with read-only repository permissions.
+Pull requests run syntax, generated-frontend and deployment-planner checks with
+a five-minute ceiling. They do not install application dependencies, start
+PostgreSQL, run pytest or build a Compose stack. Pushes to `main` use
+`.github/workflows/production-deploy.yml`, which first deploys the Mac primary
+through the `mac-production` Environment and then deploys the Vultr standby
+through `production`. Both jobs run with read-only repository permissions and
+share the target-neutral `.github/workflows/production-deploy-target.yml`.
 
-The deployment job refuses stale queued revisions, serializes production
-releases and requires the live server manifest. It fixes
+The Mac job uses `tailscale/github-action@v4` to create an ephemeral tagged
+GitHub-hosted runner. The public repository never schedules work on a
+self-hosted Mac runner. A forced-command SSH key may upload only to the fixed
+incoming directory and invoke the small Mac deployment-manager command set;
+it cannot open a shell, allocate a PTY or forward ports.
+
+The workflow refuses stale queued revisions, serializes the entire two-target
+release and requires each node's live manifest. It fixes
 `WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic`, so GitHub performs only Python
 compilation, shell parsing, committed frontend-bundle verification, packaging
 and deployment. Standard/full pytest and disposable-database verification are
-local pre-Draft responsibilities and are never selected by GitHub. The active
-server remains responsible for checksummed extraction, required backups,
-candidate health, database revision, blue/green switching, public smoke and
-automatic traffic restoration on failure.
+local pre-Draft responsibilities and are never selected by GitHub. Each target
+manager independently recomputes the impact plan and remains responsible for
+checksummed extraction, required backups, candidate health, database revision
+and automatic restoration on failure. Vultr is not updated unless the Mac
+primary has already passed its target and public health checks.
 
 ## Hosted-data disk activation
 

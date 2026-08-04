@@ -44,6 +44,19 @@ def tenant_session(tenant_id: UUID) -> Generator[Session, None, None]:
 
 
 @contextmanager
+def tenant_readonly_session(tenant_id: UUID) -> Generator[Session, None, None]:
+    """Open a database-enforced read-only transaction for one company AI."""
+
+    with get_session_factory().begin() as session:
+        session.execute(text("SET TRANSACTION READ ONLY"))
+        session.execute(
+            text("SELECT set_config('app.tenant_id', CAST(:tenant_id AS text), true)"),
+            {"tenant_id": str(tenant_id)},
+        )
+        yield session
+
+
+@contextmanager
 def system_session() -> Generator[Session, None, None]:
     """Use only for identity lookup and migration/bootstrap administration."""
     with get_session_factory().begin() as session:

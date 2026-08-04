@@ -2270,7 +2270,8 @@ COMMANDS = [
         "tool_name": "db_schema",
         "description": "讀取當前公司數據庫的機器可讀結構目錄（表、字段、主鍵、外鍵、索引及 schema hash）。排查前先按 domain 或 table 載入一次，後續 SQL 必須只使用目錄中存在的表和字段，不要逐個猜測",
         "api_method": "POST", "api_path": "/api/db/schema",
-        "permission": "settings.manage", "writes": False, "risk": "low",
+        "permission": "settings.manage", "permission_any": ["ai.database"],
+        "writes": False, "risk": "low",
         "params": [
             _p("domain", "body.domain", "業務域關鍵詞，如 erp/fin/inventory/stocktake/budget；按表名前綴及名稱篩選"),
             _p("table", "body.table", "精確表名；與 domain 二選一，留空返回表名總覽"),
@@ -2280,9 +2281,10 @@ COMMANDS = [
     {
         "command": "db query",
         "tool_name": "db_query",
-        "description": "只讀 SQL 查當前公司數據庫(只允許 SELECT/WITH/EXPLAIN/PRAGMA,單條,只讀連接)。排查任何數據/流程問題、查表結構、對賬時用它——能查不能改,絕對安全。要改數據請用對應業務指令",
+        "description": "只讀 SQL 查當前公司的 PostgreSQL 數據庫（SELECT/WITH/EXPLAIN，單條，只讀交易並受 RLS 約束）。排查數據、流程或對賬問題時使用；要改數據請用對應業務指令",
         "api_method": "POST", "api_path": "/api/db/query",
-        "permission": "settings.manage", "writes": False, "risk": "low",
+        "permission": "settings.manage", "permission_any": ["ai.database"],
+        "writes": False, "risk": "low",
         "params": [
             _p("sql", "body.sql", "只讀 SQL(SELECT…)", required=True),
             _p("limit", "body.limit", "返回行上限(默認200,最多1000)", ptype="int"),
@@ -4798,8 +4800,8 @@ COMMANDS = [
         "api_method": "GET", "api_path": "/api/agent/run",
         "permission": "ai.use", "writes": False, "risk": "low",
         "ai_exposed": False,
-        "params": [_p("id", "query.id", "運行 id", required=True, ptype="int")],
-        "examples": ["runs show --id 3"],
+        "params": [_p("id", "query.id", "runs list 返回的運行 UUID", required=True)],
+        "examples": ["runs show --id 3f4e4f5c-2a1b-4a0f-9c28-8a4cf5e0d133"],
     },
     {
         "command": "runs undo",
@@ -4808,8 +4810,8 @@ COMMANDS = [
         "api_method": "POST", "api_path": "/api/agent/run/undo",
         "permission": "ai.use", "writes": True, "risk": "normal",
         "ai_exposed": False,  # 撤銷由人決定,不交給 AI 自動觸發
-        "params": [_p("id", "body.run_id", "要沖正的運行 id", required=True, ptype="int")],
-        "examples": ["runs undo --id 7"],
+        "params": [_p("id", "body.run_id", "要沖正的運行 UUID", required=True)],
+        "examples": ["runs undo --id 3f4e4f5c-2a1b-4a0f-9c28-8a4cf5e0d133"],
     },
     {
         "command": "risk list",
@@ -5403,7 +5405,7 @@ COMMANDS = [
     {
         "command": "dm show",
         "tool_name": "digital_market_show",
-        "description": "以 UUID、數字 ID、DMA 編號或唯一名稱查看一項企業數字資產完整檔案；工作區 key 不是資產引用，應先沿語義關係取得 asset_id",
+        "description": "以 UUID、數字 ID、DMA 編號或唯一名稱查看一項企業數字資產完整檔案，包含既有 source version UUID 與服務端已驗證的 artifact_hash；工作區 key 不是資產引用，應先沿語義關係取得 asset_id",
         "api_method": "GET", "api_path": "/api/digital-assets/{id}",
         "permission": "asset_mgmt.read", "writes": False, "risk": "low",
         "semantic_contract": {
@@ -5779,7 +5781,7 @@ COMMANDS = [
     {
         "command": "dm deploy",
         "tool_name": "digital_market_deploy",
-        "description": "為已具備相應組件的數字資產記錄一次部署請求。若工作區目前只有 static 前端而要新增後端，必須先用 dm runtime upgrade；本指令不允許猜測資產 id 或工作區 key",
+        "description": "為已具備相應組件的數字資產記錄一次部署請求。若工作區目前只有 static 前端而要新增後端，必須先用 dm runtime upgrade；本指令不允許猜測資產 id 或工作區 key。指定既有 source_version_id 時，服務端會在同一資產內解析並核驗 SHA-256，絕對不要要求使用者再次提供 checksum",
         "api_method": "POST", "api_path": "/api/digital-assets/{id}/deploy",
         "permission": "asset_mgmt.manage", "writes": True, "risk": "normal",
         "ai_requires_confirmation": True,
@@ -5804,7 +5806,7 @@ COMMANDS = [
     {
         "command": "dm runtime upgrade",
         "tool_name": "digital_market_runtime_upgrade",
-        "description": "按真實 workspace_key 把 static 工作區升級成 web/api 後端託管：持久化 Runtime 類型並建立或更新 backend 組件；有已托管源碼版本時生成部署請求，無源碼時只完成配置並明確返回上傳源碼為下一步。不修改資產主檔類型，也不猜測舊式數字資產 id",
+        "description": "按真實 workspace_key 把 static 工作區升級成 web/api 後端託管：持久化 Runtime 類型並建立或更新 backend 組件；有已托管源碼版本時生成部署請求，無源碼時只完成配置並明確返回上傳源碼為下一步。不修改資產主檔類型，也不猜測舊式數字資產 id。既有 source_version_id 是完整不可變定位符，服務端自行解析已驗證 SHA-256，不得向使用者索取 checksum",
         "search_aliases": [
             "静态托管升级后端",
             "靜態託管升級後端",
@@ -6214,7 +6216,7 @@ COMMANDS = [
     {
         "command": "dm hosting requirements",
         "tool_name": "digital_market_hosting_requirements",
-        "description": "取得《託管應用技術要求 2.2》、機器可讀 Hosting Contract 及正式下載連結。用於設計或檢查可被 Warehouse OS 託管的 Python、Node.js、靜態網站、Container 與 Compose 專案；回答必須區分應用責任、平台保證與 ready 的實證門檻",
+        "description": "取得《託管應用技術要求 2.3》、機器可讀 Hosting Contract 及正式下載連結。用於設計或檢查可被 Warehouse OS 託管的 Python、Node.js、靜態網站、Container 與 Compose 專案；回答必須區分應用責任、平台保證與 ready 的實證門檻",
         "search_aliases": [
             "託管技術要求",
             "托管技术要求",
@@ -6237,7 +6239,7 @@ COMMANDS = [
     {
         "command": "dm hosting start",
         "tool_name": "digital_market_hosting_start",
-        "description": "啟動一個可恢復的智能託管會話。這是 AI 秘書處理部署目標的優先入口：先觀察真實工作區、源碼、儲存及 Runtime，再回傳非寫死計畫；可用 desired-state 明確目標，execute=true 時在同一會話內執行並保留逐步證據與精確故障位置",
+        "description": "啟動一個可恢復的智能託管會話。這是 AI 秘書處理部署目標的優先入口：先觀察真實工作區、源碼、儲存及 Runtime，再回傳非寫死計畫；可用 desired-state 明確目標，execute=true 時在同一會話內執行並保留逐步證據與精確故障位置。既有版本的 SHA-256 必須從工作區觀察结果解析，不向使用者重复索取",
         "search_aliases": [
             "智能部署會話",
             "智能托管会话",
@@ -6320,6 +6322,201 @@ COMMANDS = [
         "risk": "normal",
         "params": [],
         "examples": ["dm storage pools"],
+    },
+    {
+        "command": "dm db service list",
+        "tool_name": "digital_market_database_projects",
+        "description": "列出目前公司全部工作區數據庫與獨立數據庫服務，包含資產、工作區、Provider、容量、瀏覽器專案與安全狀態；不返回 DSN、密碼、wak_ 明文或瀏覽器會話 Token。用戶問有哪些數據庫時優先使用",
+        "search_aliases": [
+            "列出所有數據庫",
+            "列出所有数据库",
+            "數據庫服務清單",
+            "数据库服务清单",
+            "list database projects",
+            "database service inventory",
+        ],
+        "api_method": "GET",
+        "api_path": "/api/database-projects",
+        "permission": "asset_mgmt.manage",
+        "permission_any": ["assets.manage", "asset_mgmt.manage"],
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p("limit", "query.limit", "最多返回 1-500 個數據庫", ptype="int", default=100),
+        ],
+        "examples": ["dm db service list --limit 100"],
+    },
+    {
+        "command": "dm db service create",
+        "tool_name": "digital_market_database_project_create",
+        "description": "申請毋須啟動 Runtime 的獨立托管數據庫服務，沿用原生資產、工作區、HDD PostgreSQL/RLS Data API、配額與審計鏈；可同時為 GitHub Pages 等靜態前端配置精確 HTTPS Origin 和預設拒絕的集合規則",
+        "search_aliases": [
+            "申請獨立數據庫",
+            "申请独立数据库",
+            "只開數據庫服務",
+            "只开数据库服务",
+            "GitHub Pages database",
+            "create standalone database project",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/database-projects",
+        "permission": "asset_mgmt.manage",
+        "permission_any": ["assets.manage", "asset_mgmt.manage"],
+        "writes": True,
+        "risk": "high",
+        "ai_requires_confirmation": True,
+        "semantic_contract": {
+            "effect": "create_if_absent",
+            "resource": "digital_asset.database_project",
+            "related_resources": [
+                "digital_asset.asset",
+                "digital_asset.workspace",
+                "digital_asset.database_binding",
+            ],
+            "runtime_required": False,
+        },
+        "params": [
+            _p("name", "body.name", "數據庫專案名稱", required=True),
+            _p("workspace-key", "body.workspace_key", "穩定工作區代碼，英數及連字符"),
+            _p("database", "body.database_name", "邏輯數據庫名稱"),
+            _p("summary", "body.summary", "用途與資料範圍說明"),
+            _p(
+                "allowed-origins",
+                "body.allowed_origins",
+                "允許的精確 HTTPS Origin 列表，例如 https://owner.github.io；不要填路徑或萬用字元",
+                ptype="list",
+            ),
+            _p(
+                "rules",
+                "body.browser_access.rules",
+                "瀏覽器集合規則 JSON；default 與 collections 的 read/write 只能是 deny/session/owner，預設全部 deny",
+                ptype="object",
+            ),
+            _p(
+                "rate-limit",
+                "body.browser_access.rate_limit_per_minute",
+                "每個瀏覽器專案每分鐘請求上限 10-10000",
+                ptype="int",
+            ),
+        ],
+        "examples": [
+            "dm db service create --name github-tasks --workspace-key github-tasks --allowed-origins https://owner.github.io --rules '{\"default\":{\"read\":\"deny\",\"write\":\"deny\"},\"collections\":{\"tasks\":{\"read\":\"owner\",\"write\":\"owner\"}}}'"
+        ],
+    },
+    {
+        "command": "dm db browser show",
+        "tool_name": "digital_market_database_browser_access",
+        "description": "查看指定工作區數據庫的瀏覽器安全入口、公開 dbp_ 專案定位符、精確 Origins、集合規則、Token TTL、限流與 revision；不返回 wak_、wdb_、wdr_ 或數據庫密碼",
+        "search_aliases": [
+            "查看數據庫瀏覽器接入",
+            "查看数据库浏览器接入",
+            "GitHub Pages database config",
+            "browser database access status",
+        ],
+        "api_method": "GET",
+        "api_path": "/api/workspaces/{workspace_ref}/database/browser-access",
+        "permission": "asset_mgmt.manage",
+        "permission_any": ["assets.manage", "asset_mgmt.manage"],
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+        ],
+        "examples": ["dm db browser show --workspace github-tasks"],
+    },
+    {
+        "command": "dm db browser configure",
+        "tool_name": "digital_market_database_browser_configure",
+        "description": "配置或停用指定數據庫的瀏覽器安全入口：精確 HTTPS Origins、預設拒絕的集合 read/write 規則、短效 Token TTL、Refresh 有效期及共享限流。規則變更使既有 Access Token 失效，停用會撤銷全部 Refresh Session",
+        "search_aliases": [
+            "配置數據庫瀏覽器接入",
+            "配置数据库浏览器接入",
+            "允許 GitHub Pages 訪問數據庫",
+            "允许 GitHub Pages 访问数据库",
+            "configure browser database gateway",
+        ],
+        "api_method": "PUT",
+        "api_path": "/api/workspaces/{workspace_ref}/database/browser-access",
+        "permission": "asset_mgmt.manage",
+        "permission_any": ["assets.manage", "asset_mgmt.manage"],
+        "writes": True,
+        "risk": "high",
+        "ai_requires_confirmation": True,
+        "params": [
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+            _p("enabled", "body.enabled", "是否啟用瀏覽器入口 true/false", ptype="bool"),
+            _p(
+                "allowed-origins",
+                "body.allowed_origins",
+                "精確 HTTPS Origin 列表；不要填路徑或萬用字元",
+                ptype="list",
+            ),
+            _p(
+                "rules",
+                "body.rules",
+                "集合規則 JSON；default 與 collections 的 read/write 只能是 deny/session/owner",
+                ptype="object",
+            ),
+            _p(
+                "access-ttl",
+                "body.access_token_ttl_seconds",
+                "短效 wdb_ Access Token 秒數 300-3600",
+                ptype="int",
+            ),
+            _p(
+                "refresh-days",
+                "body.refresh_session_ttl_days",
+                "wdr_ Refresh Session 有效天數 1-90",
+                ptype="int",
+            ),
+            _p(
+                "rate-limit",
+                "body.rate_limit_per_minute",
+                "每分鐘請求上限 10-10000",
+                ptype="int",
+            ),
+        ],
+        "examples": [
+            "dm db browser configure --workspace github-tasks --enabled true --allowed-origins https://owner.github.io --rules '{\"default\":{\"read\":\"deny\",\"write\":\"deny\"}}'"
+        ],
+    },
+    {
+        "command": "dm db onboarding",
+        "tool_name": "digital_market_database_onboarding",
+        "description": "生成指定工作區數據庫的完整安全接入包：狀態、SDK 與指南文件、公司控制面/服務器/瀏覽器 API、公開 dbp_、Quickstart 及 Key 交付政策。服務器 wak_ 只可另行確認後一次性交付，PostgreSQL 密碼永不提供給聊天或瀏覽器",
+        "search_aliases": [
+            "給我數據庫全部文件 API KEY",
+            "给我数据库全部文件 API KEY",
+            "數據庫接入包",
+            "数据库接入包",
+            "database onboarding bundle",
+            "database SDK API key guide",
+        ],
+        "api_method": "GET",
+        "api_path": "/api/workspaces/{workspace_ref}/database/onboarding",
+        "permission": "asset_mgmt.manage",
+        "permission_any": ["assets.manage", "asset_mgmt.manage"],
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+        ],
+        "examples": ["dm db onboarding --workspace github-tasks"],
     },
     {
         "command": "dm provision",
@@ -7781,6 +7978,76 @@ COMMANDS = [
             'data mutate --resource digital_asset.workspace --ref mk4-workspace --changes \'{"runtime_type":"web"}\' --intent "改成 Web 託管類型"'
         ],
     },
+    {
+        "command": "data db catalog",
+        "tool_name": "database_catalog",
+        "description": "讓公司 AI 查看其資料庫身份實際可見的 schema、資料表、視圖、主鍵、RLS 狀態與讀寫權限；是否使用由 AI 自主判斷",
+        "api_method": "GET",
+        "api_path": "/api/data/v2/database",
+        "permission": "ai.database",
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [],
+        "examples": ["data db catalog"],
+    },
+    {
+        "command": "data db schema",
+        "tool_name": "database_schema",
+        "description": "查看公司 AI 可見物理表的全部表頭、資料類型、預設值、主外鍵、約束、索引與 RLS policy",
+        "api_method": "POST",
+        "api_path": "/api/data/v2/database/schema",
+        "permission": "ai.database",
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("table", "body.table", "schema.table；可使用 catalog 返回的完整名稱", required=True),
+        ],
+        "examples": ["data db schema --table digital_asset.assets"],
+    },
+    {
+        "command": "data db query",
+        "tool_name": "database_query",
+        "description": "由公司 AI 自主編寫 SQL，在其當前資料庫身份與 RLS 下讀取真實欄位、鍵值和行資料；事務由資料庫強制只讀",
+        "api_method": "POST",
+        "api_path": "/api/data/v2/database/query",
+        "permission": "ai.database",
+        "ai_discretionary": True,
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("sql", "body.sql", "AI 編寫的 PostgreSQL 查詢", required=True),
+            _p("parameters", "body.parameters", "SQL 命名參數 JSON", ptype="object", default={}),
+            _p("limit", "body.limit", "回傳給 Runtime 的最大行數，最多 2000", ptype="int", default=200),
+        ],
+        "examples": [
+            'data db query --sql "SELECT * FROM digital_asset.assets WHERE asset_no=:asset_no" --parameters \'{"asset_no":"DMA-000068"}\''
+        ],
+    },
+    {
+        "command": "data db execute",
+        "tool_name": "database_execute",
+        "description": "由公司 AI 自主編寫並執行 PostgreSQL，直接完成沒有專用指令的資料庫業務操作；可在同一事務中 RETURNING 或執行自選讀回查詢",
+        "api_method": "POST",
+        "api_path": "/api/data/v2/database/execute",
+        "permission": "ai.database",
+        "ai_discretionary": True,
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("sql", "body.sql", "AI 編寫的 PostgreSQL 語句", required=True),
+            _p("parameters", "body.parameters", "SQL 命名參數 JSON", ptype="object", default={}),
+            _p("verification-sql", "body.verification_sql", "可選：同一事務內的讀回核驗 SQL"),
+            _p("verification-parameters", "body.verification_parameters", "讀回核驗參數 JSON", ptype="object", default={}),
+            _p("limit", "body.limit", "RETURNING/核驗最大回傳行數，最多 2000", ptype="int", default=200),
+            _p("intent", "body.intent", "使用者目標與本次資料庫操作意圖", required=True),
+            _p("reasoning", "body.reasoning_summary", "AI 的精簡判斷依據"),
+        ],
+        "examples": [
+            'data db execute --sql "UPDATE digital_asset.assets SET summary=:summary WHERE asset_no=:asset_no RETURNING id,asset_no,summary" --parameters \'{"asset_no":"DMA-000068","summary":"updated by company AI"}\' --intent "更新資產說明"'
+        ],
+    },
 ]
 
 
@@ -8633,11 +8900,13 @@ CLI_CAP_GROUPS = [
 
 # command(指令名)→ 能力鍵;扁平能力定義(供權限表 + 設置頁分組)
 CLI_CAP_BY_COMMAND = {cmd: g["key"] for g in CLI_CAP_GROUPS for cmd in g["commands"]}
-# Business permissions that may satisfy a governed CLI capability.  Finance
-# commands still pass through their HTTP business-role guards (including the
-# finance-manager check for master data/posting) and confirmation workflow;
-# this mapping only prevents a valid finance role from losing its AI/CLI tools
-# merely because industry blueprints intentionally do not grant cli.* keys.
+# Extra business permissions that may satisfy a governed CLI capability.
+# Every grouped command also retains its own declared API permission below;
+# otherwise one asset workflow can incorrectly mix LOCKED and WRITE merely
+# because only some commands were imported into an older cli.* group.
+# Commands still pass through their HTTP business-role guards and registered
+# confirmation workflow, so accepting that native permission does not bypass
+# the domain boundary.
 CLI_CAP_PERMISSION_ALTERNATIVES = {
     "cli.finance": ("finance.write",),
 }
@@ -8673,9 +8942,11 @@ def effective_permissions(entry):
         ))
     capability = CLI_CAP_BY_COMMAND.get(entry["command"])
     if capability:
+        native_permission = entry.get("permission")
         return tuple(dict.fromkeys(
             (capability,)
             + CLI_CAP_PERMISSION_ALTERNATIVES.get(capability, ())
+            + ((str(native_permission),) if native_permission else ())
             + tuple(str(key) for key in (entry.get("permission_any") or ()) if key)
         ))
     alternatives = entry.get("permission_any")

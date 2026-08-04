@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLANNER = REPO_ROOT / "ops" / "deploy-plan"
 
@@ -37,6 +39,7 @@ def test_python_import_graph_selects_dependant_tests() -> None:
     assert plan["mode"] == "quick"
     assert plan["risk"] == "normal"
     assert "backend/tests/test_auto_runtime.py" in plan["tests"]
+    assert all(" 2." not in path for path in plan["tests"])
     assert plan["deploy_required"] is True
 
 
@@ -47,6 +50,44 @@ def test_migration_change_escalates_to_full_integration() -> None:
     assert plan["risk"] == "critical"
     assert {"backup", "integration", "migration"}.issubset(plan["impacts"])
     assert plan["tests"] == ["backend/tests"]
+
+
+def test_runtime_controller_base_and_database_provider_restart_controller() -> None:
+    plan = _plan(
+        "backend/app/runtime_controller_base.py",
+        "backend/app/services/hosted_database.py",
+    )
+
+    assert plan["mode"] == "standard"
+    assert plan["risk"] == "high"
+    assert {"api", "runtime_controller", "storage"}.issubset(plan["impacts"])
+    assert "backend/tests/test_runtime_controller_docker_engine.py" in plan["tests"]
+
+
+def test_research_executor_rebuild_follows_real_import_graph() -> None:
+    api_only = _plan("backend/app/api/full_stack_business.py")
+    shared_dependency = _plan("backend/app/core/config.py")
+    executor = _plan("backend/app/research_executor.py")
+
+    assert "research_executor" not in api_only["impacts"]
+    assert "research_executor" in shared_dependency["impacts"]
+    assert "research_executor" in executor["impacts"]
+
+
+def test_research_dockerfile_does_not_force_api_rebuild() -> None:
+    plan = _plan("backend/Dockerfile.research-executor")
+
+    assert "research_executor" in plan["impacts"]
+    assert "api" not in plan["impacts"]
+
+
+def test_control_plane_change_does_not_rebuild_runtime_images() -> None:
+    plan = _plan("ops/server/warehouse-shield-agent.py")
+
+    assert "control_plane" in plan["impacts"]
+    assert "api" not in plan["impacts"]
+    assert "browser" not in plan["impacts"]
+    assert "research_executor" not in plan["impacts"]
 
 
 def test_non_runtime_change_stops_before_packaging() -> None:
@@ -119,17 +160,51 @@ def test_active_manifest_can_be_compared_with_candidate_tree(tmp_path: Path) -> 
 
 def test_github_automation_is_basic_and_has_no_full_suite() -> None:
     workflows = REPO_ROOT / ".github" / "workflows"
+    if not workflows.is_dir():
+        pytest.skip(".github is intentionally excluded from production release archives")
     production = (workflows / "production-deploy.yml").read_text(encoding="utf-8")
+    target = (workflows / "production-deploy-target.yml").read_text(encoding="utf-8")
     pull_request = (workflows / "backend-contract.yml").read_text(encoding="utf-8")
-    automatic = f"{production}\n{pull_request}"
+    automatic = f"{production}\n{target}\n{pull_request}"
 
-    assert "WAREHOUSE_DEPLOY_LOCAL_VALIDATION: basic" in production
+    assert "WAREHOUSE_DEPLOY_LOCAL_VALIDATION: basic" in target
     assert "services:" not in automatic
     assert "pytest" not in automatic
     assert "docker compose" not in automatic
-    assert "run-full-verification" not in production
+    assert "run-full-verification" not in f"{production}\n{target}"
     assert "hosting-smoke-matrix" not in automatic
     assert sorted(path.name for path in workflows.glob("*.yml")) == [
         "backend-contract.yml",
+        "production-deploy-target.yml",
         "production-deploy.yml",
     ]
+
+
+def test_github_deploys_mac_primary_before_vultr_standby() -> None:
+    workflows = REPO_ROOT / ".github" / "workflows"
+    if not workflows.is_dir():
+        pytest.skip(".github is intentionally excluded from production release archives")
+    production = (workflows / "production-deploy.yml").read_text(encoding="utf-8")
+    target = (workflows / "production-deploy-target.yml").read_text(encoding="utf-8")
+
+    assert "environment: mac-production" in production
+    assert "target: mac-primary" in production
+    assert "needs: [freshness, deploy-mac-primary]" in production
+    assert "environment: production" in production
+    assert "target: vultr-standby" in production
+    assert "runs-on: self-hosted" not in target
+    assert "uses: tailscale/github-action@v4" in target
+    assert "ops/deploy plan" in target
+    assert "run: ops/deploy smart" in target
+
+
+def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
+    source = (REPO_ROOT / "ops" / "deploy").read_text(encoding="utf-8")
+
+    assert 'REMOTE_INCOMING="${WAREHOUSE_DEPLOY_INCOMING:' in source
+    assert 'MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:' in source
+    assert 'PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:' in source
+    assert 'SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:' in source
+    assert 'manager_remote install "${release_id}" "${INSTALL_MODE}"' in source
+    assert '"${USER}@${HOST}:${REMOTE_INCOMING}/"' in source
+    assert "${USER}@${HOST}:/var/lib/warehouse-deploy/incoming/" not in source

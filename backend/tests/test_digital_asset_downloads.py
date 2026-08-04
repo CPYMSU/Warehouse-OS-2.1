@@ -60,18 +60,18 @@ def test_21_guide_and_cli_are_downloadable_without_legacy_runtime_paths() -> Non
     assert '"/api/dam/v1/' not in cli_download.text
     compile(cli_download.text, "dam.py", "exec")
     assert standard.status_code == 200
-    assert standard.json()["version"] == "2.2"
-    assert standard.json()["schema"] == "warehouse.hosting-application.v2.2"
-    assert standard.json()["contract"]["version"] == "2.2"
+    assert standard.json()["version"] == "2.3"
+    assert standard.json()["schema"] == "warehouse.hosting-application.v2.3"
+    assert standard.json()["contract"]["version"] == "2.3"
     assert standard.json()["contract"]["health"]["ready_requires"] == [
         "runtime process is running",
         "health_path succeeds",
         "public route reaches the target deployment",
     ]
     assert standard_download.status_code == 200
-    assert standard_download.text.startswith("# Warehouse OS《託管應用技術要求 2.2》")
+    assert standard_download.text.startswith("# Warehouse OS《託管應用技術要求 2.3》")
     assert contract_download.status_code == 200
-    assert contract_download.json()["contract"] == ("warehouse.hosting-application.v2.2")
+    assert contract_download.json()["contract"] == ("warehouse.hosting-application.v2.3")
 
 
 def test_dm_guide_provision_and_key_issue_use_native_21_contracts() -> None:
@@ -234,7 +234,7 @@ def test_dm_hosting_requirements_dispatches_and_exposes_safe_downloads(
     )
 
     assert result["status"] == "succeeded"
-    assert result["data"]["version"] == "2.2"
+    assert result["data"]["version"] == "2.3"
     assert [item["url"] for item in _safe_download_markers(result)] == [
         "/api/digital-assets/hosting-standard/download",
         "/api/digital-assets/hosting-contract.json",

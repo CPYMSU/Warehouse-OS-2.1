@@ -5,6 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from app.api.deps import ActorContext, current_actor
+from app.services.database_runtime import (
+    database_catalog,
+    database_execute,
+    database_query,
+    database_schema,
+)
 from app.services.generic_data import (
     commit_mutation,
     list_capability_gaps,
@@ -19,6 +25,47 @@ from app.services.generic_data import (
 )
 
 router = APIRouter(tags=["ai-native-data"])
+
+
+@router.get("/api/data/v2/database")
+def data_database_catalog(
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return database_catalog(actor)
+
+
+@router.post("/api/data/v2/database/schema")
+def data_database_schema(
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return database_schema(actor, payload)
+
+
+@router.post("/api/data/v2/database/query")
+def data_database_query(
+    request: Request,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return database_query(
+        actor,
+        payload,
+        origin=request.headers.get("X-Warehouse-Execution-Origin") or "api",
+    )
+
+
+@router.post("/api/data/v2/database/execute")
+def data_database_execute(
+    request: Request,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return database_execute(
+        actor,
+        payload,
+        origin=request.headers.get("X-Warehouse-Execution-Origin") or "api",
+    )
 
 
 @router.get("/api/data/v2/resources")

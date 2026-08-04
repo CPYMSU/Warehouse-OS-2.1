@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MODE="${1:-smart}"
+EXPECTED_RELEASE="${WAREHOUSE_EXPECTED_RELEASE:-}"
+
+fail() {
+  printf 'cluster deploy error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_node() {
+  local prefix="$1"
+  local name variable
+  for name in HOST USER IDENTITY REMOTE_MANAGER; do
+    variable="${prefix}_${name}"
+    [[ -n "${!variable:-}" ]] || fail "${variable} is required"
+  done
+}
+
+deploy_node() {
+  local prefix="$1"
+  local label="$2"
+  local role="$3"
+  local host_var="${prefix}_HOST"
+  local user_var="${prefix}_USER"
+  local identity_var="${prefix}_IDENTITY"
+  local manager_var="${prefix}_REMOTE_MANAGER"
+  printf '==> deploy node=%s role=%s host=%s\n' "${label}" "${role}" "${!host_var}"
+  WAREHOUSE_DEPLOY_HOST="${!host_var}" \
+  WAREHOUSE_DEPLOY_USER="${!user_var}" \
+  WAREHOUSE_DEPLOY_IDENTITY="${!identity_var}" \
+  WAREHOUSE_REMOTE_DEPLOY_MANAGER="${!manager_var}" \
+    "${ROOT}/ops/deploy" "${MODE}"
+}
+
+verify_cluster() {
+  local extra=()
+  [[ -z "${EXPECTED_RELEASE}" ]] || extra+=(--release "${EXPECTED_RELEASE}")
+  [[ -z "${WAREHOUSE_EXPECTED_GIT_SHA:-}" ]] \
+    || extra+=(--git-sha "${WAREHOUSE_EXPECTED_GIT_SHA}")
+  "${ROOT}/ops/cluster/verify-nodes.py" \
+    --inventory "${ROOT}/ops/cluster/nodes.json" "${extra[@]}"
+}
+
+require_node WAREHOUSE_STANDBY
+require_node WAREHOUSE_PRIMARY
+
+# A failed standby deployment stops the release before the primary is touched.
+deploy_node WAREHOUSE_STANDBY vultr-standby standby
+
+# During the rolling window release skew is expected, but both nodes must be ready.
+"${ROOT}/ops/cluster/verify-nodes.py" \
+  --inventory "${ROOT}/ops/cluster/nodes.json" --allow-version-skew
+
+deploy_node WAREHOUSE_PRIMARY mac-primary primary
+verify_cluster
+printf '==> cluster deployment complete\n'

@@ -1,10 +1,11 @@
 """Versioned command catalogue and its activation boundary.
 
 `legacy_catalog` deliberately keeps every imported command contract as an
-institutional record. Active tenant contracts execute through either a native
-FastAPI domain route or the catalogue-driven PostgreSQL capability gateway.
-Retired contracts remain human-searchable but unavailable, and platform
-contracts remain separate until their L11 identity reaches the boundary.
+institutional record.  Discovery and execution readiness are independent:
+only concrete FastAPI domain adapters are active, while structurally routable
+legacy projections remain visible as awaiting a domain adapter.  Retired
+contracts remain human-searchable but unavailable, and platform contracts
+remain separate until their L11 identity reaches the boundary.
 """
 
 from __future__ import annotations
@@ -13,17 +14,20 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from app.terminal import legacy_catalog
+from app.terminal.adapters import verified_adapter, verified_adapter_ready
 from app.terminal.gateway import gateway_contract_ready
+from app.terminal.readiness import native_adapter_ready, readiness_snapshot
 
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
 
-CATALOGUE_REVISION = "legacy-479.2026-08-03-hosting-requirements"
+CATALOGUE_REVISION = "capability-truth-v7-database-secretary.2026-08-03"
 RETIRED_LIFECYCLES = frozenset({"retired_2_0"})
 
 
 def is_retired(entry: dict[str, Any]) -> bool:
     return str(entry.get("lifecycle") or "") in RETIRED_LIFECYCLES
+
 
 def tenant_entries() -> tuple[dict[str, Any], ...]:
     return tuple(legacy_catalog.COMMANDS)
@@ -45,9 +49,28 @@ def availability(entry: dict[str, Any], *, platform: bool = False) -> str:
         # Platform commands are withheld until the L11 ownership model is
         # implemented; an L10 tenant administrator must never receive them.
         return "requires_l11_governance"
-    if gateway_contract_ready(entry):
+    if native_adapter_ready(entry) or verified_adapter_ready(entry):
         return "active"
+    if gateway_contract_ready(entry):
+        return "awaiting_domain_adapter"
     return "invalid_contract"
+
+
+def execution_kind(entry: dict[str, Any], *, platform: bool = False) -> str:
+    """Describe the current affordance without prescribing an AI workflow."""
+
+    state = availability(entry, platform=platform)
+    if state == "active":
+        if verified_adapter_ready(entry) and not native_adapter_ready(entry):
+            return "verified_adapter"
+        return "native_adapter"
+    if state == "awaiting_domain_adapter":
+        return "capability_gap"
+    if state == "requires_l11_governance":
+        return "platform_governance"
+    if is_retired(entry):
+        return "retired"
+    return "invalid"
 
 
 def is_authorized(entry: dict[str, Any], permissions: Iterable[str]) -> bool:
@@ -61,6 +84,7 @@ def command_summary(
     required = list(legacy_catalog.effective_permissions(entry))
     state = availability(entry, platform=platform)
     authorized = is_authorized(entry, actor.permissions)
+    registered_adapter = verified_adapter(entry)
     return {
         "command": entry["command"],
         "tool_name": entry["tool_name"],
@@ -75,10 +99,17 @@ def command_summary(
         "authorized": authorized,
         "available": state == "active",
         "adapter": (
-            "fastapi_or_postgresql_gateway"
+            "verified_registry"
+            if state == "active" and registered_adapter is not None
+            else "fastapi_native"
             if state == "active"
             else None
         ),
+        "semantic_resource": (registered_adapter.semantic_resource if registered_adapter else None),
+        "verification": (registered_adapter.verification if registered_adapter else None),
+        "execution_kind": execution_kind(entry, platform=platform),
+        "transitional_projection_available": False,
+        "contract_match_available": gateway_contract_ready(entry),
         # `allowed` is the legacy terminal field and means callable now.
         "allowed": authorized and state == "active",
         "availability": state,
@@ -169,6 +200,7 @@ def skill_catalogue(actor: ActorContext) -> list[dict[str, object]]:
 def migration_summary(actor: ActorContext) -> dict[str, object]:
     entries = tenant_entries()
     active = [entry for entry in entries if availability(entry) == "active"]
+    awaiting = [entry for entry in entries if availability(entry) == "awaiting_domain_adapter"]
     invalid = [entry for entry in entries if availability(entry) == "invalid_contract"]
     retired = [entry for entry in entries if is_retired(entry)]
     return {
@@ -177,8 +209,9 @@ def migration_summary(actor: ActorContext) -> dict[str, object]:
         "platform_command_count": len(platform_entries()),
         "active_tenant_command_count": len(active),
         "retired_tenant_command_count": len(retired),
-        "awaiting_domain_adapter_count": 0,
+        "awaiting_domain_adapter_count": len(awaiting),
         "invalid_contract_count": len(invalid),
+        "readiness": readiness_snapshot(),
         "platform_state": "requires_l11_governance",
         "commands": command_catalogue(actor, include_unavailable=True),
     }
@@ -213,6 +246,7 @@ def ai_capability_states() -> list[dict[str, object]]:
                     "command": entry["command"],
                     "surface": "platform" if platform else "tenant",
                     "availability": availability(entry, platform=platform),
+                    "execution_kind": execution_kind(entry, platform=platform),
                     "writes": bool(entry["writes"]),
                     "confirmation_required": legacy_catalog.ai_confirmation_required(entry),
                     "execution_authority": "ai_policy_decision_required",
@@ -285,13 +319,12 @@ def ai_capability_gene_index() -> list[dict[str, object]]:
                     "description": summary["description"],
                     "scope": "platform" if platform else "tenant",
                     "availability": availability(entry, platform=platform),
+                    "execution_kind": execution_kind(entry, platform=platform),
                     "permission_any": list(legacy_catalog.effective_permissions(entry)),
                     "writes": bool(entry["writes"]),
                     "risk": entry["risk"],
                     "confirmation_required": legacy_catalog.ai_confirmation_required(entry),
-                    "execution_identity": str(
-                        entry.get("execution_identity") or "company_ai"
-                    ),
+                    "execution_identity": str(entry.get("execution_identity") or "company_ai"),
                     "semantic_contract": dict(entry.get("semantic_contract") or {}),
                 }
             )
@@ -310,19 +343,15 @@ def ai_capability_candidates(
     reloads live tenant authority.
     """
     entries = tuple(
-        entry
-        for entry in (*tenant_entries(), *platform_entries())
-        if not is_retired(entry)
+        entry for entry in (*tenant_entries(), *platform_entries()) if not is_retired(entry)
     )
     matches = legacy_catalog.search_capability_entries(
         entries,
         query,
         limit=limit,
     )
-    by_name = {
-        str(entry["tool_name"]): entry
-        for entry in entries
-    }
+    by_name = {str(entry["tool_name"]): entry for entry in entries}
+    platform_tool_names = {str(entry["tool_name"]) for entry in platform_entries()}
     candidates: list[dict[str, object]] = []
     for match in matches:
         tool_name = str(match.get("tool_name") or "")
@@ -337,8 +366,14 @@ def ai_capability_candidates(
                 "domain": summary["category"],
                 "description": summary["description"],
                 "writes": summary["writes"],
-                "confirmation_required": (
-                    legacy_catalog.ai_confirmation_required(entry)
+                "confirmation_required": (legacy_catalog.ai_confirmation_required(entry)),
+                "availability": availability(
+                    entry,
+                    platform=tool_name in platform_tool_names,
+                ),
+                "execution_kind": execution_kind(
+                    entry,
+                    platform=tool_name in platform_tool_names,
                 ),
             }
         )

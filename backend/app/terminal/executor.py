@@ -10,14 +10,17 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import httpx
+from fastapi import HTTPException
 
 from app.core.config import get_settings
 from app.core.security import create_access_token
 from app.terminal import legacy_catalog
+from app.terminal.adapters import execute_verified_adapter, verified_adapter_ready
 from app.terminal.catalog import (
     availability,
     command_catalogue,
     entry_by_tool_name,
+    execution_kind,
     is_authorized,
 )
 from app.terminal.store import command_audit_writer
@@ -82,10 +85,7 @@ def _redacted_response(
                 for child_key, child_value in value.items()
             }
         if isinstance(value, (list, tuple)):
-            return [
-                visit(item, in_credentials=in_credentials)
-                for item in value
-            ]
+            return [visit(item, in_credentials=in_credentials) for item in value]
         return value
 
     redacted = visit(response)
@@ -109,23 +109,15 @@ def _extract_one_time_credentials(
         credentials.append(
             {
                 "field": field,
-                "kind": (
-                    "runtime_api_key"
-                    if field == "api_key"
-                    else field
-                ),
+                "kind": ("runtime_api_key" if field == "api_key" else field),
                 "value": value,
                 "label": safe_data.get("label") or "一次性憑證",
                 "key_id": safe_data.get("key_id"),
-                "key_hint": (
-                    safe_data.get("key_hint")
-                    or safe_data.get(f"{field}_hint")
-                ),
+                "key_hint": (safe_data.get("key_hint") or safe_data.get(f"{field}_hint")),
                 "tenant_slug": safe_data.get("tenant_slug"),
                 "scopes": list(safe_data.get("scopes") or []),
                 "expires_at": safe_data.get("expires_at"),
-                "note": safe_data.get("note")
-                or "明文只顯示這一次，請立即保存。",
+                "note": safe_data.get("note") or "明文只顯示這一次，請立即保存。",
             }
         )
     return safe_data, credentials
@@ -165,7 +157,7 @@ def _envelope(
     return result
 
 
-def _atomic_recovery_contract(
+def atomic_recovery_contract(
     entry: Mapping[str, Any] | None,
     values: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
@@ -173,9 +165,9 @@ def _atomic_recovery_contract(
 
     A failed domain adapter is evidence about one attempted action, not evidence that
     the user's goal is impossible.  This packet lets Auto Runtime re-observe the
-    semantic world and, when the registered field is directly mutable, use the
-    generic data fabric.  It deliberately does not auto-select or auto-execute a
-    fallback: planning remains the model's responsibility.
+    semantic or physical database world and use the database Runtime when that
+    best serves the goal. It deliberately does not auto-select or auto-execute
+    a fallback: planning remains the model's responsibility.
     """
 
     semantic_contract = dict((entry or {}).get("semantic_contract") or {})
@@ -186,7 +178,42 @@ def _atomic_recovery_contract(
         "failed_capability": (entry or {}).get("tool_name"),
         "semantic_contract": semantic_contract,
         "attempted_arguments": _redacted_values(entry or {}, values or {}),
+        "database_fallback": {
+            "mode": "company_ai_database_runtime",
+            "decision_owner": "auto_runtime",
+            "raw_sql_exposed": True,
+            "physical_schema_exposed": True,
+            "table_headers_exposed": True,
+            "row_values_exposed": True,
+            "write_sql_exposed": True,
+            "database_identity": "current_company_ai",
+            "tenant_selector_exposed": False,
+        },
         "available_capabilities": [
+            {
+                "tool_name": "database_catalog",
+                "effect": "discover_visible_schemas_tables_keys_and_privileges",
+            },
+            {
+                "tool_name": "database_schema",
+                "effect": "inspect_physical_columns_constraints_indexes_and_rls",
+            },
+            {
+                "tool_name": "database_query",
+                "effect": "execute_ai_authored_read_only_sql",
+            },
+            {
+                "tool_name": "database_execute",
+                "effect": "execute_ai_authored_database_write_with_optional_readback",
+            },
+            {
+                "tool_name": "generic_data_resources",
+                "effect": "discover_registered_resources",
+            },
+            {
+                "tool_name": "generic_data_resolve",
+                "effect": "resolve_canonical_resource_identity",
+            },
             {
                 "tool_name": "generic_data_observe",
                 "effect": "observe_related_world",
@@ -205,13 +232,18 @@ def _atomic_recovery_contract(
             },
         ],
         "constraints": [
-            "preserve_tenant_isolation",
-            "preserve_canonical_resource_identity",
-            "never_expose_or_rewrite_secret_material",
+            "execute_as_current_company_ai_database_identity",
+            "let_postgresql_privileges_rls_constraints_and_transactions_decide_authority",
+            "preserve_canonical_resource_identity_when_one_exists",
             "never_assert_external_reality_from_a_database_write_alone",
             "use_a_specialized_adapter_for_external_effects_or_immutable_evidence",
         ],
     }
+
+
+# Retain the private name for callers/tests from the original boundary while
+# making the recovery packet reusable by the authenticated HTTP fallback.
+_atomic_recovery_contract = atomic_recovery_contract
 
 
 async def _dispatch_async(
@@ -273,6 +305,19 @@ def _dispatch(
     *,
     origin: str,
 ) -> object:
+    if verified_adapter_ready(entry):
+        try:
+            return execute_verified_adapter(
+                entry,
+                actor,
+                values,
+                origin=origin,
+            )
+        except HTTPException as exc:
+            raise CommandAdapterError(
+                exc.status_code,
+                {"detail": exc.detail},
+            ) from exc
     coroutine = _dispatch_async(entry, actor, values, origin=origin)
     try:
         asyncio.get_running_loop()
@@ -338,6 +383,27 @@ def _execute_entry(
 
     state = availability(dict(entry))
     if state != "active":
+        reason = (
+            "A capability concept exists, but no truthful domain adapter is mounted"
+            if state == "awaiting_domain_adapter"
+            else "Command contract is not executable"
+        )
+        capability_gap = None
+        if state == "awaiting_domain_adapter":
+            try:
+                from app.services.generic_data import record_missing_capability_gap
+
+                capability_gap = record_missing_capability_gap(
+                    actor,
+                    entry=dict(entry),
+                    arguments=dict(values),
+                    origin=origin,
+                    reason=reason,
+                )
+            except Exception:
+                # Gap telemetry is best effort and must never turn a truthful
+                # unavailable result into an execution exception.
+                capability_gap = None
         envelope = _envelope(
             ok=False,
             command=command,
@@ -345,16 +411,32 @@ def _execute_entry(
             status=state,
             writes=writes,
             risk=risk,
-            error="Command contract is imported, but its PostgreSQL domain adapter is not ready",
+            error=reason,
             hint=(
-                "This command remains unavailable until its typed domain route, validation, "
-                "and tests are migrated."
+                "Auto Runtime may inspect the physical database, query or write through "
+                "the current company AI identity, use semantic resources, choose another "
+                "atomic ability, or report the capability gap."
             ),
-            data={"atomic_recovery": _atomic_recovery_contract(entry, values)},
+            data={
+                "execution_kind": execution_kind(dict(entry)),
+                "transitional_projection_authoritative": False,
+                "capability_gap": capability_gap,
+                "atomic_recovery": atomic_recovery_contract(entry, values),
+            },
             elapsed_ms=round((perf_counter() - started) * 1000),
         )
+        audit_status = (
+            state
+            if state in {"awaiting_domain_adapter", "invalid_contract"}
+            else "invalid_contract"
+        )
         execution_id = _audit(
-            actor, entry, origin=origin, status=state, values=values, response=envelope
+            actor,
+            entry,
+            origin=origin,
+            status=audit_status,
+            values=values,
+            response=envelope,
         )
         envelope["execution_id"] = execution_id
         return envelope
@@ -369,10 +451,7 @@ def _execute_entry(
             writes=writes,
             risk=risk,
             error="This command requires its registered confirmation workflow",
-            hint=(
-                f"confirmation mode: {confirmation['mode']}; "
-                f"adapter: {confirmation['adapter']}"
-            ),
+            hint=(f"confirmation mode: {confirmation['mode']}; adapter: {confirmation['adapter']}"),
             data={
                 "confirmation_policy": confirmation,
                 "arguments": _redacted_values(entry, values),
@@ -403,7 +482,7 @@ def _execute_entry(
             data={
                 "http_status": exc.status_code,
                 "response": exc.payload,
-                "atomic_recovery": _atomic_recovery_contract(entry, values),
+                "atomic_recovery": atomic_recovery_contract(entry, values),
             },
             error=f"Target business API rejected the command (HTTP {exc.status_code})",
             elapsed_ms=round((perf_counter() - started) * 1000),
@@ -426,7 +505,7 @@ def _execute_entry(
             status="failed",
             writes=writes,
             risk=risk,
-            data={"atomic_recovery": _atomic_recovery_contract(entry, values)},
+            data={"atomic_recovery": atomic_recovery_contract(entry, values)},
             error="Command adapter failed",
             elapsed_ms=round((perf_counter() - started) * 1000),
         )
@@ -515,7 +594,7 @@ def execute_cli_line(
             error=str(exc),
             usage=exc.usage,
             hint=exc.hint,
-            data={"atomic_recovery": _atomic_recovery_contract(None, {"line": line})},
+            data={"atomic_recovery": atomic_recovery_contract(None, {"line": line})},
         )
     return _execute_entry(entry, actor, values, origin=origin)
 
@@ -548,9 +627,21 @@ def execute_tool_call(
             error=str(exc),
             usage=exc.usage,
             hint=exc.hint,
-            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
+            data={"atomic_recovery": atomic_recovery_contract(entry, arguments)},
         )
     return _execute_entry(entry, actor, values, origin="ai_tool")
+
+
+def execute_api_contract(
+    actor: ActorContext,
+    entry: Mapping[str, Any],
+    values: Mapping[str, object],
+    *,
+    origin: str = "api",
+) -> dict[str, object]:
+    """Execute an authenticated retained HTTP contract through this boundary."""
+
+    return _execute_entry(entry, actor, values, origin=origin)
 
 
 def execute_manual_action(
@@ -592,7 +683,7 @@ def execute_manual_action(
             error=str(exc),
             usage=exc.usage,
             hint=exc.hint,
-            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
+            data={"atomic_recovery": atomic_recovery_contract(entry, arguments)},
         )
     return _execute_entry(entry, actor, values, origin="manual_ui")
 
@@ -646,9 +737,17 @@ def execute_runtime_tool_call(
             writes=bool(entry["writes"]),
             risk=str(entry["risk"]),
             error=str(exc),
-            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
+            data={"atomic_recovery": atomic_recovery_contract(entry, arguments)},
         )
-    if tool_name == "generic_data_mutate" and execution_context:
+    if (
+        tool_name
+        in {
+            "generic_data_mutate",
+            "database_query",
+            "database_execute",
+        }
+        and execution_context
+    ):
         if execution_context.get("run_id"):
             values["body.run_id"] = execution_context["run_id"]
         if execution_context.get("conversation_id"):
@@ -695,7 +794,7 @@ def execute_confirmed_runtime_tool_call(
             writes=bool(entry["writes"]),
             risk=str(entry["risk"]),
             error=str(exc),
-            data={"atomic_recovery": _atomic_recovery_contract(entry, arguments)},
+            data={"atomic_recovery": atomic_recovery_contract(entry, arguments)},
         )
     return _execute_entry(
         entry,

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+DEPLOY_ROOT="${WAREHOUSE_MAC_DEPLOY_ROOT:-${HOME}/Server/bonfirework}"
+MANAGER="${DEPLOY_ROOT}/bin/warehouse-deploy"
+INCOMING="${DEPLOY_ROOT}/incoming"
+ORIGINAL="${SSH_ORIGINAL_COMMAND:-}"
+
+deny() {
+  printf 'warehouse-deploy-ssh-gate: command denied\n' >&2
+  exit 126
+}
+
+[[ -x "${MANAGER}" && -d "${INCOMING}" ]] || deny
+[[ -n "${ORIGINAL}" ]] || deny
+
+case "${ORIGINAL}" in
+  "${MANAGER} manifest")
+    exec "${MANAGER}" manifest
+    ;;
+  "${MANAGER} status")
+    exec "${MANAGER}" status
+    ;;
+  "${MANAGER} history")
+    exec "${MANAGER}" history
+    ;;
+  "${MANAGER} rollback")
+    exec "${MANAGER}" rollback
+    ;;
+  "scp -t ${INCOMING}"|"scp -t ${INCOMING}/")
+    exec /usr/bin/scp -t "${INCOMING}"
+    ;;
+esac
+
+read -r -a command_parts <<<"${ORIGINAL}"
+if [[ "${#command_parts[@]}" -eq 4 \
+    && "${command_parts[0]}" == "${MANAGER}" \
+    && "${command_parts[1]}" == install \
+    && "${command_parts[2]}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ \
+    && "${command_parts[3]}" =~ ^(smart|quick|standard|full)$ ]]; then
+  exec "${MANAGER}" install "${command_parts[2]}" "${command_parts[3]}"
+fi
+
+deny

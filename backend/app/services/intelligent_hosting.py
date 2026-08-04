@@ -100,7 +100,7 @@ def assistant_manifest() -> dict[str, object]:
         "desired_state": {
             "storage": {"verify": "boolean; defaults to true before deployment"},
             "runtime": {
-                "type": "auto|static|web|api|worker|agent|container|compose",
+                "type": "auto|static|web|api|worker|agent|job|container|compose",
                 "runtime": "optional runtime hint such as python3.12 or node20",
                 "profile": "optional enabled Runtime profile",
                 "component": "optional stable component name",
@@ -114,6 +114,11 @@ def assistant_manifest() -> dict[str, object]:
                 "route_service": "optional public Compose service",
                 "port": "optional container HTTP port",
                 "command": "optional container command override",
+                "database_url_env": (
+                    "optional safe env alias for the workspace database URL; "
+                    "requires database:admin"
+                ),
+                "timeout_seconds": "one-shot job timeout, 30..7200",
             },
             "deployment": {
                 "state": "observed|ready",
@@ -854,7 +859,15 @@ def _refresh_state(
                 if isinstance(desired_state.get("deployment"), dict)
                 else {}
             )
-            if deployment_options.get("activate_when_healthy", True):
+            runtime_options = (
+                desired_state.get("runtime")
+                if isinstance(desired_state.get("runtime"), dict)
+                else {}
+            )
+            if (
+                str(runtime_options.get("type") or "").lower() != "job"
+                and deployment_options.get("activate_when_healthy", True)
+            ):
                 activate_workspace_deployment(credential, UUID(str(deployment_ref)))
             status_value, stage, completed = "completed", "ready", True
             diagnosis = None
@@ -1138,10 +1151,19 @@ def execute_message(
         runtime_options = (
             desired_state.get("runtime") if isinstance(desired_state.get("runtime"), dict) else {}
         )
+        deployment_options = (
+            desired_state.get("deployment")
+            if isinstance(desired_state.get("deployment"), dict)
+            else {}
+        )
+        runtime_type = str(runtime_options.get("type") or "auto").strip().lower()
+        activate_when_healthy = bool(deployment_options.get("activate_when_healthy", True))
+        if runtime_type == "job":
+            activate_when_healthy = False
         runtime_payload = {
             key: value
             for key, value in {
-                "runtime_type": runtime_options.get("type") or "auto",
+                "runtime_type": runtime_type,
                 "runtime": runtime_options.get("runtime"),
                 "runtime_profile": runtime_options.get("profile"),
                 "component": runtime_options.get("component"),
@@ -1156,6 +1178,10 @@ def execute_message(
                 "route_service": runtime_options.get("route_service"),
                 "port": runtime_options.get("port"),
                 "command": runtime_options.get("command"),
+                "database_url_env": runtime_options.get("database_url_env"),
+                "timeout_seconds": runtime_options.get("timeout_seconds"),
+                "execution_mode": "job" if runtime_type == "job" else "service",
+                "activate": activate_when_healthy,
                 "deploy": True,
                 "idempotency_key": (
                     f"hosting-{row['id']}-{source_ref}-{runtime_options.get('type') or 'auto'}"

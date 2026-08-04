@@ -23,25 +23,117 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SOCKET_PATH = Path(os.environ.get("WAREHOUSE_SHIELD_AGENT_SOCKET", "/run/warehouse-shield/agent.sock"))
-TOKEN = os.environ.get("WAREHOUSE_SHIELD_AGENT_TOKEN", "")
-APPLY_ENABLED = os.environ.get("WAREHOUSE_SHIELD_REPAIR_APPLY", "false").lower() in {
+IS_DARWIN = platform.system() == "Darwin"
+MAC_DEPLOY_ROOT = Path(
+    os.environ.get("WAREHOUSE_MAC_DEPLOY_ROOT", str(Path.home() / "Server/bonfirework"))
+)
+ENV_FILE = Path(
+    os.environ.get(
+        "WAREHOUSE_SHIELD_ENV_FILE",
+        str(MAC_DEPLOY_ROOT / "shared/orbstack.env") if IS_DARWIN else "/etc/warehouse-os/runtime.env",
+    )
+)
+
+
+def configured_value(key: str, default: str = "") -> str:
+    supplied = os.environ.get(key)
+    if supplied is not None:
+        return supplied
+    try:
+        lines = ENV_FILE.read_text(encoding="utf-8", errors="strict").splitlines()
+    except OSError:
+        return default
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == key:
+            clean = value.strip()
+            if len(clean) >= 2 and clean[0] == clean[-1] and clean[0] in {"'", '"'}:
+                clean = clean[1:-1]
+            return clean
+    return default
+
+
+SOCKET_PATH = Path(
+    configured_value(
+        "WAREHOUSE_SHIELD_AGENT_SOCKET",
+        str(MAC_DEPLOY_ROOT / "shared/shield/agent.sock")
+        if IS_DARWIN
+        else "/run/warehouse-shield/agent.sock",
+    )
+)
+TCP_HOST = configured_value(
+    "WAREHOUSE_SHIELD_AGENT_TCP_HOST", "127.0.0.1" if IS_DARWIN else ""
+)
+TCP_PORT = int(
+    configured_value("WAREHOUSE_SHIELD_AGENT_TCP_PORT", "18091" if IS_DARWIN else "0")
+)
+TOKEN = configured_value("WAREHOUSE_SHIELD_AGENT_TOKEN")
+APPLY_ENABLED = configured_value("WAREHOUSE_SHIELD_REPAIR_APPLY", "false").lower() in {
     "1", "true", "yes", "on"
 }
-DEPLOY_STATE = Path("/opt/warehouse-os/shared/deploy-state")
-HEALTH_FLAG = Path("/opt/warehouse-os/shared/shield/health_fail")
-AGENT_LOG = Path("/var/log/warehouse-shield.jsonl")
-NGINX_ACCESS_LOG = Path("/var/log/nginx/access.log")
+DEPLOY_STATE = Path(
+    configured_value(
+        "WAREHOUSE_SHIELD_DEPLOY_STATE",
+        str(MAC_DEPLOY_ROOT / "state") if IS_DARWIN else "/opt/warehouse-os/shared/deploy-state",
+    )
+)
+HEALTH_FLAG = Path(
+    configured_value(
+        "WAREHOUSE_SHIELD_HEALTH_FLAG",
+        str(MAC_DEPLOY_ROOT / "shared/shield/health_fail")
+        if IS_DARWIN
+        else "/opt/warehouse-os/shared/shield/health_fail",
+    )
+)
+AGENT_LOG = Path(
+    configured_value(
+        "WAREHOUSE_SHIELD_AGENT_LOG",
+        str(MAC_DEPLOY_ROOT / "shared/logs/warehouse-shield.jsonl")
+        if IS_DARWIN
+        else "/var/log/warehouse-shield.jsonl",
+    )
+)
+NGINX_ACCESS_LOG = Path(configured_value("WAREHOUSE_SHIELD_ACCESS_LOG", "/var/log/nginx/access.log"))
 NGINX_DOMAIN_AVAILABLE = Path("/etc/nginx/sites-available")
 NGINX_DOMAIN_ENABLED = Path("/etc/nginx/sites-enabled")
-BACKUP_DIR = Path("/opt/warehouse-os/backups")
-DATA_MOUNTPOINT = Path(
-    os.environ.get("WAREHOUSE_SHIELD_DATA_MOUNTPOINT", "/mnt/warehouse-data")
+BACKUP_DIR = Path(
+    configured_value(
+        "WAREHOUSE_SHIELD_BACKUP_DIR",
+        str(MAC_DEPLOY_ROOT / "shared/backups") if IS_DARWIN else "/opt/warehouse-os/backups",
+    )
 )
-DATA_DEVICE = os.environ.get("WAREHOUSE_SHIELD_DATA_DEVICE", "/dev/vdb1")
-DATA_VOLUME_REQUIRED = os.environ.get(
-    "WAREHOUSE_SHIELD_DATA_VOLUME_REQUIRED", "false"
-).lower() in {"1", "true", "yes", "on"}
+if IS_DARWIN:
+    # The shared environment also serves Linux containers and therefore keeps
+    # /mnt/warehouse-data and /dev/vdb1 values.  Those must never override the
+    # Mac host probe: OrbStack data is hosted by the Mac filesystem instead.
+    DATA_MOUNTPOINT = Path(
+        configured_value(
+            "WAREHOUSE_SHIELD_MAC_DATA_MOUNTPOINT",
+            str(Path.home() / "Server/bonfirework-migration"),
+        )
+    )
+    DATA_DEVICE = configured_value("WAREHOUSE_SHIELD_MAC_DATA_DEVICE", "")
+    DATA_VOLUME_REQUIRED = configured_value(
+        "WAREHOUSE_SHIELD_MAC_DATA_VOLUME_REQUIRED", "false"
+    ).lower() in {"1", "true", "yes", "on"}
+else:
+    DATA_MOUNTPOINT = Path(
+        configured_value("WAREHOUSE_SHIELD_DATA_MOUNTPOINT", "/mnt/warehouse-data")
+    )
+    DATA_DEVICE = configured_value("WAREHOUSE_SHIELD_DATA_DEVICE", "/dev/vdb1")
+    DATA_VOLUME_REQUIRED = configured_value(
+        "WAREHOUSE_SHIELD_DATA_VOLUME_REQUIRED", "false"
+    ).lower() in {"1", "true", "yes", "on"}
+API_PORT = int(configured_value("WAREHOUSE_SHIELD_API_PORT", "8081" if IS_DARWIN else "0"))
+DOCKER_BIN = configured_value(
+    "WAREHOUSE_DOCKER_BIN",
+    str(Path.home() / ".orbstack/bin/docker") if IS_DARWIN else "docker",
+)
 MAX_REQUEST_BYTES = 64 * 1024
 ALLOWED_ACTIONS = {
     "healthcheck",
@@ -83,7 +175,12 @@ def run_fixed(arguments: list[str], timeout: float = 15.0) -> dict[str, object]:
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+            env={
+                "PATH": (
+                    f"{Path.home()}/.orbstack/bin:/opt/homebrew/bin:"
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                )
+            },
         )
         return {
             "returncode": completed.returncode,
@@ -102,15 +199,21 @@ def read_text(path: Path, default: str = "") -> str:
 
 
 def active_slot() -> str:
+    if IS_DARWIN:
+        return "mac"
     slot = read_text(DEPLOY_STATE / "active-slot").strip()
     return slot if slot in {"blue", "green"} else ""
 
 
 def active_port() -> int:
+    if API_PORT > 0:
+        return API_PORT
     return 18081 if active_slot() == "blue" else 18082 if active_slot() == "green" else 8080
 
 
 def active_container() -> str:
+    if IS_DARWIN:
+        return "bonfirework-mac-api"
     slot = active_slot()
     return f"warehouse-os-api-{slot}" if slot else "warehouse-os-api-1"
 
@@ -138,13 +241,20 @@ def http_probe(path: str = "/api/health", timeout: float = 4.0) -> dict[str, obj
 
 
 def service_active(unit: str) -> bool:
+    if IS_DARWIN:
+        if unit == "warehouse-shield-agent":
+            return True
+        process_names = {
+            "nginx": ("nginx", "caddy", "cloudflared"),
+        }.get(unit, (unit,))
+        return any(run_fixed(["pgrep", "-x", name], timeout=4)["returncode"] == 0 for name in process_names)
     result = run_fixed(["systemctl", "is-active", "--quiet", unit], timeout=4)
     return result["returncode"] == 0
 
 
 def container_state(name: str) -> dict[str, object]:
     result = run_fixed(
-        ["docker", "inspect", "--format", "{{.State.Status}}|{{.State.Health.Status}}|{{.State.Pid}}", name],
+        [DOCKER_BIN, "inspect", "--format", "{{.State.Status}}|{{.State.Health.Status}}|{{.State.Pid}}", name],
         timeout=5,
     )
     if result["returncode"] != 0:
@@ -163,6 +273,25 @@ def container_state(name: str) -> dict[str, object]:
 
 def cpu_sample() -> dict[str, object]:
     global _previous_cpu
+    if IS_DARWIN:
+        result = run_fixed(["ps", "-A", "-o", "%cpu="], timeout=5)
+        values: list[float] = []
+        if result["returncode"] == 0:
+            for value in str(result["stdout"]).split():
+                try:
+                    values.append(float(value))
+                except ValueError:
+                    continue
+        loads = os.getloadavg()
+        cores = os.cpu_count() or 1
+        return {
+            "usage_pct": round(min(100.0, sum(values) / cores), 2) if values else None,
+            "load_1m": round(loads[0], 3),
+            "load_5m": round(loads[1], 3),
+            "load_15m": round(loads[2], 3),
+            "load_normalized_pct": round(loads[0] / cores * 100, 2),
+            "logical_cores": cores,
+        }
     fields = read_text(Path("/proc/stat")).splitlines()[0].split()
     values = [int(value) for value in fields[1:]] if fields and fields[0] == "cpu" else []
     total = sum(values)
@@ -187,6 +316,40 @@ def cpu_sample() -> dict[str, object]:
 
 
 def memory_sample() -> dict[str, object]:
+    if IS_DARWIN:
+        total_result = run_fixed(["sysctl", "-n", "hw.memsize"], timeout=4)
+        total = int(str(total_result["stdout"]).strip() or 0) if total_result["returncode"] == 0 else 0
+        vm_result = run_fixed(["vm_stat"], timeout=4)
+        page_size = 4096
+        counters: dict[str, int] = {}
+        for line in str(vm_result["stdout"]).splitlines():
+            page_match = re.search(r"page size of (\d+) bytes", line)
+            if page_match:
+                page_size = int(page_match.group(1))
+            key, separator, raw = line.partition(":")
+            if separator:
+                digits = re.sub(r"[^0-9]", "", raw)
+                if digits:
+                    counters[key.strip()] = int(digits)
+        available_pages = sum(
+            counters.get(key, 0)
+            for key in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable")
+        )
+        available = min(total, available_pages * page_size) if total else 0
+        swap_result = run_fixed(["sysctl", "-n", "vm.swapusage"], timeout=4)
+        swap_match = re.search(r"used = ([0-9.]+)([MG])", str(swap_result["stdout"]))
+        swap_used = 0
+        if swap_match:
+            factor = 1024**3 if swap_match.group(2) == "G" else 1024**2
+            swap_used = round(float(swap_match.group(1)) * factor)
+        return {
+            "total_bytes": total,
+            "available_bytes": available,
+            "used_bytes": max(0, total - available),
+            "used_pct": round((total - available) / total * 100, 2) if total else None,
+            "swap_used_bytes": swap_used,
+            "swap_used_pct": None,
+        }
     values: dict[str, int] = {}
     for line in read_text(Path("/proc/meminfo")).splitlines():
         match = re.match(r"^(\w+):\s+(\d+)", line)
@@ -207,6 +370,17 @@ def memory_sample() -> dict[str, object]:
 
 
 def mount_metadata(mountpoint: Path) -> dict[str, object]:
+    if IS_DARWIN:
+        result = run_fixed(["df", "-k", str(mountpoint)], timeout=4)
+        lines = str(result["stdout"]).splitlines()
+        if result["returncode"] != 0 or len(lines) < 2:
+            return {}
+        fields = lines[-1].split()
+        return {
+            "source": fields[0] if fields else None,
+            "target": fields[-1] if fields else str(mountpoint),
+            "fstype": None,
+        }
     result = run_fixed(
         [
             "findmnt",
@@ -242,7 +416,7 @@ def volume_sample(
     expected_device: str | None = None,
     required: bool = True,
 ) -> dict[str, object]:
-    mounted = os.path.ismount(mountpoint)
+    mounted = os.path.ismount(mountpoint) or (IS_DARWIN and mountpoint.is_dir())
     device_present = Path(expected_device).exists() if expected_device else None
     metadata = mount_metadata(mountpoint) if mounted else {}
     source = str(metadata.get("source") or "") or None
@@ -386,16 +560,34 @@ def storage_alerts(storage: dict[str, object]) -> list[dict[str, object]]:
 def network_sample() -> dict[str, object]:
     global _previous_net
     rx = tx = 0
-    for line in read_text(Path("/proc/net/dev")).splitlines()[2:]:
-        if ":" not in line:
-            continue
-        interface, counters = line.split(":", 1)
-        if interface.strip() == "lo":
-            continue
-        values = counters.split()
-        if len(values) >= 9:
-            rx += int(values[0])
-            tx += int(values[8])
+    if IS_DARWIN:
+        result = run_fixed(["netstat", "-ibn"], timeout=5)
+        lines = str(result["stdout"]).splitlines()
+        header = next((line.split() for line in lines if "Ibytes" in line and "Obytes" in line), [])
+        ibytes = header.index("Ibytes") if "Ibytes" in header else -1
+        obytes = header.index("Obytes") if "Obytes" in header else -1
+        seen: set[str] = set()
+        for line in lines:
+            fields = line.split()
+            if not fields or fields[0] == "Name" or fields[0].startswith("lo"):
+                continue
+            if fields[0] in seen or max(ibytes, obytes) >= len(fields):
+                continue
+            if ibytes >= 0 and obytes >= 0 and fields[ibytes].isdigit() and fields[obytes].isdigit():
+                seen.add(fields[0])
+                rx += int(fields[ibytes])
+                tx += int(fields[obytes])
+    else:
+        for line in read_text(Path("/proc/net/dev")).splitlines()[2:]:
+            if ":" not in line:
+                continue
+            interface, counters = line.split(":", 1)
+            if interface.strip() == "lo":
+                continue
+            values = counters.split()
+            if len(values) >= 9:
+                rx += int(values[0])
+                tx += int(values[8])
     sampled = time.monotonic()
     rx_rate = tx_rate = None
     with _sample_lock:
@@ -405,12 +597,18 @@ def network_sample() -> dict[str, object]:
             tx_rate = round(max(0, tx - _previous_net[2]) / elapsed, 2)
         _previous_net = (sampled, rx, tx)
     established = listening = 0
-    for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
-        for line in read_text(table).splitlines()[1:]:
-            parts = line.split()
-            if len(parts) > 3:
-                established += parts[3] == "01"
-                listening += parts[3] == "0A"
+    if IS_DARWIN:
+        sockets = run_fixed(["netstat", "-an", "-p", "tcp"], timeout=5)
+        for line in str(sockets["stdout"]).splitlines():
+            established += "ESTABLISHED" in line
+            listening += "LISTEN" in line
+    else:
+        for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+            for line in read_text(table).splitlines()[1:]:
+                parts = line.split()
+                if len(parts) > 3:
+                    established += parts[3] == "01"
+                    listening += parts[3] == "0A"
     return {
         "rx_bytes": rx,
         "tx_bytes": tx,
@@ -422,6 +620,35 @@ def network_sample() -> dict[str, object]:
 
 
 def process_sample(pid: int | None) -> dict[str, object]:
+    if IS_DARWIN:
+        result = run_fixed(
+            [
+                DOCKER_BIN, "stats", "--no-stream", "--format",
+                "{{.CPUPerc}}|{{.MemUsage}}|{{.PIDs}}", active_container(),
+            ],
+            timeout=8,
+        )
+        if result["returncode"] != 0:
+            return {}
+        values = str(result["stdout"]).strip().split("|", 2)
+        cpu_text = values[0].strip().rstrip("%") if values else ""
+        memory_text = values[1].split("/", 1)[0].strip() if len(values) > 1 else ""
+        memory_match = re.fullmatch(r"([0-9.]+)([KMG]i?B)", memory_text)
+        factors = {"KB": 1000, "KiB": 1024, "MB": 1000**2, "MiB": 1024**2, "GB": 1000**3, "GiB": 1024**3}
+        rss_bytes = (
+            round(float(memory_match.group(1)) * factors[memory_match.group(2)])
+            if memory_match
+            else None
+        )
+        return {
+            "pid": pid,
+            "cpu_pct": float(cpu_text) if cpu_text else None,
+            "rss_bytes": rss_bytes,
+            "threads": int(values[2]) if len(values) > 2 and values[2].strip().isdigit() else None,
+            "fd_open": None,
+            "fd_limit": None,
+            "uptime_seconds": None,
+        }
     if not pid:
         return {}
     status: dict[str, str] = {}
@@ -486,6 +713,8 @@ def nginx_traffic() -> dict[str, object]:
 
 
 def ssh_failures() -> int | None:
+    if IS_DARWIN:
+        return None
     result = run_fixed(
         ["journalctl", "-u", "ssh", "-u", "sshd", "--since", "2 minutes ago", "--no-pager", "-q"],
         timeout=5,
@@ -500,6 +729,14 @@ def ssh_failures() -> int | None:
 
 def tail_guardian(limit: int = 80) -> list[str]:
     return read_text(AGENT_LOG).splitlines()[-limit:]
+
+
+def host_uptime_seconds() -> int:
+    if not IS_DARWIN:
+        return round(float(read_text(Path("/proc/uptime"), "0").split()[0]))
+    result = run_fixed(["sysctl", "-n", "kern.boottime"], timeout=4)
+    match = re.search(r"sec\s*=\s*(\d+)", str(result["stdout"]))
+    return max(0, round(time.time() - int(match.group(1)))) if match else 0
 
 
 def collect_status() -> dict[str, object]:
@@ -546,7 +783,7 @@ def collect_status() -> dict[str, object]:
         {"id": "database", "state": "online" if probe.get("ok") else "unknown"},
         {"id": "ai-engine", "state": "unknown"},
     ]
-    uptime = float(read_text(Path("/proc/uptime"), "0").split()[0])
+    uptime = host_uptime_seconds()
     backups = [path for path in BACKUP_DIR.glob("*") if path.is_file()]
     vitals = {
         "schema_version": 2,
@@ -561,7 +798,7 @@ def collect_status() -> dict[str, object]:
         "network": network,
         "process": process,
         "runtime": {
-            "uptime_seconds": round(uptime),
+            "uptime_seconds": uptime,
             "platform": platform.system(),
             "kernel": platform.release(),
             "architecture": platform.machine(),
@@ -642,6 +879,13 @@ def execute_action(action: str, apply: bool, request_id: str) -> dict[str, objec
             "result": {"status": "dry-run", "action": action, "apply_enabled": APPLY_ENABLED},
         }
     if action in {"reload-nginx", "restart-nginx"}:
+        if IS_DARWIN:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "applied": False,
+                "error": "mac_edge_proxy_is_managed_by_the_cluster_gateway",
+            }
         validation = run_fixed(["nginx", "-t"], timeout=15)
         if validation["returncode"] != 0:
             return {"ok": False, "status": "failed", "applied": False, "error": "nginx_config_invalid", "result": validation}
@@ -663,15 +907,27 @@ def execute_action(action: str, apply: bool, request_id: str) -> dict[str, objec
         return {"ok": ok, "status": "succeeded" if ok else "failed", "applied": ok, "result": {"removed": existed}, "error": error}
     if action == "restart-api":
         container = active_container()
-        schedule_fixed(["docker", "restart", container], action)
+        schedule_fixed([DOCKER_BIN, "restart", container], action)
         log_event("repair-scheduled", request_id=request_id, action=action, target=container)
         return {"ok": True, "status": "scheduled", "applied": True, "result": {"target": container, "delay_seconds": 2}}
+    if IS_DARWIN:
+        target = f"gui/{os.getuid()}/org.bonfirework.warehouse-shield-agent"
+        schedule_fixed(["launchctl", "kickstart", "-k", target], action)
+        log_event("repair-scheduled", request_id=request_id, action=action, target=target)
+        return {"ok": True, "status": "scheduled", "applied": True, "result": {"target": target, "delay_seconds": 2}}
     schedule_fixed(["systemctl", "restart", "warehouse-shield-agent"], action)
     log_event("repair-scheduled", request_id=request_id, action=action)
     return {"ok": True, "status": "scheduled", "applied": True, "result": {"target": "warehouse-shield-agent", "delay_seconds": 2}}
 
 
 def apply_hosting_domain(payload: dict[str, Any], request_id: str) -> dict[str, object]:
+    if IS_DARWIN:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "applied": False,
+            "error": "mac_hosting_domains_are_managed_by_the_cluster_gateway",
+        }
     hostname = str(payload.get("hostname") or "").strip().lower().rstrip(".")
     tenant_slug = str(payload.get("tenant_slug") or "").strip().lower()
     workspace_key = str(payload.get("workspace_key") or "").strip().lower()
@@ -844,15 +1100,44 @@ class Server(socketserver.ThreadingUnixStreamServer):
     allow_reuse_address = True
 
 
+class TCPServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main() -> None:
     if len(TOKEN) < 32:
         raise SystemExit("WAREHOUSE_SHIELD_AGENT_TOKEN must be at least 32 characters")
+    if not 0 <= TCP_PORT <= 65535:
+        raise SystemExit("WAREHOUSE_SHIELD_AGENT_TCP_PORT is invalid")
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
     SOCKET_PATH.unlink(missing_ok=True)
     with Server(str(SOCKET_PATH), Handler) as server:
         os.chmod(SOCKET_PATH, 0o660)
-        log_event("agent-started", socket=str(SOCKET_PATH), apply_enabled=APPLY_ENABLED)
-        server.serve_forever(poll_interval=0.5)
+        tcp_server = TCPServer((TCP_HOST, TCP_PORT), Handler) if TCP_HOST and TCP_PORT else None
+        tcp_thread: threading.Thread | None = None
+        if tcp_server is not None:
+            tcp_thread = threading.Thread(
+                target=tcp_server.serve_forever,
+                kwargs={"poll_interval": 0.5},
+                daemon=True,
+            )
+            tcp_thread.start()
+        log_event(
+            "agent-started",
+            socket=str(SOCKET_PATH),
+            tcp_host=TCP_HOST or None,
+            tcp_port=TCP_PORT or None,
+            apply_enabled=APPLY_ENABLED,
+        )
+        try:
+            server.serve_forever(poll_interval=0.5)
+        finally:
+            if tcp_server is not None:
+                tcp_server.shutdown()
+                tcp_server.server_close()
+            if tcp_thread is not None:
+                tcp_thread.join(timeout=2)
 
 
 if __name__ == "__main__":

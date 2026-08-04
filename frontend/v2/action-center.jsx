@@ -167,10 +167,13 @@ const ActionField = ({ name, property, required, value, onChange, disabled }) =>
     <span><b>{name}</b><small>{description || t("布林值")} · {required ? t("必填") : t("選填")}</small></span>
   </label>;
   const jsonLike = type === "array" || type === "object" || /json/i.test(name);
+  const inputValue = (type === "array" || type === "object") && value != null && typeof value !== "string"
+    ? JSON.stringify(value, null, type === "object" ? 2 : 0)
+    : value == null ? "" : value;
   const common = {
     id: inputId,
     disabled,
-    value: value == null ? "" : value,
+    value: inputValue,
     onChange: event => onChange(event.target.value),
     placeholder: type === "array" ? t("JSON 陣列") : type === "object" ? t("JSON 物件") : "",
     autoComplete: secretName(name) ? "new-password" : "off",

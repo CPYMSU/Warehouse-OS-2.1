@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     hosted_database_admin_url: SecretStr = SecretStr("")
     hosted_database_pool_size: int = 2
     hosted_database_connect_timeout_seconds: int = 5
+    # Customer-owned PostgreSQL bindings are public-network and TLS-only by
+    # default. Private-address access requires an explicitly governed network
+    # connector instead of turning a database credential into an SSRF tunnel.
+    external_database_allow_private_hosts: bool = False
+    external_database_require_tls: bool = True
     # Read-only compatibility mount used while an older local volume is being
     # migrated to the HDD.  New writes never target this path.
     asset_legacy_storage_root: Path | None = None
@@ -54,6 +59,8 @@ class Settings(BaseSettings):
     research_execution_max_output_bytes: int = 100 * 1024 * 1024
     workflow_attachment_max_upload_bytes: int = 15 * 1024 * 1024
     shield_agent_socket: Path = Path("/run/warehouse-shield/agent.sock")
+    shield_agent_host: str = ""
+    shield_agent_port: int = 0
     shield_agent_token: SecretStr = SecretStr("")
     shield_agent_timeout_seconds: float = 8.0
     shield_agent_max_response_bytes: int = 2 * 1024 * 1024

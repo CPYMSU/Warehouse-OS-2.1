@@ -1604,7 +1604,14 @@ def conversations_get(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     conversations = list_conversations(actor, limit=limit)
-    return {"available": True, "conversations": conversations, "items": conversations}
+    return {
+        "available": True,
+        "rows": conversations,
+        "hasMore": len(conversations) >= limit,
+        "has_more": len(conversations) >= limit,
+        "conversations": conversations,
+        "items": conversations,
+    }
 
 
 @router.post("/api/ai/conversations", status_code=201)

@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.api.compat import _audit_redact, _audit_redact_command
 from app.main import app
 
 EXPECTED_CONTRACTS = {
@@ -47,6 +48,13 @@ EXPECTED_CONTRACTS = {
     ("GET", "/api/ai/conversations"),
     ("POST", "/api/records/search"),
     ("GET", "/api/records/meta"),
+    ("GET", "/api/records/config"),
+    ("POST", "/api/records/config/categories"),
+    ("POST", "/api/records/config/types"),
+    ("POST", "/api/records/config/categories/{category_key}/revisions"),
+    ("POST", "/api/records/config/types/{type_key}/revisions"),
+    ("POST", "/api/records/config/categories/{category_key}/disable"),
+    ("POST", "/api/records/config/types/{type_key}/disable"),
     ("GET", "/api/settings"),
     ("GET", "/api/integrations/tavily"),
     ("GET", "/api/integrations/vision"),
@@ -62,6 +70,9 @@ EXPECTED_CONTRACTS = {
     ("POST", "/api/browser-runtime/journeys"),
     ("GET", "/api/browser-runtime/runs"),
     ("POST", "/api/browser-runtime/runs"),
+    ("GET", "/api/lighthouse/devices"),
+    ("POST", "/api/lighthouse/pairing-challenges"),
+    ("POST", "/api/lighthouse/runs"),
 }
 
 
@@ -117,3 +128,24 @@ def test_unknown_api_never_falls_through_to_static_file_server() -> None:
         "reason": "api_contract_not_migrated",
         "path": "/api/not-yet-migrated",
     }
+
+
+def test_audit_contract_redacts_nested_credentials_and_command_arguments() -> None:
+    assert _audit_redact(
+        {
+            "arguments": {
+                "api_key": "live-secret",
+                "workspace_key_id": "safe-identifier",
+                "nested": [{"access_token": "bearer-secret"}],
+            }
+        }
+    ) == {
+        "arguments": {
+            "api_key": "[REDACTED]",
+            "workspace_key_id": "safe-identifier",
+            "nested": [{"access_token": "[REDACTED]"}],
+        }
+    }
+    assert _audit_redact_command("settings save --api-key live-secret --model safe") == (
+        "settings save --api-key [REDACTED] --model safe"
+    )

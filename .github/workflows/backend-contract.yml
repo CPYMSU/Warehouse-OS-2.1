@@ -45,6 +45,8 @@ jobs:
           set -Eeuo pipefail
           bash -n \
             ops/deploy \
+            ops/macos/warehouse-deploy-macos \
+            ops/macos/warehouse-deploy-ssh-gate \
             ops/run-full-verification \
             ops/server/warehouse-deploy \
             infra/backup/warehouse-postgres-backup.sh

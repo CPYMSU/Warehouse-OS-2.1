@@ -164,15 +164,19 @@ def _imports(path: Path, module: str) -> set[str]:
     return imported
 
 
-def _discover_python_tests(
-    root: Path,
-    changed: Iterable[str],
-    *,
-    max_tests: int,
-    max_fraction: float,
-) -> list[str]:
-    python_paths = sorted((root / "backend" / "app").rglob("*.py"))
-    test_paths = sorted((root / "backend" / "tests").glob("test_*.py"))
+def _python_dependants(
+    root: Path, changed: Iterable[str]
+) -> tuple[set[str], dict[str, Path]]:
+    python_paths = sorted(
+        path
+        for path in (root / "backend" / "app").rglob("*.py")
+        if _is_packaged(root, path.relative_to(root).as_posix())
+    )
+    test_paths = sorted(
+        path
+        for path in (root / "backend" / "tests").glob("test_*.py")
+        if _is_packaged(root, path.relative_to(root).as_posix())
+    )
     module_paths: dict[str, Path] = {}
     for path in [*python_paths, *test_paths]:
         module = _module_for_path(path, root)
@@ -197,6 +201,22 @@ def _discover_python_tests(
             if importer not in reached:
                 reached.add(importer)
                 queue.append(importer)
+    return reached, module_paths
+
+
+def _discover_python_tests(
+    root: Path,
+    changed: Iterable[str],
+    *,
+    max_tests: int,
+    max_fraction: float,
+) -> list[str]:
+    reached, module_paths = _python_dependants(root, changed)
+    test_paths = sorted(
+        path
+        for path in (root / "backend" / "tests").glob("test_*.py")
+        if _is_packaged(root, path.relative_to(root).as_posix())
+    )
     selected = sorted(
         str(module_paths[module].relative_to(root))
         for module in reached
@@ -256,6 +276,10 @@ def build_plan(root: Path, changed: list[str]) -> dict[str, object]:
             }
         )
 
+    if any(path.startswith("backend/app/") and path.endswith(".py") for path in changed):
+        dependants, _ = _python_dependants(root, changed)
+        if "app.research_executor" in dependants:
+            impacts.add("research_executor")
     if discover_python:
         tests.update(
             _discover_python_tests(
@@ -323,6 +347,7 @@ def _shell(plan: dict[str, object]) -> str:
         "integration",
         "migration",
         "runtime_controller",
+        "research_executor",
         "storage",
         "tenant_templates",
         "unknown",

@@ -6,16 +6,18 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.structs import CredentialDeviceType
 
 from app.api.deps import ActorContext, current_actor
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.db.session import system_session, tenant_session
 from app.main import app
 from app.services import auto_runtime
+from app.services.legacy_capability_runtime import execute_retained_capability
 from app.services.templates import provision_tenant_template
 from app.terminal import executor
 from app.terminal.store import (
@@ -151,7 +153,7 @@ def test_identity_settings_cases_records_and_files_round_trip(monkeypatch) -> No
         response = client.get("/api/runtime/skills")
         assert response.status_code == 200
         skills = response.json()
-        assert skills["total"] == 508
+        assert skills["total"] == 517
         assert skills["skills"][0]["invocation"] == "goal_guided"
         assert "api_path" not in skills["skills"][0]
 
@@ -209,9 +211,7 @@ def test_identity_settings_cases_records_and_files_round_trip(monkeypatch) -> No
         )
         assert response.status_code == 201
         record_id = response.json()["record"]["id"]
-        records_search = client.post(
-            "/api/records/search", json={"query": "Connected"}
-        ).json()
+        records_search = client.post("/api/records/search", json={"query": "Connected"}).json()
         assert records_search["total"] == 2
         assert {item["type_key"] for item in records_search["records"]} == {
             "general_record",
@@ -229,12 +229,99 @@ def test_identity_settings_cases_records_and_files_round_trip(monkeypatch) -> No
         assert download.status_code == 200
         assert download.content == b"record document"
 
+        records_meta = client.get("/api/records/meta")
+        assert records_meta.status_code == 200
+        assert records_meta.json()["can_configure"] is True
+        assert records_meta.json()["permissions"]["can_configure"] is True
+
+        configuration = client.get("/api/records/config")
+        assert configuration.status_code == 200
+        assert configuration.json()["can_configure"] is True
+        assert {item["key"] for item in configuration.json()["categories"]} >= {
+            "personnel",
+            "other",
+        }
+
+        category = client.post(
+            "/api/records/config/categories",
+            json={
+                "key": "connected_archive",
+                "name": "Connected archive",
+                "description": "Integration-owned category",
+                "icon": "box",
+                "order": 70,
+                "confidentiality": "internal",
+                "retention": {},
+            },
+        )
+        assert category.status_code == 201
+        assert category.json()["category"]["revision_no"] == 1
+
+        record_type = client.post(
+            "/api/records/config/types",
+            json={
+                "key": "connected_record",
+                "category_key": "connected_archive",
+                "name": "Connected record type",
+                "description": "Integration-owned type",
+                "lifecycle_mode": "dossier",
+                "confidentiality": "internal",
+                "fields": [],
+            },
+        )
+        assert record_type.status_code == 201
+        assert record_type.json()["type"]["revision_no"] == 1
+
+        revised_payload = {
+            "key": "connected_record",
+            "category_key": "connected_archive",
+            "name": "Connected record type R2",
+            "description": "Versioned without rewriting existing records",
+            "lifecycle_mode": "dossier",
+            "confidentiality": "internal",
+            "fields": [],
+            "expected_revision_no": 1,
+        }
+        revised = client.post(
+            "/api/records/config/types/connected_record/revisions",
+            json=revised_payload,
+        )
+        assert revised.status_code == 200
+        assert revised.json()["type"]["revision_no"] == 2
+        assert revised.json()["type"]["managed_by_template"] is False
+        assert client.post(
+            "/api/records/config/types/connected_record/revisions",
+            json=revised_payload,
+        ).status_code == 409
+        disabled = client.post(
+            "/api/records/config/types/connected_record/disable",
+            json={"expected_revision_no": 2},
+        )
+        assert disabled.status_code == 200
+        assert disabled.json()["type"]["active"] is False
+        assert disabled.json()["type"]["revision_no"] == 3
+
+        audit_logs = client.get("/api/audit/logs?limit=50")
+        assert audit_logs.status_code == 200
+        assert audit_logs.json()["rows"]
+        assert audit_logs.json()["summary"]["total"] == len(audit_logs.json()["rows"])
+        assert all("operator_name" in row for row in audit_logs.json()["rows"])
+
+        audit_cli = client.get("/api/audit/cli?limit=50")
+        assert audit_cli.status_code == 200
+        assert isinstance(audit_cli.json()["rows"], list)
+        assert "summary" in audit_cli.json()
+
         response = client.post(
             "/api/ai/conversations",
             json={"title": "Connected conversation", "channel": "assistant"},
         )
         assert response.status_code == 201
         assert response.json()["conversation"]["title"] == "Connected conversation"
+        conversations = client.get("/api/ai/conversations?limit=100")
+        assert conversations.status_code == 200
+        assert conversations.json()["rows"]
+        assert conversations.json()["rows"][0]["title"] == "Connected conversation"
     finally:
         app.dependency_overrides.clear()
 
@@ -243,17 +330,21 @@ def test_every_workflow_node_accepts_versioned_notarized_attachments() -> None:
     actor = _actor()
     instance_id = uuid4()
     with tenant_session(actor.tenant_id) as session:
-        definition = session.execute(
-            text(
-                """
+        definition = (
+            session.execute(
+                text(
+                    """
                 SELECT id, definition
                 FROM workflow.definitions
                 WHERE active
                 ORDER BY workflow_key, version DESC
                 LIMIT 1
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         node_key = str(definition["definition"]["nodes"][0]["node_key"])
         session.execute(
             text(
@@ -329,16 +420,14 @@ def test_every_workflow_node_accepts_versioned_notarized_attachments() -> None:
         assert [item["version"] for item in artifacts] == [2, 1]
         assert all(item["node_key"] == node_key for item in artifacts)
 
-        listed = client.get(
-            f"/api/wf/instances/{instance_id}/nodes/{node_key}/attachments"
-        )
+        listed = client.get(f"/api/wf/instances/{instance_id}/nodes/{node_key}/attachments")
         assert listed.status_code == 200
         assert listed.json()["count"] == 2
     finally:
         app.dependency_overrides.clear()
 
 
-def test_terminal_gateway_persists_and_reads_a_real_tenant_business_projection() -> None:
+def test_retained_message_command_uses_canonical_evented_business_state() -> None:
     actor = _actor()
     app.dependency_overrides[current_actor] = lambda: actor
     client = TestClient(app)
@@ -348,14 +437,34 @@ def test_terminal_gateway_persists_and_reads_a_real_tenant_business_projection()
             json={"line": 'msg send --to all --text "Capability gateway message"'},
         )
         assert sent.status_code == 200
-        assert sent.json()["status"] == "succeeded"
-        assert sent.json()["data"]["adapter"] == "tenant_postgresql_capability_gateway"
+        if sent.json()["status"] != "succeeded":
+            with tenant_session(actor.tenant_id) as session:
+                diagnostic = session.execute(
+                    text(
+                        """
+                        SELECT response FROM terminal.command_executions
+                        WHERE id = :id
+                        """
+                    ),
+                    {"id": sent.json()["execution_id"]},
+                ).scalar_one()
+            pytest.fail(f"retained message failed: {sent.json()} audit={diagnostic}")
+        assert sent.json()["ok"] is True
+        assert sent.json()["data"]["transaction_committed"] is True
+        assert sent.json()["data"]["readback_verified"] is True
+
+        replay = client.post(
+            "/api/cli/exec",
+            json={"line": 'msg send --to all --text "Capability gateway message"'},
+        )
+        assert replay.json()["status"] == "succeeded"
+        assert replay.json()["data"]["idempotent_replay"] is True
 
         inbox = client.post("/api/cli/exec", json={"line": "msg inbox"})
         assert inbox.status_code == 200
         assert inbox.json()["status"] == "succeeded"
-        rows = inbox.json()["data"]["items"]
-        assert any(row.get("text") == "Capability gateway message" for row in rows)
+        assert inbox.json()["data"]["messages"][0]["text"] == "Capability gateway message"
+        assert inbox.json()["data"]["effect_verified"] is True
 
         with tenant_session(actor.tenant_id) as session:
             stored = session.execute(
@@ -363,25 +472,249 @@ def test_terminal_gateway_persists_and_reads_a_real_tenant_business_projection()
                     """
                     SELECT count(*)
                     FROM compatibility.documents
-                    WHERE namespace = 'capability.collab.messages'
+                    WHERE namespace IN (
+                      'capability.collab.messages', 'collaboration.message'
+                    )
                       AND payload->>'text' = 'Capability gateway message'
                     """
                 )
             ).scalar_one()
-            audited = session.execute(
+            canonical = session.execute(
                 text(
                     """
                     SELECT count(*)
-                    FROM audit.events
-                    WHERE event_type = 'capability.gateway.executed'
-                      AND payload->>'tool_name' IN ('msg_send', 'msg_inbox')
+                    FROM business.entities
+                    WHERE resource_type = 'collaboration.message'
+                      AND payload #>> '{body,text}' = 'Capability gateway message'
                     """
                 )
             ).scalar_one()
-        assert int(stored) == 1
-        assert int(audited) == 2
+            events = session.execute(
+                text(
+                    """
+                    SELECT count(*) FROM business.events
+                    WHERE tool_name = 'msg_send'
+                    """
+                )
+            ).scalar_one()
+        assert int(stored) == 0
+        assert int(canonical) == 1
+        assert int(events) == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_sensitive_native_retained_mutations_have_real_readback() -> None:
+    actor = _actor()
+    username = f"created-{uuid4().hex[:12]}"
+    created = execute_retained_capability(
+        "user_add",
+        actor,
+        {
+            "body.username": username,
+            "body.password": "correct-horse-battery-staple",
+            "body.display_name": "Created User",
+        },
+        origin="auto_runtime",
+        confirmation_mode="passkey",
+    )
+    assert created["transaction_committed"] is True
+    assert created["readback_verified"] is True
+    with system_session() as session:
+        login = (
+            session.execute(
+                text(
+                    """
+                    SELECT id, password_hash FROM iam.users
+                    WHERE username = :username
+                    """
+                ),
+                {"username": username},
+            )
+            .mappings()
+            .one()
+        )
+    assert verify_password("correct-horse-battery-staple", login["password_hash"])
+    with tenant_session(actor.tenant_id) as session:
+        membership_tenant = session.execute(
+            text("SELECT tenant_id FROM iam.memberships WHERE user_id = :user_id"),
+            {"user_id": login["id"]},
+        ).scalar_one()
+    assert membership_tenant == actor.tenant_id
+
+    category_id = uuid4()
+    item_id = uuid4()
+    with tenant_session(actor.tenant_id) as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO warehouse.item_categories(
+                  id, tenant_id, category_code, name
+                ) VALUES (:category_id, :tenant_id, 'RESET-TEST', 'Reset test')
+                """
+            ),
+            {"category_id": category_id, "tenant_id": actor.tenant_id},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO warehouse.items(
+                  id, tenant_id, category_id, item_code, name
+                ) VALUES (:item_id, :tenant_id, :category_id, 'RESET-ITEM', 'Reset item')
+                """
+            ),
+            {
+                "category_id": category_id,
+                "item_id": item_id,
+                "tenant_id": actor.tenant_id,
+            },
+        )
+    reset = execute_retained_capability(
+        "inventory_reset",
+        actor,
+        {"body.request_id": f"reset-{uuid4()}", "body.scope": "all"},
+        origin="auto_runtime",
+        confirmation_mode="passkey",
+    )
+    assert reset["readback_verified"] is True
+    with tenant_session(actor.tenant_id) as session:
+        counts = (
+            session.execute(
+                text(
+                    """
+                SELECT
+                  (SELECT count(*) FROM warehouse.items) AS items,
+                  (SELECT count(*) FROM warehouse.item_categories
+                   WHERE id = :category_id) AS preserved_category
+                """
+                ),
+                {"category_id": category_id},
+            )
+            .mappings()
+            .one()
+        )
+    assert int(counts["items"]) == 0
+    assert int(counts["preserved_category"]) == 1
+
+
+def test_retained_first_write_profile_run_and_weather_paths_are_truthful(monkeypatch) -> None:
+    actor = _actor()
+    run_id = uuid4()
+    warehouse_id = uuid4()
+    with tenant_session(actor.tenant_id) as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO iam.user_profiles(user_id, profile, revision)
+                VALUES (:user_id, '{"language":"zh-TW"}'::jsonb, 1)
+                """
+            ),
+            {"user_id": actor.user_id},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO secretariat.runs(
+                  id, tenant_id, actor_user_id, task, status, context_snapshot
+                ) VALUES (
+                  :id, :tenant_id, :actor_user_id, 'readback test',
+                  'succeeded', '{}'::jsonb
+                )
+                """
+            ),
+            {
+                "id": run_id,
+                "tenant_id": actor.tenant_id,
+                "actor_user_id": actor.user_id,
+            },
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO warehouse.warehouses(
+                  id, tenant_id, code, name, warehouse_type, lat, lng
+                ) VALUES (
+                  :id, :tenant_id, 'WEATHER', 'Weather location',
+                  'general', 31.230400, 121.473700
+                )
+                """
+            ),
+            {"id": warehouse_id, "tenant_id": actor.tenant_id},
+        )
+
+    reset = execute_retained_capability(
+        "profile_reset",
+        actor,
+        {},
+        origin="auto_runtime",
+        confirmation_mode="domain_workflow",
+    )
+    assert reset["profile"] == {}
+    assert reset["revision"] == 2
+    assert reset["readback_verified"] is True
+
+    detail = execute_retained_capability(
+        "agent_run_show",
+        actor,
+        {"query.id": str(run_id)},
+        origin="terminal",
+        confirmation_mode="direct",
+    )
+    assert detail["run"]["id"] == str(run_id)
+    assert detail["run"]["task"] == "readback test"
+    with pytest.raises(HTTPException) as rejected:
+        execute_retained_capability(
+            "agent_run_undo",
+            actor,
+            {"body.run_id": str(run_id)},
+            origin="terminal",
+            confirmation_mode="direct",
+        )
+    assert rejected.value.status_code == 409
+    assert "no recorded reversible write steps" in str(rejected.value.detail)
+
+    class _WeatherResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"current": {"temperature_2m": 28.5}}
+
+    captured: dict[str, object] = {}
+
+    def fake_get(_url: str, **kwargs: object) -> _WeatherResponse:
+        captured.update(dict(kwargs.get("params") or {}))
+        return _WeatherResponse()
+
+    monkeypatch.setattr("app.services.legacy_capability_runtime.httpx.get", fake_get)
+    weather = execute_retained_capability(
+        "weather_now",
+        actor,
+        {},
+        origin="terminal",
+        confirmation_mode="direct",
+    )
+    assert weather["location_source"] == "warehouse.warehouses"
+    assert float(captured["latitude"]) == pytest.approx(31.2304)
+    assert float(captured["longitude"]) == pytest.approx(121.4737)
+
+    posted = execute_retained_capability(
+        "fin_post",
+        actor,
+        {
+            "body.request_id": f"journal-{uuid4()}",
+            "body.lines_json": json.dumps(
+                [
+                    {"code": "1002", "debit": 125, "credit": 0},
+                    {"code": "6001", "debit": 0, "credit": 125},
+                ]
+            ),
+        },
+        origin="auto_runtime",
+        confirmation_mode="domain_workflow",
+    )
+    assert posted["transaction_committed"] is True
+    assert posted["entity"]["resource_type"] == "finance.ledger"
 
 
 def test_manual_and_ai_actions_share_native_inventory_round_trip() -> None:
@@ -796,7 +1129,7 @@ def test_auto_runtime_distils_all_company_authority_and_capability_genes(monkeyp
         result.observations["context_strategy"]
         == "domain_then_family_then_exact_tool_then_live_data"
     )
-    assert result.observations["capability_genes"] == 502
+    assert result.observations["capability_genes"] == 511
     assert result.observations["authority_world"]["positions"] >= 1
     assert result.distillation["selected_tool_names"] == ["warehouse_list"]
     assert result.decisions[0]["judgment"] == "ask_person"
@@ -814,7 +1147,7 @@ def test_auto_runtime_distils_all_company_authority_and_capability_genes(monkeyp
             .mappings()
             .one()
         )
-    assert stored["status"] == "succeeded"
+    assert stored["status"] == "waiting"
     assert stored["context_snapshot"]["architecture"] == "hierarchical_funnel_v2"
     assert "L0_permanent_world_map" in stored["context_snapshot"]["layers"]
 
@@ -1081,10 +1414,10 @@ def test_auto_runtime_autonomously_acquires_missing_evidence(monkeypatch) -> Non
         "wf_workflows",
     ]
     assert [item["runtime_round"] for item in result.tool_results] == [1, 2]
-    assert max(
-        int(item["input_chars"])
-        for item in result.observations["context_metrics"]["phases"]
-    ) < 50_000
+    assert (
+        max(int(item["input_chars"]) for item in result.observations["context_metrics"]["phases"])
+        < 50_000
+    )
 
 
 def test_passkey_registration_login_list_and_delete_round_trip(monkeypatch) -> None:
@@ -1172,15 +1505,21 @@ def test_passkey_registration_login_list_and_delete_round_trip(monkeypatch) -> N
         )
         assert foreign_rp.status_code == 409
         assert client.get("/api/auth/passkeys").json()["passkeys"] == []
-        assert client.post(
-            "/api/auth/passkeys/step-up/options",
-            json={"purpose": "test", "resource": {"id": "foreign-rp"}},
-        ).status_code == 409
-        assert client.request(
-            "DELETE",
-            f"/api/auth/passkeys/{passkey_id}",
-            json={"password": "test-password"},
-        ).status_code == 404
+        assert (
+            client.post(
+                "/api/auth/passkeys/step-up/options",
+                json={"purpose": "test", "resource": {"id": "foreign-rp"}},
+            ).status_code
+            == 409
+        )
+        assert (
+            client.request(
+                "DELETE",
+                f"/api/auth/passkeys/{passkey_id}",
+                json={"password": "test-password"},
+            ).status_code
+            == 404
+        )
         with system_session() as session:
             session.execute(
                 text("UPDATE iam.passkeys SET rp_id = 'localhost' WHERE id = :id"),
