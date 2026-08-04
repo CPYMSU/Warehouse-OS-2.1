@@ -99,7 +99,7 @@ def test_secretary_dock_exposes_lighthouse_pairing_and_read_only_runs():
     assert 'className="secretary-device-select"' not in source
     assert 'lh cloud-pair --warehouse-url' in source
     assert ".secretary-dock{width:min(594px,calc(100vw - 56px))}" in source
-    assert ".secretary-dock.big{width:min(1080px,calc(100vw - 56px))}" in source
+    assert ".secretary-dock.big{width:min(920px,calc(100vw - 56px))}" in source
     assert ".secretary-dock .dock-scroll{height:585px;flex-basis:585px}" in source
     assert "height:min(78vh,960px);flex-basis:min(78vh,960px)" in source
 
