@@ -5,6 +5,7 @@ ASSETS_PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-assets.jsx"
 ASSETS_CSS = ROOT / "frontend" / "v2" / "pages" / "pages-assets.css"
 ACTION_CENTER = ROOT / "frontend" / "v2" / "action-center.jsx"
 INDEX = ROOT / "frontend" / "v2" / "index.html"
+PERSONAL = ROOT / "frontend" / "v2" / "personal.html"
 CORE = ROOT / "frontend" / "v2" / "core.jsx"
 APP = ROOT / "frontend" / "v2" / "app.jsx"
 LANG = ROOT / "frontend" / "v2" / "lang.jsx"
@@ -74,7 +75,10 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260803-assets-operation-topology2' in index
     assert 'pages/pages-assets.jsx?v=20260803-assets-operation-topology2' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'dist/app.bundle.js?v=20260804-audit-conversation1' in index
+    assert 'dist/app.bundle.js?v=20260804-secretary-narrow1' in index
+    assert 'dist/personal.bundle.js?v=20260804-secretary-narrow1' in PERSONAL.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_audit_conversation_drawer_uses_native_detail_contract_and_truthful_errors():
@@ -99,7 +103,7 @@ def test_secretary_dock_exposes_lighthouse_pairing_and_read_only_runs():
     assert 'className="secretary-device-select"' not in source
     assert 'lh cloud-pair --warehouse-url' in source
     assert ".secretary-dock{width:min(594px,calc(100vw - 56px))}" in source
-    assert ".secretary-dock.big{width:min(920px,calc(100vw - 56px))}" in source
+    assert ".secretary-dock.big{width:min(920px,calc(100vw - 120px))}" in source
     assert ".secretary-dock .dock-scroll{height:585px;flex-basis:585px}" in source
     assert "height:min(78vh,960px);flex-basis:min(78vh,960px)" in source
 
