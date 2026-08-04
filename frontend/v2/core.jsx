@@ -5175,7 +5175,7 @@ const SecretaryDock = () => {
     <div className={"dock secretary-dock" + (big ? " big" : "")}>
       <style>{`
         .secretary-dock{width:min(594px,calc(100vw - 56px))}
-        .secretary-dock.big{width:min(1080px,calc(100vw - 56px))}
+        .secretary-dock.big{width:min(920px,calc(100vw - 56px))}
         .secretary-command-head{border-bottom:2px solid var(--rule);background:var(--white)}
         .secretary-head-main{display:flex;align-items:center;justify-content:space-between;gap:9px;padding:9px 11px}
         .secretary-brand{--secretary-spectrum:linear-gradient(90deg,#df2b1f 0 17%,#ff7a00 17% 33%,#f1cf00 33% 49%,#12a05c 49% 66%,#1685d1 66% 83%,#6947c6 83% 100%);position:relative;display:flex;flex:0 1 780px;align-items:center;gap:10px;min-width:0;padding:6px 11px 8px 7px;overflow:hidden;border:1px solid var(--hair);background:var(--paper)}
