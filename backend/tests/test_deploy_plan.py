@@ -203,6 +203,9 @@ def test_github_deploys_mac_primary_before_vultr_standby() -> None:
     assert "transport: ssh" in production
     assert "use_tailscale: true" not in production
     assert "tailscale/github-action" not in target
+    assert "homebrew_bin=/opt/homebrew/bin" in target
+    assert "actions/setup-python" not in target
+    assert "actions/setup-node" not in target
     assert "ops/deploy plan" in target
     assert "run: ops/deploy smart" in target
 

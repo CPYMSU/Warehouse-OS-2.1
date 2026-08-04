@@ -119,6 +119,9 @@ the labels `self-hosted`, `macOS`, `ARM64` and `warehouse-production` for every
 job. GitHub supplies scheduling and audit logs, while checkout, comparison,
 packaging and deployment consume only Mac mini compute. Pull-request checks
 stay on GitHub-hosted runners and never request the production label.
+The runner host provides Homebrew Python 3.12–3.14 and Node.js 20 or newer
+under `/opt/homebrew/bin`; production jobs reuse those installations instead
+of downloading a fresh toolchain for every deployment.
 
 The Mac-primary job uses the deploy client's `local` transport: the runner
 invokes `/Users/<user>/Server/bonfirework/bin/warehouse-deploy` directly and
