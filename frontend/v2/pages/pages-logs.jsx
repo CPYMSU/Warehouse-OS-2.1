@@ -91,9 +91,10 @@ window.W2_LANG.addEN({
   "把對話 #{id}「{title}」完整讀一遍,給我 5 句以內的要點總結:談了什麼、決定了什麼、有沒有待辦。": "Read conversation #{id} \"{title}\" in full and give me a summary within 5 sentences: what was discussed, what was decided, and any follow-ups.",
   "接續對話 #{id}「{title}」的話題:先把該對話的上下文調出來看一遍,然後我們繼續往下談。": "Continue the topic of conversation #{id} \"{title}\": first pull up its context, then let's carry on from there.",
   "把對話 #{id}「{title}」的內容調出來給我看。": "Fetch and show me the content of conversation #{id} \"{title}\".",
-  "調不到這段對話的內容": "Couldn't load this conversation",
-  "可能是後端未就緒或對話已歸檔,直接讓秘書幫你調取。": "The backend may be unavailable or the conversation archived — just ask the Secretary to fetch it.",
-  "讓秘書調取": "Ask Secretary to fetch",
+  "對話內容讀取失敗": "Failed to load conversation",
+  "重新讀取": "Retry",
+  "這段對話尚無消息記錄": "This conversation has no messages yet",
+  "對話檔案存在,但目前沒有可顯示的消息。": "The conversation exists, but currently has no messages to display.",
   "暫無秘書對話": "No conversations yet",
   "跟秘書聊過的每一段對話都會自動存檔在這裡,包括預警、數據站與採購助手的問答。": "Every conversation with the Secretary is archived here automatically, including alerts, DataHub and procurement assistant Q&A.",
   "你好,幫我看看今天倉庫的整體情況。": "Hello, give me an overview of the warehouse today.",
@@ -307,12 +308,21 @@ const MdBlock = ({ text }) => {
 /* ── 對話回放抽屜 ── */
 const ConvDrawer = ({ c, onClose, biu = false }) => {
   const [detail, setDetail] = _s(null);
+  const [detailError, setDetailError] = _s("");
+  const [detailAttempt, setDetailAttempt] = _s(0);
   _e(() => {
+    let current = true;
     setDetail(null);
-    W2.json("/api/ai/conversation?id=" + encodeURIComponent(c.id))
-      .then(d => setDetail(d && typeof d === "object" ? d : {}))
-      .catch(() => setDetail({}));
-  }, [c.id]);
+    setDetailError("");
+    W2.json("/api/ai/conversations/" + encodeURIComponent(c.id))
+      .then(d => { if (current) setDetail(d && typeof d === "object" ? d : {}); })
+      .catch(error => {
+        if (!current) return;
+        setDetail({});
+        setDetailError(String((error && error.message) || t("對話內容讀取失敗")));
+      });
+    return () => { current = false; };
+  }, [c.id, detailAttempt]);
   const msgs = (detail && Array.isArray(detail.messages)) ? detail.messages : [];
   return (
     <div className="drawer">
@@ -353,11 +363,11 @@ const ConvDrawer = ({ c, onClose, biu = false }) => {
                   </div>);
               })}
             </div>
+          ) : detailError ? (
+            <EM icon="alert" title={t("對話內容讀取失敗")} sub={detailError}
+              action={<B size="sm" icon="refresh" onClick={() => setDetailAttempt(n => n + 1)}>{t("重新讀取")}</B>}/>
           ) : (
-            <EM icon="sparkle" title={t("調不到這段對話的內容")} sub={t("可能是後端未就緒或對話已歸檔,直接讓秘書幫你調取。")}
-              action={<B size="sm" icon="sparkle" onClick={() => ask(t(biu
-                ? "讀取 BIU 對話 #{id}「{title}」，只顯示案件、卷宗、程序工作、機構職位、權限、指令集與法律倫理內容。"
-                : "把對話 #{id}「{title}」的內容調出來給我看。", { id: c.id, title: c.view_title }))}>{t("讓秘書調取")}</B>}/>
+            <EM icon="chat" title={t("這段對話尚無消息記錄")} sub={t("對話檔案存在,但目前沒有可顯示的消息。")} />
           )}
         <LB dim style={{ fontSize: 8.5, marginBottom: 8 }}>{t("直接吩咐秘書")}</LB>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -527,7 +537,7 @@ const Page = ({ templateKey = "" }) => {
   _e(() => {  // 無標題 → 拉詳情取首條用戶消息前 24 字作摘要標題(封頂 10 段,不寫庫)
     convRows.filter(r => r.id != null && r.untitled && !askedRef.current[r.id]).slice(0, 10).forEach(r => {
       askedRef.current[r.id] = 1;
-      W2.json("/api/ai/conversation?id=" + encodeURIComponent(r.id)).then(d => {
+      W2.json("/api/ai/conversations/" + encodeURIComponent(r.id)).then(d => {
         const ms = (d && Array.isArray(d.messages)) ? d.messages : [];
         const fu = ms.find(m => m && m.role === "user" && m.content);
         const txt = fu ? String(fu.content).replace(/\s+/g, " ").trim().slice(0, 24) : "";

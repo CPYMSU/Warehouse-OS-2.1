@@ -11,10 +11,14 @@ on:
         description: Stable deployment target identifier
         required: true
         type: string
-      use_tailscale:
-        description: Join the tailnet before opening the deployment channel
+      runs_on:
+        description: JSON array of runner labels
         required: true
-        type: boolean
+        type: string
+      transport:
+        description: Deploy locally on the runner or over restricted SSH
+        required: true
+        type: string
       verify_public:
         description: Verify bonfirework.org after the target becomes healthy
         required: true
@@ -26,13 +30,14 @@ permissions:
 jobs:
   deploy:
     name: Smart deploy ${{ inputs.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 20
     environment:
       name: ${{ inputs.environment }}
       url: https://bonfirework.org
     env:
       WAREHOUSE_DEPLOY_TARGET: ${{ inputs.target }}
+      WAREHOUSE_DEPLOY_TRANSPORT: ${{ inputs.transport }}
       WAREHOUSE_DEPLOY_HOST: ${{ vars.WAREHOUSE_DEPLOY_HOST }}
       WAREHOUSE_DEPLOY_USER: ${{ vars.WAREHOUSE_DEPLOY_USER }}
       WAREHOUSE_REMOTE_DEPLOY_MANAGER: ${{ vars.WAREHOUSE_REMOTE_DEPLOY_MANAGER }}
@@ -40,7 +45,6 @@ jobs:
       WAREHOUSE_DEPLOY_MANAGER_SUDO: ${{ vars.WAREHOUSE_DEPLOY_MANAGER_SUDO }}
       WAREHOUSE_DEPLOY_PREPARE_INCOMING: ${{ vars.WAREHOUSE_DEPLOY_PREPARE_INCOMING }}
       WAREHOUSE_DEPLOY_SCP_LEGACY: ${{ vars.WAREHOUSE_DEPLOY_SCP_LEGACY }}
-      WAREHOUSE_DEPLOY_IDENTITY: ${{ github.workspace }}/.warehouse-ssh/id_ed25519
       WAREHOUSE_REQUIRE_ACTIVE_MANIFEST: "1"
       WAREHOUSE_DEPLOY_LOCAL_VALIDATION: basic
 
@@ -50,14 +54,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Connect the ephemeral runner to Tailscale
-        if: inputs.use_tailscale
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          ping: ${{ vars.WAREHOUSE_DEPLOY_HOST }}
-
       - name: Install the restricted deployment identity
+        if: inputs.transport == 'ssh'
         shell: bash
         env:
           DEPLOY_SSH_KEY: ${{ secrets.WAREHOUSE_DEPLOY_SSH_KEY }}
@@ -70,11 +68,16 @@ jobs:
           : "${WAREHOUSE_DEPLOY_INCOMING:?production variable is required}"
           : "${DEPLOY_SSH_KEY:?production secret is required}"
           : "${DEPLOY_KNOWN_HOSTS:?production secret is required}"
-          install -d -m 0700 "${WAREHOUSE_DEPLOY_IDENTITY%/*}" "${HOME}/.ssh"
-          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${WAREHOUSE_DEPLOY_IDENTITY}"
-          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
-          chmod 0600 "${WAREHOUSE_DEPLOY_IDENTITY}" "${HOME}/.ssh/known_hosts"
-          ssh-keygen -y -f "${WAREHOUSE_DEPLOY_IDENTITY}" >/dev/null
+          ssh_dir="${RUNNER_TEMP}/warehouse-ssh"
+          deploy_identity="${ssh_dir}/id_ed25519"
+          deploy_known_hosts="${ssh_dir}/known_hosts"
+          install -d -m 0700 "${ssh_dir}"
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${deploy_identity}"
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > "${deploy_known_hosts}"
+          chmod 0600 "${deploy_identity}" "${deploy_known_hosts}"
+          ssh-keygen -y -f "${deploy_identity}" >/dev/null
+          echo "WAREHOUSE_DEPLOY_IDENTITY=${deploy_identity}" >> "${GITHUB_ENV}"
+          echo "WAREHOUSE_DEPLOY_KNOWN_HOSTS=${deploy_known_hosts}" >> "${GITHUB_ENV}"
 
       - name: Plan against the target's active release
         id: plan
@@ -108,10 +111,14 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libdigest-sha-perl rsync
-          python -m venv backend/.venv
-          backend/.venv/bin/pip install --disable-pip-version-check 'alembic>=1.14,<2'
+          if [[ "${RUNNER_OS}" == Linux ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends libdigest-sha-perl rsync
+          fi
+          tools_venv="${RUNNER_TEMP}/warehouse-deploy-tools"
+          python -m venv "${tools_venv}"
+          "${tools_venv}/bin/pip" install --disable-pip-version-check 'alembic>=1.14,<2'
+          echo "WAREHOUSE_DEPLOY_ALEMBIC=${tools_venv}/bin/alembic" >> "${GITHUB_ENV}"
 
       - name: Execute the smart deployment
         if: steps.plan.outputs.deploy_required == 'true'
@@ -134,3 +141,12 @@ jobs:
       - name: Record a target no-op
         if: steps.plan.outputs.deploy_required == 'false'
         run: echo "${{ inputs.target }} already matches this runtime tree."
+
+      - name: Remove the temporary deployment identity
+        if: always() && inputs.transport == 'ssh'
+        shell: bash
+        run: |
+          rm -f \
+            "${RUNNER_TEMP}/warehouse-ssh/id_ed25519" \
+            "${RUNNER_TEMP}/warehouse-ssh/known_hosts"
+          rmdir "${RUNNER_TEMP}/warehouse-ssh" 2>/dev/null || true

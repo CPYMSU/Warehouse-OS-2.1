@@ -12,8 +12,8 @@ __pycache__/
 * 2.*
 .env
 .env.*
-.venv
-backend/.venv
+.venv/
+backend/.venv/
 backend/warehouse_os_api.egg-info/
 node_modules/
 postgres-data/

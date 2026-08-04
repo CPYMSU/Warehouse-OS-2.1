@@ -114,11 +114,19 @@ through the `mac-production` Environment and then deploys the Vultr standby
 through `production`. Both jobs run with read-only repository permissions and
 share the target-neutral `.github/workflows/production-deploy-target.yml`.
 
-The Mac job uses `tailscale/github-action@v4` to create an ephemeral tagged
-GitHub-hosted runner. The public repository never schedules work on a
-self-hosted Mac runner. A forced-command SSH key may upload only to the fixed
-incoming directory and invoke the small Mac deployment-manager command set;
-it cannot open a shell, allocate a PTY or forward ports.
+The production workflow requests a dedicated Mac mini self-hosted runner with
+the labels `self-hosted`, `macOS`, `ARM64` and `warehouse-production` for every
+job. GitHub supplies scheduling and audit logs, while checkout, comparison,
+packaging and deployment consume only Mac mini compute. Pull-request checks
+stay on GitHub-hosted runners and never request the production label.
+
+The Mac-primary job uses the deploy client's `local` transport: the runner
+invokes `/Users/<user>/Server/bonfirework/bin/warehouse-deploy` directly and
+places the immutable archive in the local incoming directory. No Tailscale or
+SSH credential is involved. After Mac health and the public endpoint pass, the
+same runner executes the Vultr job over its existing restricted SSH channel.
+Its known-hosts file is isolated under `RUNNER_TEMP`, so the job never replaces
+the Mac user's personal SSH configuration.
 
 The workflow refuses stale queued revisions, serializes the entire two-target
 release and requires each node's live manifest. It fixes
