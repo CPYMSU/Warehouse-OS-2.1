@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID, uuid4
 
 import pytest
@@ -82,6 +83,65 @@ def test_shield_contract_is_closed_and_power_plane_is_enforced(monkeypatch) -> N
     with pytest.raises(HTTPException) as runtime_key:
         shield.require_shield_access(_context(auth_kind="runtime_api_key"))
     assert runtime_key.value.status_code == 403
+
+
+def test_shield_agent_uses_authenticated_tcp_bridge_when_configured(monkeypatch) -> None:
+    response = (
+        b'{"ok":true,"system_vitals":{"state":"healthy"},"guardian_tail":[]}\n'
+    )
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.sent = b""
+            self.remaining = response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def settimeout(self, _timeout: float) -> None:
+            return None
+
+        def sendall(self, payload: bytes) -> None:
+            self.sent += payload
+
+        def recv(self, _size: int) -> bytes:
+            chunk, self.remaining = self.remaining, b""
+            return chunk
+
+    connection = FakeSocket()
+    observed: dict[str, object] = {}
+
+    def connect(address, *, timeout):
+        observed.update(address=address, timeout=timeout)
+        return connection
+
+    monkeypatch.setattr(shield.socket, "create_connection", connect)
+    monkeypatch.setattr(
+        shield.socket,
+        "socket",
+        lambda *_args, **_kwargs: pytest.fail("Unix socket fallback must not be opened"),
+    )
+    result = shield._agent_request(
+        Settings(
+            shield_agent_host="host.docker.internal",
+            shield_agent_port=18091,
+            shield_agent_token="x" * 64,
+        ),
+        "status",
+        request_id="tcp-smoke",
+    )
+
+    assert observed == {
+        "address": ("host.docker.internal", 18091),
+        "timeout": 8.0,
+    }
+    assert result["ok"] is True
+    request = json.loads(connection.sent)
+    assert request["operation"] == "status"
+    assert request["token"] == "x" * 64
 
 
 @pytest.mark.integration

@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-STANDARD_VERSION = "2.2"
-STANDARD_SCHEMA = "warehouse.hosting-application.v2.2"
-STANDARD_FILENAME = "workspace-hosting-developer-standard-2.2.zh-TW.md"
-CONTRACT_FILENAME = "workspace-hosting-contract-2.2.json"
+STANDARD_VERSION = "2.3"
+STANDARD_SCHEMA = "warehouse.hosting-application.v2.3"
+STANDARD_FILENAME = "workspace-hosting-developer-standard-2.3.zh-TW.md"
+CONTRACT_FILENAME = "workspace-hosting-contract-2.3.json"
 
 
 def _document_path(filename: str) -> Path:
@@ -40,14 +40,14 @@ def requirement_downloads(*, public_surface: str) -> list[dict[str, str]]:
         contract_url = "/api/digital-assets/hosting-contract.json"
     return [
         {
-            "label": "下載《託管應用技術要求 2.2》",
+            "label": "下載《託管應用技術要求 2.3》",
             "name": STANDARD_FILENAME,
             "url": standard_url,
             "filename": STANDARD_FILENAME,
             "media_type": "text/markdown",
         },
         {
-            "label": "下載機器可讀 Hosting Contract 2.2",
+            "label": "下載機器可讀 Hosting Contract 2.3",
             "name": CONTRACT_FILENAME,
             "url": contract_url,
             "filename": CONTRACT_FILENAME,

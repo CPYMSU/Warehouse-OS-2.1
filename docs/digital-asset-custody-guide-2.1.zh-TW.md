@@ -2,7 +2,7 @@
 
 > 適用版本：Warehouse OS 2.1<br>
 > 契約日期：2026-08-02<br>
-> 資料面基線：PostgreSQL 18、強制 Row Level Security（RLS）、`wak_` 工作區 Key、`/api/workspaces/v1/*`<br>
+> 控制面基線：PostgreSQL 18、強制 Row Level Security（RLS）、`wak_` 工作區 Key、`/api/workspaces/v1/*`；工作區應用資料庫可自選<br>
 > 適用對象：在 Warehouse OS 登記、託管、開發或維護數字資產的企業管理員與開發者
 
 ## 0. 給終端 AI：優先使用智能託管接口
@@ -51,7 +51,7 @@ Warehouse OS 2.1 不把「上傳一個檔案」當成完整託管。資產、工
 | 工作區 | 綁定前端、後端、Worker 或 Agent 組件，以及儲存、數據庫、Key 和部署記錄 |
 | 永久入口 | 建立工作區時立即保留的 `/assets/{tenant_slug}/{workspace_key}/`；未部署時顯示真實狀態頁 |
 | 已部署應用 | 只有部署狀態為 `ready`、健康狀態為 `healthy` 且有經驗證的應用 URL 時才成立 |
-| PostgreSQL Data API | 以集合、記錄鍵和 JSON 物件存取工作區資料；所有資料列受租戶 RLS 隔離 |
+| PostgreSQL Data API | 選用的平台資料服務；工作區也可自管其他資料引擎或不使用資料庫 |
 | `wak_` 工作區 Key | 只代表一個租戶內的一個工作區，並帶有明確作用域與到期時間 |
 
 永久入口固定不變。應用尚未上線時，它顯示工作區狀態、Runtime、源碼狀態和儲存用量；應用真正上線後，入口才會跳轉到通過健康核驗的應用 URL。`public_url`、排隊記錄或永久入口本身都不能單獨證明應用已部署。
@@ -66,7 +66,8 @@ Warehouse OS 2.1 不把「上傳一個檔案」當成完整託管。資產、工
 | 永久工作區入口 | 可用；建立工作區即保留 |
 | 工作區儲存配額 | 可用；初始固定 512 MiB，之後每次只增加 512 MiB |
 | 本機內容定址物件儲存 | 開發提供者可用；寫入時由服務端復算 SHA-256 |
-| PostgreSQL/RLS Data API | 可用 |
+| PostgreSQL/RLS Data API | 可選；平台代管模式可用 |
+| 工作區自管資料庫 | 可用；受限 Compose、工作區命名卷與 Secret，可選任意資料引擎 |
 | 主／附屬工作區 Key、輪換與吊銷 | 可用 |
 | HDD 工作區獨立 PostgreSQL 數據庫 | 可用；DSN 不向客戶端或 AI 暴露 |
 | 工作區源碼與部署 API | 可用；`wak_` 的 deploy/logs scope 對應真實 API |
@@ -276,7 +277,7 @@ Git 同步只接受無憑證 HTTPS URL，先阻擋回環、私網與保留地址
 
 自訂網域先取得全平台唯一 hostname claim，再交由受限主機代理配置 Nginx 與 ACME。平台主域及其子域不可由工作區 Key 佔用；其他工作區或既有 Nginx 站點已持有同一 hostname 時會返回可診斷的 `blocked/409`，不會覆蓋原站點。
 
-本機 logical backup／同工作區 restore 可直接執行。PITR 或異地備份也使用相同 `backup` 資源，但只有服務器接入 WAL archive、base backup、timeline restore 或加密遠端 object store 後才會成為 ready；未接入時 action 會明確 blocked 並列出缺少的 provider capability。GPU 同理：只有 Runtime Worker 實測到可分配 GPU 池才會分配並向 Docker 注入 DeviceRequest。
+本機 logical backup／同工作區 restore 可直接執行。平台使用每工作區獨立、不可登入且可跨越 FORCE RLS 的備份身份；Runtime 永遠維持 NOBYPASSRLS 且不能切換到備份身份。ready 證據包括 owner 保留、校驗和、臨時庫恢復，以及 FORCE RLS relation 的逐表源／恢復行數一致。PITR 或異地備份也使用相同 `backup` 資源，但只有服務器接入 WAL archive、base backup、timeline restore 或加密遠端 object store 後才會成為 ready；未接入時 action 會明確 blocked 並列出缺少的 provider capability。GPU 同理：只有 Runtime Worker 實測到可分配 GPU 池才會分配並向 Docker 注入 DeviceRequest。
 
 ## 5. 使用 PostgreSQL Data API
 
@@ -341,6 +342,11 @@ curl -sS \
   -H "Authorization: Bearer $WAREHOUSE_WORKSPACE_KEY" \
   "$WAREHOUSE_BASE_URL/api/workspaces/v1/database/schema"
 
+# 資料庫健康狀態（不回傳 DSN 或密碼）
+curl -sS \
+  -H "Authorization: Bearer $WAREHOUSE_WORKSPACE_KEY" \
+  "$WAREHOUSE_BASE_URL/api/workspaces/v1/database/health"
+
 # 讀取集合
 curl -sS \
   -H "Authorization: Bearer $WAREHOUSE_WORKSPACE_KEY" \
@@ -352,24 +358,56 @@ curl -sS -X PUT \
   -H "Content-Type: application/json" \
   --data '{"data":{"name":"Acme","active":true}}' \
   "$WAREHOUSE_BASE_URL/api/workspaces/v1/data/customers/acme?expected_version=0"
+
+# 讀取真實 PostgreSQL 關係表
+curl -sS \
+  -H "Authorization: Bearer $WAREHOUSE_WORKSPACE_KEY" \
+  "$WAREHOUSE_BASE_URL/api/workspaces/v1/database/tables/public/orders/rows"
+
+# 以主鍵與版本寫入關係表
+curl -sS -X PUT \
+  -H "Authorization: Bearer $WAREHOUSE_WORKSPACE_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"data":{"total":125,"currency":"CNY"}}' \
+  "$WAREHOUSE_BASE_URL/api/workspaces/v1/database/tables/public/orders/rows/order-1?expected_version=0"
 ```
 
 穩定工作區端點包括：
 
 - `GET /api/workspaces/v1/info`
+- `GET /api/workspaces/v1/usage`
 - `GET /api/workspaces/v1/database/schema`
+- `GET /api/workspaces/v1/database/health`
+- `GET /api/workspaces/v1/database/tables/{schema}/{table}/rows`
+- `PUT /api/workspaces/v1/database/tables/{schema}/{table}/rows/{record_key}`
 - `GET /api/workspaces/v1/data/{collection}`
 - `PUT /api/workspaces/v1/data/{collection}/{record_key}`
 - `POST /api/workspaces/v1/sources/upload`
 - `GET /api/workspaces/v1/sources`
 - `POST /api/workspaces/v1/deployments`
+- `POST /api/workspaces/v1/jobs`
 - `GET /api/workspaces/v1/deployments[/{deployment_id}]`
 - `GET /api/workspaces/v1/deployments/{deployment_id}/events`
 - `GET /api/workspaces/v1/deployments/{deployment_id}/logs`
 - `POST /api/workspaces/v1/deployments/{deployment_id}/cancel`
 - `POST /api/workspaces/v1/deployments/{deployment_id}/activate`
+- `PUT /api/workspaces/v1/database/policy`
+- `GET /api/workspaces/v1/database/control`
+- `POST /api/workspaces/v1/database/reconcile`
 
-`workspace:read` 控制 `info`，`data:read` 控制 schema 與集合讀取，`data:write` 控制記錄寫入；`deploy:read/write` 控制源碼與部署，`logs:read` 控制脫敏日誌。
+`workspace:read` 控制 `info`，`data:read` 控制 schema、健康狀態、集合及關係表讀取，`data:write` 控制記錄與關係表寫入；`deploy:read/write` 控制源碼與部署，`logs:read` 控制脫敏日誌。
+
+資料庫策略可選 `platform_managed`、`external`、`workspace_managed` 或 `none`。前兩者以唯一預設 `database_binding` 驅動 Runtime、Schema、Data API、Migration 與健康檢查，完整 DSN 只加密保存並在 Runtime 啟動前注入，不出現在 API、AI 上下文、審計或日誌。`workspace_managed` 允許 WAK 在受限 Container／Compose 與該工作區命名卷內使用 MySQL、MongoDB、SQLite 或其他引擎並自行管理 Schema；`none` 不注入資料庫。這種自由不包含宿主機 root、Docker socket、host network、host path、特權容器或其他工作區資料。
+
+### 獨立資料庫與 GitHub Pages
+
+`POST /api/database-projects` 可單獨建立資料庫服務，不要求上傳前端、後端或部署 Runtime。它仍使用同一套資產、工作區、`database_binding`、HDD 配額與審計模型，不是另一套旁路資料庫。
+
+AI 秘書原生使用 `dm db service list`、`dm db service create`、`dm db browser show`、`dm db browser configure` 與 `dm db onboarding`。因此它能替使用者申請、盤點、配置並交付 SDK、指南、API 清單、公開 `dbp_` 與 Quickstart。需要服務器端 `wak_` 時，秘書只可復用既有的確認及一次性安全交付；不得在對話內重放明文，PostgreSQL DSN／密碼永不交付給對話或瀏覽器。
+
+若前端位於 GitHub Pages，公司管理員以 `PUT /api/workspaces/{workspace}/database/browser-access` 設定精確 HTTPS Origin 及集合規則。回傳的 `dbp_` 只是公開的簽章專案定位符；瀏覽器先換取短效 `wdb_` Access Token 與可輪換的 `wdr_` Refresh Token，再使用 Browser Data API。`wak_`、公司 Access Token、PostgreSQL DSN 與密碼均不得進入靜態網站。
+
+規則預設拒絕，並可逐集合將 read/write 設為 `deny`、`session` 或 `owner`。`owner` 會由服務端寫入並原子檢查 `owner_id`，避免另一個瀏覽器會話讀取、覆蓋或刪除該記錄。每個專案另有精確 Origin CORS、共享資料庫限流、策略 revision 失效及停用時全會話撤銷。官方零依賴 ES Module 位於 `/api/database-gateway/v1/sdk.js`。
 
 ## 7. 公司控制面 API
 
@@ -381,7 +419,7 @@ curl -sS -X PUT \
 - `GET /api/digital-assets/guide/download`：正式下載本指南
 - `GET /api/digital-assets/cli`：下載按目前網域注入預設地址的 `dam.py`
 - `GET /api/digital-assets/hosting-standard`：向 AI 返回託管開發標準、機器契約及下載描述
-- `GET /api/digital-assets/hosting-standard/download`：下載《託管應用技術要求 2.2》
+- `GET /api/digital-assets/hosting-standard/download`：下載《託管應用技術要求 2.3》
 - `GET /api/digital-assets/hosting-contract.json`：下載同版本機器可讀契約
 
 ### 資產、保管與工作區
@@ -400,12 +438,17 @@ curl -sS -X PUT \
 - `POST /api/digital-assets/{asset}/workspace-quota`：逐次增加 512 MiB 工作區配額
 - `POST /api/digital-assets/{asset}/database`：為資產的工作區建立數據庫綁定
 - `POST /api/digital-assets/{asset}/deploy`：建立部署排隊請求
+- `POST /api/database-projects`：建立不需要 Runtime 的獨立托管資料庫專案
+- `GET /api/database-projects`：安全列出公司全部工作區與獨立數據庫服務
 
 ### 工作區管理
 
 - `POST /api/workspaces/{workspace}/storage`：僅在無源碼／code 工件時原地切換代碼 HDD/SSD 綁定
 - `POST /api/workspaces/{workspace}/databases`：建立指定工作區的數據庫綁定
-- `GET /api/workspaces/{workspace}/database/schema`：以公司身份讀取集合結構
+- `GET /api/workspaces/{workspace}/database/schema`：以公司身份讀取集合與關係表結構
+- `GET /api/workspaces/{workspace}/database/health`：驗證目前預設綁定而不暴露憑證
+- `GET /api/workspaces/{workspace}/database/tables/{schema}/{table}/rows`：讀取關係表
+- `PUT /api/workspaces/{workspace}/database/tables/{schema}/{table}/rows/{record_key}`：依單一主鍵與版本寫入關係表
 - `GET /api/workspaces/{workspace}/data/{collection}`：以公司身份讀取集合
 - `PUT /api/workspaces/{workspace}/data/{collection}/{record_key}`：以公司身份寫入記錄
 - `POST /api/workspaces/{workspace}/keys`：簽發附屬工作區 Key
@@ -413,6 +456,18 @@ curl -sS -X PUT \
 - `POST /api/workspaces/{workspace}/keys/primary/rotate`：原子輪換唯一主 Key
 - `POST /api/workspaces/{workspace}/keys/{credential}/revoke`：吊銷單一附屬 Key
 - `POST /api/workspaces/{workspace}/runtime`：原地升級 Runtime 並在有源碼時建立部署請求
+- `GET|PUT /api/workspaces/{workspace}/database/browser-access`：讀取或配置瀏覽器 Origin、規則、Token TTL 與限流
+- `GET /api/workspaces/{workspace}/database/onboarding`：取得 SDK、指南、API、公開專案 Key、Quickstart 與密鑰交付政策
+
+建立客戶自有 PostgreSQL 綁定時，`database_url` 只可在這次公司控制面寫入請求中出現：
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $WAREHOUSE_COMPANY_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"logical_name":"app","provider":"external_postgresql","database_url":"postgresql://bounded_user:secret@db.example.com:5432/app?sslmode=verify-full","is_default":true}' \
+  "$WAREHOUSE_BASE_URL/api/workspaces/$WORKSPACE/databases"
+```
 
 公司 Access Token 不應嵌入受託管程序。受託管程序只使用限定作用域的 `wak_` Key；`wak_` 也不得反向呼叫公司控制面。
 
@@ -436,7 +491,7 @@ Runtime Controller 只領取指向 verified source 與啟用 profile 的請求�
 - HTTP 404：資產／工作區不屬於目前租戶，或資源不存在；服務端不跨租戶搜尋。
 - HTTP 409：工作區歸屬、資料版本、配額 revision 或組件狀態衝突。
 - HTTP 422：集合名、記錄鍵、作用域、配額步長或請求資料不符合契約。
-- 不要把 `wak_` 放入瀏覽器端 JavaScript；前端應經自己的後端代調 Data API。
+- 不要把 `wak_` 放入瀏覽器端 JavaScript；一般服務端整合使用自己的後端代調 Data API，已啟用 Browser Gateway 的靜態網站只使用公開 `dbp_` 與短效 `wdb_`。
 - 為不同服務簽發不同標籤、最小作用域和較短有效期的附屬 Key。
 - 日誌只記錄 Key hint、credential ID 和審計事件，不記錄完整 Key。
 - 永遠不要把聊天中的遮罩 Key、一次性交付描述或 Keychain 當成可部署憑證。

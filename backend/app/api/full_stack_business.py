@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,6 +60,7 @@ DEFAULT_RECORD_TYPES = [
         "default_confidentiality": "internal",
         "active": True,
         "can_create": True,
+        "revision_no": 1,
         "fields": [],
     },
     {
@@ -71,18 +73,35 @@ DEFAULT_RECORD_TYPES = [
         "default_confidentiality": "internal",
         "active": True,
         "can_create": True,
+        "revision_no": 1,
         "fields": [],
     },
 ]
 
 RECORD_CATEGORIES = [
-    {"key": "personnel", "name": "人员档案", "icon": "user"},
-    {"key": "meeting", "name": "会议档案", "icon": "clipboard"},
-    {"key": "training", "name": "培训档案", "icon": "doc"},
-    {"key": "safety", "name": "安全档案", "icon": "shield"},
-    {"key": "case", "name": "事务档案", "icon": "layers"},
-    {"key": "other", "name": "其他档案", "icon": "box"},
+    {"key": "personnel", "name": "人员档案", "icon": "user", "order": 10},
+    {"key": "meeting", "name": "会议档案", "icon": "clipboard", "order": 20},
+    {"key": "training", "name": "培训档案", "icon": "doc", "order": 30},
+    {"key": "safety", "name": "安全档案", "icon": "shield", "order": 40},
+    {"key": "case", "name": "事务档案", "icon": "layers", "order": 50},
+    {"key": "other", "name": "其他档案", "icon": "box", "order": 60},
 ]
+
+RECORD_CONFIG_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{2,79}$")
+RECORD_TYPE_CONFIG_KEYS = frozenset(
+    {
+        "key", "category_key", "name", "description", "lifecycle_mode",
+        "owner_unit_code", "confidentiality", "fields", "statuses",
+        "initial_status", "terminal_statuses", "transitions", "reminders",
+        "retention",
+    }
+)
+RECORD_CATEGORY_CONFIG_KEYS = frozenset(
+    {
+        "key", "name", "description", "icon", "order", "owner_unit_code",
+        "confidentiality", "retention",
+    }
+)
 
 
 def _iso_now() -> str:
@@ -858,10 +877,237 @@ def case_type_update(
 # Records
 
 
-def _record_types(actor: ActorContext) -> list[dict[str, object]]:
+def _record_config_key(item: dict[str, object], *, kind: str) -> str:
+    value = (
+        item.get("key") or item.get("type_key") or item.get("id")
+        if kind == "type"
+        else item.get("key") or item.get("id")
+    )
+    return str(value or "").strip().lower()
+
+
+def _record_config_defaults(
+    rows: list[dict[str, object]], *, kind: str
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for source in rows:
+        item = dict(source)
+        key = _record_config_key(item, kind=kind)
+        item.update(
+            {
+                "id": key,
+                "key": key,
+                "active": item.get("active", True),
+                "revision_no": int(item.get("revision_no") or 1),
+                "managed_by_template": True,
+            }
+        )
+        if kind == "type":
+            item["type_key"] = key
+        result.append(item)
+    return result
+
+
+def _record_config_rows(actor: ActorContext, *, kind: str) -> list[dict[str, object]]:
+    namespace = f"record.{kind}"
+    defaults = _record_config_defaults(
+        DEFAULT_RECORD_TYPES if kind == "type" else RECORD_CATEGORIES,
+        kind=kind,
+    )
     with tenant_session(actor.tenant_id) as session:
-        rows = _docs(session, "record.type", 500)
-    return rows or [dict(row) for row in DEFAULT_RECORD_TYPES]
+        stored = _docs(session, namespace, 500)
+    merged = {_record_config_key(item, kind=kind): item for item in defaults}
+    for source in stored:
+        item = dict(source)
+        key = _record_config_key(item, kind=kind)
+        if not key:
+            continue
+        for metadata_key in ("document_key", "source", "version", "created_at", "updated_at"):
+            item.pop(metadata_key, None)
+        item.update(
+            {
+                "id": key,
+                "key": key,
+                "active": item.get("active", True),
+                "revision_no": int(item.get("revision_no") or 1),
+                "managed_by_template": bool(item.get("managed_by_template", False)),
+            }
+        )
+        if kind == "type":
+            item["type_key"] = key
+        merged[key] = item
+    return list(merged.values())
+
+
+def _record_types(actor: ActorContext) -> list[dict[str, object]]:
+    return sorted(
+        _record_config_rows(actor, kind="type"),
+        key=lambda item: (
+            str(item.get("category_key") or ""),
+            str(item.get("name") or ""),
+        ),
+    )
+
+
+def _record_categories(actor: ActorContext) -> list[dict[str, object]]:
+    return sorted(
+        _record_config_rows(actor, kind="category"),
+        key=lambda item: (
+            int(item.get("order") or 0),
+            str(item.get("name") or ""),
+        ),
+    )
+
+
+def _can_configure_records(actor: ActorContext) -> bool:
+    return actor.role_level >= 10 or bool(
+        {"records.config.manage", "records.all.manage"} & actor.permissions
+    )
+
+
+def _require_record_configuration(actor: ActorContext) -> None:
+    if not _can_configure_records(actor):
+        raise HTTPException(status_code=403, detail="records.config.manage is required")
+
+
+def _record_configuration(actor: ActorContext) -> dict[str, object]:
+    categories = _record_categories(actor)
+    types = _record_types(actor)
+    revisions = [int(item.get("revision_no") or 1) for item in [*categories, *types]]
+    return {
+        "available": True,
+        "can_configure": _can_configure_records(actor),
+        "categories": categories,
+        "types": types,
+        "record_types": types,
+        "template_revision": max(revisions or [1]),
+    }
+
+
+def _validated_record_config_payload(
+    payload: dict[str, object], *, kind: str, expected_key: str | None = None
+) -> tuple[str, dict[str, object]]:
+    allowed = RECORD_TYPE_CONFIG_KEYS if kind == "type" else RECORD_CATEGORY_CONFIG_KEYS
+    unknown = sorted(set(payload) - allowed - {"expected_revision_no"})
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported record configuration fields: {', '.join(unknown)}",
+        )
+    key = str(payload.get("key") or expected_key or "").strip().lower()
+    if not RECORD_CONFIG_KEY_RE.fullmatch(key):
+        raise HTTPException(status_code=422, detail="Invalid record configuration key")
+    if expected_key is not None and key != expected_key:
+        raise HTTPException(status_code=409, detail="Record configuration keys are immutable")
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Record configuration name is required")
+    result = {field: payload[field] for field in allowed if field in payload}
+    result.update({"id": key, "key": key, "name": name})
+    if kind == "type":
+        category_key = str(result.get("category_key") or "").strip().lower()
+        if not category_key:
+            raise HTTPException(status_code=422, detail="Record type category is required")
+        result.update({"type_key": key, "category_key": category_key})
+    return key, result
+
+
+def _store_record_config(
+    actor: ActorContext,
+    *,
+    kind: str,
+    key: str,
+    item: dict[str, object],
+    expected_revision_no: int | None,
+    create: bool,
+) -> dict[str, object]:
+    namespace = f"record.{kind}"
+    with tenant_session(actor.tenant_id) as session:
+        row = (
+            session.execute(
+                text(
+                    """
+                    SELECT payload, version
+                    FROM compatibility.documents
+                    WHERE namespace = :namespace AND document_key = :document_key
+                    FOR UPDATE
+                    """
+                ),
+                {"namespace": namespace, "document_key": key},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if create and row is not None:
+            raise HTTPException(status_code=409, detail="Record configuration already exists")
+        current_revision = None
+        if row is not None:
+            current_payload = dict(row["payload"]) if isinstance(row["payload"], dict) else {}
+            current_revision = int(current_payload.get("revision_no") or row["version"] or 1)
+        if expected_revision_no is not None:
+            current_revision = int(current_revision or 1)
+            if expected_revision_no != current_revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "record_configuration_revision_conflict",
+                        "expected_revision_no": expected_revision_no,
+                        "current_revision_no": current_revision,
+                    },
+                )
+        next_revision = 1 if create else int(current_revision or 1) + 1
+        stored = {
+            **item,
+            "id": key,
+            "key": key,
+            "revision_no": next_revision,
+            "managed_by_template": False,
+        }
+        if kind == "type":
+            stored["type_key"] = key
+        params = {
+            "namespace": namespace,
+            "document_key": key,
+            "payload": json.dumps(stored, ensure_ascii=False, default=str),
+            "updated_by": actor.user_id,
+        }
+        if row is None:
+            inserted = session.execute(
+                text(
+                    """
+                    INSERT INTO compatibility.documents(
+                      id, tenant_id, namespace, document_key, payload, source, updated_by
+                    ) VALUES (
+                      :id, :tenant_id, :namespace, :document_key,
+                      CAST(:payload AS jsonb), 'native', :updated_by
+                    )
+                    ON CONFLICT (tenant_id, namespace, document_key) DO NOTHING
+                    RETURNING id
+                    """
+                ),
+                {**params, "id": uuid4(), "tenant_id": actor.tenant_id},
+            ).scalar_one_or_none()
+            if inserted is None:
+                raise HTTPException(status_code=409, detail="Record configuration already exists")
+        else:
+            session.execute(
+                text(
+                    """
+                    UPDATE compatibility.documents
+                    SET payload = CAST(:payload AS jsonb), status = 'active',
+                        source = 'native', version = version + 1, updated_by = :updated_by
+                    WHERE namespace = :namespace AND document_key = :document_key
+                    """
+                ),
+                params,
+            )
+        _audit(
+            session,
+            actor,
+            f"records.configuration.{('created' if create else 'revised')}",
+            {"kind": kind, "key": key, "revision_no": next_revision},
+        )
+    return _safe(stored)
 
 
 def _record_visible(actor: ActorContext, record: dict[str, object]) -> bool:
@@ -896,12 +1142,17 @@ def _record_get(actor: ActorContext, record_id: str) -> dict[str, object]:
 @router.get("/api/records/meta")
 def records_meta_full(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
     units, users = _tenant_people(actor)
-    types = _record_types(actor)
+    configuration = _record_configuration(actor)
+    types = configuration["types"]
+    can_configure = _can_configure_records(actor)
+    can_create = actor.role_level >= 10 or bool(
+        {"records.create", "records.all.manage"} & actor.permissions
+    )
     return {
         "available": True,
         "types": types,
         "record_types": types,
-        "categories": RECORD_CATEGORIES,
+        "categories": configuration["categories"],
         "confidentialities": [
             {"value": "internal", "label": "内部"},
             {"value": "sensitive", "label": "敏感"},
@@ -909,8 +1160,183 @@ def records_meta_full(actor: ActorContext = Depends(current_actor)) -> dict[str,
         ],
         "units": units,
         "users": users,
-        "permissions": {"can_create": True, "can_configure": True},
+        "can_create": can_create,
+        "can_configure": can_configure,
+        "permissions": {"can_create": can_create, "can_configure": can_configure},
+        "template_revision": configuration["template_revision"],
     }
+
+
+@router.get("/api/records/config")
+def records_configuration_get(
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_record_configuration(actor)
+    return _record_configuration(actor)
+
+
+def _record_config_create(
+    actor: ActorContext, payload: dict[str, object], *, kind: str
+) -> dict[str, object]:
+    _require_record_configuration(actor)
+    key, item = _validated_record_config_payload(payload, kind=kind)
+    catalog = _record_types(actor) if kind == "type" else _record_categories(actor)
+    if any(_record_config_key(row, kind=kind) == key for row in catalog):
+        raise HTTPException(status_code=409, detail="Record configuration already exists")
+    if kind == "type":
+        categories = {str(row.get("key")): row for row in _record_categories(actor)}
+        category = categories.get(str(item.get("category_key")))
+        if category is None or category.get("active") is False:
+            raise HTTPException(status_code=422, detail="Record type category is not active")
+    stored = _store_record_config(
+        actor,
+        kind=kind,
+        key=key,
+        item={**item, "active": True},
+        expected_revision_no=None,
+        create=True,
+    )
+    return {"ok": True, kind: stored, **_record_configuration(actor)}
+
+
+@router.post("/api/records/config/categories", status_code=201)
+def records_category_create(
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return _record_config_create(actor, payload, kind="category")
+
+
+@router.post("/api/records/config/types", status_code=201)
+def records_type_create(
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return _record_config_create(actor, payload, kind="type")
+
+
+def _record_config_revise(
+    actor: ActorContext,
+    payload: dict[str, object],
+    *,
+    kind: str,
+    key: str,
+) -> dict[str, object]:
+    _require_record_configuration(actor)
+    clean_key = key.strip().lower()
+    catalog = _record_types(actor) if kind == "type" else _record_categories(actor)
+    current = next(
+        (row for row in catalog if _record_config_key(row, kind=kind) == clean_key),
+        None,
+    )
+    if current is None:
+        raise HTTPException(status_code=404, detail="Record configuration not found")
+    try:
+        expected_revision = int(payload.get("expected_revision_no") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="expected_revision_no is required") from exc
+    if expected_revision < 1:
+        raise HTTPException(status_code=422, detail="expected_revision_no is required")
+    _, update = _validated_record_config_payload(
+        payload, kind=kind, expected_key=clean_key
+    )
+    if kind == "type":
+        categories = {str(row.get("key")): row for row in _record_categories(actor)}
+        category = categories.get(str(update.get("category_key")))
+        if category is None or category.get("active") is False:
+            raise HTTPException(status_code=422, detail="Record type category is not active")
+    stored = _store_record_config(
+        actor,
+        kind=kind,
+        key=clean_key,
+        item={**current, **update, "active": current.get("active", True)},
+        expected_revision_no=expected_revision,
+        create=False,
+    )
+    return {"ok": True, kind: stored, **_record_configuration(actor)}
+
+
+@router.post("/api/records/config/categories/{category_key}/revisions")
+def records_category_revise(
+    category_key: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return _record_config_revise(actor, payload, kind="category", key=category_key)
+
+
+@router.post("/api/records/config/types/{type_key}/revisions")
+def records_type_revise(
+    type_key: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return _record_config_revise(actor, payload, kind="type", key=type_key)
+
+
+def _record_config_disable(
+    actor: ActorContext, *, kind: str, key: str, expected: object
+) -> dict[str, object]:
+    _require_record_configuration(actor)
+    clean_key = key.strip().lower()
+    catalog = _record_types(actor) if kind == "type" else _record_categories(actor)
+    current = next(
+        (row for row in catalog if _record_config_key(row, kind=kind) == clean_key),
+        None,
+    )
+    if current is None:
+        raise HTTPException(status_code=404, detail="Record configuration not found")
+    try:
+        expected_revision = int(expected or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="expected_revision_no is required") from exc
+    if expected_revision < 1:
+        raise HTTPException(status_code=422, detail="expected_revision_no is required")
+    if kind == "category" and any(
+        row.get("active") is not False and str(row.get("category_key")) == clean_key
+        for row in _record_types(actor)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Disable or move active record types before disabling this category",
+        )
+    stored = _store_record_config(
+        actor,
+        kind=kind,
+        key=clean_key,
+        item={**current, "active": False},
+        expected_revision_no=expected_revision,
+        create=False,
+    )
+    return {"ok": True, kind: stored, **_record_configuration(actor)}
+
+
+@router.post("/api/records/config/categories/{category_key}/disable")
+def records_category_disable(
+    category_key: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return _record_config_disable(
+        actor,
+        kind="category",
+        key=category_key,
+        expected=payload.get("expected_revision_no"),
+    )
+
+
+@router.post("/api/records/config/types/{type_key}/disable")
+def records_type_disable(
+    type_key: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return _record_config_disable(
+        actor,
+        kind="type",
+        key=type_key,
+        expected=payload.get("expected_revision_no"),
+    )
 
 
 @router.post("/api/records", status_code=201)

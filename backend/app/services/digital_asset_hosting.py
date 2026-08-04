@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import jwt
+import psycopg
 from fastapi import HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -32,6 +33,7 @@ from app.services.object_storage import (
     SSD_PROVIDER_KEY,
     object_store_for_provider,
 )
+from app.services.workspace_usage import measure_workspace_runtime_storage
 
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
@@ -283,7 +285,8 @@ def _workspace_billable_usage(
     workspace_id: object,
     asset_id: object,
     persist: bool = True,
-) -> dict[str, int]:
+    refresh_infrastructure: bool = False,
+) -> dict[str, object]:
     """Measure one aggregate quota across both media and the hosted database."""
 
     artifacts = (
@@ -305,59 +308,145 @@ def _workspace_billable_usage(
         .mappings()
         .one()
     )
-    database_bytes = int(
+    database_status = "cached"
+    if refresh_infrastructure:
+        database_measurements = []
+        bindings = [
+            dict(row)
+            for row in session.execute(
+                text(
+                    """
+                    SELECT * FROM digital_asset.database_bindings
+                    WHERE workspace_id=:workspace_id AND status='ready'
+                    ORDER BY is_default DESC,created_at
+                    """
+                ),
+                {"workspace_id": workspace_id},
+            )
+            .mappings()
+            .all()
+        ]
+        for binding in bindings:
+            try:
+                database_measurements.append(
+                    hosted_database.measure_database_size(session, binding)
+                )
+            except hosted_database.HostedDatabaseUnavailable:
+                database_measurements.append(
+                    {
+                        "database_bytes": max(
+                            0, int(binding.get("actual_size_bytes") or 0)
+                        ),
+                        "measurement_status": "cached_after_error",
+                    }
+                )
+        database_bytes = sum(
+            int(measurement["database_bytes"])
+            for measurement in database_measurements
+        )
+        database_status = (
+            "complete"
+            if all(
+                measurement.get("measurement_status")
+                in {"complete", "provider_reported"}
+                for measurement in database_measurements
+            )
+            else "partial"
+        )
+    else:
+        database_bytes = int(
+            session.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(actual_size_bytes), 0)::bigint
+                    FROM digital_asset.database_bindings
+                    WHERE workspace_id = :workspace_id AND status = 'ready'
+                    """
+                ),
+                {"workspace_id": workspace_id},
+            ).scalar_one()
+        )
+    persisted_runtime = (
         session.execute(
             text(
                 """
-                SELECT COALESCE(SUM(actual_size_bytes), 0)::bigint
-                FROM digital_asset.database_bindings
-                WHERE workspace_id = :workspace_id AND status = 'ready'
-                """
-            ),
-            {"workspace_id": workspace_id},
-        ).scalar_one()
-    )
-    runtime_bytes = int(
-        session.execute(
-            text(
-                """
-                SELECT COALESCE(runtime_bytes, 0)::bigint
+                SELECT COALESCE(runtime_bytes,0)::bigint AS runtime_bytes,
+                       COALESCE(data_volume_bytes,0)::bigint AS data_volume_bytes
                 FROM digital_asset.workspace_usage
-                WHERE workspace_id = :workspace_id
+                WHERE workspace_id=:workspace_id
                 """
             ),
             {"workspace_id": workspace_id},
-        ).scalar_one_or_none()
-        or 0
+        )
+        .mappings()
+        .one_or_none()
     )
+    runtime_measurement: dict[str, object] = {
+        "runtime_release_bytes": int(
+            persisted_runtime["runtime_bytes"] if persisted_runtime else 0
+        ),
+        "data_volume_bytes": int(
+            persisted_runtime["data_volume_bytes"] if persisted_runtime else 0
+        ),
+        "measurement_status": "cached",
+        "measured_at": datetime.now(UTC),
+    }
+    if refresh_infrastructure:
+        runtime_measurement = measure_workspace_runtime_storage(
+            get_settings(),
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
     usage = {
         "code_bytes": int(artifacts["code_bytes"]),
         "data_object_bytes": int(artifacts["data_object_bytes"]),
         "database_bytes": database_bytes,
-        "runtime_bytes": runtime_bytes,
+        "runtime_bytes": int(runtime_measurement["runtime_release_bytes"]),
+        "data_volume_bytes": int(runtime_measurement["data_volume_bytes"]),
     }
-    usage["total_bytes"] = sum(usage.values())
+    usage["total_bytes"] = sum(int(value) for value in usage.values())
+    usage["measured_at"] = runtime_measurement["measured_at"]
+    usage["measurement_status"] = (
+        "complete"
+        if runtime_measurement["measurement_status"] == "complete"
+        and database_status in {"complete", "cached"}
+        else "partial"
+    )
+    usage["database_measurement_status"] = database_status
+    usage["runtime_scan_error_count"] = int(
+        runtime_measurement.get("scan_error_count") or 0
+    )
     if persist:
         session.execute(
             text(
                 """
                 INSERT INTO digital_asset.workspace_usage(
                   tenant_id, workspace_id, code_bytes, data_object_bytes,
-                  database_bytes, runtime_bytes, measured_at
+                  database_bytes, runtime_bytes, data_volume_bytes, measured_at
                 ) VALUES (
                   :tenant_id, :workspace_id, :code_bytes, :data_object_bytes,
-                  :database_bytes, :runtime_bytes, now()
+                  :database_bytes, :runtime_bytes, :data_volume_bytes, :measured_at
                 )
                 ON CONFLICT (tenant_id, workspace_id) DO UPDATE SET
                   code_bytes = EXCLUDED.code_bytes,
                   data_object_bytes = EXCLUDED.data_object_bytes,
                   database_bytes = EXCLUDED.database_bytes,
                   runtime_bytes = EXCLUDED.runtime_bytes,
-                  measured_at = now(),
+                  data_volume_bytes = EXCLUDED.data_volume_bytes,
+                  measured_at = EXCLUDED.measured_at,
                   revision = digital_asset.workspace_usage.revision + 1
                 """
             ),
-            {"tenant_id": tenant_id, "workspace_id": workspace_id, **usage},
+            {
+                "tenant_id": tenant_id,
+                "workspace_id": workspace_id,
+                "code_bytes": usage["code_bytes"],
+                "data_object_bytes": usage["data_object_bytes"],
+                "database_bytes": usage["database_bytes"],
+                "runtime_bytes": usage["runtime_bytes"],
+                "data_volume_bytes": usage["data_volume_bytes"],
+                "measured_at": usage["measured_at"],
+            },
         )
     return usage
 
@@ -1297,7 +1386,59 @@ def list_assets(
                           'runtime_status', w.runtime_status,
                           'storage_quota_bytes', w.storage_quota_bytes,
                           'storage_quota_mb', (w.storage_quota_bytes / 1048576),
+                          'code_bytes', COALESCE((
+                            SELECT SUM(ar.size_bytes)::bigint
+                            FROM digital_asset.artifacts AS ar
+                            WHERE ar.asset_id = a.id
+                              AND ar.storage_role = 'code'
+                              AND ar.state IN (
+                                'pending','stored','verified','quarantined','released'
+                              )
+                          ), 0),
+                          'runtime_bytes', COALESCE((
+                            SELECT usage.runtime_bytes
+                            FROM digital_asset.workspace_usage AS usage
+                            WHERE usage.workspace_id = w.id
+                          ), 0),
+                          'data_volume_bytes', COALESCE((
+                            SELECT usage.data_volume_bytes
+                            FROM digital_asset.workspace_usage AS usage
+                            WHERE usage.workspace_id = w.id
+                          ), 0),
+                          'data_bytes', COALESCE((
+                            SELECT SUM(ar.size_bytes)::bigint
+                            FROM digital_asset.artifacts AS ar
+                            WHERE ar.asset_id = a.id
+                              AND ar.storage_role = 'data'
+                              AND ar.state IN (
+                                'pending','stored','verified','quarantined','released'
+                              )
+                          ), 0),
+                          'database_bytes', COALESCE((
+                            SELECT SUM(db.actual_size_bytes)::bigint
+                            FROM digital_asset.database_bindings AS db
+                            WHERE db.workspace_id = w.id AND db.status = 'ready'
+                          ), 0),
                           'storage_used_bytes',
+                            COALESCE((
+                              SELECT SUM(ar.size_bytes)::bigint
+                              FROM digital_asset.artifacts AS ar
+                              WHERE ar.asset_id = a.id
+                                AND ar.state IN (
+                                  'pending','stored','verified','quarantined','released'
+                                )
+                            ), 0)
+                            + COALESCE((
+                              SELECT SUM(db.actual_size_bytes)::bigint
+                              FROM digital_asset.database_bindings AS db
+                              WHERE db.workspace_id = w.id AND db.status = 'ready'
+                            ), 0)
+                            + COALESCE((
+                            SELECT usage.runtime_bytes
+                              FROM digital_asset.workspace_usage AS usage
+                              WHERE usage.workspace_id = w.id
+                            ), 0),
+                          'total_bytes',
                             COALESCE((
                               SELECT SUM(ar.size_bytes)::bigint
                               FROM digital_asset.artifacts AS ar
@@ -1316,6 +1457,11 @@ def list_assets(
                               FROM digital_asset.workspace_usage AS usage
                               WHERE usage.workspace_id = w.id
                             ), 0),
+                          'measured_at', COALESCE((
+                            SELECT usage.measured_at
+                            FROM digital_asset.workspace_usage AS usage
+                            WHERE usage.workspace_id = w.id
+                          ), now()),
                           'public_url', COALESCE(
                             w.public_url,
                             (
@@ -1528,6 +1674,26 @@ def list_assets(
     for asset in assets:
         workspace = asset.get("workspace") if isinstance(asset, dict) else None
         if isinstance(workspace, dict) and workspace.get("workspace_key"):
+            workspace.update(
+                {
+                    "source_archive_bytes": int(workspace.get("code_bytes") or 0),
+                    "runtime_release_bytes": int(workspace.get("runtime_bytes") or 0),
+                    "managed_data_object_bytes": int(workspace.get("data_bytes") or 0),
+                    "postgresql_bytes": int(workspace.get("database_bytes") or 0),
+                }
+            )
+            total_bytes = sum(
+                int(workspace.get(key) or 0)
+                for key in (
+                    "source_archive_bytes",
+                    "runtime_release_bytes",
+                    "data_volume_bytes",
+                    "managed_data_object_bytes",
+                    "postgresql_bytes",
+                )
+            )
+            workspace["storage_used_bytes"] = total_bytes
+            workspace["total_bytes"] = total_bytes
             workspace.update(_workspace_entry_fields(actor.tenant_slug, workspace))
     return {
         "ok": True,
@@ -1674,6 +1840,27 @@ def asset_detail(actor: ActorContext, asset_ref: object) -> dict[str, object]:
         workspaces: list[dict[str, object]] = []
         for workspace in workspace_rows:
             workspace_public = _public_workspace(workspace, actor.tenant_slug)
+            measured = _workspace_billable_usage(
+                session,
+                tenant_id=actor.tenant_id,
+                workspace_id=workspace["id"],
+                asset_id=workspace["asset_id"],
+                refresh_infrastructure=True,
+            )
+            workspace_public["usage"] = _json_safe(
+                {
+                    "source_archive_bytes": measured["code_bytes"],
+                    "runtime_release_bytes": measured["runtime_bytes"],
+                    "data_volume_bytes": measured["data_volume_bytes"],
+                    "managed_data_object_bytes": measured["data_object_bytes"],
+                    "postgresql_bytes": measured["database_bytes"],
+                    "total_bytes": measured["total_bytes"],
+                    "measured_at": measured["measured_at"],
+                    "measurement_status": measured["measurement_status"],
+                }
+            )
+            workspace_public.update(workspace_public["usage"])
+            workspace_public["storage_used_bytes"] = measured["total_bytes"]
             workspace_public["storage"] = _storage_profile(
                 _storage_binding_rows(session, workspace["id"])
             )
@@ -2148,6 +2335,50 @@ def record_custody(
     return {"ok": True, "custody_event": event}
 
 
+def _database_provider_request(
+    payload: dict[str, object],
+) -> tuple[str | None, str | None, bool | None]:
+    requested = str(payload.get("provider_key") or payload.get("provider") or "").strip().lower()
+    database_url_value = payload.get("database_url")
+    database_url = (
+        str(database_url_value).strip() if isinstance(database_url_value, str) else None
+    )
+    if database_url_value is not None and not database_url:
+        raise HTTPException(status_code=422, detail="database_url cannot be empty")
+    aliases = {
+        "": None,
+        "managed": "managed",
+        "warehouse": "managed",
+        "warehouse_managed": "managed",
+        hosted_database.HDD_DATABASE_PROVIDER_KEY: "managed",
+        "external": hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY,
+        "external_postgresql": hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY,
+        hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY: (
+            hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
+        ),
+    }
+    if requested not in aliases:
+        raise HTTPException(status_code=422, detail="Unsupported workspace database provider")
+    provider = aliases[requested]
+    if database_url and provider in {None, hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY}:
+        provider = hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
+    if provider == "managed" and database_url:
+        raise HTTPException(
+            status_code=422,
+            detail="database_url is only accepted by the external PostgreSQL provider",
+        )
+    if provider == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY and not database_url:
+        raise HTTPException(
+            status_code=422,
+            detail="External PostgreSQL provider requires database_url",
+        )
+    make_default_value = payload.get("is_default", payload.get("default"))
+    if make_default_value is not None and not isinstance(make_default_value, bool):
+        raise HTTPException(status_code=422, detail="is_default must be a boolean")
+    make_default = make_default_value if isinstance(make_default_value, bool) else None
+    return provider, database_url, make_default
+
+
 def _provision_database(
     session: Session,
     *,
@@ -2155,6 +2386,9 @@ def _provision_database(
     workspace: dict[str, object],
     logical_name: str,
     isolation_mode: str = "workspace_rls",
+    requested_provider: str | None = None,
+    database_url: str | None = None,
+    make_default: bool | None = None,
 ) -> dict[str, object]:
     allowed_isolation = {
         "workspace_rls",
@@ -2164,11 +2398,106 @@ def _provision_database(
     }
     if isolation_mode not in allowed_isolation:
         raise HTTPException(status_code=422, detail="Invalid database isolation_mode")
+    external_provider = requested_provider == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
     hdd_provider = hosted_database.configured()
-    if hdd_provider:
+    if requested_provider == "managed" and not hdd_provider:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"reason": "hosted_database_unavailable"},
+        )
+    existing = (
+        session.execute(
+            text(
+                """
+                SELECT * FROM digital_asset.database_bindings
+                WHERE workspace_id=:workspace_id AND logical_name=:logical_name
+                FOR UPDATE
+                """
+            ),
+            {"workspace_id": workspace["id"], "logical_name": logical_name},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if existing is not None:
+        existing_row = dict(existing)
+        existing_external = (
+            str(existing_row["provider_key"])
+            == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
+        )
+        if existing_external != external_provider and requested_provider is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "database_provider_change_requires_new_binding",
+                    "logical_name": logical_name,
+                    "current_provider": existing_row["provider_key"],
+                },
+            )
+        if existing_external:
+            if database_url:
+                try:
+                    existing_row = hosted_database.provision_external_binding(
+                        session,
+                        existing_row,
+                        database_url=database_url,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                except hosted_database.HostedDatabaseUnavailable as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={"reason": "external_database_unavailable", "message": str(exc)},
+                    ) from exc
+        elif hdd_provider:
+            try:
+                existing_row = hosted_database.migrate_binding(session, existing_row)
+            except hosted_database.HostedDatabaseUnavailable as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={"reason": "hosted_database_unavailable", "message": str(exc)},
+                ) from exc
+        should_default = make_default is True or not bool(
+            session.execute(
+                text(
+                    "SELECT count(*) FROM digital_asset.database_bindings "
+                    "WHERE workspace_id=:workspace_id AND is_default"
+                ),
+                {"workspace_id": workspace["id"]},
+            ).scalar_one()
+        )
+        if should_default:
+            session.execute(
+                text(
+                    "UPDATE digital_asset.database_bindings SET is_default=false "
+                    "WHERE workspace_id=:workspace_id AND id<>:binding_id AND is_default"
+                ),
+                {"workspace_id": workspace["id"], "binding_id": existing_row["id"]},
+            )
+            existing_row = dict(
+                session.execute(
+                    text(
+                        "UPDATE digital_asset.database_bindings SET is_default=true "
+                        "WHERE id=:binding_id RETURNING *"
+                    ),
+                    {"binding_id": existing_row["id"]},
+                )
+                .mappings()
+                .one()
+            )
+        return _json_safe(existing_row)
+    if external_provider:
+        isolation_mode = "external_database"
+        provider_key = hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
+        binding_status = "provisioning"
+        ownership_mode = "customer_managed"
+        capabilities = hosted_database.EXTERNAL_CAPABILITIES
+    elif hdd_provider:
         isolation_mode = "dedicated_database"
         provider_key = hosted_database.HDD_DATABASE_PROVIDER_KEY
         binding_status = "provisioning"
+        ownership_mode = "platform_managed"
+        capabilities = hosted_database.MANAGED_CAPABILITIES
     else:
         provider_key = (
             hosted_database.LEGACY_DATABASE_PROVIDER_KEY
@@ -2176,6 +2505,16 @@ def _provision_database(
             else "provider_pending"
         )
         binding_status = "ready" if isolation_mode == "workspace_rls" else "provisioning"
+        ownership_mode = "platform_managed"
+        capabilities = {
+            "runtime_dsn": False,
+            "collection_data_api": True,
+            "relational_data_api": False,
+            "schema_introspection": False,
+            "migrations": False,
+            "platform_backup": False,
+            "platform_quota": True,
+        }
     binding_id = uuid4()
     endpoint_ref = f"workspace-data://{workspace['id']}/{logical_name}"
     row = dict(
@@ -2184,18 +2523,14 @@ def _provision_database(
                 """
                 INSERT INTO digital_asset.database_bindings(
                   id, tenant_id, workspace_id, logical_name, engine, provider_key,
-                  isolation_mode, status, endpoint_ref, config, created_by
+                  isolation_mode, status, endpoint_ref, config, created_by,
+                  ownership_mode, capabilities
                 ) VALUES (
                   :id, :tenant_id, :workspace_id, :logical_name, 'postgresql',
                   :provider_key, :isolation_mode, :status, :endpoint_ref,
-                  CAST(:config AS jsonb), :created_by
+                  CAST(:config AS jsonb), :created_by, :ownership_mode,
+                  CAST(:capabilities AS jsonb)
                 )
-                ON CONFLICT (tenant_id, workspace_id, logical_name)
-                DO UPDATE SET
-                  isolation_mode = EXCLUDED.isolation_mode,
-                  provider_key = EXCLUDED.provider_key,
-                  status = EXCLUDED.status,
-                  endpoint_ref = EXCLUDED.endpoint_ref
                 RETURNING *
                 """
             ),
@@ -2215,12 +2550,28 @@ def _provision_database(
                     }
                 ),
                 "created_by": actor.user_id,
+                "ownership_mode": ownership_mode,
+                "capabilities": json.dumps(capabilities),
             },
         )
         .mappings()
         .one()
     )
-    if hdd_provider:
+    if external_provider:
+        try:
+            row = hosted_database.provision_external_binding(
+                session,
+                row,
+                database_url=str(database_url or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except hosted_database.HostedDatabaseUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"reason": "external_database_unavailable", "message": str(exc)},
+            ) from exc
+    elif hdd_provider:
         try:
             row = hosted_database.migrate_binding(session, row)
         except hosted_database.HostedDatabaseUnavailable as exc:
@@ -2232,6 +2583,35 @@ def _provision_database(
                     "physical_medium": "hdd",
                 },
             ) from exc
+    has_default = bool(
+        session.execute(
+            text(
+                "SELECT count(*) FROM digital_asset.database_bindings "
+                "WHERE workspace_id=:workspace_id AND is_default"
+            ),
+            {"workspace_id": workspace["id"]},
+        ).scalar_one()
+    )
+    should_default = make_default is True or not has_default
+    if should_default:
+        session.execute(
+            text(
+                "UPDATE digital_asset.database_bindings SET is_default=false "
+                "WHERE workspace_id=:workspace_id AND id<>:binding_id AND is_default"
+            ),
+            {"workspace_id": workspace["id"], "binding_id": row["id"]},
+        )
+        row = dict(
+            session.execute(
+                text(
+                    "UPDATE digital_asset.database_bindings SET is_default=true "
+                    "WHERE id=:binding_id RETURNING *"
+                ),
+                {"binding_id": row["id"]},
+            )
+            .mappings()
+            .one()
+        )
     return _json_safe(row)
 
 
@@ -2529,6 +2909,12 @@ def create_workspace(
             components.append(_json_safe(dict(component)))
         database = None
         no_database = bool(payload.get("no_database")) or service_plan == "custody"
+        requested_provider, database_url, make_default = _database_provider_request(payload)
+        if no_database and (requested_provider is not None or database_url):
+            raise HTTPException(
+                status_code=422,
+                detail="no_database cannot be combined with a database provider",
+            )
         if not no_database:
             logical_name = re.sub(
                 r"[^a-z0-9_]+",
@@ -2543,6 +2929,9 @@ def create_workspace(
                 workspace=dict(row),
                 logical_name=logical_name,
                 isolation_mode=str(payload.get("isolation_mode") or "workspace_rls"),
+                requested_provider=requested_provider,
+                database_url=database_url,
+                make_default=True if make_default is None else make_default,
             )
         session.execute(
             text(
@@ -2695,6 +3084,44 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                          SELECT SUM(ar.size_bytes)::bigint
                          FROM digital_asset.artifacts AS ar
                          WHERE ar.asset_id = a.id
+                           AND ar.storage_role = 'code'
+                           AND ar.state IN (
+                             'pending','stored','verified','quarantined','released'
+                           )
+                       ), 0) AS code_bytes,
+                       COALESCE((
+                         SELECT SUM(ar.size_bytes)::bigint
+                         FROM digital_asset.artifacts AS ar
+                         WHERE ar.asset_id = a.id
+                           AND ar.storage_role = 'data'
+                           AND ar.state IN (
+                             'pending','stored','verified','quarantined','released'
+                           )
+                       ), 0) AS data_bytes,
+                       COALESCE((
+                         SELECT SUM(db.actual_size_bytes)::bigint
+                         FROM digital_asset.database_bindings AS db
+                         WHERE db.workspace_id = w.id AND db.status = 'ready'
+                       ), 0) AS database_bytes,
+                       COALESCE((
+                         SELECT usage.runtime_bytes
+                         FROM digital_asset.workspace_usage AS usage
+                         WHERE usage.workspace_id = w.id
+                       ), 0) AS runtime_bytes,
+                       COALESCE((
+                         SELECT usage.data_volume_bytes
+                         FROM digital_asset.workspace_usage AS usage
+                         WHERE usage.workspace_id = w.id
+                       ), 0) AS data_volume_bytes,
+                       COALESCE((
+                         SELECT usage.measured_at
+                         FROM digital_asset.workspace_usage AS usage
+                         WHERE usage.workspace_id = w.id
+                       ), now()) AS usage_measured_at,
+                       COALESCE((
+                         SELECT SUM(ar.size_bytes)::bigint
+                         FROM digital_asset.artifacts AS ar
+                         WHERE ar.asset_id = a.id
                            AND ar.state IN (
                              'pending','stored','verified','quarantined','released'
                            )
@@ -2706,6 +3133,11 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                        ), 0)
                        + COALESCE((
                          SELECT usage.runtime_bytes
+                         FROM digital_asset.workspace_usage AS usage
+                         WHERE usage.workspace_id = w.id
+                       ), 0)
+                       + COALESCE((
+                         SELECT usage.data_volume_bytes
                          FROM digital_asset.workspace_usage AS usage
                          WHERE usage.workspace_id = w.id
                        ), 0) AS storage_used_bytes,
@@ -2827,6 +3259,17 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                 **_workspace_entry_fields(str(tenant["slug"]), state),
                 "runtime_type": runtime_type,
                 "storage_used_bytes": int(state.get("storage_used_bytes") or 0),
+                "code_bytes": int(state.get("code_bytes") or 0),
+                "source_archive_bytes": int(state.get("code_bytes") or 0),
+                "runtime_bytes": int(state.get("runtime_bytes") or 0),
+                "runtime_release_bytes": int(state.get("runtime_bytes") or 0),
+                "data_bytes": int(state.get("data_bytes") or 0),
+                "managed_data_object_bytes": int(state.get("data_bytes") or 0),
+                "data_volume_bytes": int(state.get("data_volume_bytes") or 0),
+                "database_bytes": int(state.get("database_bytes") or 0),
+                "postgresql_bytes": int(state.get("database_bytes") or 0),
+                "total_bytes": int(state.get("storage_used_bytes") or 0),
+                "measured_at": state.get("usage_measured_at"),
                 "database_medium": state.get("database_medium"),
                 "storage": storage,
                 "source_available": bool(state.get("source_available")),
@@ -3679,6 +4122,7 @@ def provision_database(
     payload: dict[str, object],
 ) -> dict[str, object]:
     _require_manage(actor)
+    requested_provider, database_url, make_default = _database_provider_request(payload)
     with tenant_session(actor.tenant_id) as session:
         workspace = _workspace_row(session, workspace_ref, lock=True)
         logical_name = re.sub(
@@ -3694,6 +4138,9 @@ def provision_database(
             workspace=workspace,
             logical_name=logical_name,
             isolation_mode=str(payload.get("isolation_mode") or "workspace_rls"),
+            requested_provider=requested_provider,
+            database_url=database_url,
+            make_default=make_default,
         )
         _audit(
             session,
@@ -3723,7 +4170,7 @@ def _database_binding(
                     CAST(:logical_name AS text) IS NULL
                     OR logical_name = CAST(:logical_name AS text)
                   )
-                ORDER BY created_at
+                ORDER BY is_default DESC, created_at
                 LIMIT 1
                 """
             ),
@@ -3763,6 +4210,14 @@ def migrate_workspace_database_to_hdd(
                 "workspace": _public_workspace(workspace, actor.tenant_slug),
                 "database": _json_safe(database),
             }
+        if database["provider_key"] == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "customer_managed_database_cannot_migrate_to_hdd_in_place",
+                    "next_action": "create a new managed binding and migrate data explicitly",
+                },
+            )
         try:
             migrated = hosted_database.migrate_binding(session, database)
         except hosted_database.HostedDatabaseUnavailable as exc:
@@ -3804,11 +4259,11 @@ def migrate_tenant_databases_to_hdd(tenant_id: UUID) -> dict[str, object]:
                 text(
                     """
                     SELECT id FROM digital_asset.database_bindings
-                    WHERE provider_key <> :provider_key
+                    WHERE provider_key = :legacy_provider
                     ORDER BY created_at
                     """
                 ),
-                {"provider_key": hosted_database.HDD_DATABASE_PROVIDER_KEY},
+                {"legacy_provider": hosted_database.LEGACY_DATABASE_PROVIDER_KEY},
             ).scalars()
         )
     migrated: list[dict[str, object]] = []
@@ -3873,13 +4328,19 @@ def database_schema(
     with tenant_session(tenant_id) as session:
         workspace = _workspace_row(session, workspace_ref)
         database = _database_binding(session, workspace["id"], logical_name)
-        if database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY:
+        tables: list[dict[str, object]] = []
+        provider_key = str(database["provider_key"])
+        if provider_key == hosted_database.HDD_DATABASE_PROVIDER_KEY:
             try:
                 collections, database_bytes = hosted_database.schema(session, database)
-            except hosted_database.HostedDatabaseUnavailable as exc:
+                tables = hosted_database.relational_schema(session, database)
+            except (hosted_database.HostedDatabaseUnavailable, psycopg.Error) as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail={"reason": "hosted_database_unavailable", "message": str(exc)},
+                    detail={
+                        "reason": "hosted_database_unavailable",
+                        "message": f"PostgreSQL schema inspection failed: {type(exc).__name__}",
+                    },
                 ) from exc
             session.execute(
                 text(
@@ -3893,6 +4354,18 @@ def database_schema(
             )
             database["actual_size_bytes"] = database_bytes
             hosted_database.update_usage(session, database, database_bytes=database_bytes)
+        elif provider_key == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+            collections = []
+            try:
+                tables = hosted_database.relational_schema(session, database)
+            except (hosted_database.HostedDatabaseUnavailable, psycopg.Error) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "reason": "external_database_unavailable",
+                        "message": f"PostgreSQL schema inspection failed: {type(exc).__name__}",
+                    },
+                ) from exc
         else:
             collections = [
                 _json_safe(dict(row))
@@ -3918,7 +4391,207 @@ def database_schema(
         "ok": True,
         "database": _json_safe(database),
         "collections": collections,
+        "tables": _json_safe(tables),
     }
+
+
+def database_health(
+    *,
+    tenant_id: UUID,
+    workspace_ref: object,
+    logical_name: str | None = None,
+) -> dict[str, object]:
+    with tenant_session(tenant_id) as session:
+        workspace = _workspace_row(session, workspace_ref)
+        database = _database_binding(session, workspace["id"], logical_name)
+        if str(database["provider_key"]) not in hosted_database.POSTGRESQL_PROVIDER_KEYS:
+            return {
+                "ok": True,
+                "database": _json_safe(database),
+                "health": {
+                    "reachable": True,
+                    "provider_key": database["provider_key"],
+                    "connection_kind": "control_plane_collection_api",
+                    "credentials_exposed": False,
+                },
+            }
+        try:
+            health = hosted_database.binding_health(session, database)
+        except hosted_database.HostedDatabaseUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"reason": "workspace_database_unavailable", "message": str(exc)},
+            ) from exc
+    return {"ok": True, "database": _json_safe(database), "health": _json_safe(health)}
+
+
+def list_workspace_relation_rows(
+    *,
+    tenant_id: UUID,
+    workspace_ref: object,
+    schema_name: str,
+    table_name: str,
+    logical_name: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, object]:
+    with tenant_session(tenant_id) as session:
+        workspace = _workspace_row(session, workspace_ref)
+        database = _database_binding(session, workspace["id"], logical_name)
+        if str(database["provider_key"]) not in hosted_database.POSTGRESQL_PROVIDER_KEYS:
+            raise HTTPException(
+                status_code=409,
+                detail="Relational Data API requires a PostgreSQL provider binding",
+            )
+        try:
+            table, rows = hosted_database.list_relation_rows(
+                session,
+                database,
+                schema_name=schema_name,
+                table_name=table_name,
+                limit=max(1, min(int(limit), 1000)),
+                offset=max(0, int(offset)),
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except psycopg.Error as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"PostgreSQL rejected relational query: {type(exc).__name__}",
+            ) from exc
+        except hosted_database.HostedDatabaseUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"reason": "workspace_database_unavailable", "message": str(exc)},
+            ) from exc
+    return {
+        "ok": True,
+        "database": database["logical_name"],
+        "table": _json_safe(table),
+        "rows": _json_safe(rows),
+        "items": _json_safe(rows),
+        "count": len(rows),
+        "next_offset": offset + len(rows) if len(rows) == min(limit, 1000) else None,
+    }
+
+
+def put_workspace_relation_row(
+    *,
+    tenant_id: UUID,
+    workspace_ref: object,
+    schema_name: str,
+    table_name: str,
+    record_key: str,
+    payload: dict[str, object],
+    expected_version: str | None = None,
+    credential: WorkspaceCredential | None = None,
+    actor: ActorContext | None = None,
+    logical_name: str | None = None,
+) -> dict[str, object]:
+    if not record_key.strip() or len(record_key.strip()) > 512:
+        raise HTTPException(status_code=422, detail="Invalid relational row key")
+    with tenant_session(tenant_id) as session:
+        workspace = _workspace_row(session, workspace_ref, lock=True)
+        if credential is not None and credential.workspace_id != workspace["id"]:
+            raise HTTPException(status_code=403, detail="Workspace key scope mismatch")
+        database = _database_binding(session, workspace["id"], logical_name)
+        if str(database["provider_key"]) not in hosted_database.POSTGRESQL_PROVIDER_KEYS:
+            raise HTTPException(
+                status_code=409,
+                detail="Relational Data API requires a PostgreSQL provider binding",
+            )
+        quota_bytes: int | None = None
+        non_database_bytes = 0
+        if database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY:
+            usage = _workspace_billable_usage(
+                session,
+                tenant_id=tenant_id,
+                workspace_id=workspace["id"],
+                asset_id=workspace["asset_id"],
+            )
+            non_database_bytes = max(
+                0, usage["total_bytes"] - int(database.get("actual_size_bytes") or 0)
+            )
+            quota_bytes = int(workspace["storage_quota_bytes"])
+        try:
+            result = hosted_database.put_relation_row(
+                session,
+                database,
+                schema_name=schema_name,
+                table_name=table_name,
+                record_key=record_key.strip(),
+                payload=payload,
+                expected_version=expected_version,
+                quota_bytes=quota_bytes,
+                non_database_bytes=non_database_bytes,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except OverflowError as exc:
+            try:
+                detail = json.loads(str(exc))
+            except json.JSONDecodeError:
+                detail = {"reason": "workspace_quota_exceeded"}
+            raise HTTPException(status_code=507, detail=detail) from exc
+        except ValueError as exc:
+            try:
+                conflict = json.loads(str(exc))
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if conflict.get("reason") != "version_conflict":
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Row version conflict",
+                    "expected": conflict.get("expected"),
+                    "current": conflict.get("current"),
+                },
+            ) from exc
+        except psycopg.Error as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"PostgreSQL rejected relational row mutation: {type(exc).__name__}",
+            ) from exc
+        except hosted_database.HostedDatabaseUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"reason": "workspace_database_unavailable", "message": str(exc)},
+            ) from exc
+        if database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY:
+            session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.database_bindings
+                    SET actual_size_bytes=:size,size_measured_at=now()
+                    WHERE id=:id
+                    """
+                ),
+                {"size": result.database_bytes, "id": database["id"]},
+            )
+            hosted_database.update_usage(
+                session,
+                database,
+                database_bytes=result.database_bytes,
+            )
+        _audit(
+            session,
+            actor,
+            "digital_asset.database_row_put",
+            {
+                "workspace_id": str(workspace["id"]),
+                "database_id": str(database["id"]),
+                "schema": schema_name,
+                "table": table_name,
+                "record_key": record_key.strip(),
+                "version": result.record["version"],
+                "credential_id": str(credential.credential_id) if credential else None,
+            },
+            tenant_id=tenant_id,
+        )
+    return {"ok": True, "record": _json_safe(result.record)}
 
 
 def list_workspace_records(
@@ -3929,6 +4602,7 @@ def list_workspace_records(
     logical_name: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    owner_id: str | None = None,
 ) -> dict[str, object]:
     if not COLLECTION_RE.fullmatch(collection):
         raise HTTPException(status_code=422, detail="Invalid collection")
@@ -3937,6 +4611,14 @@ def list_workspace_records(
         database = _database_binding(session, workspace["id"], logical_name)
         bounded_limit = max(1, min(int(limit), 1000))
         bounded_offset = max(0, int(offset))
+        if database["provider_key"] == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "collection_api_not_supported_by_external_database",
+                    "next_action": "use the relational table Data API",
+                },
+            )
         if database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY:
             try:
                 rows, database_bytes = hosted_database.list_records(
@@ -3945,6 +4627,7 @@ def list_workspace_records(
                     collection=collection,
                     limit=bounded_limit,
                     offset=bounded_offset,
+                    owner_id=owner_id,
                 )
             except hosted_database.HostedDatabaseUnavailable as exc:
                 raise HTTPException(
@@ -3973,6 +4656,10 @@ def list_workspace_records(
                         WHERE workspace_id = :workspace_id
                           AND database_binding_id = :database_id
                           AND collection_name = :collection
+                          AND (
+                            CAST(:owner_id AS text) IS NULL
+                            OR payload->>'owner_id' = CAST(:owner_id AS text)
+                          )
                         ORDER BY updated_at DESC, record_key
                         LIMIT :limit OFFSET :offset
                         """
@@ -3983,6 +4670,7 @@ def list_workspace_records(
                         "collection": collection,
                         "limit": bounded_limit,
                         "offset": bounded_offset,
+                        "owner_id": owner_id,
                     },
                 )
                 .mappings()
@@ -4010,6 +4698,90 @@ def list_workspace_records(
     }
 
 
+def get_workspace_record(
+    *,
+    tenant_id: UUID,
+    workspace_ref: object,
+    collection: str,
+    record_key: str,
+    logical_name: str | None = None,
+    owner_id: str | None = None,
+) -> dict[str, object]:
+    if not COLLECTION_RE.fullmatch(collection):
+        raise HTTPException(status_code=422, detail="Invalid collection")
+    clean_key = record_key.strip()
+    if not clean_key or len(clean_key) > 240:
+        raise HTTPException(status_code=422, detail="Invalid record key")
+    with tenant_session(tenant_id) as session:
+        workspace = _workspace_row(session, workspace_ref)
+        database = _database_binding(session, workspace["id"], logical_name)
+        if database["provider_key"] == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "collection_api_not_supported_by_external_database",
+                    "next_action": "use the relational table Data API",
+                },
+            )
+        if database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY:
+            try:
+                row = hosted_database.get_record(
+                    session,
+                    database,
+                    collection=collection,
+                    record_key=clean_key,
+                    owner_id=owner_id,
+                )
+            except hosted_database.HostedDatabaseUnavailable as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={"reason": "hosted_database_unavailable", "message": str(exc)},
+                ) from exc
+        else:
+            row = (
+                session.execute(
+                    text(
+                        """
+                        SELECT record_key, payload, version, created_at, updated_at
+                        FROM digital_asset.workspace_records
+                        WHERE workspace_id=:workspace_id
+                          AND database_binding_id=:database_id
+                          AND collection_name=:collection
+                          AND record_key=:record_key
+                          AND (
+                            CAST(:owner_id AS text) IS NULL
+                            OR payload->>'owner_id'=CAST(:owner_id AS text)
+                          )
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace["id"],
+                        "database_id": database["id"],
+                        "collection": collection,
+                        "record_key": clean_key,
+                        "owner_id": owner_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+            row = dict(row) if row is not None else None
+    if row is None:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {
+        "ok": True,
+        "record": _json_safe(
+            {
+                "key": row["record_key"],
+                "data": row["payload"],
+                "version": row["version"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        ),
+    }
+
+
 def put_workspace_record(
     *,
     tenant_id: UUID,
@@ -4021,16 +4793,30 @@ def put_workspace_record(
     credential: WorkspaceCredential | None = None,
     actor: ActorContext | None = None,
     logical_name: str | None = None,
+    owner_id: str | None = None,
 ) -> dict[str, object]:
     if not COLLECTION_RE.fullmatch(collection):
         raise HTTPException(status_code=422, detail="Invalid collection")
     if not record_key.strip() or len(record_key.strip()) > 240:
         raise HTTPException(status_code=422, detail="Invalid record key")
+    if owner_id is not None:
+        requested_owner = payload.get("owner_id")
+        if requested_owner is not None and str(requested_owner) != owner_id:
+            raise HTTPException(status_code=403, detail="Record owner_id cannot be reassigned")
+        payload = {**payload, "owner_id": owner_id}
     with tenant_session(tenant_id) as session:
         workspace = _workspace_row(session, workspace_ref, lock=True)
         if credential is not None and credential.workspace_id != workspace["id"]:
             raise HTTPException(status_code=403, detail="Workspace key scope mismatch")
         database = _database_binding(session, workspace["id"], logical_name)
+        if database["provider_key"] == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "collection_api_not_supported_by_external_database",
+                    "next_action": "use the relational table Data API",
+                },
+            )
         if database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY:
             usage = _workspace_billable_usage(
                 session,
@@ -4052,6 +4838,7 @@ def put_workspace_record(
                     expected_version=expected_version,
                     quota_bytes=int(workspace["storage_quota_bytes"]),
                     non_database_bytes=non_database_bytes,
+                    owner_id=owner_id,
                 )
             except OverflowError as exc:
                 try:
@@ -4072,6 +4859,8 @@ def put_workspace_record(
                         "current": conflict.get("current"),
                     },
                 ) from exc
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
             except hosted_database.HostedDatabaseUnavailable as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -4096,7 +4885,7 @@ def put_workspace_record(
                 session.execute(
                     text(
                         """
-                        SELECT version
+                        SELECT version, payload
                         FROM digital_asset.workspace_records
                         WHERE workspace_id = :workspace_id
                           AND database_binding_id = :database_id
@@ -4116,6 +4905,15 @@ def put_workspace_record(
                 .one_or_none()
             )
             current_version = int(current["version"]) if current is not None else 0
+            if (
+                owner_id is not None
+                and current is not None
+                and str(current["payload"].get("owner_id") or "") != owner_id
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Record belongs to another browser principal",
+                )
             if expected_version is not None and expected_version != current_version:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -4186,6 +4984,121 @@ def put_workspace_record(
             }
         ),
     }
+
+
+def delete_workspace_record(
+    *,
+    tenant_id: UUID,
+    workspace_ref: object,
+    collection: str,
+    record_key: str,
+    logical_name: str | None = None,
+    owner_id: str | None = None,
+) -> dict[str, object]:
+    if not COLLECTION_RE.fullmatch(collection):
+        raise HTTPException(status_code=422, detail="Invalid collection")
+    clean_key = record_key.strip()
+    if not clean_key or len(clean_key) > 240:
+        raise HTTPException(status_code=422, detail="Invalid record key")
+    with tenant_session(tenant_id) as session:
+        workspace = _workspace_row(session, workspace_ref, lock=True)
+        database = _database_binding(session, workspace["id"], logical_name)
+        if database["provider_key"] == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "collection_api_not_supported_by_external_database",
+                    "next_action": "use the relational table Data API",
+                },
+            )
+        if database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY:
+            try:
+                deleted = hosted_database.delete_record(
+                    session,
+                    database,
+                    collection=collection,
+                    record_key=clean_key,
+                    owner_id=owner_id,
+                )
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            except hosted_database.HostedDatabaseUnavailable as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={"reason": "hosted_database_unavailable", "message": str(exc)},
+                ) from exc
+            if deleted is not None:
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.database_bindings
+                        SET actual_size_bytes=:size,size_measured_at=now()
+                        WHERE id=:id
+                        """
+                    ),
+                    {"size": deleted.database_bytes, "id": database["id"]},
+                )
+                hosted_database.update_usage(
+                    session,
+                    database,
+                    database_bytes=deleted.database_bytes,
+                )
+                row = deleted.record
+            else:
+                row = None
+        else:
+            current = (
+                session.execute(
+                    text(
+                        """
+                        SELECT record_key,payload,version,created_at,updated_at
+                        FROM digital_asset.workspace_records
+                        WHERE workspace_id=:workspace_id
+                          AND database_binding_id=:database_id
+                          AND collection_name=:collection AND record_key=:record_key
+                        FOR UPDATE
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace["id"],
+                        "database_id": database["id"],
+                        "collection": collection,
+                        "record_key": clean_key,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                current is not None
+                and owner_id is not None
+                and str(current["payload"].get("owner_id") or "") != owner_id
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Record belongs to another browser principal",
+                )
+            if current is not None:
+                session.execute(
+                    text(
+                        """
+                        DELETE FROM digital_asset.workspace_records
+                        WHERE workspace_id=:workspace_id
+                          AND database_binding_id=:database_id
+                          AND collection_name=:collection AND record_key=:record_key
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace["id"],
+                        "database_id": database["id"],
+                        "collection": collection,
+                        "record_key": clean_key,
+                    },
+                )
+                row = dict(current)
+            else:
+                row = None
+    return {"ok": True, "deleted": row is not None, "key": clean_key}
 
 
 def create_deployment(
@@ -4896,6 +5809,13 @@ def workspace_info(credential: WorkspaceCredential) -> dict[str, object]:
             .all()
         ]
         storage = _storage_profile(_storage_binding_rows(session, workspace["id"]))
+        measured = _workspace_billable_usage(
+            session,
+            tenant_id=credential.tenant_id,
+            workspace_id=workspace["id"],
+            asset_id=workspace["asset_id"],
+            refresh_infrastructure=True,
+        )
     with system_session() as session:
         tenant_slug = session.execute(
             text("SELECT slug FROM iam.tenants WHERE id = :tenant_id"),
@@ -4903,9 +5823,47 @@ def workspace_info(credential: WorkspaceCredential) -> dict[str, object]:
         ).scalar_one()
     workspace_public = _public_workspace(workspace, str(tenant_slug))
     workspace_public["storage"] = storage
+    usage = _json_safe(
+        {
+            "source_archive_bytes": int(measured["code_bytes"]),
+            "runtime_release_bytes": int(measured["runtime_bytes"]),
+            "data_volume_bytes": int(measured["data_volume_bytes"]),
+            "managed_data_object_bytes": int(measured["data_object_bytes"]),
+            "postgresql_bytes": int(measured["database_bytes"]),
+            "total_bytes": int(measured["total_bytes"]),
+            "quota_bytes": int(workspace["storage_quota_bytes"]),
+            "remaining_bytes": max(
+                int(workspace["storage_quota_bytes"]) - int(measured["total_bytes"]),
+                0,
+            ),
+            "measured_at": measured["measured_at"],
+            "measurement_status": measured["measurement_status"],
+            "database_measurement_status": measured["database_measurement_status"],
+            "runtime_scan_error_count": measured["runtime_scan_error_count"],
+            "sources": {
+                "source_archive": "custody_artifact_ledger",
+                "runtime_release": "governed_runtime_filesystem",
+                "data_volume": "governed_runtime_filesystem",
+                "managed_data_objects": "custody_artifact_ledger",
+                "postgresql": "pg_total_relation_size",
+            },
+        }
+    )
+    workspace_public.update(
+        {
+            "storage_used_bytes": usage["total_bytes"],
+            "source_archive_bytes": usage["source_archive_bytes"],
+            "runtime_release_bytes": usage["runtime_release_bytes"],
+            "data_volume_bytes": usage["data_volume_bytes"],
+            "postgresql_bytes": usage["postgresql_bytes"],
+            "total_bytes": usage["total_bytes"],
+            "usage_measured_at": usage["measured_at"],
+        }
+    )
     return {
         "ok": True,
         "workspace": workspace_public,
+        "usage": usage,
         "components": components,
         "databases": databases,
         "credential": {
@@ -4918,6 +5876,18 @@ def workspace_info(credential: WorkspaceCredential) -> dict[str, object]:
                 str(credential.parent_credential_id) if credential.parent_credential_id else None
             ),
         },
+    }
+
+
+def workspace_usage(credential: WorkspaceCredential) -> dict[str, object]:
+    """Return a fresh platform measurement for one authenticated workspace."""
+
+    info = workspace_info(credential)
+    return {
+        "ok": True,
+        "workspace_id": str(credential.workspace_id),
+        "workspace_key": info["workspace"]["workspace_key"],
+        "usage": info["usage"],
     }
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import stat
@@ -11,6 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from fastapi import HTTPException, status
+
+from app.services.hosting_compatibility import (
+    MANIFEST_FILENAME,
+    MAX_MANIFEST_BYTES,
+    validate_hosting_manifest,
+)
 
 MAX_ARCHIVE_ENTRIES = 20_000
 MAX_COMPRESSION_RATIO = 200
@@ -59,6 +67,7 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
     entries = files = unpacked = 0
     top_level: set[str] = set()
     source_paths: set[str] = set()
+    manifest_candidates: list[tuple[str, bytes]] = []
     packed = max(path.stat().st_size, 1)
     archive_format: str
     if zipfile.is_zipfile(path):
@@ -83,7 +92,19 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
                 if not item.is_dir():
                     files += 1
                     unpacked += int(item.file_size)
-                    source_paths.add(member.as_posix().lower())
+                    member_path = member.as_posix()
+                    source_paths.add(member_path.lower())
+                    if member.name == MANIFEST_FILENAME:
+                        if item.file_size > MAX_MANIFEST_BYTES:
+                            raise HTTPException(
+                                status_code=422,
+                                detail={
+                                    "reason": "hosting_manifest_invalid",
+                                    "field": "manifest",
+                                    "message": "warehouse.hosting.json exceeds 256 KiB",
+                                },
+                            )
+                        manifest_candidates.append((member_path, archive.read(item)))
     elif tarfile.is_tarfile(path):
         archive_format = "tar"
         with tarfile.open(path, mode="r:*") as archive:
@@ -106,7 +127,25 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
                 if item.isfile():
                     files += 1
                     unpacked += int(item.size)
-                    source_paths.add(member.as_posix().lower())
+                    member_path = member.as_posix()
+                    source_paths.add(member_path.lower())
+                    if member.name == MANIFEST_FILENAME:
+                        if item.size > MAX_MANIFEST_BYTES:
+                            raise HTTPException(
+                                status_code=422,
+                                detail={
+                                    "reason": "hosting_manifest_invalid",
+                                    "field": "manifest",
+                                    "message": "warehouse.hosting.json exceeds 256 KiB",
+                                },
+                            )
+                        stream = archive.extractfile(item)
+                        if stream is None:
+                            raise HTTPException(
+                                status_code=422,
+                                detail="Hosting manifest is unreadable",
+                            )
+                        manifest_candidates.append((member_path, stream.read()))
     else:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -120,6 +159,52 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
         raise HTTPException(status_code=422, detail="Source archive expansion ratio is unsafe")
     basenames = {PurePosixPath(name).name for name in source_paths}
     single_root = next(iter(top_level)) if len(top_level) == 1 else None
+    allowed_manifest_paths = {MANIFEST_FILENAME}
+    if single_root:
+        allowed_manifest_paths.add(f"{single_root}/{MANIFEST_FILENAME}")
+    misplaced_manifests = [
+        name for name, _content in manifest_candidates if name not in allowed_manifest_paths
+    ]
+    selected_manifests = [
+        (name, content)
+        for name, content in manifest_candidates
+        if name in allowed_manifest_paths
+    ]
+    if misplaced_manifests or len(selected_manifests) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": "hosting_manifest_invalid",
+                "field": "manifest",
+                "message": (
+                    "provide exactly one warehouse.hosting.json at the application root"
+                ),
+                "paths": sorted(name for name, _content in manifest_candidates),
+            },
+        )
+    hosting_manifest: dict[str, object] | None = None
+    hosting_contract: dict[str, object] | None = None
+    if selected_manifests:
+        manifest_path, content = selected_manifests[0]
+        try:
+            decoded = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "reason": "hosting_manifest_invalid",
+                    "field": "manifest",
+                    "message": "warehouse.hosting.json must be valid UTF-8 JSON",
+                },
+            ) from exc
+        hosting_manifest = validate_hosting_manifest(decoded, source_paths=source_paths)
+        hosting_contract = {
+            "schema": hosting_manifest["schema"],
+            "contract_digest": hosting_manifest["contract_digest"],
+            "manifest_sha256": hashlib.sha256(content).hexdigest(),
+            "path": manifest_path,
+            "declared": True,
+        }
     candidate_entrypoints = sorted(
         name
         for name in source_paths
@@ -129,6 +214,8 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
             "app.py",
             "main.py",
             "server.py",
+            "asgi.py",
+            "wsgi.py",
             "worker.py",
             "agent.py",
             "server.js",
@@ -185,6 +272,8 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
                 else None
             ),
             "candidate_entrypoints": candidate_entrypoints,
+            "hosting_manifest": hosting_manifest,
+            "hosting_contract": hosting_contract,
         },
     )
 

@@ -1,0 +1,21 @@
+{
+  "schema": "warehouse.cluster-inventory.v1",
+  "service": "bonfirework.org",
+  "write_policy": "single-writer",
+  "nodes": [
+    {
+      "id": "mac-primary",
+      "role": "primary",
+      "platform": "linux/arm64",
+      "health_url": "https://mac-origin.bonfirework.org/api/system/readiness",
+      "expected_peer": "vultr-standby"
+    },
+    {
+      "id": "vultr-standby",
+      "role": "standby",
+      "platform": "linux/amd64",
+      "health_url": "https://bonfirework.org/api/system/readiness",
+      "expected_peer": "mac-primary"
+    }
+  ]
+}

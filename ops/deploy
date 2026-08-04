@@ -4,10 +4,15 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-smart}"
 LOCAL_VALIDATION="${WAREHOUSE_DEPLOY_LOCAL_VALIDATION:-adaptive}"
+TARGET="${WAREHOUSE_DEPLOY_TARGET:-vultr-production}"
 HOST="${WAREHOUSE_DEPLOY_HOST:-207.148.120.30}"
 USER="${WAREHOUSE_DEPLOY_USER:-warehouse-deploy}"
 IDENTITY="${WAREHOUSE_DEPLOY_IDENTITY:-${HOME}/.ssh/warehouse_os_deploy_ed25519}"
 REMOTE_MANAGER="${WAREHOUSE_REMOTE_DEPLOY_MANAGER:-/usr/local/sbin/warehouse-deploy}"
+REMOTE_INCOMING="${WAREHOUSE_DEPLOY_INCOMING:-/var/lib/warehouse-deploy/incoming}"
+MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:-1}"
+PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:-1}"
+SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:-0}"
 
 ssh_options=(
   -i "${IDENTITY}"
@@ -26,6 +31,7 @@ Usage:
   ops/deploy quick       # frontend or low-risk application change
   ops/deploy standard    # manually force the complete non-destructive suite
   ops/deploy full        # disposable PG18 integration suite plus full server checks
+  ops/deploy plan        # compare this checkout with the target's active manifest
   ops/deploy status      # current release, slots and service health
   ops/deploy runtime-status # Runtime Controller state and recent logs
   ops/deploy api-logs    # active API slot recent logs
@@ -35,11 +41,27 @@ Usage:
   ops/deploy hosted-db-activate # start the isolated HDD PostgreSQL data plane
   ops/deploy hosted-db-migrate  # migrate legacy workspace records after both slots are ready
   ops/deploy backup-now         # back up and verify both PostgreSQL data planes
+  ops/deploy workspace-db-inspect ASSET_NO
+  ops/deploy workspace-db-capabilities ASSET_NO
+  ops/deploy workspace-db-backup ASSET_NO
+  ops/deploy workspace-db-migrate-source ASSET_NO SOURCE_PATH VERSION
+  ops/deploy workspace-deploy-latest ASSET_NO
+  ops/deploy workspace-accept ASSET_NO DEPLOYMENT_ID EXPECTED_MODULES EXPECTED_RESOURCES
+  ops/deploy workspace-activate ASSET_NO DEPLOYMENT_ID
+  ops/deploy workspace-environment ASSET_NO NAME VALUE
+  ops/deploy workspace-stage-python ASSET_NO SOURCE_VERSION_ID
+  ops/deploy workspace-job ASSET_NO SOURCE_VERSION_ID alembic-upgrade|catalog-import
+  ops/deploy workspace-source-read ASSET_NO SOURCE_PATH
 
 Environment:
   WAREHOUSE_DEPLOY_HOST
   WAREHOUSE_DEPLOY_USER
   WAREHOUSE_DEPLOY_IDENTITY
+  WAREHOUSE_DEPLOY_TARGET
+  WAREHOUSE_DEPLOY_INCOMING
+  WAREHOUSE_DEPLOY_MANAGER_SUDO      # 1 for sudo -n, 0 for an unprivileged manager
+  WAREHOUSE_DEPLOY_PREPARE_INCOMING  # 1 to create the incoming directory, 0 if pre-provisioned
+  WAREHOUSE_DEPLOY_SCP_LEGACY        # 1 for scp -O when a forced-command gate is used
   WAREHOUSE_DEPLOY_LOCAL_VALIDATION  # adaptive (local default) or basic (GitHub)
 EOF
 }
@@ -53,6 +75,19 @@ remote() {
   ssh "${ssh_options[@]}" "${USER}@${HOST}" "$@"
 }
 
+manager_remote() {
+  local command argument quoted
+  printf -v command '%q' "${REMOTE_MANAGER}"
+  for argument in "$@"; do
+    printf -v quoted '%q' "${argument}"
+    command+=" ${quoted}"
+  done
+  if [[ "${MANAGER_SUDO}" == 1 ]]; then
+    command="sudo -n ${command}"
+  fi
+  remote "${command}"
+}
+
 require_file() {
   [[ -f "$1" ]] || fail "required file not found: $1"
 }
@@ -61,6 +96,24 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
+[[ "${TARGET}" =~ ^[A-Za-z0-9._-]{1,40}$ ]] \
+  || fail "WAREHOUSE_DEPLOY_TARGET is invalid"
+[[ -n "${HOST}" && "${HOST}" != *[[:space:]]* ]] \
+  || fail "WAREHOUSE_DEPLOY_HOST is invalid"
+[[ "${USER}" =~ ^[A-Za-z_][A-Za-z0-9._-]{0,63}$ ]] \
+  || fail "WAREHOUSE_DEPLOY_USER is invalid"
+[[ "${REMOTE_MANAGER}" == /* && "${REMOTE_MANAGER}" != *[[:space:]]* ]] \
+  || fail "WAREHOUSE_REMOTE_DEPLOY_MANAGER must be an absolute path without whitespace"
+[[ "${REMOTE_INCOMING}" == /* && "${REMOTE_INCOMING}" != *[[:space:]]* \
+    && "${REMOTE_INCOMING}" != *../* && "${REMOTE_INCOMING}" != */.. ]] \
+  || fail "WAREHOUSE_DEPLOY_INCOMING must be a safe absolute path without whitespace"
+[[ "${MANAGER_SUDO}" =~ ^[01]$ ]] \
+  || fail "WAREHOUSE_DEPLOY_MANAGER_SUDO must be 0 or 1"
+[[ "${PREPARE_INCOMING}" =~ ^[01]$ ]] \
+  || fail "WAREHOUSE_DEPLOY_PREPARE_INCOMING must be 0 or 1"
+[[ "${SCP_LEGACY}" =~ ^[01]$ ]] \
+  || fail "WAREHOUSE_DEPLOY_SCP_LEGACY must be 0 or 1"
+
 case "${MODE}" in
   -h|--help|help)
     usage
@@ -68,27 +121,104 @@ case "${MODE}" in
     ;;
   status|runtime-status|api-logs|history|rollback)
     require_file "${IDENTITY}"
-    remote "sudo -n ${REMOTE_MANAGER} ${MODE}"
+    manager_remote "${MODE}"
+    exit 0
+    ;;
+  plan)
+    require_file "${IDENTITY}"
+    require_command python3
+    plan_dir="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-deploy-plan.XXXXXX")"
+    trap 'rm -rf "${plan_dir}"' EXIT
+    manager_remote manifest > "${plan_dir}/active-files.sha256"
+    [[ -s "${plan_dir}/active-files.sha256" ]] \
+      || fail "target active manifest is empty"
+    "${ROOT}/ops/deploy-plan" \
+      --base-manifest "${plan_dir}/active-files.sha256" \
+      --candidate-root "${ROOT}" \
+      --format json
     exit 0
     ;;
   storage-activate)
     require_file "${IDENTITY}"
-    remote "sudo -n ${REMOTE_MANAGER} activate-hosted-storage"
+    manager_remote activate-hosted-storage
     exit 0
     ;;
   hosted-db-activate)
     require_file "${IDENTITY}"
-    remote "sudo -n ${REMOTE_MANAGER} activate-hosted-database"
+    manager_remote activate-hosted-database
     exit 0
     ;;
   hosted-db-migrate)
     require_file "${IDENTITY}"
-    remote "sudo -n ${REMOTE_MANAGER} migrate-hosted-databases"
+    manager_remote migrate-hosted-databases
     exit 0
     ;;
   backup-now)
     require_file "${IDENTITY}"
-    remote "sudo -n ${REMOTE_MANAGER} backup-now"
+    manager_remote backup-now
+    exit 0
+    ;;
+  workspace-db-inspect|workspace-db-capabilities|workspace-db-backup)
+    [[ "$#" -eq 2 ]] || fail "${MODE} requires ASSET_NO"
+    require_file "${IDENTITY}"
+    operation="${MODE#workspace-db-}"
+    manager_remote workspace-database "${operation}" "$2"
+    exit 0
+    ;;
+  workspace-db-migrate-source)
+    [[ "$#" -eq 4 ]] || fail "workspace-db-migrate-source requires ASSET_NO SOURCE_PATH VERSION"
+    require_file "${IDENTITY}"
+    manager_remote workspace-database-migrate-source "$2" "$3" "$4"
+    exit 0
+    ;;
+  workspace-deploy-latest)
+    [[ "$#" -eq 2 ]] || fail "workspace-deploy-latest requires ASSET_NO"
+    require_file "${IDENTITY}"
+    manager_remote workspace-deploy-latest "$2"
+    exit 0
+    ;;
+  workspace-accept)
+    [[ "$#" -eq 5 ]] \
+      || fail "workspace-accept requires ASSET_NO DEPLOYMENT_ID EXPECTED_MODULES EXPECTED_RESOURCES"
+    [[ "$4" =~ ^[0-9]{1,4}$ && "$5" =~ ^[0-9]{1,6}$ ]] \
+      || fail "workspace-accept counts must be non-negative integers"
+    require_file "${IDENTITY}"
+    manager_remote workspace-accept "$2" "$3" "$4" "$5"
+    exit 0
+    ;;
+  workspace-activate)
+    [[ "$#" -eq 3 ]] || fail "workspace-activate requires ASSET_NO DEPLOYMENT_ID"
+    require_file "${IDENTITY}"
+    manager_remote workspace-activate "$2" "$3"
+    exit 0
+    ;;
+  workspace-environment)
+    [[ "$#" -eq 4 ]] || fail "workspace-environment requires ASSET_NO NAME VALUE"
+    [[ "$3" =~ ^[A-Z][A-Z0-9_]{0,79}$ ]] \
+      || fail "workspace-environment NAME is invalid"
+    require_file "${IDENTITY}"
+    manager_remote workspace-environment "$2" "$3" "$4"
+    exit 0
+    ;;
+  workspace-stage-python)
+    [[ "$#" -eq 3 ]] || fail "workspace-stage-python requires ASSET_NO SOURCE_VERSION_ID"
+    require_file "${IDENTITY}"
+    manager_remote workspace-stage-python "$2" "$3"
+    exit 0
+    ;;
+  workspace-job)
+    [[ "$#" -eq 4 ]] \
+      || fail "workspace-job requires ASSET_NO SOURCE_VERSION_ID JOB_KIND"
+    [[ "$4" =~ ^(alembic-upgrade|catalog-import)$ ]] \
+      || fail "workspace-job JOB_KIND must be alembic-upgrade or catalog-import"
+    require_file "${IDENTITY}"
+    manager_remote workspace-job "$2" "$3" "$4"
+    exit 0
+    ;;
+  workspace-source-read)
+    [[ "$#" -eq 3 ]] || fail "workspace-source-read requires ASSET_NO SOURCE_PATH"
+    require_file "${IDENTITY}"
+    manager_remote workspace-source-read "$2" "$3"
     exit 0
     ;;
   smart|quick|standard|full)
@@ -140,7 +270,7 @@ if [[ "${MODE}" == smart ]]; then
   # The model is deterministic and versioned with the release. It also tells
   # the trusted server which safety checks are required for this release.
   active_manifest="${work_dir}/active-files.sha256"
-  if remote "sudo -n ${REMOTE_MANAGER} manifest" \
+  if manager_remote manifest \
     > "${active_manifest}" 2>/dev/null && [[ -s "${active_manifest}" ]]; then
     eval "$(
       ops/deploy-plan \
@@ -231,7 +361,7 @@ dirty="false"
 if ! git diff --quiet --ignore-submodules -- || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
   dirty="true"
 fi
-release_id="$(date -u +%Y%m%dT%H%M%SZ)-${git_sha}-${MODE}"
+release_id="$(date -u +%Y%m%dT%H%M%SZ)-${git_sha}-${TARGET}-${MODE}"
 package="${work_dir}/${release_id}.tar.gz"
 checksum_file="${package}.sha256"
 
@@ -278,10 +408,18 @@ package_hash="$(shasum -a 256 "${package}" | awk '{print $1}')"
 printf '%s  %s\n' "${package_hash}" "$(basename "${package}")" > "${checksum_file}"
 
 printf '==> upload immutable release %s\n' "${release_id}"
-remote "mkdir -p /var/lib/warehouse-deploy/incoming"
-scp "${ssh_options[@]}" "${package}" "${checksum_file}" \
-  "${USER}@${HOST}:/var/lib/warehouse-deploy/incoming/"
+if [[ "${PREPARE_INCOMING}" == 1 ]]; then
+  printf -v remote_incoming_quoted '%q' "${REMOTE_INCOMING}"
+  remote "mkdir -p ${remote_incoming_quoted}"
+fi
+scp_options=("${ssh_options[@]}")
+if [[ "${SCP_LEGACY}" == 1 ]]; then
+  scp_options=(-O "${scp_options[@]}")
+fi
+scp "${scp_options[@]}" "${package}" "${checksum_file}" \
+  "${USER}@${HOST}:${REMOTE_INCOMING}/"
 
 printf '==> server install and verification\n'
-remote "sudo -n ${REMOTE_MANAGER} install ${release_id} ${INSTALL_MODE}"
-printf '==> deployed %s in %ss\n' "${release_id}" "$((SECONDS - deploy_started))"
+manager_remote install "${release_id}" "${INSTALL_MODE}"
+printf '==> deployed %s to %s in %ss\n' \
+  "${release_id}" "${TARGET}" "$((SECONDS - deploy_started))"

@@ -3582,6 +3582,17 @@ const SecretaryDock = () => {
   const [big, setBig] = useState(false);
   const [items, setItems] = useState([]);
   const [input, setInput] = useState("");
+  const [lighthouseDevices, setLighthouseDevices] = useState([]);
+  const [lighthouseLoading, setLighthouseLoading] = useState(false);
+  const [lighthouseError, setLighthouseError] = useState("");
+  const [selectedDeviceId, setSelectedDeviceId] = useState(() => {
+    try { return window.localStorage.getItem(`w2.lighthouse.device:${W2.tenant()}`) || ""; }
+    catch (e) { return ""; }
+  });
+  const [runtimeTargetOpen, setRuntimeTargetOpen] = useState(false);
+  const [pairingOpen, setPairingOpen] = useState(false);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingChallenge, setPairingChallenge] = useState(null);
   const [busy, setBusy] = useState(false);
   const [upBusy, setUpBusy] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -3634,6 +3645,66 @@ const SecretaryDock = () => {
   const busyRef = useRef(false);   // send 是 [] 依賴的 useCallback,讀不到 busy 狀態;語音定稿可能在運行中到達,必須用 ref 擋併發流
   const openRef = useRef(false);
   openRef.current = open;
+
+  const refreshLighthouseDevices = useCallback(async () => {
+    setLighthouseLoading(true);
+    setLighthouseError("");
+    try {
+      const response = await W2.json("/api/lighthouse/devices");
+      const devices = Array.isArray(response && response.devices)
+        ? response.devices.filter(device => device && device.status === "active") : [];
+      setLighthouseDevices(devices);
+      setSelectedDeviceId(current => {
+        if (!current || devices.some(device => String(device.id) === String(current))) return current;
+        try { window.localStorage.removeItem(`w2.lighthouse.device:${W2.tenant()}`); } catch (e) {}
+        return "";
+      });
+      return devices;
+    } catch (error) {
+      setLighthouseError(error.message || t("無法載入電腦"));
+      return [];
+    } finally {
+      setLighthouseLoading(false);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let disposed = false;
+    const refresh = () => { if (!disposed) refreshLighthouseDevices(); };
+    refresh();
+    const timer = window.setInterval(refresh, 12000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [open, refreshLighthouseDevices]);
+
+  const selectLighthouseDevice = (deviceId) => {
+    const value = String(deviceId || "");
+    setSelectedDeviceId(value);
+    setRuntimeTargetOpen(false);
+    setPairingOpen(false);
+    try {
+      const key = `w2.lighthouse.device:${W2.tenant()}`;
+      if (value) window.localStorage.setItem(key, value);
+      else window.localStorage.removeItem(key);
+    } catch (e) {}
+  };
+
+  const createLighthousePairing = async () => {
+    if (pairingBusy) return;
+    setPairingBusy(true);
+    setLighthouseError("");
+    try {
+      const response = await W2.post("/api/lighthouse/pairing-challenges", {
+        label: t("我的電腦"),
+      });
+      if (!response || !response.pairing_code) throw new Error(t("配對碼回應無效"));
+      setPairingChallenge(response);
+    } catch (error) {
+      setLighthouseError(error.message || t("無法建立配對碼"));
+    } finally {
+      setPairingBusy(false);
+    }
+  };
 
   const supersedeInFlightInteraction = useCallback(() => {
     const hadStream = !!(busyRef.current || streamAbortRef.current);
@@ -4628,14 +4699,141 @@ const SecretaryDock = () => {
       busyRef.current = false; setBusy(false);
     }
   }, [supersedeInFlightInteraction, supersedeNewConversation, supersedeSecretaryRestore]);
-  sendRef.current = send;
+  const sendToLighthouse = useCallback(async (text) => {
+    const msg = String(text || "").trim();
+    const deviceId = String(selectedDeviceId || "");
+    if (!msg || !deviceId) return;
+    if (busyRef.current || streamAbortRef.current || uploadAbortRef.current) {
+      supersedeInFlightInteraction();
+    }
+    supersedeNewConversation();
+    supersedeSecretaryRestore();
+    const identityGeneration = identityGenerationRef.current;
+    const streamGeneration = ++streamGenerationRef.current;
+    const controller = typeof window.AbortController === "function"
+      ? new window.AbortController() : null;
+    streamAbortRef.current = controller;
+    const isCurrent = () => identityGeneration === identityGenerationRef.current
+      && streamGeneration === streamGenerationRef.current;
+    busyRef.current = true;
+    setBusy(true);
+    setInput("");
+    forceTailRef.current = true;
+    setItems(previous => [
+      ...previous.filter(item => item && item.role !== "send_retry"),
+      { role: "u", text: msg },
+      { role: "step", text: t("正在把目標交給所選電腦的 Lighthouse"), running: true },
+    ]);
+    setAgentStatus({
+      agent: "lighthouse", status: "coordinating", label: t("Lighthouse 正在接手"),
+    });
+    let cursor = 0;
+    const eventKeys = new Set();
+    try {
+      const idempotencyKey = window.crypto && typeof window.crypto.randomUUID === "function"
+        ? window.crypto.randomUUID() : `lh-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const created = await W2.json("/api/lighthouse/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({
+          device_id: deviceId,
+          goal: msg,
+          conversation_ref: convRef.current == null ? null : String(convRef.current),
+          read_only: true,
+        }),
+        signal: controller && controller.signal,
+      });
+      if (!isCurrent()) return;
+      const remoteRun = created && created.run;
+      const runId = remoteRun && remoteRun.id;
+      if (!runId) throw new Error(t("Lighthouse Run 回應無效"));
+      setItems(previous => previous.map(item => item && item.role === "step" && item.running
+        ? { ...item, running: false, text: item.text + (
+            created.delivery_state === "sent_unacknowledged"
+              ? ` · ${t("已發送，等待電腦確認")}`
+              : ` · ${t("電腦離線，等待重連")}`
+          ) }
+        : item));
+      let terminalRun = remoteRun;
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (controller && controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+        const [eventsResponse, runResponse] = await Promise.all([
+          W2.json(`/api/lighthouse/runs/${encodeURIComponent(runId)}/events?after_sequence=${cursor}`, {
+            signal: controller && controller.signal,
+          }),
+          W2.json(`/api/lighthouse/runs/${encodeURIComponent(runId)}`, {
+            signal: controller && controller.signal,
+          }),
+        ]);
+        if (!isCurrent()) return;
+        const events = Array.isArray(eventsResponse && eventsResponse.events)
+          ? eventsResponse.events : [];
+        const projected = [];
+        events.forEach(event => {
+          cursor = Math.max(cursor, Number(event.sequence) || 0);
+          const key = String(event.event_id || `${runId}:${event.sequence}`);
+          if (eventKeys.has(key)) return;
+          eventKeys.add(key);
+          const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+          const detail = payload.message || payload.reason || payload.capability
+            || payload.presentation && payload.presentation.capability || "";
+          projected.push({
+            role: "step", running: false,
+            text: `${String(event.type || "Lighthouse").replace(/^lighthouse\./, "")}${detail ? ` · ${String(detail).slice(0, 240)}` : ""}`,
+          });
+        });
+        if (projected.length) setItems(previous => [...previous, ...projected]);
+        terminalRun = runResponse && runResponse.run ? runResponse.run : terminalRun;
+        if (["completed", "failed", "cancelled", "rejected"].includes(String(terminalRun.status))) break;
+        await new Promise(resolve => window.setTimeout(resolve, 1000));
+      }
+      if (!terminalRun || !["completed", "failed", "cancelled", "rejected"].includes(String(terminalRun.status))) {
+        throw new Error(t("電腦仍在處理；Run 已保存，可稍後繼續查看"));
+      }
+      const result = terminalRun.result && typeof terminalRun.result === "object"
+        ? terminalRun.result : {};
+      const finalText = String(result.message || terminalRun.error || (
+        terminalRun.status === "completed" ? t("電腦上的任務已完成") : t("電腦上的任務未完成")
+      ));
+      setItems(previous => [...previous, { role: "a", text: finalText }]);
+      setAgentStatus({
+        agent: "lighthouse", status: terminalRun.status,
+        label: terminalRun.status === "completed" ? t("Lighthouse 任務已完成") : t("Lighthouse 需要您查看"),
+      });
+      window.dispatchEvent(new CustomEvent("w2-agent-complete", {
+        detail: { lighthouse_run_id: runId, device_id: deviceId },
+      }));
+      if (voiceRef.current) voiceRef.current.speakReply(finalText);
+    } catch (error) {
+      if (!isCurrent() || error && error.name === "AbortError") return;
+      setItems(previous => previous.map(item => item && item.role === "step" && item.running
+        ? { ...item, running: false, text: item.text + ` · ⚠ ${t("已停止")}` }
+        : item).concat([{ role: "a", text: `⚠ ${error.message || String(error)}` }]));
+      setAgentStatus({ agent: "lighthouse", status: "failed", label: t("Lighthouse 需要您查看") });
+    } finally {
+      if (!isCurrent()) return;
+      streamAbortRef.current = null;
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, [selectedDeviceId, supersedeInFlightInteraction, supersedeNewConversation, supersedeSecretaryRestore, t]);
+  sendRef.current = (text, displayText, intent, suppliedBusinessContext, runOptions) => (
+    selectedDeviceId && !displayText && !intent
+      && !(runOptions && (runOptions.hidden_user_turn || runOptions.terminal_event))
+      ? sendToLighthouse(text)
+      : send(text, displayText, intent, suppliedBusinessContext, runOptions)
+  );
   useEffect(() => {
     reasoningModeRef.current = reasoningMode;
     window.localStorage.setItem(
       "w2.secretary.reasoning_mode", reasoningMode,
     );
   }, [reasoningMode]);
-  const submit = () => { const t = input; send(t); };
+  const submit = () => {
+    const text = input;
+    if (selectedDeviceId) sendToLighthouse(text);
+    else send(text);
+  };
 
   /* 上傳圖片 → /api/agent/vision 通用視覺識別;上傳數據/文本文件 → /api/agent/file 內置引擎嗅探;
      識別結果(suggested_text)直接喂進內核流式會話。輸入框裡已有文字時,當作對這個文件的問題一併帶上 */
@@ -4951,8 +5149,15 @@ const SecretaryDock = () => {
       }
     }
   };
-
-
+  const selectedLighthouseDevice = lighthouseDevices.find(
+    device => String(device && device.id || "") === String(selectedDeviceId || ""),
+  ) || null;
+  const runtimeTargetLabel = selectedDeviceId
+    ? String(selectedLighthouseDevice && selectedLighthouseDevice.label || t("Lighthouse 電腦"))
+    : t("Warehouse 雲端");
+  const runtimeTargetStatus = selectedDeviceId
+    ? selectedLighthouseDevice && selectedLighthouseDevice.online ? t("在線") : t("等待連線")
+    : t("雲端就緒");
 
   if (!open) return (
     <button className="dock-fab" onClick={() => {
@@ -4969,9 +5174,11 @@ const SecretaryDock = () => {
   return (
     <div className={"dock secretary-dock" + (big ? " big" : "")}>
       <style>{`
+        .secretary-dock{width:min(594px,calc(100vw - 56px))}
+        .secretary-dock.big{width:min(1080px,calc(100vw - 56px))}
         .secretary-command-head{border-bottom:2px solid var(--rule);background:var(--white)}
         .secretary-head-main{display:flex;align-items:center;justify-content:space-between;gap:9px;padding:9px 11px}
-        .secretary-brand{--secretary-spectrum:linear-gradient(90deg,#df2b1f 0 17%,#ff7a00 17% 33%,#f1cf00 33% 49%,#12a05c 49% 66%,#1685d1 66% 83%,#6947c6 83% 100%);position:relative;display:flex;flex:0 1 520px;align-items:center;gap:10px;min-width:0;padding:6px 11px 8px 7px;overflow:hidden;border:1px solid var(--hair);background:var(--paper)}
+        .secretary-brand{--secretary-spectrum:linear-gradient(90deg,#df2b1f 0 17%,#ff7a00 17% 33%,#f1cf00 33% 49%,#12a05c 49% 66%,#1685d1 66% 83%,#6947c6 83% 100%);position:relative;display:flex;flex:0 1 780px;align-items:center;gap:10px;min-width:0;padding:6px 11px 8px 7px;overflow:hidden;border:1px solid var(--hair);background:var(--paper)}
         .secretary-brand::before{content:"";position:absolute;right:6px;top:5px;width:5px;height:5px;border-top:1px solid var(--ink-4);border-right:1px solid var(--ink-4);opacity:.55}
         .secretary-brand::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--secretary-spectrum);background-size:100% 100%;opacity:.78}
         .secretary-brand.is-moving::after{background-size:220% 100%;animation:secretary-spectrum-flow 1.65s steps(12,end) infinite;opacity:1}
@@ -5005,6 +5212,34 @@ const SecretaryDock = () => {
         @keyframes secretary-glyph-complete{0%{transform:translateY(-1px) rotate(45deg) scale(0);opacity:0}66%{transform:translateY(-1px) rotate(45deg) scale(1.18);opacity:1}100%{transform:translateY(-1px) rotate(45deg) scale(1);opacity:1}}
         @media(prefers-reduced-motion:reduce){.secretary-brand.is-moving::after,.secretary-brand.is-waiting::after,.secretary-brand.is-settled::after,.secretary-status-glyph.is-moving>i,.secretary-status-glyph.is-waiting>i,.secretary-status-glyph.is-complete::before{animation:none}.secretary-brand.is-moving::after{background-size:100% 100%;background-position:0 0}.secretary-brand.is-settled::after{transform:none}}
         .btn.secretary-reasoning-toggle,.btn.secretary-new-conversation{width:32px;height:30px;padding:0}
+        .secretary-runtime-target{align-self:stretch;border:1px solid var(--rule);border-left:3px solid var(--accent);background:var(--paper);box-shadow:2px 2px 0 color-mix(in srgb,var(--rule) 22%,transparent)}
+        .secretary-runtime-target-head{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto 20px;align-items:center;gap:8px;padding:9px 10px;border:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer}
+        .secretary-runtime-target-head:hover{background:var(--surface-2)}
+        .secretary-runtime-target-copy{display:flex;min-width:0;flex-direction:column;gap:4px}
+        .secretary-runtime-target-code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:800 8px/1 var(--f-mono);letter-spacing:.15em;color:var(--ink-3)}
+        .secretary-runtime-target-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:760 11px/1.2 var(--f-mono);color:var(--ink)}
+        .secretary-runtime-target-status{display:flex;align-items:center;gap:5px;white-space:nowrap;font:720 8.5px/1 var(--f-mono);color:var(--ink-3)}
+        .secretary-runtime-target-status>i{width:6px;height:6px;border:1px solid currentColor;background:var(--white)}
+        .secretary-runtime-target-status.is-online{color:var(--ok)}
+        .secretary-runtime-target-status.is-online>i{background:var(--ok);border-color:var(--ok)}
+        .secretary-runtime-target-chevron{font:800 14px/1 var(--f-mono);text-align:center}
+        .secretary-runtime-target-body{display:flex;flex-direction:column;gap:8px;padding:9px;border-top:1px solid var(--hair)}
+        .secretary-runtime-target-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+        .secretary-runtime-target-option{position:relative;display:grid;grid-template-columns:26px minmax(0,1fr) auto;align-items:center;gap:8px;min-height:54px;padding:8px;border:1px solid var(--hair);background:var(--white);color:var(--ink);text-align:left;cursor:pointer}
+        .secretary-runtime-target-option:hover{border-color:var(--rule);background:var(--surface-2)}
+        .secretary-runtime-target-option.is-selected{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+        .secretary-runtime-target-icon{width:26px;height:26px;display:grid;place-items:center;border:1px solid var(--rule);background:var(--paper)}
+        .secretary-runtime-target-option-copy{display:flex;min-width:0;flex-direction:column;gap:3px}
+        .secretary-runtime-target-option-copy>strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:750 10px/1.2 var(--f-mono)}
+        .secretary-runtime-target-option-copy>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;line-height:1.3;color:var(--ink-3)}
+        .secretary-runtime-target-check{width:15px;height:15px;display:grid;place-items:center;border:1px solid var(--rule);font:850 9px/1 var(--f-mono);color:transparent}
+        .secretary-runtime-target-option.is-selected .secretary-runtime-target-check{border-color:var(--accent);background:var(--accent);color:var(--on-red)}
+        .secretary-runtime-target-actions{display:flex;align-items:center;justify-content:space-between;gap:7px;flex-wrap:wrap;padding-top:1px}
+        .secretary-pairing-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;padding:10px;border:1px solid var(--hair);background:var(--white)}
+        .secretary-pairing-copy{min-width:0;display:flex;flex-direction:column;gap:5px}
+        .secretary-pairing-copy code{display:block;padding:6px 7px;border:1px solid var(--hair);background:var(--white);overflow:auto;white-space:nowrap;font:700 9px/1.35 var(--f-mono);user-select:all}
+        .secretary-pairing-note{font-size:10px;line-height:1.5;color:var(--ink-3)}
+        .secretary-device-error{padding:7px 8px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--hair));background:color-mix(in srgb,var(--danger) 5%,var(--white));color:var(--danger);font-size:10px}
         .btn.secretary-reasoning-toggle{--moon-surface:var(--white);position:relative;overflow:hidden}
         .btn.secretary-reasoning-toggle:hover{--moon-surface:var(--ink)}
         .secretary-mode-moon{position:relative;width:11px;height:11px;display:block;border:1px solid currentColor;border-radius:50%;background:currentColor}
@@ -5048,11 +5283,11 @@ const SecretaryDock = () => {
         .secretary-runtime-state>small{font:600 7.5px/1 var(--f-mono);color:var(--ink-4)}
         @keyframes secretary-runtime-pulse{0%,48%{opacity:1}49%,100%{opacity:.25}}
         @media(prefers-reduced-motion:reduce){.secretary-runtime-row.status-running .secretary-runtime-dot{animation:none}}
-        .secretary-dock .dock-scroll{height:390px;flex-basis:390px}
-        .secretary-dock.big .dock-scroll{height:min(62vh,640px);flex-basis:min(62vh,640px)}
+        .secretary-dock .dock-scroll{height:585px;flex-basis:585px}
+        .secretary-dock.big .dock-scroll{height:min(78vh,960px);flex-basis:min(78vh,960px)}
         .secretary-compose-input{font-size:13.5px}
-        @media(max-width:768px){.secretary-compose-input{font-size:16px!important}.secretary-dock .dock-scroll{height:48vh;height:48dvh;flex-basis:48vh;flex-basis:48dvh;max-height:400px}.secretary-dock.big .dock-scroll{height:54vh;height:54dvh;flex-basis:54vh;flex-basis:54dvh;max-height:480px}}
-        @media(max-width:520px){.secretary-head-main{gap:7px;padding:8px}.secretary-brand{gap:8px;padding:5px 8px 7px 5px}.secretary-seal{width:36px;height:36px;flex-basis:36px;box-shadow:1px 1px 0 var(--rule)}.secretary-brand-title-line{gap:7px}.secretary-brand-title{font-size:14px}.secretary-inline-status{gap:4px;padding-left:7px}.secretary-inline-actor{max-width:68px;font-size:7.5px}}
+        @media(max-width:768px){.secretary-dock,.secretary-dock.big{width:auto}.secretary-compose-input{font-size:16px!important}.secretary-dock .dock-scroll{height:48vh;height:48dvh;flex-basis:48vh;flex-basis:48dvh;max-height:400px}.secretary-dock.big .dock-scroll{height:54vh;height:54dvh;flex-basis:54vh;flex-basis:54dvh;max-height:480px}}
+        @media(max-width:520px){.secretary-head-main{gap:7px;padding:8px}.secretary-brand{gap:8px;padding:5px 8px 7px 5px}.secretary-seal{width:36px;height:36px;flex-basis:36px;box-shadow:1px 1px 0 var(--rule)}.secretary-brand-title-line{gap:7px}.secretary-brand-title{font-size:14px}.secretary-inline-status{gap:4px;padding-left:7px}.secretary-inline-actor{max-width:68px;font-size:7.5px}.secretary-runtime-target-options{grid-template-columns:1fr}.secretary-pairing-panel{grid-template-columns:1fr}}
         @media(max-width:390px){.secretary-brand-code{font-size:7px;letter-spacing:.12em}.secretary-brand-title-line{display:block}.secretary-inline-status{margin-top:5px;padding-left:0}.secretary-inline-divider{display:none}.secretary-inline-actor{max-width:72px}}
       `}</style>
       <div className="secretary-command-head">
@@ -5109,6 +5344,76 @@ const SecretaryDock = () => {
           followTailRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 72;
         }}
         style={{ padding: 16, overflowY: "auto" }}>
+        <section className={`secretary-runtime-target${runtimeTargetOpen ? " is-open" : ""}`}
+          data-auto-runtime-card="execution-target" aria-label={t("Auto Runtime 執行位置卡片")}>
+          <button type="button" className="secretary-runtime-target-head"
+            aria-expanded={runtimeTargetOpen} onClick={() => setRuntimeTargetOpen(value => !value)}>
+            <span className="secretary-runtime-target-copy">
+              <span className="secretary-runtime-target-code">AUTO RUNTIME · EXECUTION ROUTE</span>
+              <strong className="secretary-runtime-target-name">{runtimeTargetLabel}</strong>
+            </span>
+            <span className={`secretary-runtime-target-status ${
+                !selectedDeviceId || selectedLighthouseDevice && selectedLighthouseDevice.online ? "is-online" : ""
+              }`}><i aria-hidden="true"/>{runtimeTargetStatus}</span>
+            <span className="secretary-runtime-target-chevron" aria-hidden="true">{runtimeTargetOpen ? "−" : "+"}</span>
+          </button>
+          {runtimeTargetOpen && <div className="secretary-runtime-target-body">
+            <div className="secretary-runtime-target-options" role="group" aria-label={t("選擇執行位置")}>
+              <button type="button" className={`secretary-runtime-target-option${!selectedDeviceId ? " is-selected" : ""}`}
+                aria-pressed={!selectedDeviceId} onClick={() => selectLighthouseDevice("")}>
+                <span className="secretary-runtime-target-icon" aria-hidden="true"><Icon2 name="sparkle" size={13}/></span>
+                <span className="secretary-runtime-target-option-copy">
+                  <strong>{t("Warehouse 雲端")}</strong>
+                  <span>{t("由雲端 Auto Runtime 安全處理")}</span>
+                </span>
+                <span className="secretary-runtime-target-check" aria-hidden="true">✓</span>
+              </button>
+              {lighthouseDevices.map(device => {
+                const selected = String(device.id) === String(selectedDeviceId);
+                return <button type="button" key={device.id}
+                  className={`secretary-runtime-target-option${selected ? " is-selected" : ""}`}
+                  aria-pressed={selected} onClick={() => selectLighthouseDevice(device.id)}>
+                  <span className="secretary-runtime-target-icon" aria-hidden="true"><Icon2 name="cpu" size={13}/></span>
+                  <span className="secretary-runtime-target-option-copy">
+                    <strong>{device.label}</strong>
+                    <span>{device.online ? t("在線 · 可立即接手") : t("離線 · 上線後接手")}</span>
+                  </span>
+                  <span className="secretary-runtime-target-check" aria-hidden="true">✓</span>
+                </button>;
+              })}
+            </div>
+            {lighthouseLoading && <div className="step-line"><Icon2 name="refresh" size={10}/>{t("正在載入電腦…")}</div>}
+            {!lighthouseLoading && !lighthouseDevices.length && !lighthouseError && (
+              <div className="secretary-pairing-note">{t("尚未連接本機；您仍可使用 Warehouse 雲端。")}</div>
+            )}
+            {!!lighthouseError && <div className="secretary-device-error" role="alert">{lighthouseError}</div>}
+            <div className="secretary-runtime-target-actions">
+              <button type="button" className="btn ghost sm" disabled={lighthouseLoading}
+                onClick={refreshLighthouseDevices}><Icon2 name="refresh" size={11}/>{t("重新整理")}</button>
+              <button type="button" className="btn sm" onClick={() => {
+                setPairingOpen(value => !value);
+                if (!pairingOpen && !pairingChallenge) createLighthousePairing();
+              }}><Icon2 name="cpu" size={11}/>{pairingOpen ? t("收起配對") : t("連接新電腦")}</button>
+            </div>
+            {pairingOpen && <div className="secretary-pairing-panel">
+              <div className="secretary-pairing-copy">
+                <strong>{t("把 Lighthouse 連到這個帳號")}</strong>
+                {pairingChallenge ? <>
+                  <span className="secretary-pairing-note">{t("在電腦終端執行；配對碼十分鐘後失效且只能使用一次。")}</span>
+                  <code>{`lh cloud-pair --warehouse-url ${location.origin} --code ${pairingChallenge.pairing_code} --label "My computer"`}</code>
+                </> : <span className="secretary-pairing-note">{pairingBusy ? t("正在建立一次性配對碼…") : t("尚未建立配對碼")}</span>}
+              </div>
+              <div className="row g4" style={{ alignItems: "flex-start" }}>
+                <button type="button" className="btn sm" disabled={pairingBusy} onClick={createLighthousePairing}>
+                  <Icon2 name="refresh" size={11}/>{pairingChallenge ? t("換一個碼") : t("建立配對碼")}
+                </button>
+                <button type="button" className="btn ghost sm" onClick={() => {
+                  setPairingOpen(false); refreshLighthouseDevices();
+                }}>{t("完成")}</button>
+              </div>
+            </div>}
+          </div>}
+        </section>
         {restoring && !items.length && (
           <div className="step-line"><Icon2 name="refresh" size={10}/>{t("正在恢復上次會話…")}</div>
         )}

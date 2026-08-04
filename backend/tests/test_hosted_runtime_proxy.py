@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 from fastapi.testclient import TestClient
 
-from app.api import digital_assets
+from app.api import digital_assets, hosted_runtime_gateway
 from app.main import app
 
 
@@ -26,6 +26,11 @@ class _RuntimeClient:
 
 def test_api_entry_redirects_to_available_upstream_docs(monkeypatch) -> None:
     runtime_client = _RuntimeClient(docs_status=200)
+    monkeypatch.setattr(
+        hosted_runtime_gateway,
+        "active_workspace_runtime",
+        lambda *_args: None,
+    )
     monkeypatch.setattr(
         digital_assets,
         "active_workspace_runtime",
@@ -59,6 +64,11 @@ def test_api_entry_redirects_to_available_upstream_docs(monkeypatch) -> None:
 
 def test_api_entry_preserves_upstream_404_when_docs_are_unavailable(monkeypatch) -> None:
     runtime_client = _RuntimeClient(docs_status=404)
+    monkeypatch.setattr(
+        hosted_runtime_gateway,
+        "active_workspace_runtime",
+        lambda *_args: None,
+    )
     monkeypatch.setattr(
         digital_assets,
         "active_workspace_runtime",

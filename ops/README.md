@@ -54,31 +54,67 @@ locally before a Draft PR is created:
   shell syntax, verifies the committed frontend bundles and parses one sample
   deployment plan. It does not start PostgreSQL, install the backend, run
   pytest or build a Compose stack.
-- `.github/workflows/production-deploy.yml` repeats the basic checks, packages
-  the immutable release and invokes the restricted production deployment
-  channel for each deployable push to `main` or manual dispatch.
+- `.github/workflows/production-deploy.yml` rejects stale revisions and then
+  serially deploys the Mac primary before the Vultr standby.
+- `.github/workflows/production-deploy-target.yml` is the shared target job. It
+  compares the clean checkout with each target's own active manifest, packages
+  an immutable release only when required and invokes `ops/deploy smart`.
+- The Mac target joins Tailscale as an ephemeral tagged node. It does not use a
+  self-hosted runner, which would be inappropriate for this public repository.
 
-The `production` GitHub Environment must define:
+Both the `mac-production` and `production` GitHub Environments define the same
+target contract:
 
 ```text
 Variables:
   WAREHOUSE_DEPLOY_HOST
   WAREHOUSE_DEPLOY_USER
   WAREHOUSE_REMOTE_DEPLOY_MANAGER
+  WAREHOUSE_DEPLOY_INCOMING
+  WAREHOUSE_DEPLOY_MANAGER_SUDO
+  WAREHOUSE_DEPLOY_PREPARE_INCOMING
+  WAREHOUSE_DEPLOY_SCP_LEGACY
 
 Secrets:
   WAREHOUSE_DEPLOY_SSH_KEY
   WAREHOUSE_DEPLOY_KNOWN_HOSTS
 ```
 
+The existing `production` environment remains the Vultr standby and keeps
+`WAREHOUSE_DEPLOY_MANAGER_SUDO=1`,
+`WAREHOUSE_DEPLOY_PREPARE_INCOMING=1` and
+`WAREHOUSE_DEPLOY_SCP_LEGACY=0`. The `mac-production` environment uses:
+
+```text
+WAREHOUSE_DEPLOY_HOST=<Mac mini Tailscale IPv4 or MagicDNS name>
+WAREHOUSE_DEPLOY_USER=<restricted Mac deployment user>
+WAREHOUSE_REMOTE_DEPLOY_MANAGER=/Users/<user>/Server/bonfirework/bin/warehouse-deploy
+WAREHOUSE_DEPLOY_INCOMING=/Users/<user>/Server/bonfirework/incoming
+WAREHOUSE_DEPLOY_MANAGER_SUDO=0
+WAREHOUSE_DEPLOY_PREPARE_INCOMING=0
+WAREHOUSE_DEPLOY_SCP_LEGACY=1
+```
+
+`mac-production` additionally requires `TAILSCALE_AUTHKEY`, created as a
+reusable, ephemeral, pre-approved key owned by a deployment-only tag. The
+tailnet policy should allow that tag to reach only the Mac mini on TCP 22.
+
+The Mac public key must be installed with a forced command so that the Action
+cannot open a shell or forward ports:
+
+```text
+restrict,command="/Users/<user>/Server/bonfirework/actions/warehouse-deploy-ssh-gate" ssh-ed25519 AAAA...
+```
+
+The gate permits only immutable release upload plus `manifest`, `install`,
+`status`, `history` and `rollback`. GitHub uses legacy SCP only for this
+channel so the forced command can validate the exact upload operation.
+
 The deployment workflow refuses stale queued commits, serializes production
-changes and requires the active manifest. `WAREHOUSE_DEPLOY_LOCAL_VALIDATION`
-is fixed to `basic`, so GitHub never selects or runs the standard/full pytest
-lanes or `ops/run-full-verification`. The impact plan is used only to skip
-non-runtime changes and to tell the trusted server which backup and health
-checks are required. The SSH key remains the same restricted, no-PTY
-deployment identity; it does not grant a general server shell or access to
-production secrets.
+changes and requires each target's active manifest.
+`WAREHOUSE_DEPLOY_LOCAL_VALIDATION` is fixed to `basic`, so GitHub never runs
+the standard/full pytest lanes or `ops/run-full-verification`. Both target
+managers independently recompute the smart plan before installing anything.
 
 Each deploy uploads a checksummed archive, verifies every file, builds a tagged
 image and starts the inactive API slot. Nginx switches only after candidate

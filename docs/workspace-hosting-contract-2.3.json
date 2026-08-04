@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contract": "warehouse.hosting-application.v2.3",
+  "version": "2.3",
+  "status": "stable",
+  "responsibilities": {
+    "application": [
+      "Provide a safe ZIP or TAR source package",
+      "Expose one deterministic entrypoint",
+      "Listen on 0.0.0.0 and the injected PORT",
+      "Expose an unauthenticated health_path",
+      "Treat source as read-only and persist only under /workspace/data or platform services",
+      "Read secrets and any selected database URL only from injected environment",
+      "Declare lifecycle jobs and acceptance facts instead of hiding them in service startup",
+      "Support graceful SIGTERM shutdown"
+    ],
+    "platform": [
+      "Validate tenant, workspace and scopes",
+      "Recompute source SHA-256 and inspect the archive safely",
+      "Preserve immutable source versions and deployment lineage",
+      "Mount source read-only and persistent data read-write",
+      "Use separate least-privilege Runtime and migration database identities",
+      "Execute declared lifecycle jobs without routing traffic",
+      "Probe staged candidates over the private Runtime network",
+      "Compare public API facts and RLS-scoped database facts before activation",
+      "Verify process, health path and public route before ready",
+      "Retain the previous healthy deployment when activation fails",
+      "Return stage evidence and sanitized diagnostics",
+      "Use a real write probe for storage health"
+    ]
+  },
+  "runtime_environment": {
+    "required": {
+      "PORT": "HTTP port allocated by the platform",
+      "DATABASE_URL": "Present when a platform database is attached"
+    },
+    "optional": {
+      "WAREHOUSE_ROUTE_PREFIX": "External route prefix for path-aware applications",
+      "WAREHOUSE_SOURCE_VERSION_ID": "Immutable source version identifier",
+      "WAREHOUSE_DEPLOYMENT_ID": "Deployment correlation identifier"
+    },
+    "listen_host": "0.0.0.0"
+  },
+  "filesystem": {
+    "source": {
+      "mode": "read-only",
+      "immutable_per_source_version": true
+    },
+    "persistent_data": {
+      "path": "/workspace/data",
+      "mode": "read-write"
+    },
+    "python_virtual_environment": {
+      "path_template": "/workspace/data/.runtime/python/{build_digest}/venv",
+      "mode": "read-write",
+      "source_tree_venv_forbidden": true
+    },
+    "temporary_data": {
+      "durability": "not-guaranteed"
+    }
+  },
+  "source_archive": {
+    "formats": [
+      "zip",
+      "tar",
+      "tar.gz",
+      "tgz"
+    ],
+    "server_sha256_required": true,
+    "reject": [
+      "absolute paths",
+      "parent traversal",
+      "device files",
+      "escaping symbolic or hard links",
+      "encrypted members",
+      "archive bombs"
+    ]
+  },
+  "health": {
+    "recommended_path": "/healthz",
+    "authentication": false,
+    "success_status": "200-299",
+    "side_effect_free": true,
+    "ready_requires": [
+      "runtime process is running",
+      "health_path succeeds",
+      "public route reaches the target deployment"
+    ]
+  },
+  "database": {
+    "policy_modes": [
+      "platform_managed",
+      "external",
+      "workspace_managed",
+      "none"
+    ],
+    "platform_connection_env": "DATABASE_URL",
+    "runtime_identity": "non-owner without SUPERUSER, BYPASSRLS, CREATEDB or CREATEROLE",
+    "migration_identity": "owner credential injected only into explicitly declared one-shot jobs",
+    "backup_identity": "per-workspace NOLOGIN BYPASSRLS role isolated from Runtime",
+    "backup_ready_requires": [
+      "ownership-preserving logical archive",
+      "checksum verification",
+      "ephemeral database restore",
+      "per-relation FORCE RLS row-count equality"
+    ],
+    "workspace_managed_engine_restricted": false,
+    "versioned_migrations": true,
+    "activate_after_migration": true,
+    "migration_failure_blocks_activation": true,
+    "expand_contract_recommended": true
+  },
+  "occupancy": {
+    "endpoint": "/api/workspaces/v1/usage",
+    "components": [
+      "source_archive_bytes",
+      "runtime_release_bytes",
+      "data_volume_bytes",
+      "managed_data_object_bytes",
+      "postgresql_bytes"
+    ],
+    "includes_measured_at_and_total": true,
+    "runtime_cache_classified_as": "runtime_release",
+    "filesystem_symlinks_followed": false
+  },
+  "release_lifecycle": {
+    "sequence": [
+      "verify immutable source and executable manifest",
+      "run required idempotent lifecycle jobs",
+      "build an inactive candidate with read-only source",
+      "probe declared HTTP and RLS-scoped database facts",
+      "explicitly activate the accepted candidate",
+      "retain the previous healthy revision for rollback"
+    ],
+    "job_database_access": [
+      "none",
+      "runtime",
+      "migration"
+    ],
+    "service_migration_identity_forbidden": true
+  },
+  "acceptance_model": {
+    "http": "bounded private GET probes with status and JSON assertions",
+    "database": "safe relation counts through the Runtime role and declared RLS context",
+    "arbitrary_acceptance_sql": false,
+    "evidence_bound_to": [
+      "source_version_id",
+      "contract_digest",
+      "deployment_id"
+    ]
+  },
+  "security": {
+    "secret_sources": [
+      "platform secret resource",
+      "injected environment"
+    ],
+    "forbidden_secret_targets": [
+      "source archive",
+      "git history",
+      "browser assets",
+      "logs",
+      "API responses"
+    ],
+    "privileged_runtime": false
+  },
+  "manifest_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "warehouse.hosting.json",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "runtime"
+    ],
+    "properties": {
+      "schema": {
+        "enum": [
+          "warehouse.hosting-application.v2.2",
+          "warehouse.hosting-application.v2.3"
+        ]
+      },
+      "runtime": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "health_path"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "static",
+              "web",
+              "api",
+              "worker",
+              "agent",
+              "job",
+              "container",
+              "compose"
+            ]
+          },
+          "runtime": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runtime_profile": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entrypoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "build_command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "health_path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "dockerfile": {
+            "type": "string",
+            "minLength": 1
+          },
+          "compose_file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "route_service": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "persistent_path": {
+            "const": "/workspace/data"
+          },
+          "database_url_env": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,79}$"
+          },
+          "runtime_database_url_env": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,79}$"
+          },
+          "migration_database_url_env": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,79}$"
+          },
+          "database_policy": {
+            "enum": [
+              "platform_managed",
+              "external",
+              "workspace_managed",
+              "none"
+            ]
+          }
+        }
+      },
+      "deployment": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "activate_when_healthy": {
+            "type": "boolean"
+          },
+          "strategy": {
+            "enum": [
+              "automatic",
+              "staged"
+            ]
+          },
+          "retain_previous": {
+            "type": "boolean"
+          },
+          "require_acceptance_before_activation": {
+            "type": "boolean"
+          }
+        }
+      },
+      "lifecycle": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "command"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                },
+                "command": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192
+                },
+                "runtime": {
+                  "type": "string"
+                },
+                "runtime_profile": {
+                  "type": "string"
+                },
+                "entrypoint": {
+                  "type": "string"
+                },
+                "build_command": {
+                  "type": "string"
+                },
+                "database_access": {
+                  "enum": [
+                    "none",
+                    "runtime",
+                    "migration"
+                  ]
+                },
+                "database_url_env": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]{0,79}$"
+                },
+                "timeout_seconds": {
+                  "type": "integer",
+                  "minimum": 30,
+                  "maximum": 7200
+                },
+                "required_before_activation": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      },
+      "acceptance": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "required_before_activation": {
+            "type": "boolean"
+          },
+          "http": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "path"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                },
+                "path": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "expected_status": {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                "json_pointer": {
+                  "type": "string"
+                },
+                "operator": {
+                  "enum": [
+                    "status_only",
+                    "equals",
+                    "length_equals"
+                  ]
+                },
+                "expected": {}
+              }
+            }
+          },
+          "database": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              },
+              "counts": {
+                "type": "array",
+                "maxItems": 30,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "schema",
+                    "relation",
+                    "expected"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                    },
+                    "schema": {
+                      "type": "string"
+                    },
+                    "relation": {
+                      "type": "string"
+                    },
+                    "filters": {
+                      "type": "object"
+                    },
+                    "expected": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "example_manifest": {
+    "schema": "warehouse.hosting-application.v2.3",
+    "runtime": {
+      "type": "api",
+      "runtime": "python3.12",
+      "entrypoint": "app/main.py",
+      "build_command": "pip install --require-hashes -r requirements.txt",
+      "start_command": "uvicorn app.main:app --host 0.0.0.0 --port $PORT",
+      "port": 8080,
+      "health_path": "/healthz"
+    },
+    "data": {
+      "persistent_path": "/workspace/data",
+      "database_policy": "platform_managed",
+      "runtime_database_url_env": "DATABASE_URL",
+      "migration_database_url_env": "APP_MIGRATION_DATABASE_URL"
+    },
+    "lifecycle": {
+      "jobs": [
+        {
+          "name": "migrate",
+          "command": "alembic upgrade head",
+          "database_access": "migration",
+          "required_before_activation": true
+        }
+      ]
+    },
+    "acceptance": {
+      "required_before_activation": true,
+      "http": [
+        {
+          "name": "health",
+          "path": "/healthz",
+          "expected_status": 200
+        }
+      ],
+      "database": {
+        "context": {},
+        "counts": []
+      }
+    },
+    "deployment": {
+      "strategy": "staged",
+      "activate_when_healthy": false,
+      "retain_previous": true,
+      "require_acceptance_before_activation": true
+    }
+  }
+}

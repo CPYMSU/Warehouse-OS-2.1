@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -83,7 +84,9 @@ def _actor(label: str) -> ActorContext:
         role_level=10,
         topology_level=10,
         topology_title="Owner",
-        permissions=frozenset({"ai.use", "assets.read", "assets.manage"}),
+        permissions=frozenset(
+            {"ai.use", "ai.database", "assets.read", "assets.manage"}
+        ),
     )
 
 
@@ -467,5 +470,198 @@ def test_auto_runtime_sees_resource_atlas_and_executes_generic_mutation(
         assert str(mutation["run_id"]) == result.run_id
         assert mutation["origin"] == "auto_runtime"
         assert mutation["execution_identity"] == "company_ai"
+    finally:
+        app.dependency_overrides.pop(current_actor, None)
+
+
+def test_company_ai_database_runtime_inspects_queries_and_writes_real_tables() -> None:
+    actor = _actor("database-runtime")
+    outsider = _actor("database-outsider")
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        human_only_actor = replace(
+            actor,
+            permissions=actor.permissions - {"ai.database"},
+        )
+        app.dependency_overrides[current_actor] = lambda: human_only_actor
+        denied_catalog = client.get("/api/data/v2/database")
+        assert denied_catalog.status_code == 403
+        app.dependency_overrides[current_actor] = lambda: actor
+
+        asset = client.post(
+            "/api/digital-assets",
+            json={"name": "Database MK4", "asset_kind": "software"},
+        ).json()["asset"]
+        client.post(
+            f"/api/digital-assets/{asset['uuid']}/workspace",
+            json={"workspace_key": "database-mk4", "runtime_type": "static"},
+        )
+
+        catalog = client.get("/api/data/v2/database")
+        assert catalog.status_code == 200
+        assert catalog.json()["ai_decides_usage"] is True
+        relation = next(
+            item
+            for item in catalog.json()["relations"]
+            if item["table"] == "digital_asset.workspaces"
+        )
+        assert relation["can_select"] is True
+        assert relation["can_update"] is True
+        assert "id" in relation["primary_key"]
+
+        schema = client.post(
+            "/api/data/v2/database/schema",
+            json={"table": "digital_asset.workspaces"},
+        )
+        assert schema.status_code == 200
+        assert {"id", "tenant_id", "workspace_key", "region"}.issubset(
+            schema.json()["column_headers"]
+        )
+        assert any(
+            item["constraint_type"] == "primary_key"
+            for item in schema.json()["constraints"]
+        )
+        assert schema.json()["world_observation"]["verified_facts"][
+            "physical_schema_visible"
+        ] is True
+
+        legacy_schema = execute_runtime_tool_call(
+            actor,
+            "db_schema",
+            {"table": "digital_asset.workspaces"},
+        )
+        assert legacy_schema["status"] == "succeeded"
+        assert legacy_schema["data"]["legacy_command"] == "db_schema"
+        assert "workspace_key" in legacy_schema["data"]["column_headers"]
+
+        inventory = execute_runtime_tool_call(actor, "inventory_list", {})
+        categories = execute_runtime_tool_call(actor, "category_list_tenant", {})
+        ledger = execute_runtime_tool_call(
+            actor,
+            "ledger_list",
+            {"category": "safety_tool"},
+        )
+        assert inventory["status"] == "succeeded"
+        assert inventory["data"]["source"] == "warehouse.inventory_balance"
+        assert categories["status"] == "succeeded"
+        assert categories["data"]["source"] == "warehouse.item_category"
+        assert ledger["status"] == "succeeded"
+        assert ledger["data"]["source"] == "warehouse.stock_ledger"
+
+        queried = execute_runtime_tool_call(
+            actor,
+            "database_query",
+            {
+                "sql": (
+                    "SELECT workspace_key, config->>'runtime_type' AS runtime_type, region "
+                    "FROM digital_asset.workspaces "
+                    "WHERE workspace_key=:workspace_key"
+                ),
+                "parameters": {"workspace_key": "database-mk4"},
+                "limit": 20,
+            },
+            execution_context={"run_id": str(uuid4())},
+        )
+        assert queried["status"] == "succeeded"
+        assert queried["data"]["columns"] == [
+            "workspace_key",
+            "runtime_type",
+            "region",
+        ]
+        assert queried["data"]["rows"][0]["workspace_key"] == "database-mk4"
+
+        legacy_queried = execute_runtime_tool_call(
+            actor,
+            "db_query",
+            {
+                "sql": (
+                    "SELECT workspace_key FROM digital_asset.workspaces "
+                    "WHERE workspace_key='database-mk4'"
+                ),
+                "limit": 20,
+            },
+        )
+        assert legacy_queried["status"] == "succeeded"
+        assert legacy_queried["data"]["legacy_command"] == "db_query"
+        assert legacy_queried["data"]["rows"] == [
+            {"workspace_key": "database-mk4"}
+        ]
+
+        run_id = uuid4()
+        written = execute_runtime_tool_call(
+            actor,
+            "database_execute",
+            {
+                "sql": (
+                    "UPDATE digital_asset.workspaces SET region=:region "
+                    "WHERE workspace_key=:workspace_key "
+                    "RETURNING id, workspace_key, region"
+                ),
+                "parameters": {
+                    "workspace_key": "database-mk4",
+                    "region": "ai-selected-region",
+                },
+                "verification-sql": (
+                    "SELECT workspace_key, region FROM digital_asset.workspaces "
+                    "WHERE workspace_key=:workspace_key"
+                ),
+                "verification-parameters": {"workspace_key": "database-mk4"},
+                "intent": "AI 判断直接通过数据库完成区域字段更新",
+                "reasoning": "当前公司数据库身份有写权限，使用同事务读回核验",
+            },
+            execution_context={"run_id": str(run_id)},
+        )
+        assert written["status"] == "succeeded"
+        assert written["data"]["rows"][0]["region"] == "ai-selected-region"
+        assert written["data"]["verification"]["rows"] == [
+            {"workspace_key": "database-mk4", "region": "ai-selected-region"}
+        ]
+        assert written["data"]["world_observation"]["verified_facts"][
+            "transaction_committed"
+        ] is True
+
+        rejected_write_on_query = client.post(
+            "/api/data/v2/database/query",
+            json={
+                "sql": (
+                    "UPDATE digital_asset.workspaces SET region='must-not-change' "
+                    "WHERE workspace_key='database-mk4'"
+                )
+            },
+        )
+        assert rejected_write_on_query.status_code == 422
+        assert rejected_write_on_query.json()["detail"]["reason"] == (
+            "database_query_rejected"
+        )
+
+        app.dependency_overrides[current_actor] = lambda: outsider
+        isolated = client.post(
+            "/api/data/v2/database/query",
+            json={
+                "sql": (
+                    "SELECT workspace_key, region FROM digital_asset.workspaces "
+                    "WHERE workspace_key=:workspace_key"
+                ),
+                "parameters": {"workspace_key": "database-mk4"},
+            },
+        )
+        assert isolated.status_code == 200
+        assert isolated.json()["rows"] == []
+
+        with tenant_session(actor.tenant_id) as session:
+            write_audit = session.execute(
+                text(
+                    """
+                    SELECT payload
+                    FROM audit.events
+                    WHERE event_type = 'database.runtime.write.succeeded'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                )
+            ).scalar_one()
+        assert write_audit["run_id"] == str(run_id)
+        assert "UPDATE digital_asset.workspaces" in write_audit["sql"]
     finally:
         app.dependency_overrides.pop(current_actor, None)

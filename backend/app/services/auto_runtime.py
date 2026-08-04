@@ -201,22 +201,21 @@ def _resource_locators(value: object) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _localized_grounding_gap(locale: str) -> str:
+def _localized_unverified_locator_placeholder(locale: str) -> str:
     selected = normalize_locale(locale) or "zh-Hant"
     return {
-        "zh-Hant": (
-            "目前的世界觀察不足以證明所要求的結果或資源位置；"
-            "Runtime 已停止交付未經證實的內容，且沒有把推測當成完成結果。"
-        ),
-        "zh-Hans": (
-            "目前的世界观察不足以证明所要求的结果或资源位置；"
-            "Runtime 已停止交付未经证实的内容，也没有把推测当成完成结果。"
-        ),
-        "en": (
-            "The current world observations do not establish the requested result or "
-            "resource location. The Runtime stopped instead of presenting an inference "
-            "as a completed outcome."
-        ),
+        "zh-Hant": "（未驗證地址已移除）",
+        "zh-Hans": "（未验证地址已移除）",
+        "en": "(unverified address removed)",
+    }[selected]
+
+
+def _localized_input_locator_placeholder(locale: str) -> str:
+    selected = normalize_locale(locale) or "zh-Hant"
+    return {
+        "zh-Hant": "（請填入實際地址）",
+        "zh-Hans": "（请填入实际地址）",
+        "en": "(provide the actual address)",
     }[selected]
 
 
@@ -370,7 +369,7 @@ def _company_ai_actor(actor: ActorContext) -> ActorContext:
     return replace(
         actor,
         role_level=max(10, actor.role_level),
-        permissions=frozenset(BLUEPRINT_PERMISSION_KEYS),
+        permissions=frozenset({*BLUEPRINT_PERMISSION_KEYS, "ai.database"}),
     )
 
 
@@ -519,114 +518,62 @@ def _parse_or_repair_json(
     return _json_object(repaired)
 
 
-def _repair_message_grounding(
-    connection: object,
-    *,
-    goal: str,
-    message: str,
-    locale: str,
-    ledger: list[dict[str, object]],
-    allowed_locators: set[str],
-    unsupported_locators: tuple[str, ...],
-    unsupported_claims: list[str],
-    metrics: list[dict[str, object]],
-    context_mode: str,
-    activity_callback: RuntimeActivityCallback | None,
-) -> str:
-    """Reconcile a proposed answer against the evidence ledger once."""
-
-    raw = _completion(
-        connection,
-        system_prompt=(
-            "You are the final evidence reconciler for Warehouse Intelligence Runtime. "
-            "Rewrite the proposed user-facing message so every claim about current world "
-            "state, an action outcome, an existing deliverable, or a usable resource locator "
-            "is supported by the supplied evidence ledger. Human-reported input may be "
-            "repeated as a request or report but is not proof. Stable explanation and advice "
-            "may remain without world evidence. Use only an exact locator from "
-            "allowed_resource_locators; never derive, join, guess, or extend a locator. If the "
-            "requested outcome is not established, say that plainly and do not claim "
-            "completion. Preserve useful supported facts. Return JSON only with one string key "
-            "named message. "
-            + language_instruction(locale)
-        ),
-        user_prompt=json.dumps(
-            {
-                "goal": goal,
-                "proposed_message": message,
-                "evidence_ledger": ledger,
-                "allowed_resource_locators": sorted(allowed_locators)[:80],
-                "unsupported_resource_locators": list(unsupported_locators),
-                "unsupported_claims": unsupported_claims[:20],
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            default=str,
-        ),
-        metrics=metrics,
-        phase="evidence_repair",
-        context_mode=context_mode,
-        max_tokens=1_200,
-        activity_callback=activity_callback,
-    )
-    parsed = _json_object(raw) or {}
-    return _public_message(parsed.get("message"), locale=locale, fallback="")
-
-
 def _finalize_grounded_message(
-    connection: object,
     *,
-    goal: str,
     message: str,
     locale: str,
-    ledger: list[dict[str, object]],
     grounding_sources: list[object],
     public_origin: str | None,
     unsupported_claims: list[str],
     force_reconciliation: bool,
-    metrics: list[dict[str, object]],
-    context_mode: str,
-    activity_callback: RuntimeActivityCallback | None,
+    waiting_for_human_input: bool = False,
 ) -> tuple[str, dict[str, object]]:
-    """Apply exact-locator provenance after every prose transformation."""
+    """Remove invented locators without replacing a factual execution receipt.
+
+    Claim/evidence linkage is recorded by the reflection contract.  It must not
+    launch another model pass that can overwrite a successful server result.
+    Exact URL provenance remains deterministic: an unobserved locator is
+    removed from public prose, while the rest of the answer is preserved.
+    """
 
     unsupported_locators = _unsupported_resource_locators(
         message,
         grounding_sources,
         public_origin=public_origin,
     )
-    if not (unsupported_locators or unsupported_claims or force_reconciliation):
-        return message, {
-            "reconciled": False,
-            "unsupported_resource_locators": [],
-        }
-    allowed = _allowed_resource_locators(
-        grounding_sources,
-        public_origin=public_origin,
-    )
-    repaired = _repair_message_grounding(
-        connection,
-        goal=goal,
-        message=message,
-        locale=locale,
-        ledger=ledger,
-        allowed_locators=allowed,
-        unsupported_locators=unsupported_locators,
-        unsupported_claims=unsupported_claims,
-        metrics=metrics,
-        context_mode=context_mode,
-        activity_callback=activity_callback,
-    )
-    remaining = _unsupported_resource_locators(
-        repaired,
-        grounding_sources,
-        public_origin=public_origin,
-    )
-    if not repaired or remaining or not message_matches_locale(repaired, locale):
-        repaired = _localized_grounding_gap(locale)
-    return repaired, {
-        "reconciled": True,
+    audit = {
+        "reconciled": False,
         "unsupported_resource_locators": list(unsupported_locators),
+        "unsupported_claims_recorded": list(unsupported_claims),
+        "world_evidence_missing": bool(force_reconciliation),
+    }
+    if not unsupported_locators:
+        return message, {
+            **audit,
+            "deterministic_sanitized": False,
+        }
+
+    placeholder = (
+        _localized_input_locator_placeholder(locale)
+        if waiting_for_human_input
+        else _localized_unverified_locator_placeholder(locale)
+    )
+    sanitized = message
+    for locator in unsupported_locators:
+        sanitized = sanitized.replace(locator, placeholder)
+    sanitized = sanitized.strip()
+    remaining = _unsupported_resource_locators(
+        sanitized,
+        grounding_sources,
+        public_origin=public_origin,
+    )
+    return sanitized, {
+        **audit,
+        # Removing a claimed deliverable URL means that operational result is
+        # incomplete.  Questions requesting user input remain valid questions.
+        "reconciled": not waiting_for_human_input,
+        "deterministic_sanitized": True,
+        "waiting_input_sanitized": waiting_for_human_input,
         "repair_left_unsupported_resource_locators": list(remaining),
     }
 
@@ -781,13 +728,25 @@ def _evidence_ledger(
             or f"capability:{int(item.get('runtime_round') or 0)}:{index}:"
             f"{str(item.get('tool_name') or 'unknown')}"
         )
+        result_status = str(
+            result.get("status") or ("succeeded" if result.get("ok") else "")
+        ).strip().lower()
+        effect_verified = bool(
+            result.get("ok") is True
+            and result_status in {"succeeded", "completed"}
+        )
         records.append(
             {
                 "evidence_id": evidence_id,
                 "source_type": "capability_result",
-                "authority": "observed",
+                "authority": (
+                    "verified_capability_effect"
+                    if effect_verified
+                    else "observed_attempt_only"
+                ),
+                "effect_verified": effect_verified,
                 "tool_name": item.get("tool_name"),
-                "status": result.get("status") or ("succeeded" if result.get("ok") else None),
+                "status": result_status or None,
                 "payload": _compact_for_model(result),
             }
         )
@@ -861,20 +820,60 @@ def _apply_reflection_evidence_contract(
         for item in ledger
         if isinstance(item, dict) and item.get("evidence_id")
     }
+    world_evidence_ids = {
+        str(item.get("evidence_id"))
+        for item in ledger
+        if isinstance(item, dict)
+        and (
+            (
+                item.get("source_type") == "capability_result"
+                and item.get("effect_verified") is True
+            )
+            or str(item.get("evidence_id"))
+            in {
+                "context:company_authority_world",
+                "context:hosted_application_world",
+                "context:company_world_observation",
+                "context:exact_entities",
+                "context:world_observations",
+            }
+        )
+    }
+    verified_capability_effect_ids = {
+        str(item.get("evidence_id"))
+        for item in ledger
+        if isinstance(item, dict)
+        and item.get("source_type") == "capability_result"
+        and item.get("effect_verified") is True
+        and item.get("evidence_id")
+    }
+    attempt_only_evidence_ids = {
+        str(item.get("evidence_id"))
+        for item in ledger
+        if isinstance(item, dict)
+        and item.get("source_type") == "capability_result"
+        and item.get("effect_verified") is not True
+        and item.get("evidence_id")
+    }
     normalized_claims: list[dict[str, object]] = []
     unsupported_claims: list[str] = []
     for item in reflection.get("claims") or []:
         if not isinstance(item, dict):
             continue
         statement = str(item.get("statement") or item.get("claim") or "").strip()[:800]
-        evidence_refs = list(
+        requires_evidence = bool(item.get("requires_evidence"))
+        supplied_refs = list(
             dict.fromkeys(
                 str(ref)
                 for ref in item.get("evidence_refs") or []
                 if str(ref) in valid_ids
             )
         )[:12]
-        requires_evidence = bool(item.get("requires_evidence"))
+        evidence_refs = (
+            [ref for ref in supplied_refs if ref in world_evidence_ids]
+            if requires_evidence
+            else supplied_refs
+        )
         supported = not requires_evidence or bool(evidence_refs)
         normalized_claims.append(
             {
@@ -887,39 +886,109 @@ def _apply_reflection_evidence_contract(
         if statement and not supported:
             unsupported_claims.append(statement)
 
-    world_evidence_ids = {
-        str(item.get("evidence_id"))
-        for item in ledger
-        if isinstance(item, dict)
-        and (
-            item.get("source_type") == "capability_result"
-            or str(item.get("evidence_id"))
-            in {
-                "context:company_authority_world",
-                "context:hosted_application_world",
-                "context:company_world_observation",
-                "context:exact_entities",
-                "context:world_observations",
-            }
-        )
-    }
+    waiting_for_human_input = bool(reflection.get("requires_user_input"))
     operational_without_world_evidence = (
         str(interaction_mode).strip().lower() == "operational"
+        and not waiting_for_human_input
         and not world_evidence_ids
     )
-    if unsupported_claims or operational_without_world_evidence:
+    operational_attempt_without_verified_effect = bool(
+        str(interaction_mode).strip().lower() == "operational"
+        and not waiting_for_human_input
+        and attempt_only_evidence_ids
+        and not verified_capability_effect_ids
+    )
+    if (
+        unsupported_claims
+        or operational_without_world_evidence
+        or operational_attempt_without_verified_effect
+    ):
         reflection["goal_complete"] = False
-        if not reflection.get("continue_reason"):
+        if str(reflection.get("continue_reason") or "").strip().lower() in {
+            "",
+            "complete",
+            "completed",
+            "goal_complete",
+        }:
             reflection["continue_reason"] = "world_evidence_required"
     reflection["claims"] = normalized_claims
     reflection["grounding"] = {
         "contract": "warehouse.claim-evidence.v1",
         "evidence_ids": sorted(valid_ids),
         "world_evidence_ids": sorted(world_evidence_ids),
+        "verified_capability_effect_ids": sorted(verified_capability_effect_ids),
+        "attempt_only_evidence_ids": sorted(attempt_only_evidence_ids),
         "unsupported_claims": unsupported_claims,
         "operational_without_world_evidence": operational_without_world_evidence,
+        "operational_attempt_without_verified_effect": (
+            operational_attempt_without_verified_effect
+        ),
     }
     return reflection
+
+
+def _stage_autonomous_grounding_recovery(
+    reflection: dict[str, object],
+    layers: dict[str, object],
+) -> str | None:
+    """Turn an evidence gap into another Auto Runtime reasoning state.
+
+    Grounding is an observation, not a terminal policy verdict.  When the
+    reflection cannot yet link its material claims to the cumulative ledger,
+    the Runtime gets another bounded chance to reuse existing evidence or to
+    select a read capability from the atlas.  Human-input and confirmation
+    boundaries remain terminal until the human acts.
+    """
+
+    grounding = reflection.get("grounding")
+    grounding = grounding if isinstance(grounding, dict) else {}
+    has_gap = bool(
+        grounding.get("unsupported_claims")
+        or grounding.get("operational_without_world_evidence")
+        or grounding.get("operational_attempt_without_verified_effect")
+    )
+    l3 = layers.get("L3_execution_working_set")
+    l3 = l3 if isinstance(l3, dict) else {}
+    if not has_gap or bool(reflection.get("requires_user_input")):
+        l3.pop("grounding_recovery", None)
+        reflection.pop("grounding_recovery_mode", None)
+        return None
+
+    has_next_capability_request = bool(
+        reflection.get("next_domains")
+        or reflection.get("next_families")
+        or reflection.get("next_decisions")
+    )
+    mode = (
+        "execute_evidence_capabilities"
+        if has_next_capability_request
+        else "reflect_cumulative_evidence"
+    )
+    recovery = {
+        "schema": "warehouse.autonomous-grounding-recovery.v1",
+        "mode": mode,
+        "unsupported_claims": list(grounding.get("unsupported_claims") or [])[:20],
+        "world_evidence_ids": list(grounding.get("world_evidence_ids") or [])[:40],
+        "verified_capability_effect_ids": list(
+            grounding.get("verified_capability_effect_ids") or []
+        )[:40],
+        "attempt_only_evidence_ids": list(
+            grounding.get("attempt_only_evidence_ids") or []
+        )[:40],
+        "instruction": (
+            "Re-reflect against the cumulative evidence ledger. Reuse a verified result "
+            "when it already proves the claim; otherwise select the smallest read-only "
+            "capability that can observe the missing current-tenant fact."
+        ),
+    }
+    l3["grounding_recovery"] = recovery
+    reflection["goal_complete"] = False
+    reflection["continue_autonomously"] = True
+    reflection["requires_user_input"] = False
+    reflection["grounding_recovery_mode"] = mode
+    if mode == "reflect_cumulative_evidence":
+        reflection["continue_reason"] = "autonomous_grounding_recovery"
+    return mode
 
 
 def _domain_index_prompt(
@@ -934,6 +1003,7 @@ def _domain_index_prompt(
             "family",
             "description",
             "availability",
+            "execution_kind",
             "mode",
         ],
         "rows": [
@@ -943,6 +1013,7 @@ def _domain_index_prompt(
                 item.get("family"),
                 str(item.get("description") or "")[:description_chars],
                 item.get("availability"),
+                item.get("execution_kind"),
                 item.get("mode"),
             ]
             for item in domain_index
@@ -1118,6 +1189,8 @@ def _reference_value_projection(
         return normalized in {
             "id",
             "name",
+            "table",
+            "column_headers",
             "status",
             "active",
             "count",
@@ -1125,7 +1198,7 @@ def _reference_value_projection(
             "ok",
             "error",
             "reason",
-        } or normalized.endswith(("_key", "_code", "_id"))
+        } or normalized.endswith(("_key", "_code", "_id", "_name"))
 
     def visit(value: object, key: str = "") -> None:
         if isinstance(value, dict):
@@ -1217,6 +1290,28 @@ def _atomic_recovery_projection(
 
     visit(tool_results)
     return packets
+
+
+def _recovery_capability_names(
+    packets: list[dict[str, object]],
+) -> list[str]:
+    """Extract declared recovery affordances without selecting a workflow."""
+
+    known = {
+        str(item.get("tool_name"))
+        for item in ai_capability_gene_index()
+        if isinstance(item, dict) and item.get("tool_name")
+    }
+    return list(
+        dict.fromkeys(
+            str(capability.get("tool_name"))
+            for packet in packets
+            if isinstance(packet, dict)
+            for capability in packet.get("available_capabilities") or []
+            if isinstance(capability, dict)
+            and str(capability.get("tool_name") or "") in known
+        )
+    )
 
 
 def _conversation_uuid(value: str | None) -> UUID | None:
@@ -1409,6 +1504,7 @@ def _route_goal(
         for item in l0.get("capability_atlas") or []
         if isinstance(item, dict)
     ]
+    catalogue_candidates = ai_capability_candidates(goal, limit=8)
     router_world = {
         "company": l1.get("company_summary") or {},
         "interaction": l1.get("current_interaction") or {},
@@ -1421,7 +1517,14 @@ def _route_goal(
             "command_families",
         ],
         "capability_atlas": atlas,
-        "catalogue_candidates": ai_capability_candidates(goal, limit=8),
+        "catalogue_candidates": catalogue_candidates,
+        "catalogue_candidate_contracts": _parameter_contracts(
+            [
+                str(item.get("tool_name"))
+                for item in catalogue_candidates
+                if isinstance(item, dict) and item.get("tool_name")
+            ]
+        ),
         "capability_gene_count": l0.get("capability_gene_count"),
         "resource_atlas": [
             {
@@ -1471,6 +1574,15 @@ def _route_goal(
             "later turn; stage the operation now and let its confirmation card expose the "
             "concrete defaults for human review. Defaults and the capability's own "
             "confirmation/permission contract are resolved after routing. "
+            "Candidate parameter contracts list their exact required inputs. When any "
+            "required input is absent and cannot be inferred from the request or recent "
+            "referents, ask for only those missing values with requires_user_input=true. "
+            "A value resolvable from registered same-tenant state is not a missing human input: "
+            "select read evidence first. In particular, an immutable source_version_id is enough "
+            "to resolve and verify its server-stored SHA-256; never ask the human to repeat that "
+            "checksum merely to deploy the existing version. "
+            "When asking the human for an address or Origin, describe the required format "
+            "without inventing a concrete example URL. "
             "The resource_atlas is a database-backed semantic map. When the goal is an "
             "ordinary field/configuration correction and no exact business capability is "
             "needed, freely select the system:data family so the Runtime can inspect the "
@@ -1764,7 +1876,14 @@ def _plan_goal(
             "(array of strings), decisions (array of objects with tool_name, judgment, "
             "arguments, reasoning, continue_after_result), completion_assessment (object). "
             "Use judgment='execute' only when you actually want the Runtime to invoke the "
-            "selected gene now. If authorization_signal is present and you judge its "
+            "selected gene now. Capability availability is factual, not a workflow: an "
+            "awaiting_domain_adapter gene is a visible business concept, not proof of an "
+            "executable effect. You may observe that gap, autonomously inspect/query/write "
+            "the current company database, use semantic data abilities, choose another "
+            "atomic ability, complete a reversible part, or ask a human by your own "
+            "judgment. Never describe a "
+            "transitional projection as the requested business effect. If "
+            "authorization_signal is present and you judge its "
             "already-reviewed effect should run, select the matching tool and include "
             "authorization_action_id from that signal at the decision object's top level, "
             "never inside arguments. The Runtime then "
@@ -1825,6 +1944,54 @@ def _plan_goal(
     return parsed, raw
 
 
+def _deterministic_execution_receipt(
+    tool_results: list[dict[str, object]],
+    *,
+    locale: str,
+) -> str:
+    """Render a safe factual receipt when model reflection is malformed."""
+
+    rows: list[str] = []
+    for item in tool_results:
+        if not isinstance(item, dict):
+            continue
+        result = item.get("result")
+        result = result if isinstance(result, dict) else {}
+        tool_name = str(item.get("tool_name") or "unknown")[:180]
+        result_status = str(
+            result.get("status") or ("succeeded" if result.get("ok") else "unknown")
+        )[:80]
+        identifiers: list[str] = []
+        for key in (
+            "execution_id",
+            "operation_id",
+            "mutation_id",
+            "entity_id",
+            "document_key",
+        ):
+            value = result.get(key)
+            if value in (None, ""):
+                data = result.get("data")
+                value = data.get(key) if isinstance(data, dict) else None
+            if value not in (None, ""):
+                identifiers.append(f"{key}={str(value)[:180]}")
+        error = str(result.get("error") or "").strip()[:240]
+        suffix = f" · {' · '.join(identifiers)}" if identifiers else ""
+        if error:
+            suffix += f" · error={error}"
+        rows.append(f"- {tool_name}: {result_status}{suffix}")
+    if not rows:
+        return ""
+    if str(locale).lower().startswith("zh"):
+        heading = "服务器已保留以下真实执行回执；这是阶段状态，不代表目标已完成："
+    else:
+        heading = (
+            "The server retained this factual execution receipt. It reports an "
+            "intermediate state and does not assert goal completion:"
+        )
+    return heading + "\n" + "\n".join(rows)
+
+
 def _reflect(
     connection: object,
     goal: str,
@@ -1843,15 +2010,20 @@ def _reflect(
     l3 = layers.get("L3_execution_working_set")
     l3 = l3 if isinstance(l3, dict) else {}
     selected_contract_names: list[str] = []
-    for gene in l3.get("selected_capability_genes") or []:
-        if not isinstance(gene, dict):
-            continue
-        schema = gene.get("schema")
-        schema = schema if isinstance(schema, dict) else {}
-        function = schema.get("function")
-        function = function if isinstance(function, dict) else {}
-        if function.get("name"):
-            selected_contract_names.append(str(function["name"]))
+    for gene_group in (
+        l3.get("selected_capability_genes") or [],
+        l3.get("recovery_capability_genes") or [],
+    ):
+        for gene in gene_group:
+            if not isinstance(gene, dict):
+                continue
+            schema = gene.get("schema")
+            schema = schema if isinstance(schema, dict) else {}
+            function = schema.get("function")
+            function = function if isinstance(function, dict) else {}
+            if function.get("name"):
+                selected_contract_names.append(str(function["name"]))
+    selected_contract_names = list(dict.fromkeys(selected_contract_names))
     raw = _completion(
         connection,
         system_prompt=(
@@ -1884,9 +2056,12 @@ def _reflect(
             "used the wrong resource type, traverse or observe the registered relation "
             "instead of declaring the entity missing or creating a replacement. "
             "Atomic recovery packets are optional affordances after a failed capability, "
-            "not mandatory fallback steps. Decide whether to re-observe, inspect schema, "
-            "query or mutate a registered direct field. Never use a database mutation to "
-            "claim an external deployment, health check or immutable evidence succeeded. "
+            "not mandatory fallback steps. The company AI database Runtime may expose "
+            "physical schemas, columns, keys, row values, read-only SQL and SQL writes under "
+            "the current company database identity. Subjectively decide whether to inspect "
+            "or use it, use semantic resources, select another capability, or do neither. "
+            "Never use a database mutation alone to claim an external deployment, health "
+            "check or immutable evidence succeeded. "
             "For hosted workspaces, hosting_url or entry_url is the permanent, real URL the "
             "human can open immediately. public_url/application_url separately mean a verified "
             "deployed application. When hosting_url exists, answer the hosting-URL question "
@@ -1912,9 +2087,19 @@ def _reflect(
             "from evidence_ledger). Current world state, action outcomes, existing deliverables "
             "and usable resource locators require evidence. General reasoning or advice does "
             "not. Never cite human_report as verification of current external reality. Never "
+            "treat evidence whose authority is observed_attempt_only as proof that its requested "
+            "business effect occurred; it proves only the attempt and returned status. Never "
             "derive or extend a resource locator; repeat only an exact locator present in cited "
             "evidence. If evidence is absent, continue through the capability atlas rather than "
             "manufacturing a result. "
+            "When grounding_recovery is present, it is a new autonomous reasoning state, not "
+            "a refusal. First check whether the cumulative ledger already has a verified "
+            "capability effect that proves the claim and cite its exact evidence_id. If not, "
+            "choose the smallest read-only observation capability through next domains, "
+            "families or decisions. Never repeat a completed write merely to obtain evidence. "
+            "Do not classify a source checksum as missing human input when a registered "
+            "source_version_id exists; observe the asset/version and let the deployment service "
+            "verify its stored SHA-256. "
             + _language_prompt(layers)
         ),
         user_prompt=json.dumps(
@@ -1939,6 +2124,7 @@ def _reflect(
                 "atomic_recovery_from_full_results": (
                     _atomic_recovery_projection(tool_results)
                 ),
+                "grounding_recovery": l3.get("grounding_recovery"),
                 "new_tool_results": _compact_for_model(
                     tool_results,
                     max_depth=4,
@@ -1986,9 +2172,16 @@ def _reflect(
         activity_callback=activity_callback,
         max_tokens=1_300,
     ) or {
-        "message": localized_structure_failure(_layer_locale(layers)),
+        "message": (
+            _deterministic_execution_receipt(
+                list(l3.get("tool_results") or tool_results),
+                locale=_layer_locale(layers),
+            )
+            or localized_structure_failure(_layer_locale(layers))
+        ),
         "goal_complete": False,
         "evidence": [],
+        "claims": [],
         "contradictions": ["Reflection response was not structured JSON"],
         "revised_plan": plan.get("plan") or [],
         "continue_reason": "Structured reflection unavailable",
@@ -2058,6 +2251,33 @@ def _apply_declarative_tool_composition(
         for item in decisions
         for tool_name in [str(item.get("tool_name") or "")]
     ]
+
+
+def _apply_human_input_decision_boundary(
+    reflection: dict[str, object],
+    decisions: list[dict[str, object]],
+) -> dict[str, object]:
+    """Preserve a planner-selected question as the next valid Runtime state."""
+
+    waiting = any(
+        str(item.get("judgment") or "").strip().lower()
+        in {"ask_person", "requires_user_input"}
+        for item in decisions
+        if isinstance(item, dict)
+    )
+    if waiting:
+        reflection.update(
+            {
+                "goal_complete": False,
+                "continue_autonomously": False,
+                "requires_user_input": True,
+                "continue_reason": "waiting_for_human_input",
+                "next_domains": [],
+                "next_families": [],
+                "next_decisions": [],
+            }
+        )
+    return reflection
 
 
 def _normalise_continuation_decisions(
@@ -2531,6 +2751,33 @@ def run_auto_runtime(
                     interaction_mode=str(route.get("interaction_mode") or "knowledge"),
                     ledger=_evidence_ledger(normalized_goal, layers, []),
                 )
+                for recovery_round in range(1, 3):
+                    recovery_mode = _stage_autonomous_grounding_recovery(
+                        direct_review,
+                        layers,
+                    )
+                    if recovery_mode != "reflect_cumulative_evidence":
+                        break
+                    prior_direct_review = direct_review
+                    direct_review = _reflect(
+                        connection,
+                        normalized_goal,
+                        direct_plan,
+                        [],
+                        round_number=recovery_round,
+                        layers=layers,
+                        metrics=phase_metrics,
+                        prior_reflection=prior_direct_review,
+                        context_mode=normalized_context_mode,
+                        activity_callback=activity_callback,
+                    )
+                    direct_review = _apply_reflection_evidence_contract(
+                        direct_review,
+                        interaction_mode=str(
+                            route.get("interaction_mode") or "knowledge"
+                        ),
+                        ledger=_evidence_ledger(normalized_goal, layers, []),
+                    )
                 requested_domains = [
                     str(item) for item in direct_review.get("next_domains") or []
                 ]
@@ -2606,11 +2853,8 @@ def run_auto_runtime(
                     else {}
                 )
                 message, grounding_repair = _finalize_grounded_message(
-                    connection,
-                    goal=normalized_goal,
                     message=message,
                     locale=normalized_response_locale,
-                    ledger=direct_ledger,
                     grounding_sources=direct_sources,
                     public_origin=getattr(settings, "public_origin", None),
                     unsupported_claims=[
@@ -2620,9 +2864,7 @@ def run_auto_runtime(
                     force_reconciliation=bool(
                         review_grounding.get("operational_without_world_evidence")
                     ),
-                    metrics=phase_metrics,
-                    context_mode=normalized_context_mode,
-                    activity_callback=activity_callback,
+                    waiting_for_human_input=bool(route.get("requires_user_input")),
                 )
                 grounding_failed = bool(grounding_repair.get("reconciled"))
                 reflection = direct_review or {
@@ -2705,7 +2947,11 @@ def run_auto_runtime(
                 _finish_run(
                     actor,
                     run_id=runtime_run_id,
-                    status="succeeded",
+                    status=(
+                        "succeeded"
+                        if bool(reflection.get("goal_complete"))
+                        else "waiting"
+                    ),
                     snapshot=final_snapshot,
                 )
                 return RuntimeResult(
@@ -3022,7 +3268,12 @@ def run_auto_runtime(
                     l3["world_observations"] = _world_observation_projection(
                         tool_results
                     )
-                    l3["atomic_recovery"] = _atomic_recovery_projection(tool_results)
+                    recovery_packets = _atomic_recovery_projection(tool_results)
+                    recovery_names = _recovery_capability_names(recovery_packets)
+                    l3["atomic_recovery"] = recovery_packets
+                    l3["recovery_capability_genes"] = ai_capability_genes(
+                        recovery_names
+                    )
                 executed_names.append(tool_name)
             return executed_names
 
@@ -3045,6 +3296,7 @@ def run_auto_runtime(
             context_mode=normalized_context_mode,
             activity_callback=activity_callback,
         )
+        reflection = _apply_human_input_decision_boundary(reflection, decisions)
         reflection = _apply_reflection_evidence_contract(
             reflection,
             interaction_mode=str(route.get("interaction_mode") or "operational"),
@@ -3064,6 +3316,8 @@ def run_auto_runtime(
                     "next_decisions": [],
                 }
             )
+        else:
+            _stage_autonomous_grounding_recovery(reflection, layers)
         rounds.append(
             {
                 "round": 1,
@@ -3072,6 +3326,9 @@ def run_auto_runtime(
                 "goal_complete": bool(reflection.get("goal_complete")),
                 "continue_autonomously": bool(reflection.get("continue_autonomously")),
                 "continue_reason": reflection.get("continue_reason"),
+                "grounding_recovery_mode": reflection.get(
+                    "grounding_recovery_mode"
+                ),
             }
         )
 
@@ -3088,6 +3345,45 @@ def run_auto_runtime(
                 break
             if not bool(reflection.get("continue_autonomously")):
                 break
+            if reflection.get("grounding_recovery_mode") == "reflect_cumulative_evidence":
+                prior_reflection = reflection
+                reflection = _reflect(
+                    connection,
+                    normalized_goal,
+                    planned,
+                    [],
+                    round_number=round_number,
+                    layers=layers,
+                    metrics=phase_metrics,
+                    prior_reflection=prior_reflection,
+                    context_mode=normalized_context_mode,
+                    activity_callback=activity_callback,
+                )
+                reflection = _apply_reflection_evidence_contract(
+                    reflection,
+                    interaction_mode=str(
+                        route.get("interaction_mode") or "operational"
+                    ),
+                    ledger=_evidence_ledger(normalized_goal, layers, tool_results),
+                )
+                _stage_autonomous_grounding_recovery(reflection, layers)
+                rounds.append(
+                    {
+                        "round": round_number,
+                        "selected_tool_names": [],
+                        "executed_tool_names": [],
+                        "reasoning_only": True,
+                        "goal_complete": bool(reflection.get("goal_complete")),
+                        "continue_autonomously": bool(
+                            reflection.get("continue_autonomously")
+                        ),
+                        "continue_reason": reflection.get("continue_reason"),
+                        "grounding_recovery_mode": reflection.get(
+                            "grounding_recovery_mode"
+                        ),
+                    }
+                )
+                continue
             requested_domains = [
                 str(item) for item in reflection.get("next_domains") or []
             ]
@@ -3113,6 +3409,11 @@ def run_auto_runtime(
                 for item in l3.get("domain_capability_index") or []
                 if isinstance(item, dict) and item.get("tool_name")
             }
+            known_tool_names.update(
+                _recovery_capability_names(
+                    list(l3.get("atomic_recovery") or [])
+                )
+            )
             continuation = _normalise_continuation_decisions(
                 reflection,
                 known_tool_names=known_tool_names,
@@ -3206,6 +3507,8 @@ def run_auto_runtime(
                         "next_decisions": [],
                     }
                 )
+            else:
+                _stage_autonomous_grounding_recovery(reflection, layers)
             rounds.append(
                 {
                     "round": round_number,
@@ -3214,6 +3517,9 @@ def run_auto_runtime(
                     "goal_complete": bool(reflection.get("goal_complete")),
                     "continue_autonomously": bool(reflection.get("continue_autonomously")),
                     "continue_reason": reflection.get("continue_reason"),
+                    "grounding_recovery_mode": reflection.get(
+                        "grounding_recovery_mode"
+                    ),
                 }
             )
             if len(tool_results) >= _MAX_AUTONOMOUS_TOOL_CALLS:
@@ -3249,13 +3555,9 @@ def run_auto_runtime(
         )
         grounding = reflection.get("grounding")
         grounding = grounding if isinstance(grounding, dict) else {}
-        final_ledger = _evidence_ledger(normalized_goal, layers, tool_results)
         message, grounding_repair = _finalize_grounded_message(
-            connection,
-            goal=normalized_goal,
             message=message,
             locale=normalized_response_locale,
-            ledger=final_ledger,
             grounding_sources=_grounding_source_values(
                 normalized_goal,
                 layers,
@@ -3269,9 +3571,7 @@ def run_auto_runtime(
             force_reconciliation=bool(
                 grounding.get("operational_without_world_evidence")
             ),
-            metrics=phase_metrics,
-            context_mode=normalized_context_mode,
-            activity_callback=activity_callback,
+            waiting_for_human_input=bool(reflection.get("requires_user_input")),
         )
         grounding["message_repair"] = grounding_repair
         reflection["grounding"] = grounding
@@ -3321,7 +3621,11 @@ def run_auto_runtime(
         _finish_run(
             actor,
             run_id=runtime_run_id,
-            status="succeeded",
+            status=(
+                "succeeded"
+                if bool(reflection.get("goal_complete"))
+                else "waiting"
+            ),
             snapshot=final_snapshot,
         )
         for activity_id, started_at in secure_delivery_started.items():

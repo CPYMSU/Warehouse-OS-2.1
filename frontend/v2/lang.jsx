@@ -199,8 +199,10 @@ const EN = {
   "待確認（未寫庫）": "awaiting confirmation (no write yet)", "部分完成": "partially completed",
   "(完成,但沒有返回文字)": "(done, no text returned)",
   // 登入海報
-  "一句話出入庫,一句話對賬。你負責決定,秘書負責執行——每一步都有審計留痕。":
-    "Move stock with a sentence. Reconcile with a sentence. You decide — the Secretary executes, every step audited.",
+  "人類因篝火聚集，文明因連接誕生。":
+    "Humanity gathered around fire; civilization was born through connection.",
+  "在數字時代，我們重新點燃一座篝火。":
+    "In the digital age, we light a bonfire anew.",
 };
 
 const t = (s, vars) => {

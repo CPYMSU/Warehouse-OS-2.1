@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api import router as api_router
@@ -188,6 +189,66 @@ def test_router_stops_safely_when_control_json_and_repair_are_malformed(
     assert "格式异常" in str(route["message"])
 
 
+def test_database_request_router_receives_exact_candidate_input_contract(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_completion(_connection, **kwargs):
+        captured.update(kwargs)
+        return json.dumps(
+            {
+                "interaction_mode": "operational",
+                "understood_goal": "申请独立托管资料库",
+                "message": "请提供专案名称、精确 HTTPS Origin 与集合读写规则。",
+                "needs_tools": False,
+                "requires_user_input": True,
+                "selected_domains": [],
+                "selected_families": [],
+                "context_requests": [],
+                "success_criteria": ["申请参数齐全后生成确认卡"],
+                "uncertainties": ["专案名称、Origin 与集合规则尚未提供"],
+                "reasoning": "先收集用户明确要求追问的输入",
+                "memory_depth": "index",
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(auto_runtime, "_completion", fake_completion)
+    route, _raw = auto_runtime._route_goal(
+        SimpleNamespace(),
+        (
+            "我要单独申请托管资料库服务，不部署 Runtime；请追问专案名称、"
+            "精确 HTTPS Origin 和 owner/session 集合规则。"
+        ),
+        {
+            "L0_permanent_world_map": {
+                "capability_atlas": [],
+                "resource_atlas": [],
+                "expansion_protocol": {},
+            },
+            "L1_current_company_and_people": {},
+            "L2_current_goal": {"language_contract": {"locale": "zh-Hans"}},
+            "L3_execution_working_set": {},
+        },
+        [],
+        context_mode="balanced",
+        activity_callback=None,
+    )
+
+    router_world = json.loads(str(captured["user_prompt"]))["router_world"]
+    contract = next(
+        item
+        for item in router_world["catalogue_candidate_contracts"]
+        if item["tool_name"] == "digital_market_database_project_create"
+    )
+    assert contract["parameters"]["required"] == ["name"]
+    assert "allowed-origins" in contract["parameters"]["properties"]
+    assert "rules" in contract["parameters"]["properties"]
+    assert route["requires_user_input"] is True
+    assert route["needs_tools"] is False
+
+
 def test_model_selected_operational_mode_always_enters_the_evidence_loop(
     monkeypatch,
 ) -> None:
@@ -249,51 +310,61 @@ def test_resource_locator_provenance_does_not_allow_derived_child_paths() -> Non
     ) == (invented,)
 
 
-def test_grounding_repair_rewrites_an_unobserved_locator(monkeypatch) -> None:
-    phases: list[str] = []
-
-    def fake_completion(*_args, **kwargs):
-        phases.append(str(kwargs["phase"]))
-        return json.dumps(
-            {"message": "目前的證據只有工作區入口，沒有已驗證的文件下載位置。"},
-            ensure_ascii=False,
-        )
-
-    monkeypatch.setattr(auto_runtime, "_completion", fake_completion)
+def test_grounding_sanitizes_an_unobserved_locator_without_a_model_repair(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_runtime,
+        "_completion",
+        lambda *_args, **_kwargs: pytest.fail("locator sanitization must be deterministic"),
+    )
     message, grounding = auto_runtime._finalize_grounded_message(
-        SimpleNamespace(),
-        goal="給我部署指南",
         message=(
             "下載：https://bonfirework.org/assets/bonfire/pd-detection/"
             "deploy-guide.md"
         ),
         locale="zh-Hant",
-        ledger=[
-            {
-                "evidence_id": "context:hosted_application_world",
-                "source_type": "current_tenant_context",
-                "authority": "observed",
-                "payload": {
-                    "entry_url": (
-                        "https://bonfirework.org/assets/bonfire/pd-detection/"
-                    )
-                },
-            }
-        ],
         grounding_sources=[
             {"entry_url": "https://bonfirework.org/assets/bonfire/pd-detection/"}
         ],
         public_origin="https://bonfirework.org",
         unsupported_claims=[],
         force_reconciliation=False,
-        metrics=[],
-        context_mode="balanced",
-        activity_callback=None,
     )
 
-    assert phases == ["evidence_repair"]
     assert "deploy-guide.md" not in message
+    assert "未驗證地址已移除" in message
     assert grounding["reconciled"] is True
+    assert grounding["deterministic_sanitized"] is True
+
+
+def test_missing_input_question_keeps_the_question_without_an_invented_example_url(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_runtime,
+        "_completion",
+        lambda *_args, **_kwargs: pytest.fail("waiting-input sanitization must be deterministic"),
+    )
+
+    message, grounding = auto_runtime._finalize_grounded_message(
+        message=(
+            "请提供专案名称、精确 HTTPS Origin（例如 "
+            "https://owner.github.io）以及需要 owner 读写的集合。"
+        ),
+        locale="zh-Hans",
+        grounding_sources=[],
+        public_origin="https://bonfirework.org",
+        unsupported_claims=[],
+        force_reconciliation=False,
+        waiting_for_human_input=True,
+    )
+
+    assert "请提供专案名称" in message
+    assert "owner.github.io" not in message
+    assert "请填入实际地址" in message
+    assert grounding["reconciled"] is False
+    assert grounding["waiting_input_sanitized"] is True
 
 
 def test_operational_completion_requires_observed_world_evidence() -> None:
@@ -323,6 +394,52 @@ def test_operational_completion_requires_observed_world_evidence() -> None:
     assert reflection["grounding"]["operational_without_world_evidence"] is True
 
 
+def test_operational_question_does_not_require_world_evidence() -> None:
+    reflection = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "message": "请提供专案名称与精确 HTTPS Origin。",
+            "goal_complete": False,
+            "requires_user_input": True,
+            "claims": [],
+        },
+        interaction_mode="operational",
+        ledger=[
+            {
+                "evidence_id": "input:goal",
+                "source_type": "human_report",
+                "authority": "reported_not_verified",
+            }
+        ],
+    )
+
+    assert reflection["grounding"]["operational_without_world_evidence"] is False
+
+
+def test_planner_question_is_a_deterministic_human_input_boundary() -> None:
+    reflection = auto_runtime._apply_human_input_decision_boundary(
+        {
+            "message": "请提供缺少的申请参数。",
+            "goal_complete": True,
+            "continue_autonomously": True,
+            "requires_user_input": False,
+            "next_domains": ["dam"],
+        },
+        [
+            {
+                "tool_name": "digital_market_database_project_create",
+                "judgment": "ask_person",
+                "arguments": {},
+            }
+        ],
+    )
+
+    assert reflection["goal_complete"] is False
+    assert reflection["continue_autonomously"] is False
+    assert reflection["requires_user_input"] is True
+    assert reflection["continue_reason"] == "waiting_for_human_input"
+    assert reflection["next_domains"] == []
+
+
 def test_material_claim_must_reference_an_existing_evidence_record() -> None:
     reflection = auto_runtime._apply_reflection_evidence_contract(
         {
@@ -349,6 +466,124 @@ def test_material_claim_must_reference_an_existing_evidence_record() -> None:
     assert reflection["goal_complete"] is False
     assert reflection["claims"][0]["evidence_refs"] == []
     assert reflection["claims"][0]["supported"] is False
+
+
+def test_human_report_cannot_be_used_as_material_world_evidence() -> None:
+    reflection = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "message": "资产已建立。",
+            "goal_complete": True,
+            "continue_reason": "complete",
+            "claims": [
+                {
+                    "statement": "资产已建立",
+                    "requires_evidence": True,
+                    "evidence_refs": ["input:goal"],
+                }
+            ],
+        },
+        interaction_mode="operational",
+        ledger=[
+            {
+                "evidence_id": "input:goal",
+                "source_type": "human_report",
+                "authority": "reported_not_verified",
+            }
+        ],
+    )
+
+    assert reflection["goal_complete"] is False
+    assert reflection["continue_reason"] == "world_evidence_required"
+    assert reflection["claims"][0]["evidence_refs"] == []
+    assert reflection["claims"][0]["supported"] is False
+
+
+def test_single_successful_receipt_stages_autonomous_grounding_recovery() -> None:
+    layers = {
+        "L1_current_company_and_people": {},
+        "L3_execution_working_set": {},
+    }
+    ledger = auto_runtime._evidence_ledger(
+        "新开一个 MK53 Voyager 数字资产",
+        layers,
+        [
+            {
+                "evidence_id": "tool:1:1:digital_market_provision",
+                "runtime_round": 1,
+                "tool_name": "digital_market_provision",
+                "result": {
+                    "ok": True,
+                    "signal": "runtime_execution_completed",
+                    "action": {
+                        "status": "completed",
+                        "result": {
+                            "asset_no": "DMA-20260804-0AD4019D",
+                            "hosting_url": (
+                                "https://bonfirework.org/assets/bonfire/mk53-voyager/"
+                            ),
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    reflection = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "message": "MK53 Voyager 已建立。",
+            "goal_complete": True,
+            "continue_reason": "complete",
+            "claims": [
+                {
+                    "statement": "MK53 Voyager 已建立",
+                    "requires_evidence": True,
+                    "evidence_refs": [],
+                }
+            ],
+        },
+        interaction_mode="operational",
+        ledger=ledger,
+    )
+
+    claim = reflection["claims"][0]
+    assert reflection["goal_complete"] is False
+    assert claim["supported"] is False
+    assert claim["evidence_refs"] == []
+
+    mode = auto_runtime._stage_autonomous_grounding_recovery(reflection, layers)
+
+    assert mode == "reflect_cumulative_evidence"
+    assert reflection["continue_autonomously"] is True
+    assert reflection["requires_user_input"] is False
+    assert reflection["continue_reason"] == "autonomous_grounding_recovery"
+    recovery = layers["L3_execution_working_set"]["grounding_recovery"]
+    assert recovery["schema"] == "warehouse.autonomous-grounding-recovery.v1"
+    assert recovery["verified_capability_effect_ids"] == [
+        "tool:1:1:digital_market_provision"
+    ]
+
+    recovered = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "message": "MK53 Voyager 已建立。",
+            "goal_complete": True,
+            "continue_reason": "complete",
+            "continue_autonomously": False,
+            "requires_user_input": False,
+            "claims": [
+                {
+                    "statement": "MK53 Voyager 已建立",
+                    "requires_evidence": True,
+                    "evidence_refs": ["tool:1:1:digital_market_provision"],
+                }
+            ],
+        },
+        interaction_mode="operational",
+        ledger=ledger,
+    )
+
+    assert recovered["goal_complete"] is True
+    assert recovered["claims"][0]["supported"] is True
+    assert auto_runtime._stage_autonomous_grounding_recovery(recovered, layers) is None
+    assert "grounding_recovery" not in layers["L3_execution_working_set"]
 
 
 def test_public_message_firewall_blocks_control_envelopes_and_redacts_keys() -> None:
@@ -455,6 +690,142 @@ def test_runtime_preserves_atomic_recovery_as_optional_ai_affordance() -> None:
     assert projected == [recovery]
     assert projected[0]["decision_owner"] == "auto_runtime"
     assert projected[0]["workflow_prescribed"] is False
+    assert auto_runtime._recovery_capability_names(projected) == [
+        "generic_data_observe"
+    ]
+
+
+def test_database_structure_survives_bounded_model_projection() -> None:
+    projected = auto_runtime._reference_value_projection(
+        [
+            {
+                "tool_name": "database_schema",
+                "result": {
+                    "data": {
+                        "table": "digital_asset.workspaces",
+                        "column_headers": [
+                            "id",
+                            "tenant_id",
+                            "workspace_key",
+                            "config",
+                            "region",
+                            "revision",
+                        ],
+                        "columns": [
+                            {"column_name": "id"},
+                            {"column_name": "tenant_id"},
+                            {"column_name": "workspace_key"},
+                        ],
+                    }
+                },
+            }
+        ]
+    )
+
+    assert projected["table"] == ["digital_asset.workspaces"]
+    assert projected["column_headers"] == [
+        "id",
+        "tenant_id",
+        "workspace_key",
+        "config",
+        "region",
+        "revision",
+    ]
+    assert projected["column_name"] == ["id", "tenant_id", "workspace_key"]
+
+
+def test_runtime_ignores_unknown_recovery_capabilities() -> None:
+    assert auto_runtime._recovery_capability_names(
+        [
+            {
+                "schema": "warehouse.atomic-recovery.v1",
+                "available_capabilities": [
+                    {"tool_name": "invented_raw_sql_escape"},
+                    {"tool_name": "generic_data_resolve"},
+                    {"tool_name": "generic_data_resolve"},
+                ],
+            }
+        ]
+    ) == ["generic_data_resolve"]
+
+
+def test_missing_adapter_attempt_cannot_prove_operational_completion() -> None:
+    layers = {
+        "L1_current_company_and_people": {},
+        "L3_execution_working_set": {},
+    }
+    tool_results = [
+        {
+            "evidence_id": "tool:1:1:digital_market_assess",
+            "runtime_round": 1,
+            "tool_name": "digital_market_assess",
+            "result": {
+                "ok": False,
+                "status": "awaiting_domain_adapter",
+                "data": {
+                    "execution_kind": "capability_gap",
+                    "transitional_projection_authoritative": False,
+                },
+            },
+        }
+    ]
+
+    ledger = auto_runtime._evidence_ledger("评估 mk4", layers, tool_results)
+    capability_evidence = ledger[-1]
+    assert capability_evidence["authority"] == "observed_attempt_only"
+    assert capability_evidence["effect_verified"] is False
+
+    reflected = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "goal_complete": True,
+            "claims": [
+                {
+                    "statement": "评估已经完成",
+                    "requires_evidence": True,
+                    "evidence_refs": [capability_evidence["evidence_id"]],
+                }
+            ],
+        },
+        interaction_mode="operational",
+        ledger=ledger,
+    )
+
+    assert reflected["goal_complete"] is False
+    assert reflected["grounding"][
+        "operational_attempt_without_verified_effect"
+    ] is True
+    assert reflected["grounding"]["verified_capability_effect_ids"] == []
+
+
+def test_malformed_reflection_keeps_a_deterministic_execution_receipt() -> None:
+    receipt = auto_runtime._deterministic_execution_receipt(
+        [
+            {
+                "tool_name": "generic_data_mutate",
+                "result": {
+                    "ok": True,
+                    "status": "succeeded",
+                    "execution_id": "exec-123",
+                    "data": {"mutation_id": "mutation-456", "secret": "hidden"},
+                },
+            },
+            {
+                "tool_name": "digital_market_assess",
+                "result": {
+                    "ok": False,
+                    "status": "awaiting_domain_adapter",
+                    "error": "no truthful adapter",
+                },
+            },
+        ],
+        locale="zh-Hans",
+    )
+
+    assert "不代表目标已完成" in receipt
+    assert "generic_data_mutate: succeeded" in receipt
+    assert "execution_id=exec-123" in receipt
+    assert "digital_market_assess: awaiting_domain_adapter" in receipt
+    assert "hidden" not in receipt
 
 
 def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
@@ -600,13 +971,27 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
         "execute_authorized_confirmation_action",
         fake_consume,
     )
-    monkeypatch.setattr(
-        auto_runtime,
-        "_reflect",
-        lambda *_a, **_k: {
+    reflection_rounds: list[int] = []
+
+    def fake_reflect(*_args, **kwargs):
+        round_number = int(kwargs["round_number"])
+        reflection_rounds.append(round_number)
+        evidence_refs = (
+            []
+            if len(reflection_rounds) == 1
+            else ["tool:1:1:digital_market_runtime_upgrade"]
+        )
+        return {
             "message": "已由 AI Runtime 完成並核對。",
             "goal_complete": True,
             "evidence": ["authorization consumed after AI decision"],
+            "claims": [
+                {
+                    "statement": "runtime 升級已完成",
+                    "requires_evidence": True,
+                    "evidence_refs": evidence_refs,
+                }
+            ],
             "contradictions": [],
             "revised_plan": [],
             "continue_reason": "goal complete",
@@ -616,8 +1001,9 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
             "next_families": [],
             "next_decisions": [],
             "memory_candidate": None,
-        },
-    )
+        }
+
+    monkeypatch.setattr(auto_runtime, "_reflect", fake_reflect)
 
     result = auto_runtime.run_auto_runtime(
         actor,
@@ -634,6 +1020,9 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
     assert consumed["authorization_keychain_id"] == signal["authorization_keychain_id"]
     assert result.tool_results[0]["result"]["action"]["status"] == "completed"
     assert result.confirmation_actions == ()
+    assert reflection_rounds == [1, 2]
+    assert result.reflection["goal_complete"] is True
+    assert result.reflection["reasoning_rounds"][1]["reasoning_only"] is True
     delivery_activities = [
         item
         for item in activities
@@ -711,8 +1100,8 @@ def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> N
     atlas = ai_capability_atlas()
     genes = ai_capability_gene_index()
 
-    assert len(genes) == 502
-    assert sum(int(domain["gene_count"]) for domain in atlas) == 502
+    assert len(genes) == 511
+    assert sum(int(domain["gene_count"]) for domain in atlas) == 511
     assert {gene["scope"] for gene in genes} == {"tenant", "platform"}
     assert all("permission_any" in gene and "availability" in gene for gene in genes)
     observe_gene = next(
@@ -755,6 +1144,8 @@ def test_router_discovery_finds_the_research_key_capability() -> None:
         ),
         "writes": True,
         "confirmation_required": False,
+        "availability": "active",
+        "execution_kind": "native_adapter",
     }
 
 
