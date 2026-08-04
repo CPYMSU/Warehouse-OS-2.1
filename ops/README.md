@@ -10,6 +10,20 @@ The deployment and database channels are deliberately separate:
 The deploy key cannot forward ports, start a PTY, read production secrets or
 run arbitrary root commands.
 
+## Mac portable storage
+
+Preflight a dedicated mirrored data volume before moving either PostgreSQL
+cluster:
+
+```bash
+ops/storage/macos-storage check
+ops/storage/macos-storage plan
+```
+
+The guard refuses the internal system disk, non-`/Volumes` paths, unknown RAID
+protection, and undersized targets. See
+`docs/macos-portable-storage.zh-TW.md` for the maintenance-window procedure.
+
 ## Commands
 
 ```bash
@@ -21,6 +35,26 @@ ops/deploy status
 ops/deploy history
 ops/deploy rollback
 ```
+
+The dual-node PostgreSQL control plane is intentionally separate from release
+deployment:
+
+```bash
+ops/cluster/configure-control-publication
+ops/cluster/configure-hosted-publications
+ops/cluster/reconcile-hosted-databases-macos
+ops/cluster/initialize-hosted-subscriber-macos
+ops/cluster/sync-sequences-macos all
+ops/cluster/set-macos-write-policy standby
+ops/cluster/verify-replication-macos
+ops/cluster/verify-nodes.py --inventory ops/cluster/nodes.json
+```
+
+The reconciler mirrors newly provisioned hosted database topology and schema,
+while each database receives its own logical subscription. It refuses local-
+only databases and schema drift, and never rebuilds a subscribed database.
+Logical replication does not copy DDL or sequence state; migrations remain an
+explicit release concern and sequence levels are synchronized at cutover.
 
 The root-owned release manager also exposes one host-specific, idempotent data
 disk command through the restricted deployment channel:
@@ -59,8 +93,13 @@ locally before a Draft PR is created:
 - `.github/workflows/production-deploy-target.yml` is the shared target job. It
   compares the clean checkout with each target's own active manifest, packages
   an immutable release only when required and invokes `ops/deploy smart`.
-- The Mac target joins Tailscale as an ephemeral tagged node. It does not use a
-  self-hosted runner, which would be inappropriate for this public repository.
+- Every production job uses the dedicated Mac mini runner labels
+  `self-hosted`, `macOS`, `ARM64` and `warehouse-production`. GitHub remains the
+  scheduler and audit UI; all checkout, planning, packaging and deployment
+  compute runs on the Mac mini.
+- Pull-request workflows remain on GitHub-hosted runners and must never request
+  the `warehouse-production` label. The production runner accepts only the
+  `main` push/dispatch workflow and its Environments are restricted to `main`.
 
 Both the `mac-production` and `production` GitHub Environments define the same
 target contract:
@@ -83,32 +122,32 @@ Secrets:
 The existing `production` environment remains the Vultr standby and keeps
 `WAREHOUSE_DEPLOY_MANAGER_SUDO=1`,
 `WAREHOUSE_DEPLOY_PREPARE_INCOMING=1` and
-`WAREHOUSE_DEPLOY_SCP_LEGACY=0`. The `mac-production` environment uses:
+`WAREHOUSE_DEPLOY_SCP_LEGACY=0`. That job runs on the Mac mini but still uses
+the restricted Vultr SSH identity. The `mac-production` environment uses:
 
 ```text
-WAREHOUSE_DEPLOY_HOST=<Mac mini Tailscale IPv4 or MagicDNS name>
-WAREHOUSE_DEPLOY_USER=<restricted Mac deployment user>
 WAREHOUSE_REMOTE_DEPLOY_MANAGER=/Users/<user>/Server/bonfirework/bin/warehouse-deploy
 WAREHOUSE_DEPLOY_INCOMING=/Users/<user>/Server/bonfirework/incoming
 WAREHOUSE_DEPLOY_MANAGER_SUDO=0
 WAREHOUSE_DEPLOY_PREPARE_INCOMING=0
-WAREHOUSE_DEPLOY_SCP_LEGACY=1
+WAREHOUSE_DEPLOY_SCP_LEGACY=0
 ```
 
-`mac-production` additionally requires `TAILSCALE_AUTHKEY`, created as a
-reusable, ephemeral, pre-approved key owned by a deployment-only tag. The
-tailnet policy should allow that tag to reach only the Mac mini on TCP 22.
+The Mac job sets `WAREHOUSE_DEPLOY_TRANSPORT=local`; it invokes the local
+manager and copies the immutable archive into the local incoming directory.
+It does not require Tailscale, a Mac SSH key or Mac host keys. The Vultr job
+sets `WAREHOUSE_DEPLOY_TRANSPORT=ssh` and receives its identity and isolated
+known-hosts file from the `production` Environment.
 
-The Mac public key must be installed with a forced command so that the Action
-cannot open a shell or forward ports:
+The existing Mac forced-command key remains available for audited operator
+access, but GitHub Actions no longer depends on it:
 
 ```text
 restrict,command="/Users/<user>/Server/bonfirework/actions/warehouse-deploy-ssh-gate" ssh-ed25519 AAAA...
 ```
 
 The gate permits only immutable release upload plus `manifest`, `install`,
-`status`, `history` and `rollback`. GitHub uses legacy SCP only for this
-channel so the forced command can validate the exact upload operation.
+`status`, `history` and `rollback`.
 
 The deployment workflow refuses stale queued commits, serializes production
 changes and requires each target's active manifest.

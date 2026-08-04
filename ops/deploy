@@ -5,20 +5,24 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-smart}"
 LOCAL_VALIDATION="${WAREHOUSE_DEPLOY_LOCAL_VALIDATION:-adaptive}"
 TARGET="${WAREHOUSE_DEPLOY_TARGET:-vultr-production}"
+TRANSPORT="${WAREHOUSE_DEPLOY_TRANSPORT:-ssh}"
 HOST="${WAREHOUSE_DEPLOY_HOST:-207.148.120.30}"
 USER="${WAREHOUSE_DEPLOY_USER:-warehouse-deploy}"
 IDENTITY="${WAREHOUSE_DEPLOY_IDENTITY:-${HOME}/.ssh/warehouse_os_deploy_ed25519}"
+KNOWN_HOSTS="${WAREHOUSE_DEPLOY_KNOWN_HOSTS:-${HOME}/.ssh/known_hosts}"
 REMOTE_MANAGER="${WAREHOUSE_REMOTE_DEPLOY_MANAGER:-/usr/local/sbin/warehouse-deploy}"
 REMOTE_INCOMING="${WAREHOUSE_DEPLOY_INCOMING:-/var/lib/warehouse-deploy/incoming}"
 MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:-1}"
 PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:-1}"
 SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:-0}"
+ALEMBIC="${WAREHOUSE_DEPLOY_ALEMBIC:-${ROOT}/backend/.venv/bin/alembic}"
 
 ssh_options=(
   -i "${IDENTITY}"
   -o BatchMode=yes
   -o IdentitiesOnly=yes
   -o StrictHostKeyChecking=yes
+  -o UserKnownHostsFile="${KNOWN_HOSTS}"
   -o ConnectTimeout=15
   -o ServerAliveInterval=20
   -o ServerAliveCountMax=3
@@ -57,12 +61,15 @@ Environment:
   WAREHOUSE_DEPLOY_HOST
   WAREHOUSE_DEPLOY_USER
   WAREHOUSE_DEPLOY_IDENTITY
+  WAREHOUSE_DEPLOY_KNOWN_HOSTS
   WAREHOUSE_DEPLOY_TARGET
+  WAREHOUSE_DEPLOY_TRANSPORT         # ssh (default) or local
   WAREHOUSE_DEPLOY_INCOMING
   WAREHOUSE_DEPLOY_MANAGER_SUDO      # 1 for sudo -n, 0 for an unprivileged manager
   WAREHOUSE_DEPLOY_PREPARE_INCOMING  # 1 to create the incoming directory, 0 if pre-provisioned
   WAREHOUSE_DEPLOY_SCP_LEGACY        # 1 for scp -O when a forced-command gate is used
   WAREHOUSE_DEPLOY_LOCAL_VALIDATION  # adaptive (local default) or basic (GitHub)
+  WAREHOUSE_DEPLOY_ALEMBIC           # absolute Alembic executable used for release evidence
 EOF
 }
 
@@ -76,6 +83,14 @@ remote() {
 }
 
 manager_remote() {
+  if [[ "${TRANSPORT}" == local ]]; then
+    if [[ "${MANAGER_SUDO}" == 1 ]]; then
+      sudo -n "${REMOTE_MANAGER}" "$@"
+    else
+      "${REMOTE_MANAGER}" "$@"
+    fi
+    return
+  fi
   local command argument quoted
   printf -v command '%q' "${REMOTE_MANAGER}"
   for argument in "$@"; do
@@ -92,16 +107,27 @@ require_file() {
   [[ -f "$1" ]] || fail "required file not found: $1"
 }
 
+require_deploy_access() {
+  if [[ "${TRANSPORT}" == ssh ]]; then
+    require_file "${IDENTITY}"
+    require_file "${KNOWN_HOSTS}"
+  fi
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
 [[ "${TARGET}" =~ ^[A-Za-z0-9._-]{1,40}$ ]] \
   || fail "WAREHOUSE_DEPLOY_TARGET is invalid"
-[[ -n "${HOST}" && "${HOST}" != *[[:space:]]* ]] \
-  || fail "WAREHOUSE_DEPLOY_HOST is invalid"
-[[ "${USER}" =~ ^[A-Za-z_][A-Za-z0-9._-]{0,63}$ ]] \
-  || fail "WAREHOUSE_DEPLOY_USER is invalid"
+[[ "${TRANSPORT}" =~ ^(ssh|local)$ ]] \
+  || fail "WAREHOUSE_DEPLOY_TRANSPORT must be ssh or local"
+if [[ "${TRANSPORT}" == ssh ]]; then
+  [[ -n "${HOST}" && "${HOST}" != *[[:space:]]* ]] \
+    || fail "WAREHOUSE_DEPLOY_HOST is invalid"
+  [[ "${USER}" =~ ^[A-Za-z_][A-Za-z0-9._-]{0,63}$ ]] \
+    || fail "WAREHOUSE_DEPLOY_USER is invalid"
+fi
 [[ "${REMOTE_MANAGER}" == /* && "${REMOTE_MANAGER}" != *[[:space:]]* ]] \
   || fail "WAREHOUSE_REMOTE_DEPLOY_MANAGER must be an absolute path without whitespace"
 [[ "${REMOTE_INCOMING}" == /* && "${REMOTE_INCOMING}" != *[[:space:]]* \
@@ -120,12 +146,12 @@ case "${MODE}" in
     exit 0
     ;;
   status|runtime-status|api-logs|history|rollback)
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote "${MODE}"
     exit 0
     ;;
   plan)
-    require_file "${IDENTITY}"
+    require_deploy_access
     require_command python3
     plan_dir="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-deploy-plan.XXXXXX")"
     trap 'rm -rf "${plan_dir}"' EXIT
@@ -139,41 +165,41 @@ case "${MODE}" in
     exit 0
     ;;
   storage-activate)
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote activate-hosted-storage
     exit 0
     ;;
   hosted-db-activate)
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote activate-hosted-database
     exit 0
     ;;
   hosted-db-migrate)
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote migrate-hosted-databases
     exit 0
     ;;
   backup-now)
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote backup-now
     exit 0
     ;;
   workspace-db-inspect|workspace-db-capabilities|workspace-db-backup)
     [[ "$#" -eq 2 ]] || fail "${MODE} requires ASSET_NO"
-    require_file "${IDENTITY}"
+    require_deploy_access
     operation="${MODE#workspace-db-}"
     manager_remote workspace-database "${operation}" "$2"
     exit 0
     ;;
   workspace-db-migrate-source)
     [[ "$#" -eq 4 ]] || fail "workspace-db-migrate-source requires ASSET_NO SOURCE_PATH VERSION"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-database-migrate-source "$2" "$3" "$4"
     exit 0
     ;;
   workspace-deploy-latest)
     [[ "$#" -eq 2 ]] || fail "workspace-deploy-latest requires ASSET_NO"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-deploy-latest "$2"
     exit 0
     ;;
@@ -182,13 +208,13 @@ case "${MODE}" in
       || fail "workspace-accept requires ASSET_NO DEPLOYMENT_ID EXPECTED_MODULES EXPECTED_RESOURCES"
     [[ "$4" =~ ^[0-9]{1,4}$ && "$5" =~ ^[0-9]{1,6}$ ]] \
       || fail "workspace-accept counts must be non-negative integers"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-accept "$2" "$3" "$4" "$5"
     exit 0
     ;;
   workspace-activate)
     [[ "$#" -eq 3 ]] || fail "workspace-activate requires ASSET_NO DEPLOYMENT_ID"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-activate "$2" "$3"
     exit 0
     ;;
@@ -196,13 +222,13 @@ case "${MODE}" in
     [[ "$#" -eq 4 ]] || fail "workspace-environment requires ASSET_NO NAME VALUE"
     [[ "$3" =~ ^[A-Z][A-Z0-9_]{0,79}$ ]] \
       || fail "workspace-environment NAME is invalid"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-environment "$2" "$3" "$4"
     exit 0
     ;;
   workspace-stage-python)
     [[ "$#" -eq 3 ]] || fail "workspace-stage-python requires ASSET_NO SOURCE_VERSION_ID"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-stage-python "$2" "$3"
     exit 0
     ;;
@@ -211,13 +237,13 @@ case "${MODE}" in
       || fail "workspace-job requires ASSET_NO SOURCE_VERSION_ID JOB_KIND"
     [[ "$4" =~ ^(alembic-upgrade|catalog-import)$ ]] \
       || fail "workspace-job JOB_KIND must be alembic-upgrade or catalog-import"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-job "$2" "$3" "$4"
     exit 0
     ;;
   workspace-source-read)
     [[ "$#" -eq 3 ]] || fail "workspace-source-read requires ASSET_NO SOURCE_PATH"
-    require_file "${IDENTITY}"
+    require_deploy_access
     manager_remote workspace-source-read "$2" "$3"
     exit 0
     ;;
@@ -229,11 +255,13 @@ case "${MODE}" in
     ;;
 esac
 
-require_file "${IDENTITY}"
+require_deploy_access
 require_command node
 require_command rsync
-require_command ssh
-require_command scp
+if [[ "${TRANSPORT}" == ssh ]]; then
+  require_command ssh
+  require_command scp
+fi
 require_command shasum
 require_command python3
 
@@ -387,6 +415,10 @@ mkdir -p "${stage_dir}/.warehouse-release"
     while IFS= read -r file; do shasum -a 256 "${file}"; done
 ) > "${stage_dir}/.warehouse-release/files.sha256"
 
+require_file "${ALEMBIC}"
+alembic_head="$(cd backend && "${ALEMBIC}" heads | awk 'NR==1 {print $1}')"
+[[ -n "${alembic_head}" ]] || fail "Alembic did not report a migration head"
+
 cat > "${stage_dir}/.warehouse-release/manifest.env" <<EOF
 release_id=${release_id}
 mode=${MODE}
@@ -399,7 +431,7 @@ plan_source=${PLAN_SOURCE}
 git_sha=${git_sha}
 dirty=${dirty}
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-alembic_head=$(cd backend && .venv/bin/alembic heads | awk 'NR==1 {print $1}')
+alembic_head=${alembic_head}
 frontend_bundle_sha256=$(shasum -a 256 frontend/v2/dist/app.bundle.js | awk '{print $1}')
 EOF
 
@@ -408,16 +440,24 @@ package_hash="$(shasum -a 256 "${package}" | awk '{print $1}')"
 printf '%s  %s\n' "${package_hash}" "$(basename "${package}")" > "${checksum_file}"
 
 printf '==> upload immutable release %s\n' "${release_id}"
-if [[ "${PREPARE_INCOMING}" == 1 ]]; then
-  printf -v remote_incoming_quoted '%q' "${REMOTE_INCOMING}"
-  remote "mkdir -p ${remote_incoming_quoted}"
+if [[ "${TRANSPORT}" == local ]]; then
+  if [[ "${PREPARE_INCOMING}" == 1 ]]; then
+    mkdir -p "${REMOTE_INCOMING}"
+  fi
+  install -m 0600 "${package}" "${REMOTE_INCOMING}/$(basename "${package}")"
+  install -m 0600 "${checksum_file}" "${REMOTE_INCOMING}/$(basename "${checksum_file}")"
+else
+  if [[ "${PREPARE_INCOMING}" == 1 ]]; then
+    printf -v remote_incoming_quoted '%q' "${REMOTE_INCOMING}"
+    remote "mkdir -p ${remote_incoming_quoted}"
+  fi
+  scp_options=("${ssh_options[@]}")
+  if [[ "${SCP_LEGACY}" == 1 ]]; then
+    scp_options=(-O "${scp_options[@]}")
+  fi
+  scp "${scp_options[@]}" "${package}" "${checksum_file}" \
+    "${USER}@${HOST}:${REMOTE_INCOMING}/"
 fi
-scp_options=("${ssh_options[@]}")
-if [[ "${SCP_LEGACY}" == 1 ]]; then
-  scp_options=(-O "${scp_options[@]}")
-fi
-scp "${scp_options[@]}" "${package}" "${checksum_file}" \
-  "${USER}@${HOST}:${REMOTE_INCOMING}/"
 
 printf '==> server install and verification\n'
 manager_remote install "${release_id}" "${INSTALL_MODE}"

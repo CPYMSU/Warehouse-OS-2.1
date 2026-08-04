@@ -27,7 +27,7 @@ concurrency:
 jobs:
   freshness:
     name: Refuse a stale queued revision
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 3
     outputs:
       current: ${{ steps.revision.outputs.current }}
@@ -59,7 +59,8 @@ jobs:
     with:
       environment: mac-production
       target: mac-primary
-      use_tailscale: true
+      runs_on: '["self-hosted","macOS","ARM64","warehouse-production"]'
+      transport: local
       verify_public: true
     secrets: inherit
 
@@ -73,7 +74,8 @@ jobs:
     with:
       environment: production
       target: vultr-standby
-      use_tailscale: false
+      runs_on: '["self-hosted","macOS","ARM64","warehouse-production"]'
+      transport: ssh
       verify_public: false
     secrets: inherit
 
@@ -81,6 +83,6 @@ jobs:
     name: Record a stale no-op
     needs: freshness
     if: needs.freshness.outputs.current == 'false'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     steps:
       - run: echo "No deployment started because this queued revision is stale."

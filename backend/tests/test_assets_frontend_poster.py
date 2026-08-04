@@ -8,6 +8,7 @@ INDEX = ROOT / "frontend" / "v2" / "index.html"
 CORE = ROOT / "frontend" / "v2" / "core.jsx"
 APP = ROOT / "frontend" / "v2" / "app.jsx"
 LANG = ROOT / "frontend" / "v2" / "lang.jsx"
+LOGS = ROOT / "frontend" / "v2" / "pages" / "pages-logs.jsx"
 
 
 def test_assets_page_loads_all_existing_data_contracts():
@@ -72,7 +73,18 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     index = INDEX.read_text(encoding="utf-8")
     assert 'pages/pages-assets.css?v=20260803-assets-operation-topology2' in index
     assert 'pages/pages-assets.jsx?v=20260803-assets-operation-topology2' in index
-    assert 'dist/app.bundle.js?v=20260804-secretary-150-bonfire1' in index
+    assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
+    assert 'dist/app.bundle.js?v=20260804-audit-conversation1' in index
+
+
+def test_audit_conversation_drawer_uses_native_detail_contract_and_truthful_errors():
+    source = LOGS.read_text(encoding="utf-8")
+
+    assert 'W2.json("/api/ai/conversations/" + encodeURIComponent(c.id))' in source
+    assert "/api/ai/conversation?id=" not in source
+    assert "對話內容讀取失敗" in source
+    assert "重新讀取" in source
+    assert "可能是後端未就緒或對話已歸檔" not in source
 
 
 def test_secretary_dock_exposes_lighthouse_pairing_and_read_only_runs():

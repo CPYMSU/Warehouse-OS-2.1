@@ -1,7 +1,12 @@
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
+from app.api import full_stack_identity
 from app.api.compat import _audit_redact, _audit_redact_command
+from app.api.deps import ActorContext, current_actor
 from app.main import app
+from app.services import integrations
 
 EXPECTED_CONTRACTS = {
     ("GET", "/api/company/branding"),
@@ -9,6 +14,8 @@ EXPECTED_CONTRACTS = {
     ("GET", "/api/runtime/world"),
     ("GET", "/api/runtime/skills"),
     ("GET", "/api/voice/status"),
+    ("POST", "/api/voice/transcribe"),
+    ("POST", "/api/voice/speak"),
     ("GET", "/api/alerts/watch"),
     ("GET", "/api/assets/portfolio"),
     ("GET", "/api/assets"),
@@ -46,6 +53,7 @@ EXPECTED_CONTRACTS = {
     ("GET", "/api/audit/logs"),
     ("GET", "/api/audit/cli"),
     ("GET", "/api/ai/conversations"),
+    ("GET", "/api/ai/conversation"),
     ("POST", "/api/records/search"),
     ("GET", "/api/records/meta"),
     ("GET", "/api/records/config"),
@@ -128,6 +136,68 @@ def test_unknown_api_never_falls_through_to_static_file_server() -> None:
         "reason": "api_contract_not_migrated",
         "path": "/api/not-yet-migrated",
     }
+
+
+def _voice_actor(*, can_use_voice: bool) -> ActorContext:
+    return ActorContext(
+        user_id=uuid4(),
+        tenant_id=uuid4(),
+        tenant_slug="voice-test",
+        tenant_name="Voice Test",
+        industry_template_key="general",
+        username="voice@example.test",
+        display_name="Voice Tester",
+        role_level=10,
+        topology_level=10,
+        topology_title=None,
+        permissions=frozenset({"ai.use"} if can_use_voice else set()),
+    )
+
+
+def test_voice_routes_require_explicit_ai_use_and_return_real_media(monkeypatch) -> None:
+    client = TestClient(app)
+    app.dependency_overrides[current_actor] = lambda: _voice_actor(can_use_voice=False)
+    try:
+        denied = client.post(
+            "/api/voice/transcribe",
+            content=b"\x1aE\xdf\xa3" + b"\x00" * 508,
+            headers={"Content-Type": "audio/webm"},
+        )
+        assert denied.status_code == 403
+
+        app.dependency_overrides[current_actor] = lambda: _voice_actor(can_use_voice=True)
+        monkeypatch.setattr(
+            full_stack_identity,
+            "transcribe_voice_audio",
+            lambda *_args, **_kwargs: integrations.VoiceTranscription(
+                "語音路由正常", "FunAudioLLM/SenseVoiceSmall", "route-trace"
+            ),
+        )
+        transcribed = client.post(
+            "/api/voice/transcribe",
+            content=b"\x1aE\xdf\xa3" + b"\x00" * 508,
+            headers={"Content-Type": "audio/webm"},
+        )
+        assert transcribed.status_code == 200
+        assert transcribed.json()["text"] == "語音路由正常"
+        assert transcribed.headers["cache-control"] == "no-store"
+
+        monkeypatch.setattr(
+            full_stack_identity,
+            "synthesize_voice_speech",
+            lambda *_args, **_kwargs: integrations.VoiceSpeech(
+                b"ID3" + b"\x00" * 400,
+                "audio/mpeg",
+                "FunAudioLLM/CosyVoice2-0.5B",
+                None,
+            ),
+        )
+        spoken = client.post("/api/voice/speak", json={"text": "晚安"})
+        assert spoken.status_code == 200
+        assert spoken.headers["content-type"].startswith("audio/mpeg")
+        assert len(spoken.content) > 200
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_audit_contract_redacts_nested_credentials_and_command_arguments() -> None:
