@@ -10,7 +10,7 @@
       "Listen on 0.0.0.0 and the injected PORT",
       "Expose an unauthenticated health_path",
       "Treat source as read-only and persist only under /workspace/data or platform services",
-      "Read secrets and DATABASE_URL only from injected environment",
+      "Read secrets and any selected database URL only from injected environment",
       "Support graceful SIGTERM shutdown"
     ],
     "platform": [
@@ -45,6 +45,11 @@
       "path": "/workspace/data",
       "mode": "read-write"
     },
+    "python_virtual_environment": {
+      "path_template": "/workspace/data/.runtime/python/{build_digest}/venv",
+      "mode": "read-write",
+      "source_tree_venv_forbidden": true
+    },
     "temporary_data": {
       "durability": "not-guaranteed"
     }
@@ -78,7 +83,14 @@
     ]
   },
   "database": {
-    "connection_env": "DATABASE_URL",
+    "policy_modes": [
+      "platform_managed",
+      "external",
+      "workspace_managed",
+      "none"
+    ],
+    "platform_connection_env": "DATABASE_URL",
+    "workspace_managed_engine_restricted": false,
     "versioned_migrations": true,
     "activate_after_migration": true,
     "migration_failure_blocks_activation": true,
@@ -126,6 +138,7 @@
               "api",
               "worker",
               "agent",
+              "job",
               "container",
               "compose"
             ]
@@ -177,7 +190,16 @@
             "const": "/workspace/data"
           },
           "database_url_env": {
-            "const": "DATABASE_URL"
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,79}$"
+          },
+          "database_policy": {
+            "enum": [
+              "platform_managed",
+              "external",
+              "workspace_managed",
+              "none"
+            ]
           }
         }
       },

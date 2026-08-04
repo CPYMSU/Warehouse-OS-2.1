@@ -812,6 +812,37 @@ def test_workspace_key_runtime_contract_supports_api_web_worker_and_agent(
         )
         assert automatic_payload["deployment"]["runtime_profile_key"] != "static.v1"
 
+        staged = client.post(
+            "/api/workspaces/v1/deployments",
+            headers={**headers, "Idempotency-Key": "staged-python-runtime"},
+            json={"source_version_id": python_source_id, "activate": False},
+        )
+        assert staged.status_code == 202, staged.text
+        assert staged.json()["deployment"]["requested_config"]["activate"] is False
+        assert staged.json()["deployment"]["requested_config"]["execution_mode"] == "service"
+
+        job = client.post(
+            "/api/workspaces/v1/jobs",
+            headers={**headers, "Idempotency-Key": "python-migration-job"},
+            json={
+                "source_version_id": python_source_id,
+                "command": "python -m compileall app.py",
+            },
+        )
+        assert job.status_code == 202, job.text
+        assert job.json()["component"]["component_kind"] == "worker"
+        assert job.json()["job"]["requested_config"]["execution_mode"] == "job"
+        assert job.json()["job"]["requested_config"]["activate"] is False
+        for queued_id in (
+            staged.json()["deployment"]["uuid"],
+            job.json()["job"]["uuid"],
+        ):
+            cancelled = client.post(
+                f"/api/workspaces/v1/deployments/{queued_id}/cancel",
+                headers=headers,
+            )
+            assert cancelled.status_code == 200, cancelled.text
+
         repeated_automatic = client.post(
             "/api/workspaces/v1/deployments",
             headers={**headers, "Idempotency-Key": "auto-python-runtime"},
@@ -1503,7 +1534,25 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
         assert database["pool_key"] == hosted_database.HDD_DATABASE_POOL_KEY
         assert database["physical_medium"] == "hdd"
         assert database["isolation_mode"] == "dedicated_database"
+        assert database["capabilities"]["vector_extension"] is True
         assert "password" not in json.dumps(database).lower()
+
+        listed_assets = client.get("/api/digital-assets?limit=300")
+        assert listed_assets.status_code == 200
+        listed_workspace = next(
+            item["workspace"]
+            for item in listed_assets.json()["assets"]
+            if item["uuid"] == asset["uuid"]
+        )
+        assert {
+            "code_bytes",
+            "runtime_bytes",
+            "data_bytes",
+            "database_bytes",
+            "total_bytes",
+            "measured_at",
+        }.issubset(listed_workspace)
+        assert listed_workspace["total_bytes"] == listed_workspace["storage_used_bytes"]
 
         written = client.put(
             f"/api/workspaces/{workspace['uuid']}/data/questions/q-1",
@@ -1533,6 +1582,10 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
             assert runtime_url.database == database_ref
             assert runtime_url.username == role_ref
             assert runtime_url.password
+            with psycopg.connect(runtime_url.render_as_string(hide_password=False)) as connection:
+                assert connection.execute(
+                    "SELECT extversion FROM pg_extension WHERE extname='vector'"
+                ).fetchone()[0]
             assert (
                 session.execute(
                     text(
@@ -1596,6 +1649,214 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
                         psycopg.sql.Identifier(role_ref)
                     )
                 )
+
+
+def test_external_postgresql_binding_drives_runtime_and_relational_data_api(
+    monkeypatch,
+) -> None:
+    migration_source = os.environ["WAREHOUSE_MIGRATION_DATABASE_URL"]
+    admin_url = make_url(migration_source).set(drivername="postgresql", database="postgres")
+    suffix = uuid4().hex[:12]
+    database_ref = f"warehouse_external_{suffix}"
+    role_ref = f"warehouse_external_role_{suffix}"
+    password = f"external-test-{suffix}"
+    external_url = admin_url.set(
+        database=database_ref,
+        username=role_ref,
+        password=password,
+        query={"sslmode": "disable"},
+    )
+    with psycopg.connect(
+        admin_url.render_as_string(hide_password=False), autocommit=True
+    ) as connection:
+        connection.execute(
+            psycopg.sql.SQL(
+                "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOINHERIT NOREPLICATION PASSWORD {}"
+            ).format(psycopg.sql.Identifier(role_ref), psycopg.sql.Literal(password))
+        )
+        connection.execute(
+            psycopg.sql.SQL("CREATE DATABASE {} OWNER {}")
+            .format(psycopg.sql.Identifier(database_ref), psycopg.sql.Identifier(role_ref))
+        )
+    with psycopg.connect(external_url.render_as_string(hide_password=False)) as connection:
+        connection.execute(
+            """
+            CREATE TABLE public.orders (
+              id text PRIMARY KEY,
+              total integer NOT NULL,
+              metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+            )
+            """
+        )
+
+    settings = Settings(
+        external_database_allow_private_hosts=True,
+        external_database_require_tls=False,
+        integration_secret="external-database-test-secret-" + "x" * 32,
+    )
+    monkeypatch.setattr(hosted_database, "get_settings", lambda: settings)
+    monkeypatch.setattr(digital_asset_hosting, "get_settings", lambda: settings)
+    actor = _actor("external-database")
+    app.dependency_overrides[current_actor] = lambda: actor
+    app.dependency_overrides[get_settings] = lambda: settings
+    client = TestClient(app)
+    try:
+        asset = client.post(
+            "/api/digital-assets",
+            json={"name": "External Data App", "asset_kind": "software"},
+        ).json()["asset"]
+        created = client.post(
+            f"/api/digital-assets/{asset['uuid']}/workspace",
+            json={
+                "workspace_key": "external-data-app",
+                "runtime_type": "api",
+                "database_name": "customer_data",
+                "provider": "external_postgresql",
+                "database_url": external_url.render_as_string(hide_password=False),
+                "is_default": False,
+            },
+        )
+        assert created.status_code == 200, created.text
+        workspace = created.json()["workspace"]
+        database = created.json()["database"]
+        assert database["provider_key"] == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
+        assert database["ownership_mode"] == "customer_managed"
+        assert database["is_default"] is True
+        assert database["isolation_mode"] == "external_database"
+        assert database["capabilities"]["relational_data_api"] is True
+        public_payload = json.dumps(created.json()).lower()
+        assert password.lower() not in public_payload
+        assert "database_url" not in public_payload
+
+        with tenant_session(actor.tenant_id) as session:
+            runtime_url = make_url(
+                hosted_database.runtime_database_url(
+                    session,
+                    workspace["uuid"],
+                    settings=settings,
+                )
+            )
+            assert runtime_url.database == database_ref
+            assert runtime_url.username == role_ref
+            credential = (
+                session.execute(
+                    text(
+                        """
+                        SELECT credential_kind,secret_ciphertext,last_validated_at
+                        FROM digital_asset.database_credentials
+                        WHERE database_binding_id=:database_id
+                        """
+                    ),
+                    {"database_id": database["id"]},
+                )
+                .mappings()
+                .one()
+            )
+            assert credential["credential_kind"] == "external_dsn"
+            assert str(credential["secret_ciphertext"]).startswith("fernet:v1:")
+            assert password not in str(credential["secret_ciphertext"])
+            assert credential["last_validated_at"] is not None
+
+        schema = client.get(f"/api/workspaces/{workspace['uuid']}/database/schema")
+        assert schema.status_code == 200, schema.text
+        assert schema.json()["collections"] == []
+        orders = next(table for table in schema.json()["tables"] if table["name"] == "orders")
+        assert orders["schema"] == "public"
+        assert orders["primary_key"] == ["id"]
+        assert {column["name"] for column in orders["columns"]} == {
+            "id",
+            "total",
+            "metadata",
+        }
+
+        inserted = client.put(
+            f"/api/workspaces/{workspace['uuid']}/database/tables/public/orders/rows/order-1",
+            params={"expected_version": "0"},
+            json={"total": 125, "metadata": {"currency": "CNY"}},
+        )
+        assert inserted.status_code == 200, inserted.text
+        first_version = inserted.json()["record"]["version"]
+        assert inserted.json()["record"]["data"]["total"] == 125
+
+        stale = client.put(
+            f"/api/workspaces/{workspace['uuid']}/database/tables/public/orders/rows/order-1",
+            params={"expected_version": "0"},
+            json={"total": 126},
+        )
+        assert stale.status_code == 409
+        updated = client.put(
+            f"/api/workspaces/{workspace['uuid']}/database/tables/public/orders/rows/order-1",
+            params={"expected_version": first_version},
+            json={"total": 126},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["record"]["data"]["total"] == 126
+
+        listed = client.get(
+            f"/api/workspaces/{workspace['uuid']}/database/tables/public/orders/rows"
+        )
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["rows"][0]["key"] == "order-1"
+        assert listed.json()["rows"][0]["data"]["metadata"]["currency"] == "CNY"
+
+        primary = client.post(
+            f"/api/workspaces/{workspace['uuid']}/keys/primary/rotate",
+            json={"label": "External database runtime"},
+        )
+        assert primary.status_code == 200, primary.text
+        workspace_headers = {"Authorization": f"Bearer {primary.json()['api_key']}"}
+        customer_rows = client.get(
+            "/api/workspaces/v1/database/tables/public/orders/rows",
+            headers=workspace_headers,
+        )
+        assert customer_rows.status_code == 200, customer_rows.text
+        assert customer_rows.json()["rows"][0]["key"] == "order-1"
+        customer_insert = client.put(
+            "/api/workspaces/v1/database/tables/public/orders/rows/order-2",
+            headers=workspace_headers,
+            params={"expected_version": "0"},
+            json={"total": 200, "metadata": {"currency": "USD"}},
+        )
+        assert customer_insert.status_code == 200, customer_insert.text
+        customer_health = client.get(
+            "/api/workspaces/v1/database/health",
+            headers=workspace_headers,
+        )
+        assert customer_health.status_code == 200, customer_health.text
+        assert customer_health.json()["health"]["provider_key"] == (
+            hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
+        )
+
+        collections = client.get(f"/api/workspaces/{workspace['uuid']}/data/orders")
+        assert collections.status_code == 409
+        assert (
+            collections.json()["detail"]["reason"]
+            == "collection_api_not_supported_by_external_database"
+        )
+        health = client.get(f"/api/workspaces/{workspace['uuid']}/database/health")
+        assert health.status_code == 200, health.text
+        assert health.json()["health"]["reachable"] is True
+        assert health.json()["health"]["credentials_exposed"] is False
+    finally:
+        app.dependency_overrides.clear()
+        with psycopg.connect(
+            admin_url.render_as_string(hide_password=False), autocommit=True
+        ) as connection:
+            connection.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s",
+                (database_ref,),
+            )
+            connection.execute(
+                psycopg.sql.SQL("DROP DATABASE IF EXISTS {}").format(
+                    psycopg.sql.Identifier(database_ref)
+                )
+            )
+            connection.execute(
+                psycopg.sql.SQL("DROP ROLE IF EXISTS {}").format(
+                    psycopg.sql.Identifier(role_ref)
+                )
+            )
 
 
 def test_company_isolation_and_workspace_scope_are_enforced() -> None:

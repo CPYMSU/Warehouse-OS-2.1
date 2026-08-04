@@ -15,7 +15,7 @@ import time
 import traceback
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import httpx
@@ -24,6 +24,10 @@ from sqlalchemy import text
 
 from app.core.config import Settings, get_settings
 from app.db.session import system_session, tenant_session
+from app.services.database_release import (
+    observe_database_release_gate,
+    workspace_database_policy,
+)
 from app.services.hosted_database import runtime_database_url
 from app.services.hosting_fabric import reconcile_repository_resources, runtime_environment
 from app.services.object_storage import object_store_read_candidates
@@ -34,7 +38,7 @@ def _python_api_launcher_source() -> str:
     """Return a self-contained launcher that preserves entrypoint package context."""
 
     return (
-        "import importlib.util, itertools, os, sys; "
+        "import importlib.util, inspect, itertools, os, sys; "
         "from pathlib import Path; "
         "import uvicorn; "
         "root=Path(os.environ.get('WAREHOUSE_APPLICATION_ROOT', '/workspace/app')).resolve(); "
@@ -50,8 +54,13 @@ def _python_api_launcher_source() -> str:
         "module=importlib.util.module_from_spec(spec); "
         "sys.modules[module_name]=module; "
         "spec.loader.exec_module(module); "
-        "uvicorn.run(getattr(module, 'app'), host='0.0.0.0', "
-        "port=int(os.environ['PORT']))"
+        "application=(getattr(module, 'app', None) or "
+        "getattr(module, 'application', None)); "
+        "assert application is not None, 'entrypoint must expose app or application'; "
+        "interface=('wsgi' if callable(application) and "
+        "len(inspect.signature(application).parameters)==2 else 'auto'); "
+        "uvicorn.run(application, host='0.0.0.0', "
+        "port=int(os.environ['PORT']), interface=interface)"
     )
 
 
@@ -171,6 +180,29 @@ class DockerEngine:
             "status": state.get("Status"),
             "exit_code": state.get("ExitCode"),
         }
+
+    def container_exists(self, name: str) -> bool:
+        response = self.client.get(f"{self.api_prefix}/containers/{name}/json")
+        if response.status_code == 404:
+            return False
+        if response.status_code != 200:
+            self._raise_engine_error(response, "container inspection")
+        return True
+
+    def wait(self, name: str, *, timeout: int = 1200) -> int:
+        """Wait for a bounded one-shot container and return its exit code."""
+
+        response = self.client.post(
+            f"{self.api_prefix}/containers/{name}/wait",
+            params={"condition": "not-running"},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            self._raise_engine_error(response, "container wait")
+        try:
+            return int(response.json()["StatusCode"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Docker Engine container wait returned no exit code") from exc
 
     def replica_spec(self, name: str, *, network_alias: str | None = None) -> dict[str, object]:
         """Return a create-safe copy of an existing managed container.
@@ -321,7 +353,22 @@ class DockerEngine:
         if failure:
             raise RuntimeError(f"Docker Engine image pull failed: {failure[:500]}")
 
-    def build(self, root: Path, *, dockerfile: str, tag: str) -> list[str]:
+    def image_exists(self, image: str) -> bool:
+        encoded = quote(image, safe="")
+        response = self.client.get(
+            f"{self.api_prefix}/images/{encoded}/json",
+            timeout=30,
+        )
+        return response.status_code == 200
+
+    def build(
+        self,
+        root: Path,
+        *,
+        dockerfile: str,
+        tag: str,
+        pull: bool = True,
+    ) -> list[str]:
         dockerfile_path = (root / dockerfile).resolve()
         dockerfile_path.relative_to(root.resolve())
         if not dockerfile_path.is_file():
@@ -343,7 +390,7 @@ class DockerEngine:
                         "dockerfile": dockerfile,
                         "rm": "true",
                         "forcerm": "true",
-                        "pull": "true",
+                        "pull": str(pull).lower(),
                     },
                     headers={"Content-Type": "application/x-tar"},
                     content=stream,
@@ -376,6 +423,7 @@ class RuntimeController:
         self._last_capacity_observation = 0.0
         self._last_scaling_reconcile = 0.0
         self._last_repository_reconcile = 0.0
+        self._last_runtime_drift_reconcile = 0.0
 
     def reconcile_repositories(self) -> int:
         if time.monotonic() - self._last_repository_reconcile < 60:
@@ -535,6 +583,7 @@ class RuntimeController:
                     text(
                         """
                     SELECT d.*, w.asset_id, w.workspace_key, w.storage_quota_bytes,
+                           w.config AS workspace_config,
                            w.active_deployment_id,
                            c.component_name, c.component_kind, c.runtime,
                            c.entrypoint, c.build_command, c.start_command,
@@ -571,13 +620,22 @@ class RuntimeController:
                     hashlib.sha256,
                 ).hexdigest(),
             }
-            database_url = runtime_database_url(
-                session,
-                snapshot["workspace_id"],
-                settings=self.settings,
-            )
-            if database_url:
-                environment["DATABASE_URL"] = database_url
+            database_policy = workspace_database_policy(snapshot.get("workspace_config"))
+            snapshot["database_policy"] = database_policy
+            if bool(database_policy["platform_database_injected"]):
+                database_url = runtime_database_url(
+                    session,
+                    snapshot["workspace_id"],
+                    settings=self.settings,
+                )
+                if database_url:
+                    environment["DATABASE_URL"] = database_url
+                    requested = snapshot.get("requested_config") or {}
+                    database_url_env = str(requested.get("database_url_env") or "").strip()
+                    if database_url_env:
+                        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
+                            raise RuntimeError("Database URL environment alias is invalid")
+                        environment[database_url_env] = database_url
             fabric_environment, hosting_policy = runtime_environment(
                 session,
                 UUID(str(snapshot["workspace_id"])),
@@ -718,15 +776,17 @@ class RuntimeController:
         )
         component_kind = str(snapshot.get("component_kind") or "backend")
         process_only = component_kind in {"worker", "agent"}
+        one_shot = str(
+            (snapshot.get("requested_config") or {}).get("execution_mode") or "service"
+        ) == "job"
         runtime_entrypoint: str | None = None
         configured_start = str(
             (snapshot.get("requested_config") or {}).get("start_command")
             or snapshot.get("start_command")
             or ""
         ).strip()
-        if configured_start:
-            command = configured_start
-        elif family == "python":
+        managed_build = bool(snapshot.get("managed_build"))
+        if family == "python":
             entrypoint = str(
                 snapshot.get("entrypoint") or contract.get("default_entrypoint") or "app.py"
             )
@@ -738,6 +798,9 @@ class RuntimeController:
             ):
                 raise RuntimeError("Python Runtime entrypoint must be a safe .py source path")
             runtime_entrypoint = entrypoint_path.as_posix()
+        if configured_start:
+            command = configured_start
+        elif family == "python":
             dependency_cache = hashlib.sha256(
                 (
                     f"{snapshot.get('sha256') or snapshot['id']}:{snapshot.get('image_ref') or ''}"
@@ -764,12 +827,15 @@ class RuntimeController:
             )
             if process_only:
                 command = (
-                    f'set -eu; cd /workspace/app; {install}exec python "$WAREHOUSE_ENTRYPOINT"'
+                    "set -eu; cd /workspace/app; "
+                    + ("" if managed_build else install)
+                    + 'exec python "$WAREHOUSE_ENTRYPOINT"'
                 )
             else:
                 command = (
-                    f"set -eu; cd /workspace/app; {install}"
-                    f"exec python -c {shlex.quote(_python_api_launcher_source())}"
+                    "set -eu; cd /workspace/app; "
+                    + ("" if managed_build else install)
+                    + f"exec python -c {shlex.quote(_python_api_launcher_source())}"
                 )
         elif family == "node":
             command = (
@@ -790,6 +856,7 @@ class RuntimeController:
             "WorkingDir": "/workspace/app",
             "Env": [
                 f"PORT={port}",
+                "HOST=0.0.0.0",
                 "PYTHONDONTWRITEBYTECODE=1",
                 "WAREHOUSE_DATA_DIR=/workspace/data",
                 "WAREHOUSE_APPLICATION_ROOT=/workspace/app",
@@ -820,7 +887,7 @@ class RuntimeController:
                 "Memory": memory,
                 "NanoCpus": cpus,
                 "PidsLimit": int(limits.get("pids") or 128),
-                "RestartPolicy": {"Name": "unless-stopped"},
+                "RestartPolicy": {"Name": "no" if one_shot else "unless-stopped"},
             },
         }
         if command:
@@ -855,6 +922,7 @@ class RuntimeController:
         if parsed.query:
             route += "?" + parsed.query
         candidates = [
+            f"http://api:8080{route}",
             f"http://warehouse-os-api-green:8080{route}",
             f"http://warehouse-os-api-blue:8080{route}",
             url,
@@ -916,8 +984,53 @@ class RuntimeController:
             f"{str(snapshot['workspace_id']).replace('-', '')[:20]}-"
             f"{str(snapshot['id']).replace('-', '')[:16]}-{suffix}:latest"
         )
-        logs = engine.build(root, dockerfile=selected_dockerfile, tag=tag)
+        if engine.image_exists(tag):
+            return tag, ["Reused immutable deployment image from the local Docker cache"]
+        try:
+            logs = engine.build(
+                root,
+                dockerfile=selected_dockerfile,
+                tag=tag,
+                pull=True,
+            )
+        except RuntimeError as exc:
+            if engine.image_exists(tag):
+                return tag, [
+                    "Recovered the immutable deployment image after an interrupted build stream"
+                ]
+            if not self._transient_registry_failure(str(exc)):
+                raise
+            logs = [
+                "Registry access failed; retried with trusted base images from the local cache"
+            ]
+            logs.extend(
+                engine.build(
+                    root,
+                    dockerfile=selected_dockerfile,
+                    tag=tag,
+                    pull=False,
+                )
+            )
         return tag, logs
+
+    @staticmethod
+    def _transient_registry_failure(message: str) -> bool:
+        normalized = message.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "connection reset",
+                "connection timed out",
+                "context deadline exceeded",
+                "failed to do request",
+                "failed to resolve source metadata",
+                "i/o timeout",
+                "network is unreachable",
+                "no such host",
+                "tls handshake timeout",
+                "unexpected eof",
+            )
+        )
 
     @staticmethod
     def _compose_environment(value: object) -> dict[str, str]:
@@ -1156,6 +1269,9 @@ class RuntimeController:
         snapshot = self._snapshot(tenant_id, deployment_id)
         root, host_root, materialized = self._materialize(snapshot)
         requested = snapshot.get("requested_config") or {}
+        execution_mode = str(requested.get("execution_mode") or "service").strip().lower()
+        one_shot = execution_mode == "job"
+        activation_requested = bool(requested.get("activate", True)) and not one_shot
         contract = snapshot.get("execution_contract") or {}
         health_path = str(
             requested.get("health_path")
@@ -1166,14 +1282,18 @@ class RuntimeController:
             "runtime_kind": snapshot["runtime_family"],
             "component_kind": snapshot["component_kind"],
             "public_route": str(snapshot["component_kind"]) not in {"worker", "agent"},
+            "execution_mode": execution_mode,
+            "activation_requested": activation_requested,
             "runtime_rel_path": materialized["runtime_rel_path"],
             "source_sha256": snapshot["sha256"],
             "archive": {
                 key: value
                 for key, value in materialized.items()
-                if key not in {"runtime_rel_path", "runtime_bytes"}
+                if key not in {"runtime_rel_path", "runtime_bytes", "build"}
             },
         }
+        if materialized.get("build"):
+            result["build"] = materialized["build"]
         container_names: list[str] = []
         if snapshot["runtime_family"] == "static":
             if not (root / "index.html").is_file():
@@ -1248,7 +1368,31 @@ class RuntimeController:
                         engine.create(name=replica_name, spec=spec)
                         engine.start(replica_name)
                         container_names.append(replica_name)
-                        if bool(result["public_route"]):
+                        if one_shot:
+                            timeout_seconds = max(
+                                30, min(int(requested.get("timeout_seconds") or 1200), 7200)
+                            )
+                            exit_code = engine.wait(replica_name, timeout=timeout_seconds)
+                            job_logs = self._redact_runtime_logs(
+                                snapshot, engine.logs(replica_name)
+                            )
+                            if exit_code != 0:
+                                raise RuntimeError(
+                                    f"Workspace job failed with exit code {exit_code}"
+                                )
+                            engine.remove(replica_name)
+                            container_names.remove(replica_name)
+                            result.update(
+                                {
+                                    "job": {
+                                        "status": "succeeded",
+                                        "exit_code": exit_code,
+                                        "timeout_seconds": timeout_seconds,
+                                    },
+                                    "log_excerpt": job_logs,
+                                }
+                            )
+                        elif bool(result["public_route"]):
                             internal_url = f"http://{replica_name}:{port}"
                             try:
                                 self._wait_health(
@@ -1272,7 +1416,7 @@ class RuntimeController:
                                 "health_path": health_path,
                             }
                         )
-                    else:
+                    elif not one_shot:
                         result.update(
                             {
                                 "container_names": container_names,
@@ -1310,6 +1454,24 @@ class RuntimeController:
                 engine.close()
 
         with tenant_session(tenant_id) as session:
+            database_release = observe_database_release_gate(
+                session, snapshot["workspace_id"]
+            )
+        result["database_release"] = database_release
+        if activation_requested and not bool(database_release["ready"]):
+            if container_names:
+                engine = DockerEngine(self.settings.runtime_docker_socket)
+                try:
+                    for container_name in container_names:
+                        engine.remove(container_name)
+                finally:
+                    engine.close()
+            raise RuntimeError(
+                "Database release gate blocked activation: "
+                + ", ".join(str(item) for item in database_release.get("blockers", []))
+            )
+
+        with tenant_session(tenant_id) as session:
             current = session.execute(
                 text(
                     "SELECT active_deployment_id FROM digital_asset.workspaces "
@@ -1333,16 +1495,30 @@ class RuntimeController:
                     "worker": self.worker_id,
                 },
             )
-            session.execute(
-                text(
-                    """
-                    UPDATE digital_asset.workspaces
-                    SET active_deployment_id=:deployment_id, runtime_status='ready'
-                    WHERE id=:workspace_id;
-                    """
-                ),
-                {"deployment_id": deployment_id, "workspace_id": snapshot["workspace_id"]},
-            )
+            if activation_requested:
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.workspaces
+                        SET active_deployment_id=:deployment_id, runtime_status='ready'
+                        WHERE id=:workspace_id;
+                        """
+                    ),
+                    {"deployment_id": deployment_id, "workspace_id": snapshot["workspace_id"]},
+                )
+            else:
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.workspaces
+                        SET runtime_status=CASE
+                          WHEN active_deployment_id IS NULL THEN 'provisioned' ELSE 'ready'
+                        END
+                        WHERE id=:workspace_id
+                        """
+                    ),
+                    {"workspace_id": snapshot["workspace_id"]},
+                )
             session.execute(
                 text("UPDATE digital_asset.workspace_components SET status='ready' WHERE id=:id"),
                 {"id": snapshot["component_id"]},
@@ -1367,13 +1543,25 @@ class RuntimeController:
                 "health_verified",
                 {"provider": "warehouse_runtime_v1"},
             )
-            _event(
-                session,
-                deployment_id,
-                tenant_id,
-                "route_activated",
-                {"public_url": snapshot["public_url"]},
-            )
+            if activation_requested and bool(result["public_route"]):
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "route_activated",
+                    {"public_url": snapshot["public_url"]},
+                )
+
+        if one_shot:
+            with tenant_session(tenant_id) as session:
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "job_completed",
+                    {"exit_code": 0, "production_traffic_changed": False},
+                )
+            return
 
         if not bool(result["public_route"]):
             with tenant_session(tenant_id) as session:
@@ -1395,6 +1583,29 @@ class RuntimeController:
                     tenant_id,
                     "runtime_process_verified",
                     {"component_kind": snapshot["component_kind"]},
+                )
+            return
+
+        if not activation_requested:
+            with tenant_session(tenant_id) as session:
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.deployments
+                        SET result=result || jsonb_build_object(
+                          'public_route_verified', false,
+                          'activation_deferred', true
+                        ) WHERE id=:id
+                        """
+                    ),
+                    {"id": deployment_id},
+                )
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "ready_for_activation",
+                    {"production_traffic_changed": False},
                 )
             return
 
@@ -1509,6 +1720,104 @@ class RuntimeController:
                 {"id": row["workspace_id"]},
             )
             _event(session, deployment_id, tenant_id, "failed", {"error": message})
+
+    def _runtime_drift_candidates(self) -> list[tuple[UUID, UUID, list[str]]]:
+        candidates: list[tuple[UUID, UUID, list[str]]] = []
+        for tenant_id in self._tenants():
+            with tenant_session(tenant_id) as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT d.id AS deployment_id,d.result
+                        FROM digital_asset.workspaces AS w
+                        JOIN digital_asset.deployments AS d
+                          ON d.id=w.active_deployment_id
+                        WHERE d.status='ready' AND d.health='healthy'
+                          AND d.runtime_profile_key IS NOT NULL
+                        ORDER BY d.completed_at NULLS LAST,d.created_at
+                        """
+                    )
+                ).mappings()
+                for row in rows:
+                    result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
+                    names = [
+                        str(value)
+                        for value in result.get("container_names") or []
+                        if re.fullmatch(r"warehouse-runtime-[a-zA-Z0-9_.-]+", str(value))
+                    ]
+                    if names:
+                        candidates.append(
+                            (tenant_id, UUID(str(row["deployment_id"])), names)
+                        )
+                    if len(candidates) >= 8:
+                        return candidates
+        return candidates
+
+    def reconcile_runtime_drift(self) -> int:
+        """Requeue an active healthy deployment when a managed container vanished."""
+
+        if time.monotonic() - self._last_runtime_drift_reconcile < 15:
+            return 0
+        self._last_runtime_drift_reconcile = time.monotonic()
+        candidates = self._runtime_drift_candidates()
+        if not candidates:
+            return 0
+        missing_by_deployment: list[tuple[UUID, UUID, list[str]]] = []
+        engine = DockerEngine(self.settings.runtime_docker_socket)
+        try:
+            for tenant_id, deployment_id, names in candidates:
+                missing = [name for name in names if not engine.container_exists(name)]
+                if missing:
+                    missing_by_deployment.append((tenant_id, deployment_id, missing))
+        finally:
+            engine.close()
+
+        repaired = 0
+        for tenant_id, deployment_id, missing in missing_by_deployment:
+            with tenant_session(tenant_id) as session:
+                queued = session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.deployments AS deployment
+                        SET status='queued',health='pending',lease_owner=NULL,
+                            lease_expires_at=NULL,started_at=NULL,completed_at=NULL
+                        WHERE deployment.id=:deployment_id
+                          AND deployment.status='ready'
+                          AND deployment.health='healthy'
+                          AND EXISTS (
+                            SELECT 1 FROM digital_asset.workspaces AS workspace
+                            WHERE workspace.active_deployment_id=deployment.id
+                          )
+                        RETURNING deployment.id
+                        """
+                    ),
+                    {"deployment_id": deployment_id},
+                ).scalar_one_or_none()
+                if queued is None:
+                    continue
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.workspaces
+                        SET runtime_status='building'
+                        WHERE active_deployment_id=:deployment_id
+                        """
+                    ),
+                    {"deployment_id": deployment_id},
+                )
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "self_heal_queued",
+                    {
+                        "reason": "managed_runtime_container_missing",
+                        "missing_container_names": missing,
+                        "worker": self.worker_id,
+                    },
+                )
+                repaired += 1
+        return repaired
 
     def _scaling_candidates(self) -> list[tuple[UUID, dict[str, object]]]:
         candidates: list[tuple[UUID, dict[str, object]]] = []
@@ -1742,6 +2051,7 @@ class RuntimeController:
             marker.write_text(f"{self.worker_id} {datetime.now(UTC).isoformat()}", encoding="utf-8")
             try:
                 self.observe_capacity()
+                self.reconcile_runtime_drift()
                 self.reconcile_scaling()
                 self.reconcile_repositories()
                 worked = self.run_once()

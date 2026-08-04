@@ -37,6 +37,7 @@ def test_python_import_graph_selects_dependant_tests() -> None:
     assert plan["mode"] == "quick"
     assert plan["risk"] == "normal"
     assert "backend/tests/test_auto_runtime.py" in plan["tests"]
+    assert all(" 2." not in path for path in plan["tests"])
     assert plan["deploy_required"] is True
 
 

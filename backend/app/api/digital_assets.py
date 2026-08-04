@@ -41,14 +41,17 @@ from app.services.digital_asset_hosting import (
     create_asset,
     create_deployment,
     create_workspace,
+    database_health,
     database_schema,
     issue_workspace_key,
     list_workspace_keys,
     list_workspace_records,
+    list_workspace_relation_rows,
     migrate_workspace_database_to_hdd,
     provision_database,
     public_workspace_status,
     put_workspace_record,
+    put_workspace_relation_row,
     record_custody,
     register_artifact,
     resize_workspace_quota,
@@ -89,6 +92,7 @@ from app.services.workspace_deployments import (
     observe_workspace_deployment,
     probe_workspace_storage,
     register_workspace_source,
+    repair_workspace_deployment,
     request_workspace_deployment,
     workspace_source_download_target,
     workspace_source_upload_target,
@@ -698,6 +702,22 @@ def customer_deployment_cancel(
     return cancel_workspace_deployment(credential, _deployment_reference(deployment_id))
 
 
+@router.post(
+    "/api/workspaces/v1/deployments/{deployment_id}/repair",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def customer_deployment_repair(
+    deployment_id: str,
+    payload: dict[str, object] = Body(default={}),
+    credential: WorkspaceCredential = Depends(workspace_credential),
+) -> dict[str, object]:
+    return repair_workspace_deployment(
+        credential,
+        _deployment_reference(deployment_id),
+        payload,
+    )
+
+
 @router.post("/api/workspaces/v1/deployments/{deployment_id}/activate")
 @router.post("/api/workspaces/v1/deployments/{deployment_id}/rollback")
 def customer_deployment_activate(
@@ -716,6 +736,67 @@ def customer_database_schema(
     return database_schema(
         tenant_id=credential.tenant_id,
         workspace_ref=credential.workspace_id,
+        logical_name=database,
+    )
+
+
+@router.get("/api/workspaces/v1/database/health")
+def customer_database_health(
+    database: str | None = Query(default=None),
+    credential: WorkspaceCredential = Depends(workspace_credential),
+) -> dict[str, object]:
+    credential.require("data:read")
+    return database_health(
+        tenant_id=credential.tenant_id,
+        workspace_ref=credential.workspace_id,
+        logical_name=database,
+    )
+
+
+@router.get("/api/workspaces/v1/database/tables/{schema_name}/{table_name}/rows")
+def customer_relation_rows(
+    schema_name: str,
+    table_name: str,
+    database: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    credential: WorkspaceCredential = Depends(workspace_credential),
+) -> dict[str, object]:
+    credential.require("data:read")
+    return list_workspace_relation_rows(
+        tenant_id=credential.tenant_id,
+        workspace_ref=credential.workspace_id,
+        schema_name=schema_name,
+        table_name=table_name,
+        logical_name=database,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.put(
+    "/api/workspaces/v1/database/tables/{schema_name}/{table_name}/rows/{record_key}"
+)
+def customer_relation_row_put(
+    schema_name: str,
+    table_name: str,
+    record_key: str,
+    payload: dict[str, object] = Body(default={}),
+    database: str | None = Query(default=None),
+    expected_version: str | None = Query(default=None, max_length=80),
+    credential: WorkspaceCredential = Depends(workspace_credential),
+) -> dict[str, object]:
+    credential.require("data:write")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    return put_workspace_relation_row(
+        tenant_id=credential.tenant_id,
+        workspace_ref=credential.workspace_id,
+        schema_name=schema_name,
+        table_name=table_name,
+        record_key=record_key,
+        payload=data,
+        expected_version=expected_version,
+        credential=credential,
         logical_name=database,
     )
 
@@ -1197,6 +1278,73 @@ def workspace_database_schema(
     return database_schema(
         tenant_id=actor.tenant_id,
         workspace_ref=workspace_ref,
+        logical_name=database,
+    )
+
+
+@router.get("/api/workspaces/{workspace_ref}/database/health")
+def workspace_database_health(
+    workspace_ref: str,
+    database: str | None = Query(default=None),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_asset_read(actor)
+    return database_health(
+        tenant_id=actor.tenant_id,
+        workspace_ref=workspace_ref,
+        logical_name=database,
+    )
+
+
+@router.get(
+    "/api/workspaces/{workspace_ref}/database/tables/{schema_name}/{table_name}/rows"
+)
+def workspace_relation_rows(
+    workspace_ref: str,
+    schema_name: str,
+    table_name: str,
+    database: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_asset_read(actor)
+    return list_workspace_relation_rows(
+        tenant_id=actor.tenant_id,
+        workspace_ref=workspace_ref,
+        schema_name=schema_name,
+        table_name=table_name,
+        logical_name=database,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.put(
+    "/api/workspaces/{workspace_ref}/database/tables/"
+    "{schema_name}/{table_name}/rows/{record_key}"
+)
+def workspace_relation_row_put(
+    workspace_ref: str,
+    schema_name: str,
+    table_name: str,
+    record_key: str,
+    payload: dict[str, object] = Body(default={}),
+    database: str | None = Query(default=None),
+    expected_version: str | None = Query(default=None, max_length=80),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_asset_manage(actor)
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    return put_workspace_relation_row(
+        tenant_id=actor.tenant_id,
+        workspace_ref=workspace_ref,
+        schema_name=schema_name,
+        table_name=table_name,
+        record_key=record_key,
+        payload=data,
+        expected_version=expected_version,
+        actor=actor,
         logical_name=database,
     )
 

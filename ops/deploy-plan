@@ -171,8 +171,16 @@ def _discover_python_tests(
     max_tests: int,
     max_fraction: float,
 ) -> list[str]:
-    python_paths = sorted((root / "backend" / "app").rglob("*.py"))
-    test_paths = sorted((root / "backend" / "tests").glob("test_*.py"))
+    python_paths = sorted(
+        path
+        for path in (root / "backend" / "app").rglob("*.py")
+        if _is_packaged(root, path.relative_to(root).as_posix())
+    )
+    test_paths = sorted(
+        path
+        for path in (root / "backend" / "tests").glob("test_*.py")
+        if _is_packaged(root, path.relative_to(root).as_posix())
+    )
     module_paths: dict[str, Path] = {}
     for path in [*python_paths, *test_paths]:
         module = _module_for_path(path, root)

@@ -17,7 +17,7 @@
 5. 把源碼視為唯讀，把持久資料寫入 /workspace/data。
 6. 依賴、執行時版本、建置與啟動命令必須可重現。
 7. 機密只從環境變數或平台 Secret 取得，不得寫入源碼、日誌或回應。
-8. 資料庫連線只讀取 DATABASE_URL；遷移必須可重入、可追蹤並具失敗邊界。
+8. 使用平台／外部綁定時從 DATABASE_URL 讀取連線；工作區自管模式可使用自己的安全環境變數與資料引擎。遷移必須可重入、可追蹤並具失敗邊界。
 9. 收到終止信號後停止接收新工作、完成短任務並正常退出。
 
 平台只有在「進程運行、健康檢查通過、公開路由驗證成功」三項事實同時成立時，才能把部署標記為 ready。
@@ -73,6 +73,7 @@
 - 必須能辨識建置輸出目錄，例如 dist、build 或 public。
 - 路由回退、快取策略和資產相對路徑應顯式設定。
 - 不得把 Workspace Key 或其他 Secret 編譯進瀏覽器資產。
+- 外部靜態網站需要直接存取平台資料時，只能使用已配置精確 Origin 與 deny-by-default 規則的 Browser Data Gateway；`dbp_` 是公開定位符，瀏覽器資料權限來自短效 `wdb_`，不得以 `wak_` 取代。
 
 ### Container
 
@@ -109,9 +110,12 @@
 |---|---|
 | 已解封的源碼 | 唯讀；每個 source_version 不可變 |
 | /workspace/data | 工作區持久資料，可寫 |
+| /workspace/data/.runtime/python/&lt;digest&gt;/venv | Python 依賴虛擬環境，可寫且按建置摘要隔離 |
 | 系統臨時目錄 | 可寫但不保證跨部署保存 |
 | DATABASE_URL | 平台資料庫連線，由環境注入 |
 | Workspace Key | 控制面認證；不應提供給應用前端 |
+
+資料庫策略有四種：`platform_managed` 由平台建立並注入 PostgreSQL、`external` 注入已驗證外部 PostgreSQL、`workspace_managed` 由工作區 Compose／Secret 自行選擇任何資料引擎、`none` 不使用資料庫。前兩者的 `DATABASE_URL` 由預設 `database_binding` 解析且應用不得覆蓋；後兩者不強制 PostgreSQL，也不啟用平台 PostgreSQL 發布閘門。
 
 應用不能依賴目前工作目錄恰好等於源碼根目錄；路徑應以應用根目錄或平台變數解析。
 
@@ -123,6 +127,7 @@
 4. 大表操作應分批，並聲明逾時、鎖定和回復策略。
 5. 原生 SQL 必須使用驅動可接受的執行介面；含 JSON 冒號的 SQL 不應被誤解析為綁定參數。
 6. 不把密碼、完整連線字串或個資輸出到 migration 日誌。
+7. 可用 `POST /api/workspaces/v1/jobs` 執行 Alembic、catalog import 或初始化命令；任務只掛載唯讀源碼與該工作區可寫資料卷，成功不切換正式流量。
 
 ## 07 · 安全與供應鏈
 
@@ -149,7 +154,7 @@ Warehouse OS 託管控制面必須：
 2. 在服務端驗證上傳雜湊及安全解封。
 3. 將 source_version 設為不可變並留下操作與部署譜系。
 4. 根據來源 digest 重用可信依賴快取，不混用未知版本。
-5. 注入 PORT、DATABASE_URL、工作區路徑及已授權 Secret。
+5. 注入 PORT、工作區路徑、已授權 Secret，以及資料庫策略允許時的 DATABASE_URL。
 6. 以唯讀源碼和可寫資料卷啟動隔離進程。
 7. 執行健康檢查，再驗證公開入口確實路由至該部署。
 8. 只有通過全部門檻才啟用；失敗時保留前一個健康版本。

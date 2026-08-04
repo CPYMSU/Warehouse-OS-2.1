@@ -156,7 +156,9 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert kit.status_code == 200
     assert cli.status_code == 200
     assert 'DEFAULT_BASE = "http://testserver"' in cli.text
-    assert 'VERSION = "2.3.2"' in cli.text
+    assert 'VERSION = "2.4.0"' in cli.text
+    assert 'commands.add_parser("job"' in cli.text
+    assert 'commands.add_parser("database"' in cli.text
     assert '"fabric"' in cli.text
     assert 'source_subcommands.add_parser("pull"' in cli.text
     assert '"/api/hosting/v2/sessions"' in cli.text

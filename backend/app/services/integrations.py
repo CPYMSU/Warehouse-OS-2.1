@@ -257,9 +257,7 @@ def _provider_request(
     response.raise_for_status()
 
 
-def validate_credentials(
-    provider: str, secret: str, config: dict[str, object]
-) -> ValidationResult:
+def validate_credentials(provider: str, secret: str, config: dict[str, object]) -> ValidationResult:
     started = perf_counter()
     try:
         _provider_request(provider, secret, config)
@@ -330,6 +328,55 @@ def validate_saved(
     )
     _write(actor, provider, stored)
     return public_state(actor, provider), result
+
+
+def tavily_search(
+    actor: ActorContext,
+    settings: Settings,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Search through the tenant-owned Tavily connection.
+
+    Credential lookup remains tenant/RLS scoped and the secret is never placed
+    in the response or audit payload.
+    """
+
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        raise ValueError("Search query is required")
+    try:
+        max_results = max(1, min(int(payload.get("max_results") or 5), 20))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_results must be an integer") from exc
+    stored = _stored(actor, "tavily")
+    secret = _decrypt(stored, settings)
+    if not secret or str(stored.get("connection_status") or "") != "connected":
+        raise ValueError("Tavily integration is not connected for this tenant")
+    response = httpx.post(
+        f"{DEFAULTS['tavily']['base_url']}/search",
+        headers={
+            "Authorization": f"Bearer {secret}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "query": query,
+            "max_results": max_results,
+            "topic": str(payload.get("topic") or "general"),
+            "include_answer": True,
+        },
+        timeout=20.0,
+    )
+    response.raise_for_status()
+    body = response.json()
+    results = body.get("results") if isinstance(body, dict) else None
+    return {
+        "ok": True,
+        "provider": "tavily",
+        "query": query,
+        "answer": body.get("answer") if isinstance(body, dict) else None,
+        "results": results if isinstance(results, list) else [],
+        "effect_verified": True,
+    }
 
 
 def connected_deepseek(actor: ActorContext, settings: Settings) -> ModelConnection:

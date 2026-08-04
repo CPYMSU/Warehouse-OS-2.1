@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     hosted_database_admin_url: SecretStr = SecretStr("")
     hosted_database_pool_size: int = 2
     hosted_database_connect_timeout_seconds: int = 5
+    # Customer-owned PostgreSQL bindings are public-network and TLS-only by
+    # default. Private-address access requires an explicitly governed network
+    # connector instead of turning a database credential into an SSRF tunnel.
+    external_database_allow_private_hosts: bool = False
+    external_database_require_tls: bool = True
     # Read-only compatibility mount used while an older local volume is being
     # migrated to the HDD.  New writes never target this path.
     asset_legacy_storage_root: Path | None = None

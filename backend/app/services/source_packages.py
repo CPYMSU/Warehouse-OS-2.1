@@ -129,6 +129,8 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
             "app.py",
             "main.py",
             "server.py",
+            "asgi.py",
+            "wsgi.py",
             "worker.py",
             "agent.py",
             "server.js",

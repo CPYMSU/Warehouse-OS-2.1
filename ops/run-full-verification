@@ -3,6 +3,9 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG_BIN="${WAREHOUSE_TEST_PG_BIN:-/opt/homebrew/opt/postgresql@18/bin}"
+if [[ -x "${PG_BIN}/pg_dump" && -x "${PG_BIN}/pg_restore" ]]; then
+  export WAREHOUSE_POSTGRESQL_CLIENT_BIN="${PG_BIN}"
+fi
 pytest_targets=("$@")
 if [[ ${#pytest_targets[@]} -eq 0 ]]; then
   pytest_targets=(tests)

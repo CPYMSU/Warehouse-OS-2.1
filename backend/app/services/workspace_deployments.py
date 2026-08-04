@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -16,6 +17,7 @@ from sqlalchemy import text
 
 from app.core.config import Settings, get_settings
 from app.db.session import system_session, tenant_session
+from app.services.database_release import observe_database_release_gate
 from app.services.digital_asset_hosting import (
     HDD_POOL_KEY,
     LOCAL_PROVIDER_KEYS,
@@ -41,7 +43,7 @@ from app.services.object_storage import (
 from app.services.source_packages import SourceArchive, inspect_source_archive
 
 WORKSPACE_RUNTIME_TYPES = frozenset(
-    {"auto", "static", "web", "api", "worker", "agent", "container", "compose"}
+    {"auto", "static", "web", "api", "worker", "agent", "job", "container", "compose"}
 )
 DeploymentReference = UUID | int
 
@@ -864,7 +866,7 @@ def _resolve_runtime_contract(
     if requested_type not in WORKSPACE_RUNTIME_TYPES:
         raise HTTPException(
             status_code=422,
-            detail=("runtime_type must be auto/static/web/api/worker/agent/container/compose"),
+            detail=("runtime_type must be auto/static/web/api/worker/agent/job/container/compose"),
         )
     requested_profile = str(payload.get("runtime_profile") or "").strip()
     requested_runtime = str(payload.get("runtime") or "").strip().lower()
@@ -895,7 +897,7 @@ def _resolve_runtime_contract(
             family = "static"
         elif requested_type in {"container", "compose"}:
             family = "container"
-        elif requested_type in {"api", "worker", "agent"}:
+        elif requested_type in {"api", "worker", "agent", "job"}:
             family = (
                 "python"
                 if signals.get("python_source")
@@ -967,7 +969,7 @@ def _resolve_runtime_contract(
         )
     if requested_type == "static" and family != "static":
         raise HTTPException(status_code=422, detail="Static hosting requires a static profile")
-    if requested_type in {"api", "worker", "agent"} and family == "static":
+    if requested_type in {"api", "worker", "agent", "job"} and family == "static":
         raise HTTPException(status_code=422, detail=f"{requested_type} requires Python or Node")
     if not requested_profile:
         profile = (
@@ -1009,6 +1011,7 @@ def configure_workspace_runtime(
             "api": "backend",
             "worker": "worker",
             "agent": "agent",
+            "job": "worker",
             "container": "backend",
             "compose": "backend",
         }[runtime_type]
@@ -1018,6 +1021,8 @@ def configure_workspace_runtime(
             "worker": "worker",
             "agent": "agent",
         }[kind]
+        if runtime_type == "job":
+            default_name = "job"
         component_name = str(payload.get("component") or default_name).strip()
         if not component_name or len(component_name) > 80:
             raise HTTPException(status_code=422, detail="Invalid component name")
@@ -1039,7 +1044,15 @@ def configure_workspace_runtime(
             if kind == "worker"
             else ["agent.py", "agent.js", "main.py", "index.js"]
             if kind == "agent"
-            else ["app.py", "main.py", "server.py", "server.js", "index.js"]
+            else [
+                "app.py",
+                "main.py",
+                "server.py",
+                "asgi.py",
+                "wsgi.py",
+                "server.js",
+                "index.js",
+            ]
         )
         detected_entrypoint = next(
             (
@@ -1072,9 +1085,16 @@ def configure_workspace_runtime(
                 "route_service",
                 "port",
                 "command",
+                "activate",
+                "execution_mode",
+                "database_url_env",
+                "timeout_seconds",
             )
             if payload.get(key) not in (None, "")
         }
+        if runtime_type == "job":
+            component_config["execution_mode"] = "job"
+            component_config["activate"] = False
         component = (
             session.execute(
                 text(
@@ -1183,6 +1203,10 @@ def configure_workspace_runtime(
                 "runtime_profile": profile["profile_key"],
                 "entrypoint": entrypoint,
                 "health_path": payload.get("health_path"),
+                "activate": payload.get("activate"),
+                "execution_mode": payload.get("execution_mode"),
+                "database_url_env": payload.get("database_url_env"),
+                "timeout_seconds": payload.get("timeout_seconds"),
                 **component_config,
             },
             idempotency_key=str(
@@ -1203,6 +1227,24 @@ def request_workspace_deployment(
     settings: Settings | None = None,
 ) -> dict[str, object]:
     credential.require("deploy:write")
+    if payload.get("database_url_env") not in (None, ""):
+        credential.require("database:admin")
+    execution_mode = str(payload.get("execution_mode") or "service").strip().lower()
+    if execution_mode not in {"service", "job"}:
+        raise HTTPException(status_code=422, detail="execution_mode must be service or job")
+    database_url_env = str(payload.get("database_url_env") or "").strip()
+    if database_url_env and not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
+        raise HTTPException(status_code=422, detail="database_url_env must be a safe env name")
+    try:
+        timeout_seconds = int(payload.get("timeout_seconds") or 1200)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="timeout_seconds must be an integer") from exc
+    if not 30 <= timeout_seconds <= 7200:
+        raise HTTPException(status_code=422, detail="timeout_seconds must be between 30 and 7200")
+    activate_value = payload.get("activate")
+    activate_requested = (
+        True if activate_value is None else bool(activate_value)
+    ) and execution_mode != "job"
     settings = settings or get_settings()
     key = str(idempotency_key or payload.get("idempotency_key") or "").strip() or None
     if key and len(key) > 200:
@@ -1345,6 +1387,10 @@ def request_workspace_deployment(
             "build_command": payload.get("build_command") or component.get("build_command"),
             "start_command": payload.get("start_command") or component.get("start_command"),
             "health_path": payload.get("health_path"),
+            "activate": activate_requested,
+            "execution_mode": execution_mode,
+            "database_url_env": database_url_env or None,
+            "timeout_seconds": timeout_seconds,
             **{
                 key: (
                     payload.get(key)
@@ -1602,6 +1648,156 @@ def observe_workspace_deployment(
     return {"ok": True, "deployment": _deployment_public(dict(row)), "events": events}
 
 
+def repair_workspace_deployment(
+    credential: WorkspaceCredential,
+    deployment_id: DeploymentReference,
+    payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Idempotently enqueue a bounded repair under the workspace credential."""
+
+    credential.require("deploy:write")
+    request = payload or {}
+    source = str(request.get("source") or "user").strip().lower()
+    if source not in {"user", "ai_secretary", "platform_probe"}:
+        raise HTTPException(status_code=422, detail="Invalid deployment repair source")
+    reason = str(request.get("reason") or "deployment_runtime_repair").strip()
+    if not reason or len(reason) > 240:
+        raise HTTPException(status_code=422, detail="Invalid deployment repair reason")
+
+    with tenant_session(credential.tenant_id) as session:
+        row = (
+            session.execute(
+                text(
+                    """
+                    SELECT * FROM digital_asset.deployments
+                    WHERE workspace_id=:workspace_id
+                      AND (
+                        CAST(id AS text)=:deployment_reference
+                        OR CAST(legacy_id AS text)=:deployment_reference
+                      )
+                    FOR UPDATE
+                    """
+                ),
+                {
+                    **_deployment_reference_params(deployment_id),
+                    "workspace_id": credential.workspace_id,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        resolved_id = UUID(str(row["id"]))
+        current_status = str(row["status"])
+        if current_status in {"queued", "building", "deploying"}:
+            return {
+                "ok": True,
+                "accepted": False,
+                "deployment": _deployment_public(dict(row)),
+                "next_action": "observe_deployment",
+            }
+        if current_status not in {"ready", "failed"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Deployment cannot be repaired from {current_status}",
+            )
+        active = bool(
+            session.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM digital_asset.workspaces "
+                    "WHERE id=:workspace_id AND active_deployment_id=:deployment_id)"
+                ),
+                {
+                    "workspace_id": credential.workspace_id,
+                    "deployment_id": resolved_id,
+                },
+            ).scalar_one()
+        )
+        if current_status == "ready" and not active:
+            raise HTTPException(
+                status_code=409,
+                detail="Only the active ready deployment can be repaired",
+            )
+        updated = (
+            session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET status='queued',health='pending',lease_owner=NULL,
+                        lease_expires_at=NULL,started_at=NULL,completed_at=NULL,
+                        result=result || jsonb_build_object(
+                          'repair_requested_at',now(),
+                          'repair_source',CAST(:source AS text)
+                        )
+                    WHERE id=:deployment_id
+                    RETURNING *
+                    """
+                ),
+                {"deployment_id": resolved_id, "source": source},
+            )
+            .mappings()
+            .one()
+        )
+        if active:
+            session.execute(
+                text(
+                    "UPDATE digital_asset.workspaces SET runtime_status='building' "
+                    "WHERE id=:workspace_id AND active_deployment_id=:deployment_id"
+                ),
+                {
+                    "workspace_id": credential.workspace_id,
+                    "deployment_id": resolved_id,
+                },
+            )
+        sequence = int(
+            session.execute(
+                text(
+                    "SELECT COALESCE(max(sequence),0)+1 "
+                    "FROM digital_asset.deployment_events WHERE deployment_id=:id"
+                ),
+                {"id": resolved_id},
+            ).scalar_one()
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO digital_asset.deployment_events(
+                  deployment_id,tenant_id,sequence,event_type,payload
+                ) VALUES (
+                  :id,:tenant_id,:sequence,'repair_requested',CAST(:payload AS jsonb)
+                )
+                """
+            ),
+            {
+                "id": resolved_id,
+                "tenant_id": credential.tenant_id,
+                "sequence": sequence,
+                "payload": json.dumps(
+                    {
+                        "credential_id": str(credential.credential_id),
+                        "source": source,
+                        "reason": reason,
+                        "previous_status": current_status,
+                        "active_deployment": active,
+                    }
+                ),
+            },
+        )
+    return {
+        "ok": True,
+        "accepted": True,
+        "deployment": _deployment_public(dict(updated)),
+        "repair_contract": {
+            "execution": "asynchronous",
+            "required_scope": "deploy:write",
+            "source": source,
+            "automatic_runtime_reconciliation": True,
+        },
+        "next_action": "observe_deployment",
+    }
+
+
 def cancel_workspace_deployment(
     credential: WorkspaceCredential,
     deployment_id: DeploymentReference,
@@ -1710,6 +1906,22 @@ def activate_workspace_deployment(
             raise HTTPException(
                 status_code=409, detail="Only a healthy deployment can be activated"
             )
+        deployment_result = (
+            deployment.get("result") if isinstance(deployment.get("result"), dict) else {}
+        )
+        if str(deployment_result.get("execution_mode") or "service") == "job":
+            raise HTTPException(status_code=409, detail="A one-shot job cannot receive traffic")
+        database_release = observe_database_release_gate(
+            session, credential.workspace_id
+        )
+        if not bool(database_release["ready"]):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "database_release_gate_blocked",
+                    "database_release": _json_safe(database_release),
+                },
+            )
         resolved_id = UUID(str(deployment["id"]))
         session.execute(
             text(
@@ -1720,6 +1932,20 @@ def activate_workspace_deployment(
                 """
             ),
             {"deployment_id": resolved_id, "workspace_id": credential.workspace_id},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE digital_asset.deployments
+                SET result=result || jsonb_build_object(
+                  'activation_requested', true,
+                  'activation_deferred', false,
+                  'activated_at', now()
+                )
+                WHERE id=:deployment_id
+                """
+            ),
+            {"deployment_id": resolved_id},
         )
         sequence = int(
             session.execute(
@@ -1747,7 +1973,12 @@ def activate_workspace_deployment(
                 ),
             },
         )
-    return {"ok": True, "deployment": _deployment_public(dict(deployment)), "active": True}
+    return {
+        "ok": True,
+        "deployment": _deployment_public(dict(deployment)),
+        "database_release": _json_safe(database_release),
+        "active": True,
+    }
 
 
 def active_workspace_runtime(tenant_slug: str, workspace_key: str) -> dict[str, object] | None:

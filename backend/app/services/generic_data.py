@@ -24,6 +24,7 @@ from app.services.digital_asset_hosting import (
     workspace_entry_path,
     workspace_entry_url,
 )
+from app.terminal import legacy_catalog
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -282,7 +283,9 @@ def list_capability_gaps(
         rows = session.execute(
             text(
                 f"""
-                SELECT id, fingerprint, resource_key, effect, field_set,
+                SELECT id, fingerprint, resource_key, capability_key,
+                       domain_key, effect, field_set, semantic_contract,
+                       last_error,
                        occurrence_count, examples, suggested_tool_name,
                        promotion_reason, status, promoted_tool_name,
                        first_seen_at, last_seen_at
@@ -296,6 +299,134 @@ def list_capability_gaps(
         ).mappings().all()
     items = [_json_safe(dict(row)) for row in rows]
     return {"ok": True, "items": items, "total": len(items), "limit": bounded_limit}
+
+
+def record_missing_capability_gap(
+    actor: ActorContext,
+    *,
+    entry: dict[str, object],
+    arguments: dict[str, object],
+    origin: str,
+    reason: str,
+) -> dict[str, object] | None:
+    """Persist a truthful missing-adapter observation without prescribing recovery.
+
+    Capability concepts may precede their semantic-resource registration.  The
+    gap ledger therefore accepts a capability key with an optional resource;
+    Auto Runtime remains responsible for choosing generic data, another
+    adapter, partial completion, or a human question.
+    """
+
+    tool_name = str(entry.get("tool_name") or "").strip()
+    if not tool_name:
+        return None
+    semantic_contract = dict(entry.get("semantic_contract") or {})
+    declared_resource = str(semantic_contract.get("resource") or "").strip()
+    effect = str(
+        semantic_contract.get("effect")
+        or ("write" if bool(entry.get("writes")) else "read")
+    )[:120]
+    domain_key = str(entry.get("domain") or "").strip() or None
+    if domain_key is None:
+        try:
+            domain_key = str(
+                legacy_catalog.capability_summary(entry)["category"]
+            ).strip() or None
+        except (KeyError, TypeError, ValueError):
+            domain_key = None
+    safe_arguments = {
+        str(key): (
+            "[redacted]"
+            if any(
+                secret in str(key).lower()
+                for secret in ("password", "secret", "token", "credential", "passkey", "sql")
+            )
+            else _json_safe(value)
+        )
+        for key, value in arguments.items()
+    }
+    fingerprint = _digest(
+        {
+            "tenant_id": str(actor.tenant_id),
+            "capability": tool_name,
+            "resource": declared_resource or None,
+            "effect": effect,
+        }
+    )
+    example = {
+        "origin": origin if origin in _ORIGINS else "api",
+        "arguments": safe_arguments,
+        "reason": str(reason)[:1000],
+        "observed_at": datetime.now(UTC).isoformat(),
+    }
+    with tenant_session(actor.tenant_id) as session:
+        resource_key = None
+        if declared_resource and declared_resource != "any_registered_resource":
+            resource_key = session.execute(
+                text(
+                    """
+                    SELECT resource_key FROM app.resource_types
+                    WHERE resource_key = :resource_key AND active
+                    """
+                ),
+                {"resource_key": declared_resource},
+            ).scalar_one_or_none()
+        row = session.execute(
+            text(
+                """
+                INSERT INTO terminal.capability_gaps(
+                  id, tenant_id, fingerprint, resource_key, capability_key,
+                  domain_key, effect, field_set, examples,
+                  suggested_tool_name, promotion_reason, semantic_contract,
+                  last_error
+                ) VALUES (
+                  :id, :tenant_id, :fingerprint, :resource_key, :capability_key,
+                  :domain_key, :effect, '[]'::jsonb, CAST(:examples AS jsonb),
+                  :suggested_tool_name,
+                  'A discovered capability has no truthful executable adapter; '
+                  'Auto Runtime may use registered semantic data or another atomic ability.',
+                  CAST(:semantic_contract AS jsonb), CAST(:last_error AS jsonb)
+                )
+                ON CONFLICT (tenant_id, fingerprint)
+                DO UPDATE SET
+                  occurrence_count = terminal.capability_gaps.occurrence_count + 1,
+                  last_seen_at = now(),
+                  semantic_contract = EXCLUDED.semantic_contract,
+                  last_error = EXCLUDED.last_error,
+                  examples = CASE
+                    WHEN jsonb_array_length(terminal.capability_gaps.examples) < 5
+                    THEN terminal.capability_gaps.examples || EXCLUDED.examples
+                    ELSE terminal.capability_gaps.examples
+                  END
+                RETURNING id, fingerprint, occurrence_count, status
+                """
+            ),
+            {
+                "id": uuid4(),
+                "tenant_id": actor.tenant_id,
+                "fingerprint": fingerprint,
+                "resource_key": resource_key,
+                "capability_key": tool_name,
+                "domain_key": domain_key,
+                "effect": effect,
+                "examples": json.dumps([example], ensure_ascii=False, default=str),
+                "suggested_tool_name": tool_name[:128],
+                "semantic_contract": json.dumps(semantic_contract, ensure_ascii=False),
+                "last_error": json.dumps(
+                    {"reason": str(reason)[:2000], "origin": origin},
+                    ensure_ascii=False,
+                ),
+            },
+        ).mappings().one()
+    return {
+        "id": str(row["id"]),
+        "fingerprint": str(row["fingerprint"]),
+        "capability_key": tool_name,
+        "resource_key": resource_key,
+        "effect": effect,
+        "occurrence_count": int(row["occurrence_count"]),
+        "status": str(row["status"]),
+    }
 
 
 def _table_name(resource: dict[str, object]) -> str:

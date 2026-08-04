@@ -1,4 +1,6 @@
-FROM python:3.13-slim
+FROM postgres:18.4-bookworm AS postgresql-client
+
+FROM python:3.13-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -6,9 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /service
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git postgresql-client \
+    && apt-get install -y --no-install-recommends git liblz4-1 libpq5 libzstd1 \
     && git --version \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=postgresql-client /usr/lib/postgresql/18 /usr/lib/postgresql/18
+ENV PATH="/usr/lib/postgresql/18/bin:${PATH}" \
+    WAREHOUSE_POSTGRESQL_CLIENT_BIN=/usr/lib/postgresql/18/bin
+RUN pg_dump --version | grep -Eq '^pg_dump \(PostgreSQL\) 18\.' \
+    && pg_restore --version | grep -Eq '^pg_restore \(PostgreSQL\) 18\.'
 COPY backend/pyproject.toml ./pyproject.toml
 COPY backend/app ./app
 COPY backend/alembic ./alembic
