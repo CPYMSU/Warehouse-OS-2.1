@@ -54,6 +54,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Use the Mac mini toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "${RUNNER_OS}" == macOS ]] || {
+            echo "production deployments require the dedicated Mac runner" >&2
+            exit 1
+          }
+          homebrew_bin=/opt/homebrew/bin
+          [[ -x "${homebrew_bin}/python3" && -x "${homebrew_bin}/node" ]] || {
+            echo "the Mac runner requires Homebrew Python and Node.js" >&2
+            exit 1
+          }
+          export PATH="${homebrew_bin}:${PATH}"
+          python3 -c 'import sys; assert (3, 12) <= sys.version_info < (3, 15), sys.version'
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
+          echo "${homebrew_bin}" >> "${GITHUB_PATH}"
+
       - name: Install the restricted deployment identity
         if: inputs.transport == 'ssh'
         shell: bash
@@ -94,18 +112,6 @@ jobs:
               "${plan_json}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Set up Python
-        if: steps.plan.outputs.deploy_required == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Set up Node.js
-        if: steps.plan.outputs.deploy_required == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Install packaging tools
         if: steps.plan.outputs.deploy_required == 'true'
         shell: bash
@@ -116,7 +122,7 @@ jobs:
             sudo apt-get install -y --no-install-recommends libdigest-sha-perl rsync
           fi
           tools_venv="${RUNNER_TEMP}/warehouse-deploy-tools"
-          python -m venv "${tools_venv}"
+          python3 -m venv "${tools_venv}"
           "${tools_venv}/bin/pip" install --disable-pip-version-check 'alembic>=1.14,<2'
           echo "WAREHOUSE_DEPLOY_ALEMBIC=${tools_venv}/bin/alembic" >> "${GITHUB_ENV}"
 
