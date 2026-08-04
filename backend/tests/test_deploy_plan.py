@@ -216,6 +216,7 @@ def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
     assert 'REMOTE_INCOMING="${WAREHOUSE_DEPLOY_INCOMING:' in source
     assert 'TRANSPORT="${WAREHOUSE_DEPLOY_TRANSPORT:' in source
     assert 'KNOWN_HOSTS="${WAREHOUSE_DEPLOY_KNOWN_HOSTS:' in source
+    assert "-F /dev/null" in source
     assert 'MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:' in source
     assert 'PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:' in source
     assert 'SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:' in source

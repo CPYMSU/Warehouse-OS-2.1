@@ -129,7 +129,9 @@ places the immutable archive in the local incoming directory. No Tailscale or
 SSH credential is involved. After Mac health and the public endpoint pass, the
 same runner executes the Vultr job over its existing restricted SSH channel.
 Its known-hosts file is isolated under `RUNNER_TEMP`, so the job never replaces
-the Mac user's personal SSH configuration.
+the Mac user's personal SSH configuration. The deploy client also passes
+`-F /dev/null`, preventing personal SSH `Include`, proxy or multiplexing rules
+from changing or blocking the automated connection.
 
 The workflow refuses stale queued revisions, serializes the entire two-target
 release and requires each node's live manifest. It fixes

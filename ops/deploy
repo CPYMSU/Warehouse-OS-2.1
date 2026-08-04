@@ -18,6 +18,7 @@ SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:-0}"
 ALEMBIC="${WAREHOUSE_DEPLOY_ALEMBIC:-${ROOT}/backend/.venv/bin/alembic}"
 
 ssh_options=(
+  -F /dev/null
   -i "${IDENTITY}"
   -o BatchMode=yes
   -o IdentitiesOnly=yes
