@@ -30,6 +30,7 @@ if [[ ! -x "${ALEMBIC}" ]]; then
   ALEMBIC="${ROOT}/ops/alembic-head"
 fi
 RELEASE_ID_FILE="${WAREHOUSE_DEPLOY_RELEASE_ID_FILE:-}"
+DATABASE_MIGRATION_DEFER="${WAREHOUSE_DATABASE_MIGRATION_DEFER:-0}"
 
 ssh_options=(
   -F /dev/null
@@ -162,6 +163,8 @@ fi
   || fail "WAREHOUSE_DEPLOY_PREPARE_INCOMING must be 0 or 1"
 [[ "${SCP_LEGACY}" =~ ^[01]$ ]] \
   || fail "WAREHOUSE_DEPLOY_SCP_LEGACY must be 0 or 1"
+[[ "${DATABASE_MIGRATION_DEFER}" =~ ^[01]$ ]] \
+  || fail "WAREHOUSE_DATABASE_MIGRATION_DEFER must be 0 or 1"
 
 case "${MODE}" in
   -h|--help|help)
@@ -500,7 +503,11 @@ if [[ -n "${RELEASE_ID_FILE}" ]]; then
 fi
 
 printf '==> server %s and verification\n' "${DEPLOY_ACTION}"
-manager_remote "${DEPLOY_ACTION}" "${release_id}" "${INSTALL_MODE}"
+manager_action="${DEPLOY_ACTION}"
+if [[ "${DEPLOY_ACTION}" == prepare && "${DATABASE_MIGRATION_DEFER}" == 1 ]]; then
+  manager_action=prepare-deferred
+fi
+manager_remote "${manager_action}" "${release_id}" "${INSTALL_MODE}"
 if [[ "${DEPLOY_ACTION}" == prepare ]]; then
   printf '==> prepared %s on %s in %ss\n' \
     "${release_id}" "${TARGET}" "$((SECONDS - deploy_started))"

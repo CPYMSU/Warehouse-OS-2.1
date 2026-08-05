@@ -54,7 +54,7 @@ def test_gate_allows_fixed_manager_operations(deploy_root: Path, operation: str)
     assert completed.stdout == f"manager={operation}\n"
 
 
-@pytest.mark.parametrize("operation", ["install", "prepare"])
+@pytest.mark.parametrize("operation", ["install", "prepare", "prepare-deferred"])
 def test_gate_allows_a_valid_immutable_release_install(
     deploy_root: Path, operation: str
 ) -> None:

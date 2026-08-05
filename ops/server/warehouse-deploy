@@ -175,7 +175,8 @@ wait_database_migration() {
           chmod 0600 "${reseed_marker}"
           printf 'database_migration=recovering action=standby_reseed release=%s\n' \
             "${release}"
-          WAREHOUSE_CONFIRM_STANDBY_RESEED=YES "${reseed_action}"
+          WAREHOUSE_NODE_ROLE=standby \
+            WAREHOUSE_CONFIRM_STANDBY_RESEED=YES "${reseed_action}"
           rm -f "${status}"
           start_database_migration "${release}" "${image}" "${role}"
           continue
@@ -1749,6 +1750,12 @@ command="${1:-status}"
 case "${command}" in
   prepare)
     [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy prepare RELEASE MODE"
+    prepare_release "$2" "$3"
+    ;;
+  prepare-deferred)
+    [[ "$#" -eq 3 ]] \
+      || fail "usage: warehouse-deploy prepare-deferred RELEASE MODE"
+    MIGRATION_DEFER=1
     prepare_release "$2" "$3"
     ;;
   prepared-status)
