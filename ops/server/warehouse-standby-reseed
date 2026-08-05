@@ -69,12 +69,52 @@ slot_name="$(control_psql -At -c \
 [[ "${slot_name}" == vultr_control ]] \
   || fail "unexpected publisher slot: ${slot_name}"
 
-publisher_revision="$(docker exec -e PGDATABASE="${conninfo}" "${CONTROL_CONTAINER}" \
+mapfile -d '' -t publisher_fields < <(
+  printf '%s' "${conninfo}" | python3 -c '
+import shlex, sys
+
+options = {}
+for item in shlex.split(sys.stdin.read()):
+    key, separator, value = item.partition("=")
+    if not separator:
+        raise SystemExit("invalid publisher conninfo")
+    options[key] = value
+for name in (
+    "host", "hostaddr", "port", "user", "password", "dbname",
+    "sslmode", "connect_timeout",
+):
+    sys.stdout.write(options.get(name, "") + "\0")
+'
+)
+[[ "${#publisher_fields[@]}" == 8 ]] \
+  || fail "publisher conninfo could not be parsed"
+export PGHOST="${publisher_fields[0]}"
+export PGHOSTADDR="${publisher_fields[1]}"
+export PGPORT="${publisher_fields[2]}"
+export PGUSER="${publisher_fields[3]}"
+export PGPASSWORD="${publisher_fields[4]}"
+export PGDATABASE="${publisher_fields[5]}"
+export PGSSLMODE="${publisher_fields[6]}"
+export PGCONNECT_TIMEOUT="${publisher_fields[7]}"
+[[ -n "${PGHOST}${PGHOSTADDR}" && -n "${PGUSER}" \
+    && -n "${PGPASSWORD}" && -n "${PGDATABASE}" ]] \
+  || fail "publisher conninfo is incomplete"
+
+publisher_environment=(-e PGUSER -e PGPASSWORD -e PGDATABASE)
+for variable in PGHOST PGHOSTADDR PGPORT PGSSLMODE PGCONNECT_TIMEOUT; do
+  [[ -z "${!variable}" ]] || publisher_environment+=(-e "${variable}")
+done
+
+publisher_command() {
+  docker exec "${publisher_environment[@]}" "${CONTROL_CONTAINER}" "$@"
+}
+
+publisher_revision="$(publisher_command \
   psql -X -v ON_ERROR_STOP=1 -At -c \
   'select version_num from app.alembic_version')"
 [[ "${publisher_revision}" =~ ^[A-Za-z0-9_.-]{4,128}$ ]] \
   || fail "publisher Alembic revision is invalid"
-publisher_tables="$(docker exec -e PGDATABASE="${conninfo}" "${CONTROL_CONTAINER}" \
+publisher_tables="$(publisher_command \
   psql -X -v ON_ERROR_STOP=1 -At -c \
   "select count(*) from pg_publication_tables where pubname='${publication}'")"
 [[ "${publisher_tables}" =~ ^[1-9][0-9]*$ ]] \
@@ -109,8 +149,7 @@ mv "${partial_backup}" "${local_backup}"
 sha256sum "${local_backup}" > "${local_backup}.sha256"
 chmod 0600 "${local_backup}.sha256"
 
-docker exec -e PGDATABASE="${conninfo}" "${CONTROL_CONTAINER}" \
-  pg_dump --schema-only > "${schema_dump}"
+publisher_command pg_dump --schema-only > "${schema_dump}"
 [[ -s "${schema_dump}" ]] || fail "publisher schema dump is empty"
 
 while IFS= read -r container; do
@@ -170,7 +209,7 @@ subscriber_revision="$(control_psql -At -c \
 [[ "${subscriber_revision}" == "${publisher_revision}" ]] \
   || fail "Alembic revision mismatch after reseed"
 
-publisher_counts="$(docker exec -e PGDATABASE="${conninfo}" "${CONTROL_CONTAINER}" \
+publisher_counts="$(publisher_command \
   psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
   "select (select count(*) from iam.tenants),(select count(*) from digital_asset.deployments),(select count(*) from app.resource_invariants)")"
 subscriber_counts="$(control_psql -At -F '|' -c \

@@ -315,6 +315,13 @@ def test_standby_reseed_uses_the_prepared_candidate_action() -> None:
     assert "WAREHOUSE_NODE_ROLE=standby" in source
     assert "prepare-deferred)" in source
 
+    reseed = (REPO_ROOT / "ops" / "server" / "warehouse-standby-reseed").read_text(
+        encoding="utf-8"
+    )
+    assert "publisher_command()" in reseed
+    assert "publisher_environment=(-e PGUSER -e PGPASSWORD -e PGDATABASE)" in reseed
+    assert 'PGDATABASE="${conninfo}"' not in reseed
+
 
 def test_database_migrations_are_detached_from_web_startup_and_deploy_process() -> None:
     compose = (REPO_ROOT / "compose.production.yaml").read_text(encoding="utf-8")
