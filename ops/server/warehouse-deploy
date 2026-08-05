@@ -57,6 +57,20 @@ active_slot() {
   fi
 }
 
+configured_node_role() {
+  local role
+  role="$({
+    set -a
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+    set +a
+    printf '%s\n' "${WAREHOUSE_NODE_ROLE:-standby}"
+  })"
+  [[ "${role}" =~ ^(primary|standby)$ ]] \
+    || fail "invalid WAREHOUSE_NODE_ROLE: ${role}"
+  printf '%s\n' "${role}"
+}
+
 slot_release() {
   local slot="$1"
   if [[ -f "${STATE}/slot-${slot}-release" ]]; then
@@ -747,11 +761,12 @@ healthy_runtime_controller() {
 }
 
 install_release() {
-  local release="$1" mode="$2" requested_mode install_started phase_started
+  local release="$1" mode="$2" requested_mode install_started phase_started node_role
   install_started="${SECONDS}"
   requested_mode="${mode}"
   valid_release_id "${release}" || fail "invalid release id"
   [[ "${mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid deploy mode"
+  node_role="$(configured_node_role)"
 
   local archive="${INCOMING}/${release}.tar.gz"
   local checksum="${archive}.sha256"
@@ -837,9 +852,11 @@ install_release() {
     install_shield_agent "${release_dir}"
     install_backup_service "${release_dir}"
   fi
-  install_browser_runtime_config
+  if [[ "${node_role}" == primary ]]; then
+    install_browser_runtime_config
+  fi
   local image="warehouse-os-api:${release}"
-  local browser_image="warehouse-os-browser:${release}"
+  local browser_image=""
   phase_started="${SECONDS}"
   if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_API}" == 1 ]]; then
     docker build --file "${release_dir}/backend/Dockerfile" --tag "${image}" "${release_dir}" >/dev/null
@@ -847,11 +864,16 @@ install_release() {
     image="$(active_api_image)" \
       || fail "unchanged API has no healthy source image"
   fi
-  if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_BROWSER}" == 1 ]]; then
-    docker build --file "${release_dir}/browser-runtime/Dockerfile" --tag "${browser_image}" "${release_dir}" >/dev/null
+  if [[ "${node_role}" == primary ]]; then
+    browser_image="warehouse-os-browser:${release}"
+    if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_BROWSER}" == 1 ]]; then
+      docker build --file "${release_dir}/browser-runtime/Dockerfile" --tag "${browser_image}" "${release_dir}" >/dev/null
+    else
+      browser_image="$(active_browser_image)" \
+        || fail "unchanged Browser Runtime has no healthy source image"
+    fi
   else
-    browser_image="$(active_browser_image)" \
-      || fail "unchanged Browser Runtime has no healthy source image"
+    printf 'component=browser_worker action=skipped node_role=standby\n'
   fi
   log_event deploy_phase succeeded "${release}" image_build "" \
     "$((SECONDS - phase_started))"
@@ -864,7 +886,7 @@ install_release() {
   log_event deploy_phase succeeded "${release}" hosted_database "" \
     "$((SECONDS - phase_started))"
 
-  local previous_slot next_slot next_port container browser_container runtime_controller previous_release
+  local previous_slot next_slot next_port container browser_container="" runtime_controller="" previous_release
   previous_slot="$(active_slot)"
   next_slot="$(other_slot "${previous_slot}")"
   next_port="$(slot_port "${next_slot}")"
@@ -881,15 +903,19 @@ install_release() {
   log_event deploy_phase succeeded "${release}" candidate_validation \
     "${next_slot}" "$((SECONDS - phase_started))"
 
-  phase_started="${SECONDS}"
-  if ! browser_container="$(start_browser_worker "${next_slot}" "${release}" "${browser_image}")"; then
-    docker rm -f "${container}" "warehouse-os-browser-${next_slot}" >/dev/null 2>&1 || true
-    log_event deploy failed "${release}" "${mode}" "${next_slot}" \
-      "$((SECONDS - install_started))"
-    fail "candidate Browser Runtime failed"
+  if [[ "${node_role}" == primary ]]; then
+    phase_started="${SECONDS}"
+    if ! browser_container="$(start_browser_worker "${next_slot}" "${release}" "${browser_image}")"; then
+      docker rm -f "${container}" "warehouse-os-browser-${next_slot}" >/dev/null 2>&1 || true
+      log_event deploy failed "${release}" "${mode}" "${next_slot}" \
+        "$((SECONDS - install_started))"
+      fail "candidate Browser Runtime failed"
+    fi
+    log_event deploy_phase succeeded "${release}" browser_worker \
+      "${next_slot}" "$((SECONDS - phase_started))"
+  else
+    log_event deploy_phase skipped "${release}" browser_worker "${next_slot}" 0
   fi
-  log_event deploy_phase succeeded "${release}" browser_worker \
-    "${next_slot}" "$((SECONDS - phase_started))"
 
   phase_started="${SECONDS}"
   switch_upstream "${next_port}"
@@ -900,7 +926,9 @@ install_release() {
       switch_upstream 8080
     fi
     docker rm -f "${container}" >/dev/null 2>&1 || true
-    docker rm -f "${browser_container}" >/dev/null 2>&1 || true
+    if [[ -n "${browser_container}" ]]; then
+      docker rm -f "${browser_container}" >/dev/null 2>&1 || true
+    fi
     log_event deploy rolled_back "${release}" "${mode}" "${next_slot}" \
       "$((SECONDS - install_started))"
     fail "public smoke failed; upstream restored"
@@ -908,25 +936,29 @@ install_release() {
   log_event deploy_phase succeeded "${release}" public_smoke \
     "${next_slot}" "$((SECONDS - phase_started))"
 
-  phase_started="${SECONDS}"
-  if [[ "${PLAN_ADAPTIVE}" == 1 && "${PLAN_RUNTIME_CONTROLLER}" != 1 ]] \
-    && runtime_controller="$(healthy_runtime_controller)"; then
-    printf 'runtime_controller=%s action=reused\n' "${runtime_controller}"
+  if [[ "${node_role}" == standby ]]; then
+    log_event deploy_phase skipped "${release}" runtime_controller "${next_slot}" 0
   else
-    if ! runtime_controller="$(start_runtime_controller "${release}" "${image}")"; then
-      if [[ -n "${previous_slot}" ]]; then
-        switch_upstream "$(slot_port "${previous_slot}")"
-      else
-        switch_upstream 8080
+    phase_started="${SECONDS}"
+    if [[ "${PLAN_ADAPTIVE}" == 1 && "${PLAN_RUNTIME_CONTROLLER}" != 1 ]] \
+      && runtime_controller="$(healthy_runtime_controller)"; then
+      printf 'runtime_controller=%s action=reused\n' "${runtime_controller}"
+    else
+      if ! runtime_controller="$(start_runtime_controller "${release}" "${image}")"; then
+        if [[ -n "${previous_slot}" ]]; then
+          switch_upstream "$(slot_port "${previous_slot}")"
+        else
+          switch_upstream 8080
+        fi
+        docker rm -f "${container}" "${browser_container}" >/dev/null 2>&1 || true
+        log_event deploy rolled_back "${release}" "${mode}" "${next_slot}" \
+          "$((SECONDS - install_started))"
+        fail "candidate Runtime Controller failed; upstream restored"
       fi
-      docker rm -f "${container}" "${browser_container}" >/dev/null 2>&1 || true
-      log_event deploy rolled_back "${release}" "${mode}" "${next_slot}" \
-        "$((SECONDS - install_started))"
-      fail "candidate Runtime Controller failed; upstream restored"
     fi
+    log_event deploy_phase succeeded "${release}" runtime_controller \
+      "${next_slot}" "$((SECONDS - phase_started))"
   fi
-  log_event deploy_phase succeeded "${release}" runtime_controller \
-    "${next_slot}" "$((SECONDS - phase_started))"
 
   ln -sfn "${release_dir}" "${CURRENT}"
   printf '%s\n' "${next_slot}" > "${STATE}/active-slot"
