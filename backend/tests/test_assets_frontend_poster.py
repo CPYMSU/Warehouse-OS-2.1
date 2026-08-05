@@ -30,6 +30,7 @@ def test_assets_page_loads_all_existing_data_contracts():
         "/database/health",
         "/database/schema",
         "/database/onboarding",
+        "/pages-console?limit=20",
     ):
         assert endpoint in source
 
@@ -73,17 +74,31 @@ def test_digital_assets_use_numbered_swiss_register_without_losing_actions():
     assert "prefers-reduced-motion" in css
 
 
+def test_digital_asset_drawer_exposes_the_pages_hosting_console():
+    source = ASSETS_PAGE.read_text(encoding="utf-8")
+    css = ASSETS_CSS.read_text(encoding="utf-8")
+
+    assert "const PagesConsole" in source
+    assert 'data-testid="pages-hosting-console"' in source
+    assert "Warehouse OS 內訪問" in source
+    assert "發布歷史" in source
+    assert "回滾至此" in source
+    assert "不得使用已退役的 dm site rollback" in source
+    assert ".pages-console" in css
+    assert ".pages-release-history" in css
+
+
 def test_assets_poster_styles_are_loaded_and_cache_busted():
     index = INDEX.read_text(encoding="utf-8")
-    assert 'pages/pages-assets.css?v=20260803-assets-operation-topology2' in index
-    assert 'pages/pages-assets.jsx?v=20260803-assets-operation-topology2' in index
+    assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
+    assert 'pages/pages-assets.jsx?v=20260805-pages-console1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
     assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
     assert 'core.css?v=20260804-task-runtime1' in index
     assert 'core.jsx?v=20260804-task-runtime2' in index
     assert 'action-center.jsx?v=20260804-task-runtime1' in index
-    assert 'dist/app.bundle.js?v=20260804-task-runtime2' in index
+    assert 'dist/app.bundle.js?v=20260805-pages-console1' in index
     assert 'dist/personal.bundle.js?v=20260801-workspace-runtime2' in PERSONAL.read_text(
         encoding="utf-8"
     )

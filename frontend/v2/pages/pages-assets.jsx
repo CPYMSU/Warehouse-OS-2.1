@@ -137,6 +137,22 @@ window.W2_LANG.addEN({
   "尚未上傳源碼,可以直接切換;DATA 與數據庫仍固定在 HDD。": "No source uploaded; the binding can be switched directly. DATA and databases remain on HDD.",
   "已存在源碼或代碼工件,不能直接改綁定;請交給 AI 規劃校驗後遷移。": "Source or code artifacts already exist. The binding cannot be changed directly; ask AI to plan a verified migration.",
   "交給 AI 判斷": "Let AI decide",
+  "定制網址": "Customize URL", "AI 改設計": "AI redesign",
+  "Pages 托管控制台": "Pages hosting console", "Warehouse OS 內訪問": "Open in Warehouse OS",
+  "正式入口": "Canonical URL", "複製網址": "Copy URL", "網址已複製": "URL copied",
+  "當前發布": "Current release", "發布新版": "Publish release", "發布歷史": "Release history",
+  "托管模式": "Hosting mode", "瀏覽器計算": "Browser compute", "專用 Runtime": "Dedicated Runtime",
+  "計算位置": "Compute location", "用戶瀏覽器": "User browser", "Warehouse Runtime": "Warehouse Runtime",
+  "閒置內存": "Idle memory", "接近 0": "Near zero", "由 Runtime 配置管理": "Managed by Runtime profile",
+  "平台數據庫 API": "Platform database API", "獨立網址": "Independent URL",
+  "默認關閉": "Off by default", "已開啟": "Enabled", "隔離運行來源": "Isolated runtime origin",
+  "托管狀態讀取中…": "Loading hosting state…", "托管狀態讀取失敗": "Hosting state failed to load",
+  "重試": "Retry", "沒有發布記錄": "No releases yet", "當前": "CURRENT", "可回滾": "Rollback ready",
+  "回滾至此": "Roll back here", "源版本": "Source version", "發佈於": "Released",
+  "不可原地修改": "Immutable", "變更需要治理確認並留下審計": "Changes require governed confirmation and an audit trail",
+  "數據庫綁定": "Database bindings", "發布摘要": "Release digest",
+  "請協助我定制工作區「{ws}」的 Warehouse OS 托管網址。先讀取目前站點,再追問我要的短名稱;確認後在托管會話提交 desired_state.pages.site_key,默認網址保持 https://bonfirework.org/apps/短名稱/。獨立子域別名默認關閉,只有我明確要求時才設 public_alias_enabled=true。若站點綁定了瀏覽器資料庫,核對隔離運行來源的精確 HTTPS Origin 已同步加入允許清單;只有達到來源上限時才提示我處理。": "Help customize the Warehouse OS hosting URL for workspace “{ws}”. Read the current site first, then ask for the short name; after confirmation submit desired_state.pages.site_key in the hosting session so the default URL remains https://bonfirework.org/apps/short-name/. Keep the independent subdomain alias disabled unless I explicitly request public_alias_enabled=true. If a browser database is attached, verify that the isolated runtime's exact HTTPS origin was synchronized to its allowlist; only ask me to intervene if the origin limit is full.",
+  "請讀取工作區「{ws}」目前激活源碼的 Pages design context 與必要的代碼/設計文件,排除秘密文件,分析版式、組件、設計 token、響應式、無障礙與瀏覽器資料庫接入。先給有文件證據的改造建議;我確認後才建立新的不可變源碼版本、預覽驗證並激活,不得原地修改當前 release。": "Read the Pages design context and necessary code/design files from the active source of workspace “{ws}”, excluding secret files. Analyze layout, components, design tokens, responsiveness, accessibility and browser database integration. First provide evidence-backed recommendations; only after my confirmation create a new immutable source version, preview, verify and activate it. Never edit the active release in place.",
   "請檢查工作區「{ws}」的源碼版本與 code 工件。若仍為空工作區,使用 dm workspace storage 把核心代碼從 {from} 切換至 {to};保持同一工作區,DATA 與數據庫不得移動。若已有源碼,不要直接改綁定,請先提出可校驗的遷移方案。": "Inspect source versions and code artifacts for workspace “{ws}”. If it is still empty, use dm workspace storage to switch core code from {from} to {to}; preserve the workspace and do not move DATA or the database. If source exists, do not edit the binding directly—propose a verifiable migration first.",
   "評估資產": "Assess asset", "上架到市場": "List on market", "訪問與收入": "Traffic & revenue",
   "開通托管工作區": "Provision workspace", "工作區控制台": "Workspace console",
@@ -263,6 +279,125 @@ const wsStorage = (ws) => {
   return `${t("核心代碼")} ${mbfmt(ws && ws.code_bytes)} · Runtime ${mbfmt(ws && ws.runtime_bytes)} · DATA ${mbfmt(ws && ws.data_bytes)} · ${t("數據庫")} ${mbfmt(ws && ws.database_bytes)} · ${t("總計")} ${mbfmt(total)}`;
 };
 
+const pagesReleaseTone = release => {
+  const status = String(release && release.status || "").toLowerCase();
+  const health = String(release && release.health || "").toLowerCase();
+  if (status === "ready" && health === "healthy") return "ok";
+  if (["failed", "cancelled"].includes(status) || health === "unhealthy") return "bad";
+  if (["queued", "building", "deploying"].includes(status)) return "warn";
+  return "plain";
+};
+const pagesReleaseWhen = value => value ? String(value).replace("T", " ").replace("Z", "").slice(0, 16) : "—";
+const pagesReleaseDigest = release => String(release && (release.release_digest || release.uuid) || "—").slice(0, 14);
+
+const PagesConsole = ({ ws, onCustomize, onRedesign }) => {
+  const workspaceKey = String(ws && ws.workspace_key || "");
+  const [state, setState] = _s({ loading: true, data: null, error: "" });
+  const [reload, setReload] = _s(0);
+  const [copied, setCopied] = _s(false);
+  _e(() => {
+    if (!workspaceKey) return undefined;
+    let disposed = false;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const load = () => {
+      setState(current => ({ loading: true, data: current.data, error: "" }));
+      W2.json(
+        `/api/workspaces/${encodeURIComponent(workspaceKey)}/pages-console?limit=20`,
+        controller ? { signal: controller.signal, cache: "no-store" } : { cache: "no-store" },
+      ).then(data => {
+        if (!disposed) setState({ loading: false, data, error: "" });
+      }).catch(error => {
+        if (disposed || error && error.name === "AbortError") return;
+        setState(current => ({ loading: false, data: current.data, error: error && error.message || t("托管狀態讀取失敗") }));
+      });
+    };
+    load();
+    const refresh = () => setReload(value => value + 1);
+    window.addEventListener("w2-agent-complete", refresh);
+    window.addEventListener("w2-business-action-complete", refresh);
+    return () => {
+      disposed = true;
+      if (controller) controller.abort();
+      window.removeEventListener("w2-agent-complete", refresh);
+      window.removeEventListener("w2-business-action-complete", refresh);
+    };
+  }, [workspaceKey, reload]);
+  const data = state.data || {};
+  const site = data.site || {};
+  const runtime = data.runtime || {};
+  const database = data.database || {};
+  const releases = Array.isArray(data.releases) ? data.releases.slice(0, 6) : [];
+  const current = data.current_release || null;
+  const alias = site.public_alias || {};
+  const entryUrl = site.url || wsHref(ws);
+  const copyUrl = async () => {
+    if (!entryUrl || !navigator.clipboard || !navigator.clipboard.writeText) return;
+    try {
+      await navigator.clipboard.writeText(String(entryUrl));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch (e) {}
+  };
+  const publishRelease = () => ask(
+    `請為工作區「${workspaceKey}」規劃並發布新版本。先讀取 Pages design context、當前 Release 與必要代碼文件，追問本次變更；確認後建立新的不可變源碼版本，完成預覽、健康檢查與驗收，再由我確認是否激活。不得原地修改當前 Release。`
+  );
+  const rollbackRelease = release => ask(
+    `我要把工作區「${workspaceKey}」回滾到已驗證部署 ${release.uuid}（${pagesReleaseDigest(release)}）。先重新核對它仍為 healthy/ready、當前激活版本沒有變化，說明回滾影響；取得我的明確確認後，使用 Warehouse OS 2.1 原生 deployment rollback/activate 能力切換發布指針。不得使用已退役的 dm site rollback，也不得改寫歷史源碼。`
+  );
+  return (
+    <section className="pages-console" data-testid="pages-hosting-console" aria-label={t("Pages 托管控制台")}>
+      <header className="pages-console-head">
+        <div>
+          <LB red>{t("Pages 托管控制台")}</LB>
+          <strong>{workspaceKey || "—"}</strong>
+        </div>
+        <T tone={current ? "ok" : "plain"} dot={!!current}>{t(current ? "當前" : "尚未部署")}</T>
+      </header>
+
+      {state.loading && !state.data && <div className="pages-console-state"><I name="refresh" size={14}/>{t("托管狀態讀取中…")}</div>}
+      {state.error && !state.data && <div className="pages-console-state is-error"><span>{t("托管狀態讀取失敗")}</span><button className="btn sm" onClick={() => setReload(value => value + 1)}>{t("重試")}</button></div>}
+
+      {state.data && <>
+        <div className="pages-console-url">
+          <LB dim>{t("正式入口")}</LB>
+          <a href={entryUrl || undefined} target="_blank" rel="noopener noreferrer">{entryUrl || "—"}</a>
+          <div className="row g6">
+            {entryUrl && <a className="btn sm primary" href={entryUrl} target="_blank" rel="noopener noreferrer"><I name="outbound" size={12}/>{t("Warehouse OS 內訪問")}</a>}
+            <button className="btn sm" onClick={copyUrl} disabled={!entryUrl}><I name="copy" size={12}/>{t(copied ? "網址已複製" : "複製網址")}</button>
+          </div>
+        </div>
+
+        <div className="pages-console-grid">
+          <div><LB dim>{t("托管模式")}</LB><strong>{t(runtime.mode === "static_browser" ? "瀏覽器計算" : "專用 Runtime")}</strong><small>{runtime.type || "static"}</small></div>
+          <div><LB dim>{t("計算位置")}</LB><strong>{t(runtime.compute_location === "browser" ? "用戶瀏覽器" : "Warehouse Runtime")}</strong><small>{t("閒置內存")} · {t(runtime.idle_server_memory === "near_zero" ? "接近 0" : "由 Runtime 配置管理")}</small></div>
+          <div><LB dim>{t("數據庫綁定")}</LB><strong>{nfmt(database.count, 0)}</strong><small>{t("平台數據庫 API")}</small></div>
+          <div><LB dim>{t("獨立網址")}</LB><strong>{t(alias.enabled ? "已開啟" : "默認關閉")}</strong><small>{alias.enabled && alias.hostname || t("不可原地修改")}</small></div>
+        </div>
+
+        <div className="pages-console-current">
+          <div><LB dim>{t("當前發布")}</LB><strong>{current ? pagesReleaseDigest(current) : "—"}</strong><small>{current ? pagesReleaseWhen(current.completed_at || current.created_at) : t("沒有發布記錄")}</small></div>
+          <div className="row g6">
+            <button className="btn sm" onClick={onCustomize}><I name="link" size={12}/>{t("定制網址")}</button>
+            <button className="btn sm" onClick={onRedesign}><I name="sparkle" size={12}/>{t("AI 改設計")}</button>
+            <button className="btn sm primary" onClick={publishRelease}><I name="outbound" size={12}/>{t("發布新版")}</button>
+          </div>
+        </div>
+
+        <div className="pages-release-history">
+          <div className="row spread g8"><LB dim>{t("發布歷史")}</LB><small>{t("變更需要治理確認並留下審計")}</small></div>
+          {!releases.length && <div className="pages-release-empty">{t("沒有發布記錄")}</div>}
+          {releases.map(release => <article key={release.uuid || release.id} className={release.active ? "is-active" : ""}>
+            <div className="pages-release-index"><T tone={pagesReleaseTone(release)}>{release.active ? t("當前") : String(release.status || "—").toUpperCase()}</T><code>{pagesReleaseDigest(release)}</code></div>
+            <div><strong>{pagesReleaseWhen(release.completed_at || release.created_at)}</strong><small>{t("源版本")} · {String(release.source_version_id || "—").slice(0, 12)}</small></div>
+            {release.rollback_eligible && <button className="btn sm" onClick={() => rollbackRelease(release)}>{t("回滾至此")}</button>}
+          </article>)}
+        </div>
+        {site.database_origin && <div className="pages-console-origin"><LB dim>{t("隔離運行來源")}</LB><code>{site.database_origin}</code></div>}
+      </>}
+    </section>
+  );
+};
+
 /* ── 金融資產抽屜 ── */
 const AssetDrawer = ({ a, onClose }) => {
   const sym = a.symbol || t("未填代碼");
@@ -331,7 +466,6 @@ const AssetDrawer = ({ a, onClose }) => {
 const DigitalDrawer = ({ a, assess, onClose }) => {
   const ws = a.workspace || null;
   const keySummary = ws && ws.key_summary || {};
-  const url = wsHref(ws);
   const codeStorage = String((((ws || {}).storage || {}).code || {}).medium || "hdd").toLowerCase();
   const targetCodeStorage = codeStorage === "ssd" ? "hdd" : "ssd";
   const codeStorageSwitchable = !!(ws && ws.code_storage_switchable === true);
@@ -356,6 +490,14 @@ const DigitalDrawer = ({ a, assess, onClose }) => {
       from: codeStorage.toUpperCase(),
       to: targetCodeStorage.toUpperCase(),
     }
+  ));
+  const askPagesSite = () => ask(t(
+    "請協助我定制工作區「{ws}」的 Warehouse OS 托管網址。先讀取目前站點,再追問我要的短名稱;確認後在托管會話提交 desired_state.pages.site_key,默認網址保持 https://bonfirework.org/apps/短名稱/。獨立子域別名默認關閉,只有我明確要求時才設 public_alias_enabled=true。若站點綁定了瀏覽器資料庫,核對隔離運行來源的精確 HTTPS Origin 已同步加入允許清單;只有達到來源上限時才提示我處理。",
+    { ws: (ws && ws.workspace_key) || "—" }
+  ));
+  const askPagesDesign = () => ask(t(
+    "請讀取工作區「{ws}」目前激活源碼的 Pages design context 與必要的代碼/設計文件,排除秘密文件,分析版式、組件、設計 token、響應式、無障礙與瀏覽器資料庫接入。先給有文件證據的改造建議;我確認後才建立新的不可變源碼版本、預覽驗證並激活,不得原地修改當前 release。",
+    { ws: (ws && ws.workspace_key) || "—" }
   ));
   const val = a.latest_valuation || null;
   const lc = a.latest_compliance || null;
@@ -409,17 +551,7 @@ const DigitalDrawer = ({ a, assess, onClose }) => {
           <div className="col g4" style={{ borderTop: "1px solid var(--hair)", paddingTop: 8, marginBottom: 16 }}>
             <LB dim style={{ fontSize: 8.5 }}>{t("托管")}</LB>
             <span className="num" style={{ fontSize: 13, fontWeight: 650 }}>{ws.workspace_key || "—"}</span>
-            {url && (
-              <a href={url} target="_blank" rel="noopener noreferrer" className="num"
-                style={{ fontSize: 11.5, color: "var(--ink)", textDecoration: "underline", textUnderlineOffset: 3, wordBreak: "break-all" }}>
-                {url} ↗
-              </a>
-            )}
-            {!url && (
-              <span className="num muted" style={{ fontSize: 11 }}>
-                {t(wsSiteLabel(ws))}{ws.public_path ? " · " + t("預定入口") + " " + ws.public_path : ""}
-              </span>
-            )}
+            <PagesConsole ws={ws} onCustomize={askPagesSite} onRedesign={askPagesDesign}/>
             <span className="num muted" style={{ fontSize: 11 }}>
               {t("數據庫")} {ws.database_name || "—"}{ws.database_status ? " · " + ws.database_status : ""} · {t("運行狀態")} {ws.runtime_status || "—"}{ws.runtime_type ? " · " + ws.runtime_type : ""}
             </span>

@@ -379,6 +379,60 @@
   border-top: 7px solid var(--red);
 }
 
+/* Pages hosting control plane inside the governed asset drawer. */
+.pages-console {
+  margin: 8px 0 10px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+}
+.pages-console-head {
+  min-height: 58px;
+  padding: 10px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 3px solid var(--rule);
+}
+.pages-console-head > div { min-width: 0; display: grid; gap: 5px; }
+.pages-console-head strong { overflow: hidden; font: 800 13px/1.2 var(--f-mono); text-overflow: ellipsis; }
+.pages-console-state { min-height: 92px; padding: 14px; display: flex; gap: 8px; align-items: center; justify-content: center; color: var(--ink-3); font-size: 10px; }
+.pages-console-state.is-error { color: var(--red); justify-content: space-between; }
+.pages-console-url { padding: 12px; display: grid; gap: 8px; color: var(--ap-ivory); background: var(--ap-black); }
+.pages-console-url > a:not(.btn) { overflow: hidden; color: var(--ap-yellow); font: 700 10px/1.5 var(--f-mono); text-decoration: none; text-overflow: ellipsis; }
+.pages-console-url > a:not(.btn):hover { text-decoration: underline; text-underline-offset: 3px; }
+.pages-console-url .label { color: rgba(245,242,235,.58); }
+.pages-console-url .btn { min-width: 0; color: var(--ap-ivory); border-color: rgba(245,242,235,.45); }
+.pages-console-url .btn.primary { color: #141414; background: var(--ap-yellow); border-color: var(--ap-yellow); }
+.pages-console-grid { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--rule); }
+.pages-console-grid > div { min-width: 0; min-height: 84px; padding: 9px; display: grid; align-content: space-between; border-right: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.pages-console-grid > div:nth-child(2n) { border-right: 0; }
+.pages-console-grid strong { overflow: hidden; font: 800 11px/1.3 var(--f-mono); text-overflow: ellipsis; }
+.pages-console-grid small { color: var(--ink-3); font: 600 8px/1.35 var(--f-mono); }
+.pages-console-current { padding: 11px; display: grid; gap: 10px; border-bottom: 1px solid var(--rule); }
+.pages-console-current > div:first-child { display: grid; gap: 4px; }
+.pages-console-current strong { font: 850 21px/1 var(--f-mono); letter-spacing: -.05em; }
+.pages-console-current small { color: var(--ink-3); font: 600 8px/1.4 var(--f-mono); }
+.pages-console-current .row { display: grid; grid-template-columns: 1fr 1fr; }
+.pages-console-current .row .btn { min-width: 0; justify-content: flex-start; font-size: 8px; }
+.pages-console-current .row .btn:last-child { grid-column: 1/-1; }
+.pages-release-history { padding: 10px; display: grid; gap: 0; }
+.pages-release-history > .row { min-height: 28px; align-items: flex-start; }
+.pages-release-history > .row small { max-width: 170px; color: var(--ink-3); font-size: 7px; line-height: 1.35; text-align: right; }
+.pages-release-history article { min-height: 56px; padding: 7px 0; display: grid; grid-template-columns: minmax(0,.9fr) minmax(0,1.1fr); gap: 8px; align-items: center; border-top: 1px solid var(--hair); }
+.pages-release-history article.is-active { box-shadow: inset 3px 0 0 var(--ap-green); padding-left: 7px; }
+.pages-release-history article > div { min-width: 0; display: grid; gap: 4px; }
+.pages-release-history article > div:nth-child(2) { text-align: right; }
+.pages-release-history article code,
+.pages-release-history article strong { overflow: hidden; font: 700 8px/1.3 var(--f-mono); text-overflow: ellipsis; white-space: nowrap; }
+.pages-release-history article small { overflow: hidden; color: var(--ink-3); font: 600 7px/1.3 var(--f-mono); text-overflow: ellipsis; white-space: nowrap; }
+.pages-release-history article .btn { grid-column: 1/-1; min-height: 28px; justify-content: center; color: var(--red); border-color: var(--red); font-size: 8px; }
+.pages-release-index { text-align: left; }
+.pages-release-empty { padding: 18px 0; color: var(--ink-3); font-size: 9px; text-align: center; border-top: 1px solid var(--hair); }
+.pages-console-origin { padding: 9px 10px; display: grid; gap: 5px; color: #d9e8ff; background: #101820; }
+.pages-console-origin code { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (max-width: 1120px) {
   .digital-poster-layout.has-selection { grid-template-columns: minmax(0,1fr) 340px; }
   .digital-poster-layout > .drawer { width: 340px; }

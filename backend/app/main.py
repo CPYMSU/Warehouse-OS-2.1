@@ -41,6 +41,11 @@ from app.api.workspace_provision_compat import router as workspace_provision_com
 from app.api.workspace_v1_compat import router as workspace_v1_compat_router
 from app.core.config import get_settings
 from app.services.database_browser_gateway import origin_is_allowed
+from app.services.pages_runtime import (
+    pages_hostname_site_key,
+    pages_internal_path,
+    resolve_pages_hostname,
+)
 from app.terminal.readiness import configure_native_capability_routes
 
 # Keep the original modules as stable extension points. Their runtime globals are
@@ -72,6 +77,43 @@ app.add_middleware(
         "Content-SHA256",
     ],
 )
+
+
+@app.middleware("http")
+async def pages_hostname_route(request: Request, call_next):
+    """Map the isolated Pages runtime origin to the stable deployment route."""
+
+    host = request.headers.get("host", "")
+    if pages_hostname_site_key(host, settings) is None:
+        return await call_next(request)
+    route = resolve_pages_hostname(host, settings)
+    if route is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": {
+                    "reason": "pages_site_not_found",
+                    "hostname": host.split(":", 1)[0].lower(),
+                }
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    state = request.scope.setdefault("state", {})
+    state["pages_hostname_route"] = {
+        "site_key": str(route["site_key"]),
+        "tenant_slug": str(route["tenant_slug"]),
+        "workspace_key": str(route["workspace_key"]),
+    }
+    original_path = request.scope.get("path", "/")
+    if not str(original_path).startswith("/api/"):
+        internal_path = pages_internal_path(route, str(original_path))
+        request.scope["path"] = internal_path
+        request.scope["raw_path"] = internal_path.encode("utf-8")
+    response = await call_next(request)
+    response.headers["X-Warehouse-Pages-Site"] = str(route["site_key"])
+    if not bool(route.get("public_alias_enabled", False)):
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
 
 
 @app.middleware("http")

@@ -246,6 +246,9 @@ install_browser_runtime_config() {
   if ! grep -q '^WAREHOUSE_PUBLIC_ORIGIN=' "${ENV_FILE}"; then
     printf 'WAREHOUSE_PUBLIC_ORIGIN=https://bonfirework.org\n' >> "${ENV_FILE}"
   fi
+  if ! grep -q '^WAREHOUSE_PAGES_ROOT_DOMAIN=' "${ENV_FILE}"; then
+    printf 'WAREHOUSE_PAGES_ROOT_DOMAIN=apps.bonfirework.org\n' >> "${ENV_FILE}"
+  fi
   if ! grep -q '^WAREHOUSE_BROWSER_WORKER_TOKEN=' "${ENV_FILE}"; then
     printf 'WAREHOUSE_BROWSER_WORKER_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "${ENV_FILE}"
   fi

@@ -1,22 +1,30 @@
-"""Compatibility-first public gateway for hosted workspace applications.
+"""Warehouse OS Pages shell and compatibility gateway for hosted applications.
 
-The permanent workspace entry is a real application boundary: browser cookies,
-Authorization headers, redirects, request IDs and root-relative frontend assets
-must continue to work under ``/assets/{tenant}/{workspace}/``.
+The canonical entry is ``/apps/{site_key}/``. It embeds an isolated runtime
+origin while the compatibility route keeps cookies, redirects, request IDs and
+root-relative frontend assets working under ``/assets/{tenant}/{workspace}/``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
+from html import escape
 from mimetypes import guess_type
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.api import digital_assets as legacy
 from app.core.config import Settings, get_settings
+from app.services.pages_runtime import (
+    pages_entry_path,
+    pages_url,
+    resolve_pages_site_key,
+)
 from app.services.workspace_deployments import active_workspace_runtime
 
 router = APIRouter(tags=["hosted-runtime-gateway"])
@@ -45,6 +53,32 @@ _RESPONSE_EXCLUDED = _HOP_BY_HOP | {
 
 def _prefix(tenant_slug: str, workspace_key: str) -> str:
     return f"/assets/{tenant_slug}/{workspace_key}"
+
+
+def _public_prefix(request: Request, tenant_slug: str, workspace_key: str) -> str:
+    if getattr(request.state, "pages_hostname_route", None):
+        return ""
+    return _prefix(tenant_slug, workspace_key)
+
+
+def _static_cache_headers(
+    route: dict[str, object], runtime_path: str, content_type: str
+) -> dict[str, str]:
+    release = str(route.get("release_digest") or route["deployment_id"])
+    identity = hashlib.sha256(f"{release}:{runtime_path or 'index.html'}".encode()).hexdigest()
+    filename = Path(runtime_path or "index.html").name.lower()
+    lowered_type = content_type.lower()
+    if "text/html" in lowered_type or filename in {"service-worker.js", "sw.js"}:
+        cache_control = "public, max-age=0, s-maxage=30, must-revalidate"
+    elif re.search(r"(?:^|[.-])[a-f0-9]{8,}(?:[.-]|$)", filename):
+        cache_control = "public, max-age=31536000, immutable"
+    else:
+        cache_control = "public, max-age=300, s-maxage=600, stale-while-revalidate=60"
+    return {
+        "Cache-Control": cache_control,
+        "ETag": f'"{identity}"',
+        "X-Warehouse-Release": release,
+    }
 
 
 def _browser_compatibility_script(prefix: str) -> str:
@@ -141,6 +175,91 @@ def _rewrite_cookie(cookie: str, prefix: str) -> str:
     return cookie
 
 
+def _pages_shell_document(
+    *,
+    site_key: str,
+    runtime_path: str,
+    query: str,
+    settings: Settings,
+) -> tuple[str, str]:
+    encoded_path = quote(
+        str(runtime_path or "").lstrip("/"), safe="/-._~!$&'()*+,;=:@"
+    )
+    frame_url = pages_url(site_key, settings) + "/" + encoded_path
+    if query:
+        frame_url += "?" + query
+    safe_frame_url = escape(frame_url, quote=True)
+    safe_site_key = escape(site_key)
+    document = f"""<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="index,follow">
+  <title>{safe_site_key} · Warehouse OS</title>
+  <style>
+    html,body,iframe{{width:100%;height:100%;margin:0;border:0;background:#fff}}
+    body{{overflow:hidden}}
+    iframe{{display:block}}
+  </style>
+</head>
+<body>
+  <iframe
+    src="{safe_frame_url}"
+    title="{safe_site_key}"
+    sandbox="allow-downloads allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts"
+    referrerpolicy="strict-origin-when-cross-origin"
+    allow="clipboard-read; clipboard-write; fullscreen; geolocation; microphone; camera"
+  ></iframe>
+</body>
+</html>"""
+    return document, frame_url
+
+
+def _pages_shell_response(
+    site_key: str,
+    runtime_path: str,
+    request: Request,
+    settings: Settings,
+) -> Response:
+    route = resolve_pages_site_key(site_key)
+    if route is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": {
+                    "reason": "pages_site_not_found",
+                    "site_key": site_key,
+                }
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    document, frame_url = _pages_shell_document(
+        site_key=str(route["site_key"]),
+        runtime_path=runtime_path,
+        query=request.url.query,
+        settings=settings,
+    )
+    frame_origin = pages_url(str(route["site_key"]), settings)
+    return HTMLResponse(
+        document,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": (
+                "default-src 'none'; "
+                "style-src 'unsafe-inline'; "
+                f"frame-src {frame_origin}; "
+                "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+            ),
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "SAMEORIGIN",
+            "X-Warehouse-Pages-Site": str(route["site_key"]),
+            "X-Warehouse-Pages-Frame": frame_url,
+        },
+    )
+
+
 async def _proxy_response(
     route: dict[str, object],
     runtime_path: str,
@@ -155,7 +274,7 @@ async def _proxy_response(
     ]
     if not upstreams:
         raise HTTPException(status_code=502, detail="Hosted Runtime has no active upstream")
-    prefix = _prefix(tenant_slug, workspace_key)
+    prefix = _public_prefix(request, tenant_slug, workspace_key)
     suffix = "/" + runtime_path.lstrip("/")
     if request.url.query:
         suffix += "?" + request.url.query
@@ -168,7 +287,7 @@ async def _proxy_response(
     client_ip = request.client.host if request.client else ""
     headers.extend(
         [
-            ("x-forwarded-prefix", prefix),
+            ("x-forwarded-prefix", prefix or "/"),
             ("x-forwarded-host", request.headers.get("host", "")),
             ("x-forwarded-proto", request.url.scheme),
             ("x-forwarded-for", ", ".join(value for value in (forwarded_for, client_ip) if value)),
@@ -232,7 +351,7 @@ async def runtime_response(
     route = active_workspace_runtime(tenant_slug, workspace_key)
     if route is None:
         return None
-    prefix = _prefix(tenant_slug, workspace_key)
+    prefix = _public_prefix(request, tenant_slug, workspace_key)
     if route["kind"] == "static":
         root = (settings.hosted_runtime_data_root / str(route["runtime_rel_path"])).resolve()
         try:
@@ -251,16 +370,76 @@ async def runtime_response(
         if not target.is_file():
             raise HTTPException(status_code=404, detail="Hosted file not found")
         content_type = guess_type(str(target))[0] or "application/octet-stream"
-        content = _rewrite_text(target.read_bytes(), content_type, prefix)
+        headers = {
+            **_static_cache_headers(route, runtime_path, content_type),
+            "X-Warehouse-Deployment": str(route["deployment_id"]),
+            "X-Content-Type-Options": "nosniff",
+        }
+        if request.headers.get("if-none-match") == headers["ETag"]:
+            return Response(status_code=304, headers=headers)
+        raw_content = target.read_bytes()
+        content = raw_content if not prefix else _rewrite_text(raw_content, content_type, prefix)
         return Response(
             content=content,
             media_type=content_type,
-            headers={
-                "X-Warehouse-Deployment": str(route["deployment_id"]),
-                "X-Content-Type-Options": "nosniff",
-            },
+            headers=headers,
         )
     return await _proxy_response(route, runtime_path, request, tenant_slug, workspace_key)
+
+
+@router.api_route(
+    "/apps/{site_key}",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def warehouse_pages_entry_redirect(
+    site_key: str,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    route = resolve_pages_site_key(site_key)
+    if route is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": {
+                    "reason": "pages_site_not_found",
+                    "site_key": site_key,
+                }
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    target = pages_entry_path(str(route["site_key"]))
+    if request.url.query:
+        target += "?" + request.url.query
+    return RedirectResponse(target, status_code=308)
+
+
+@router.api_route(
+    "/apps/{site_key}/",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def warehouse_pages_entry(
+    site_key: str,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    return _pages_shell_response(site_key, "", request, settings)
+
+
+@router.api_route(
+    "/apps/{site_key}/{runtime_path:path}",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def warehouse_pages_runtime_path(
+    site_key: str,
+    runtime_path: str,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    return _pages_shell_response(site_key, runtime_path, request, settings)
 
 
 @router.api_route(

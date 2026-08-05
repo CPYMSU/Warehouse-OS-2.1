@@ -78,6 +78,11 @@ nginx_site=/etc/nginx/sites-available/bonfirework.org
   printf 'nginx site not found: %s\n' "${nginx_site}" >&2
   exit 1
 }
+if ! grep -Fq '*.apps.bonfirework.org' "${nginx_site}"; then
+  sed -i \
+    's/server_name bonfirework\.org www\.bonfirework\.org;/server_name bonfirework.org www.bonfirework.org *.apps.bonfirework.org;/' \
+    "${nginx_site}"
+fi
 if ! grep -q 'warehouse-api-upstream.conf' "${nginx_site}"; then
   sed -i \
     's@^[[:space:]]*proxy_pass http://127\.0\.0\.1:8080;@        include /etc/nginx/snippets/warehouse-api-upstream.conf;@' \

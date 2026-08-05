@@ -33,6 +33,7 @@ from app.services.object_storage import (
     SSD_PROVIDER_KEY,
     object_store_for_provider,
 )
+from app.services.pages_runtime import ensure_pages_route, workspace_pages_entry_fields
 from app.services.workspace_usage import measure_workspace_runtime_storage
 
 if TYPE_CHECKING:
@@ -755,26 +756,13 @@ def workspace_entry_url(tenant_slug: str, workspace_key: str) -> str:
 
 
 def _workspace_entry_fields(tenant_slug: str, row: dict[str, object]) -> dict[str, object]:
-    path = workspace_entry_path(tenant_slug, str(row["workspace_key"]))
-    entry = workspace_entry_url(tenant_slug, str(row["workspace_key"]))
-    verified_application_url = row.get("public_url")
-    return {
-        "entry_path": path,
-        "entry_url": entry,
-        "hosting_url": entry,
-        "hosting_url_status": "active",
-        # Compatibility for the older frontend field. It now means the real
-        # reserved entry rather than a guessed, globally ambiguous path.
-        "public_path": path,
-        "application_url": verified_application_url,
-        "entry_kind": ("deployed_application" if verified_application_url else "workspace_status"),
-    }
+    return workspace_pages_entry_fields(tenant_slug, row)
 
 
 def _public_workspace(row: dict[str, object], tenant_slug: str | None = None) -> dict[str, object]:
     config = row.get("config") if isinstance(row.get("config"), dict) else {}
     payload = {
-        **row,
+        **{key: value for key, value in row.items() if not str(key).startswith("_")},
         "id": int(row["legacy_id"]),
         "uuid": row["id"],
         "workspace": row["workspace_key"],
@@ -1381,6 +1369,26 @@ def list_assets(
                           'id', w.legacy_id,
                           'uuid', w.id,
                           'workspace_key', w.workspace_key,
+                          'pages_site_key', (
+                            SELECT route.site_key
+                            FROM platform.pages_routes AS route
+                            WHERE route.workspace_id=w.id
+                          ),
+                          'pages_status', (
+                            SELECT route.status
+                            FROM platform.pages_routes AS route
+                            WHERE route.workspace_id=w.id
+                          ),
+                          'pages_public_alias_enabled', (
+                            SELECT route.public_alias_enabled
+                            FROM platform.pages_routes AS route
+                            WHERE route.workspace_id=w.id
+                          ),
+                          'pages_active_deployment_id', (
+                            SELECT route.active_deployment_id
+                            FROM platform.pages_routes AS route
+                            WHERE route.workspace_id=w.id
+                          ),
                           'service_plan', w.service_plan,
                           'runtime_type', w.config->>'runtime_type',
                           'runtime_status', w.runtime_status,
@@ -2700,6 +2708,9 @@ def create_workspace(
             )
             database = _json_safe(dict(database_row)) if database_row is not None else None
             storage = _storage_profile(_storage_binding_rows(session, existing_row["id"]))
+            existing_row["_pages_route"] = ensure_pages_route(
+                session, actor.tenant_id, existing_row["id"]
+            )
             existing_public = _public_workspace(existing_row, actor.tenant_slug)
             existing_public["storage"] = storage
             _audit(
@@ -2731,8 +2742,8 @@ def create_workspace(
                             "asset_id": existing_row["asset_id"],
                             "runtime_type": (existing_row.get("config") or {}).get("runtime_type"),
                             "runtime_status": existing_row.get("runtime_status"),
-                            "entry_url": workspace_entry_url(actor.tenant_slug, desired_key),
-                            "hosting_url": workspace_entry_url(actor.tenant_slug, desired_key),
+                            "entry_url": existing_public["entry_url"],
+                            "hosting_url": existing_public["hosting_url"],
                             "application_url": existing_row.get("public_url"),
                             "storage_quota_bytes": existing_row.get("storage_quota_bytes"),
                             "storage": storage,
@@ -2962,7 +2973,11 @@ def create_workspace(
                 "database_provider": database.get("provider_key") if database else None,
             },
         )
-    workspace_public = _public_workspace(dict(row), actor.tenant_slug)
+        row = dict(row)
+        row["_pages_route"] = ensure_pages_route(
+            session, actor.tenant_id, workspace_id
+        )
+    workspace_public = _public_workspace(row, actor.tenant_slug)
     workspace_public["storage"] = storage
     return {
         "ok": True,
@@ -2976,16 +2991,14 @@ def create_workspace(
             effect="create",
             primary=_world_entity(
                 "digital_asset.workspace",
-                dict(row),
+                row,
                 ref_field="workspace_key",
                 facts={
                     "asset_id": row["asset_id"],
                     "runtime_type": (row.get("config") or {}).get("runtime_type"),
                     "runtime_status": row.get("runtime_status"),
-                    "entry_url": workspace_entry_url(actor.tenant_slug, str(row["workspace_key"])),
-                    "hosting_url": workspace_entry_url(
-                        actor.tenant_slug, str(row["workspace_key"])
-                    ),
+                    "entry_url": workspace_public["entry_url"],
+                    "hosting_url": workspace_public["hosting_url"],
                     "application_url": row.get("public_url"),
                     "storage_quota_bytes": row.get("storage_quota_bytes"),
                     "storage": storage,
