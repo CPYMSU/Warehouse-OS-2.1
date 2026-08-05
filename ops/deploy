@@ -30,6 +30,7 @@ if [[ ! -x "${ALEMBIC}" ]]; then
   ALEMBIC="${ROOT}/ops/alembic-head"
 fi
 RELEASE_ID_FILE="${WAREHOUSE_DEPLOY_RELEASE_ID_FILE:-}"
+PLAN_FILE="${WAREHOUSE_DEPLOY_PLAN_FILE:-}"
 DATABASE_MIGRATION_DEFER="${WAREHOUSE_DATABASE_MIGRATION_DEFER:-0}"
 
 ssh_options=(
@@ -94,6 +95,7 @@ Environment:
   WAREHOUSE_DEPLOY_LOCAL_VALIDATION  # adaptive (local default) or basic (GitHub)
   WAREHOUSE_DEPLOY_ALEMBIC           # absolute Alembic executable used for release evidence
   WAREHOUSE_DEPLOY_RELEASE_ID_FILE   # optional controller-owned output path for prepare
+  WAREHOUSE_DEPLOY_PLAN_FILE         # optional controller-owned impact output path for prepare
 EOF
 }
 
@@ -500,6 +502,11 @@ if [[ -n "${RELEASE_ID_FILE}" ]]; then
   [[ "${RELEASE_ID_FILE}" == /* ]] \
     || fail "WAREHOUSE_DEPLOY_RELEASE_ID_FILE must be an absolute path"
   printf '%s\n' "${release_id}" > "${RELEASE_ID_FILE}"
+fi
+if [[ -n "${PLAN_FILE}" ]]; then
+  [[ "${PLAN_FILE}" == /* ]] \
+    || fail "WAREHOUSE_DEPLOY_PLAN_FILE must be an absolute path"
+  printf 'migration_required=%s\n' "${PLAN_MIGRATION:-1}" > "${PLAN_FILE}"
 fi
 
 printf '==> server %s and verification\n' "${DEPLOY_ACTION}"

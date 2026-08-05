@@ -342,6 +342,32 @@ def test_database_migrations_are_detached_from_web_startup_and_deploy_process() 
     assert "WAREHOUSE_MIGRATION_DATABASE_URL: \"\"" in compose
     assert "WAREHOUSE_MIGRATOR_DB_PASSWORD: \"\"" in compose
     assert "migration-start|migration-status|migration-wait" in deploy
+    assert 'WAREHOUSE_DEPLOY_PLAN_FILE' in deploy
+    assert 'migration_required=%s' in deploy
+
+
+def test_code_only_release_does_not_inspect_or_reconcile_databases() -> None:
+    macos = (REPO_ROOT / "ops" / "macos" / "warehouse-deploy-macos").read_text(
+        encoding="utf-8"
+    )
+    server = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+    cluster = (REPO_ROOT / "ops" / "cluster" / "rolling-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    primary_validation = macos[
+        macos.index("validate_primary_api()") : macos.index("acquire_lock()")
+    ]
+    candidate_validation = server[
+        server.index("validate_candidate()") : server.index("switch_upstream()")
+    ]
+    assert "alembic current" not in primary_validation
+    assert "alembic current" not in candidate_validation
+    assert 'hosted_database=unchanged action=skipped reason=code_only' in server
+    assert 'if [[ "${primary_migration}" == 1 ]]; then' in cluster
+    assert 'database phase skipped (code-only release)' in cluster
 
 
 def test_cluster_database_gate_runs_standby_schema_before_primary_data() -> None:

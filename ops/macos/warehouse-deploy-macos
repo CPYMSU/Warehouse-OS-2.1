@@ -300,7 +300,6 @@ validate_primary_api() {
     return 1
   fi
   rm -f "${openapi}"
-  "${DOCKER}" exec bonfirework-mac-api alembic current | grep -q '(head)'
 }
 
 acquire_lock() {
