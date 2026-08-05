@@ -1,3 +1,5 @@
+# Keep the Browser Runtime layer explicit in the first cloud sync so an older
+# standby without a browser image bootstraps it before later fast reuse.
 FROM mcr.microsoft.com/playwright:v1.62.0-noble
 
 ENV NODE_ENV=production \

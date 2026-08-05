@@ -840,8 +840,14 @@ install_release() {
   if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_BROWSER}" == 1 ]]; then
     DOCKER_BUILDKIT=1 docker build --file "${release_dir}/browser-runtime/Dockerfile" --tag "${browser_image}" "${release_dir}" >/dev/null
   else
-    browser_image="$(active_browser_image)" \
-      || fail "unchanged Browser Runtime has no healthy source image"
+    if ! browser_image="$(active_browser_image)"; then
+      # Older nodes may predate the Browser Runtime slot. Bootstrap it once
+      # instead of failing a release that otherwise has a healthy API image.
+      browser_image="warehouse-os-browser:${release}"
+      DOCKER_BUILDKIT=1 docker build \
+        --file "${release_dir}/browser-runtime/Dockerfile" \
+        --tag "${browser_image}" "${release_dir}" >/dev/null
+    fi
   fi
   log_event deploy_phase succeeded "${release}" image_build "" \
     "$((SECONDS - phase_started))"
