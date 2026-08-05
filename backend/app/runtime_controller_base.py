@@ -154,6 +154,14 @@ class DockerEngine:
         if response.status_code != 204:
             self._raise_engine_error(response, "container start")
 
+    def stop(self, container_id: str, *, timeout: int = 10) -> None:
+        response = self.client.post(
+            f"{self.api_prefix}/containers/{container_id}/stop",
+            params={"t": str(max(1, timeout))},
+        )
+        if response.status_code not in {204, 304, 404}:
+            self._raise_engine_error(response, "container stop")
+
     def remove(self, name: str) -> None:
         response = self.client.delete(
             f"{self.api_prefix}/containers/{name}",
@@ -426,6 +434,7 @@ class RuntimeController:
         self._last_scaling_reconcile = 0.0
         self._last_repository_reconcile = 0.0
         self._last_runtime_drift_reconcile = 0.0
+        self._last_runtime_lifecycle_reconcile = 0.0
 
     def reconcile_repositories(self) -> int:
         if time.monotonic() - self._last_repository_reconcile < 60:
@@ -1528,12 +1537,25 @@ class RuntimeController:
                     """
                     UPDATE digital_asset.deployments
                     SET status='ready', health='healthy', result=CAST(:result AS jsonb),
+                        runtime_state=CASE
+                          WHEN CAST(:dynamic_runtime AS boolean) THEN 'running'
+                          ELSE 'not_applicable'
+                        END,
+                        runtime_last_request_at=CASE
+                          WHEN CAST(:dynamic_runtime AS boolean) THEN now()
+                          ELSE NULL
+                        END,
+                        runtime_wake_requested_at=NULL, runtime_suspended_at=NULL,
+                        runtime_state_changed_at=now(), runtime_wake_error=NULL,
                         lease_owner=NULL, lease_expires_at=NULL, completed_at=now()
                     WHERE id=:id AND lease_owner=:worker;
                     """
                 ),
                 {
                     "result": json.dumps(result, default=str),
+                    "dynamic_runtime": bool(container_names)
+                    and bool(result["public_route"])
+                    and not one_shot,
                     "id": deployment_id,
                     "worker": self.worker_id,
                 },
@@ -1781,6 +1803,252 @@ class RuntimeController:
             )
             _event(session, deployment_id, tenant_id, "failed", {"error": message})
 
+    @staticmethod
+    def _runtime_container_names(result: object) -> list[str]:
+        payload = dict(result) if isinstance(result, dict) else {}
+        return [
+            str(value)
+            for value in payload.get("container_names") or []
+            if re.fullmatch(r"warehouse-runtime-[a-zA-Z0-9_.-]+", str(value))
+        ]
+
+    def _runtime_lifecycle_candidates(self) -> list[tuple[UUID, dict[str, object]]]:
+        candidates: list[tuple[UUID, dict[str, object]]] = []
+        idle_seconds = max(60, int(self.settings.runtime_idle_timeout_seconds))
+        for tenant_id in self._tenants():
+            with tenant_session(tenant_id) as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT d.id AS deployment_id,d.runtime_state,
+                               d.runtime_last_request_at,d.result
+                        FROM digital_asset.workspaces AS w
+                        JOIN digital_asset.deployments AS d
+                          ON d.workspace_id=w.id
+                        WHERE d.status='ready' AND d.health='healthy'
+                          AND d.runtime_state != 'not_applicable'
+                          AND d.result->>'runtime_kind' IN ('python','node','container')
+                          AND COALESCE((d.result->>'public_route')::boolean,true)
+                          AND COALESCE(d.result->>'execution_mode','service')='service'
+                          AND (
+                            d.runtime_state IN (
+                              'wake_requested','waking','suspending'
+                            )
+                            OR (
+                              d.runtime_state='running'
+                              AND d.runtime_last_request_at
+                                < now() - make_interval(secs => :idle_seconds)
+                            )
+                          )
+                        ORDER BY
+                          CASE WHEN d.runtime_state IN ('wake_requested','waking')
+                            THEN 0 ELSE 1 END,
+                          d.runtime_last_request_at NULLS FIRST
+                        LIMIT 32
+                        """
+                    ),
+                    {"idle_seconds": idle_seconds},
+                ).mappings()
+                candidates.extend((tenant_id, dict(row)) for row in rows)
+        return candidates
+
+    def _record_runtime_lifecycle_error(
+        self,
+        tenant_id: UUID,
+        deployment_id: UUID,
+        exc: Exception,
+    ) -> None:
+        message = (str(exc).strip() or exc.__class__.__name__)[:1000]
+        with tenant_session(tenant_id) as session:
+            updated = session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET runtime_state='error',runtime_state_changed_at=now(),
+                        runtime_wake_error=:error
+                    WHERE id=:id AND runtime_state IN ('waking','suspending')
+                    RETURNING id
+                    """
+                ),
+                {"id": deployment_id, "error": message},
+            ).scalar_one_or_none()
+            if updated is not None:
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "runtime_lifecycle_error",
+                    {"error": message, "worker": self.worker_id},
+                )
+
+    def _wake_runtime(
+        self,
+        engine: DockerEngine,
+        tenant_id: UUID,
+        deployment_id: UUID,
+    ) -> bool:
+        with tenant_session(tenant_id) as session:
+            result = session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET runtime_state='waking',runtime_state_changed_at=now(),
+                        runtime_wake_error=NULL
+                    WHERE id=:id
+                      AND runtime_state IN ('wake_requested','waking')
+                    RETURNING result
+                    """
+                ),
+                {"id": deployment_id},
+            ).scalar_one_or_none()
+        if result is None:
+            return False
+        payload = dict(result) if isinstance(result, dict) else {}
+        names = self._runtime_container_names(payload)
+        if not names:
+            raise RuntimeError("Hosted Runtime wake has no managed containers")
+        for name in names:
+            if not engine.container_exists(name):
+                raise RuntimeError(f"Hosted Runtime wake container is missing: {name}")
+            if not bool(engine.state(name)["running"]):
+                engine.start(name)
+        health_path = str(payload.get("health_path") or "/health")
+        health_timeout = max(1, int(self.settings.runtime_wake_health_timeout_seconds))
+        urls = [
+            str(value).rstrip("/")
+            for value in payload.get("internal_urls") or [payload.get("internal_url")]
+            if value
+        ]
+        if not urls:
+            raise RuntimeError("Hosted Runtime wake has no health-check upstream")
+        for url in urls:
+            try:
+                self._wait_health(url + health_path, health_timeout)
+            except RuntimeError:
+                if health_path == "/":
+                    raise
+                self._wait_health(url + "/", min(10, health_timeout))
+        with tenant_session(tenant_id) as session:
+            updated = session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET runtime_state='running',runtime_state_changed_at=now(),
+                        runtime_last_request_at=now(),runtime_suspended_at=NULL,
+                        runtime_wake_error=NULL
+                    WHERE id=:id AND runtime_state='waking'
+                    RETURNING id
+                    """
+                ),
+                {"id": deployment_id},
+            ).scalar_one_or_none()
+            if updated is not None:
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "runtime_woke",
+                    {"container_names": names, "worker": self.worker_id},
+                )
+        return updated is not None
+
+    def _suspend_runtime(
+        self,
+        engine: DockerEngine,
+        tenant_id: UUID,
+        deployment_id: UUID,
+    ) -> bool:
+        idle_seconds = max(60, int(self.settings.runtime_idle_timeout_seconds))
+        with tenant_session(tenant_id) as session:
+            result = session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET runtime_state='suspending',runtime_state_changed_at=now(),
+                        runtime_wake_error=NULL
+                    WHERE id=:id AND (
+                      runtime_state='suspending'
+                      OR (
+                        runtime_state='running'
+                        AND runtime_last_request_at
+                          < now() - make_interval(secs => :idle_seconds)
+                      )
+                    )
+                    RETURNING result
+                    """
+                ),
+                {"id": deployment_id, "idle_seconds": idle_seconds},
+            ).scalar_one_or_none()
+        if result is None:
+            return False
+        names = self._runtime_container_names(result)
+        if not names:
+            raise RuntimeError("Hosted Runtime suspend has no managed containers")
+        for name in reversed(names):
+            if engine.container_exists(name) and bool(engine.state(name)["running"]):
+                engine.stop(name)
+        with tenant_session(tenant_id) as session:
+            updated = session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET runtime_state='suspended',runtime_suspended_at=now(),
+                        runtime_state_changed_at=now(),runtime_wake_error=NULL
+                    WHERE id=:id AND runtime_state='suspending'
+                    RETURNING id
+                    """
+                ),
+                {"id": deployment_id},
+            ).scalar_one_or_none()
+            if updated is not None:
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "runtime_suspended",
+                    {
+                        "container_names": names,
+                        "idle_timeout_seconds": idle_seconds,
+                        "worker": self.worker_id,
+                    },
+                )
+        return updated is not None
+
+    def reconcile_runtime_lifecycle(self) -> int:
+        """Stop idle dynamic runtimes and wake them in place on gateway demand."""
+
+        scan_seconds = max(0.25, float(self.settings.runtime_lifecycle_scan_seconds))
+        if time.monotonic() - self._last_runtime_lifecycle_reconcile < scan_seconds:
+            return 0
+        self._last_runtime_lifecycle_reconcile = time.monotonic()
+        candidates = self._runtime_lifecycle_candidates()
+        actionable = [
+            (tenant_id, row)
+            for tenant_id, row in candidates
+            if row.get("runtime_state") in {"wake_requested", "waking"}
+            or (
+                self.settings.runtime_idle_suspend_enabled
+                and row.get("runtime_state") in {"running", "suspending"}
+            )
+        ]
+        if not actionable:
+            return 0
+        engine = DockerEngine(self.settings.runtime_docker_socket)
+        changed = 0
+        try:
+            for tenant_id, row in actionable:
+                deployment_id = UUID(str(row["deployment_id"]))
+                try:
+                    if row.get("runtime_state") in {"wake_requested", "waking"}:
+                        changed += int(self._wake_runtime(engine, tenant_id, deployment_id))
+                    else:
+                        changed += int(self._suspend_runtime(engine, tenant_id, deployment_id))
+                except Exception as exc:
+                    self._record_runtime_lifecycle_error(tenant_id, deployment_id, exc)
+        finally:
+            engine.close()
+        return changed
+
     def _runtime_drift_candidates(self) -> list[tuple[UUID, UUID, list[str]]]:
         candidates: list[tuple[UUID, UUID, list[str]]] = []
         for tenant_id in self._tenants():
@@ -1900,6 +2168,7 @@ class RuntimeController:
                           ON r.workspace_id=w.id AND r.resource_kind='scaling'
                          AND r.status='ready'
                         WHERE d.status='ready' AND d.health='healthy'
+                          AND d.runtime_state='running'
                           AND (r.desired_state->>'component' IN (c.component_name,'*'))
                         """
                     )
@@ -2111,6 +2380,7 @@ class RuntimeController:
             marker.write_text(f"{self.worker_id} {datetime.now(UTC).isoformat()}", encoding="utf-8")
             try:
                 self.observe_capacity()
+                self.reconcile_runtime_lifecycle()
                 self.reconcile_runtime_drift()
                 self.reconcile_scaling()
                 self.reconcile_repositories()

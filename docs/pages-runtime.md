@@ -61,6 +61,30 @@ platform later moves untrusted runtimes to a separate registrable domain, only
 the internal frame origin and exact database allowlists need to change; user
 entry URLs stay stable.
 
+## Runtime memory policy
+
+Static releases are served directly from immutable files and never reserve a
+workspace container. Dynamic Python, Node and Compose releases use
+request-driven scale-to-zero: after 30 minutes without routed traffic, the
+Runtime Controller stops their containers while retaining images, release files
+and persistent data on SSD/HDD. A later request changes the deployment state to
+`wake_requested`; the controller starts the same containers and the gateway
+holds the request until the application passes its health check.
+
+The public lifecycle is `running → suspending → suspended → wake_requested →
+waking → running`. Stopped containers are intentional and therefore excluded
+from drift repair and CPU autoscaling. Missing containers remain failures and
+are handled by the existing rebuild/self-heal path. Controller events record
+successful suspend, wake and internal failure evidence without exposing Docker
+names or failure text through the public gateway.
+
+Defaults can be adjusted with
+`WAREHOUSE_RUNTIME_IDLE_TIMEOUT_SECONDS`,
+`WAREHOUSE_RUNTIME_WAKE_TIMEOUT_SECONDS`, and
+`WAREHOUSE_RUNTIME_WAKE_HEALTH_TIMEOUT_SECONDS`. Disabling
+`WAREHOUSE_RUNTIME_IDLE_SUSPEND_ENABLED` stops new idle suspensions but still
+allows already-suspended applications to wake on demand.
+
 ## API and AI workflow
 
 Workspace-key APIs:
@@ -101,7 +125,7 @@ bound to the old origin.
 
 ## Release order
 
-1. Back up PostgreSQL and apply Alembic through `20260805_0077`.
+1. Back up PostgreSQL and apply Alembic through `20260805_0078`.
 2. Deploy the API and Runtime Controller together.
 3. Configure the one-level wildcard DNS and TLS at Cloudflare. Configure an
    advanced `*.apps.bonfirework.org` certificate only if independent aliases
