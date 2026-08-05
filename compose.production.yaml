@@ -57,7 +57,10 @@ services:
       WAREHOUSE_PAGES_RUNTIME_ROOT_DOMAIN: ${WAREHOUSE_PAGES_RUNTIME_ROOT_DOMAIN:-bonfirework.org}
       WAREHOUSE_PAGES_SCHEME: https
       WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD:?required}@postgres:5432/warehouse_os
-      WAREHOUSE_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:${WAREHOUSE_MIGRATOR_DB_PASSWORD:?required}@postgres:5432/warehouse_os
+      # Web services must never receive the schema-owner identity. Database
+      # migrations run only in the detached controller job.
+      WAREHOUSE_MIGRATION_DATABASE_URL: ""
+      WAREHOUSE_MIGRATOR_DB_PASSWORD: ""
       WAREHOUSE_ASSET_STORAGE_ROOT: /data/hdd/digital-assets
       WAREHOUSE_ASSET_CODE_SSD_ROOT: /data/ssd-code/digital-assets
       WAREHOUSE_ASSET_LEGACY_STORAGE_ROOT: /data/legacy-assets
@@ -76,7 +79,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
+      - exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -116,6 +119,8 @@ services:
       WAREHOUSE_HOSTED_RUNTIME_DATA_ROOT: /data/hdd/runtime-volumes
       WAREHOUSE_RUNTIME_HOST_DATA_ROOT: /mnt/warehouse-data/hosted/runtime-volumes
       WAREHOUSE_RUNTIME_CONTROLLER_ENABLED: "true"
+      WAREHOUSE_MIGRATION_DATABASE_URL: ""
+      WAREHOUSE_MIGRATOR_DB_PASSWORD: ""
       WAREHOUSE_RUNTIME_DOCKER_NETWORK: warehouse-os_default
       WAREHOUSE_HOSTED_DATABASE_ADMIN_URL: postgresql+psycopg://warehouse_hosted_admin:${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?required}@hosted-postgres:5432/postgres
     depends_on:
@@ -201,6 +206,8 @@ services:
       WAREHOUSE_DATABASE_URL: postgresql://warehouse_os:${WAREHOUSE_API_DB_PASSWORD:?required}@postgres:5432/warehouse_os
       WAREHOUSE_BROWSER_API_BASE: http://api:8080
       WAREHOUSE_BROWSER_RUNTIME_ROOT: /data/browser-runtime
+      WAREHOUSE_MIGRATION_DATABASE_URL: ""
+      WAREHOUSE_MIGRATOR_DB_PASSWORD: ""
       WAREHOUSE_BROWSER_ALLOWED_ORIGINS: https://bonfirework.org
       WAREHOUSE_BROWSER_RESOURCE_ORIGINS: https://static.cloudflareinsights.com,https://cloudflareinsights.com,https://fonts.googleapis.com,https://fonts.gstatic.com,https://unpkg.com
     depends_on:

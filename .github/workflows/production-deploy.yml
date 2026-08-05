@@ -1,0 +1,48 @@
+name: Production fast smart deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Deployment safety lane
+        required: true
+        default: smart
+        type: choice
+        options: [smart, quick, standard, full]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warehouse-production
+  cancel-in-progress: false
+
+jobs:
+  coordinated-deploy:
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 25
+    env:
+      DEPLOY_MODE: ${{ github.event.inputs.mode || 'smart' }}
+      WAREHOUSE_CLUSTER_PREFLIGHT: basic
+      WAREHOUSE_PRIMARY_TRANSPORT: local
+      WAREHOUSE_PRIMARY_MANAGER_SUDO: "0"
+      WAREHOUSE_PRIMARY_PREPARE_INCOMING: "0"
+      WAREHOUSE_STANDBY_TRANSPORT: ssh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Refuse stale queued revisions
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          git fetch origin main --depth=1
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          test -z "$(git status --porcelain=v1)"
+      - name: Run coordinated fast deployment
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          ops/cluster/rolling-deploy "${DEPLOY_MODE}"

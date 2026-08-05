@@ -52,6 +52,10 @@ Usage:
   ops/deploy full        # disposable PG18 integration suite plus full server checks
   ops/deploy prepare smart # validate, back up, build and health-check without switching
   ops/deploy prepared-status RELEASE # verify a prepared candidate remains healthy
+  ops/deploy migration-start RELEASE # start the detached database controller job
+  ops/deploy migration-status RELEASE # read the controller's durable state
+  ops/deploy migration-wait RELEASE  # wait outside the activation window
+  ops/deploy migration-reconcile RELEASE # refresh and verify standby replication
   ops/deploy activate RELEASE # atomically switch to an already prepared candidate
   ops/deploy plan        # compare this checkout with the target's active manifest
   ops/deploy status      # current release, slots and service health
@@ -169,7 +173,7 @@ case "${MODE}" in
     manager_remote "${MODE}"
     exit 0
     ;;
-  prepared-status|activate)
+  prepared-status|migration-start|migration-status|migration-wait|migration-reconcile|activate)
     [[ "$#" -eq 2 ]] || fail "${MODE} requires RELEASE"
     require_deploy_access
     manager_remote "${MODE}" "$2"

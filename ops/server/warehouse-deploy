@@ -22,6 +22,10 @@ HOSTED_DATABASE_ROOT=${HOSTED_DATA_ROOT}/postgres-data
 HOSTED_DATABASE_OBSERVER_ROOT=${HOSTED_DATA_ROOT}/database-capacity
 HOSTED_DATABASE_CONTAINER=warehouse-os-hosted-postgres
 LEGACY_ASSET_VOLUME=warehouse-os_warehouse-digital-assets
+MIGRATION_ROOT="${SHARED}/database-migrations"
+MIGRATION_BACKUP_ROOT="${HOSTED_ARCHIVE_ROOT}/database-backups/control-migrations"
+MIGRATION_DEFER="${WAREHOUSE_DATABASE_MIGRATION_DEFER:-0}"
+MIGRATION_WAIT_SECONDS="${WAREHOUSE_DATABASE_MIGRATION_WAIT_SECONDS:-900}"
 
 BLUE_PORT=18081
 GREEN_PORT=18082
@@ -30,6 +34,11 @@ fail() {
   printf 'warehouse-deploy: %s\n' "$*" >&2
   exit 1
 }
+
+[[ "${MIGRATION_DEFER}" =~ ^[01]$ ]] \
+  || fail "WAREHOUSE_DATABASE_MIGRATION_DEFER must be 0 or 1"
+[[ "${MIGRATION_WAIT_SECONDS}" =~ ^[1-9][0-9]{1,3}$ ]] \
+  || fail "WAREHOUSE_DATABASE_MIGRATION_WAIT_SECONDS must be 10..9999"
 
 valid_release_id() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]]
@@ -71,6 +80,138 @@ configured_node_role() {
   printf '%s\n' "${role}"
 }
 
+migration_job_dir() {
+  printf '%s/%s\n' "${MIGRATION_ROOT}" "$1"
+}
+
+migration_json_value() {
+  local path="$1" key="$2"
+  [[ -f "${path}" ]] || return 1
+  python3 -c \
+    'import json,sys; value=json.load(open(sys.argv[1],encoding="utf-8")).get(sys.argv[2]); print(value if value is not None else "")' \
+    "${path}" "${key}"
+}
+
+prepare_database_migration_request() {
+  local release="$1" git_sha="$2" target_revision="$3" role="$4"
+  local job_dir request temporary
+  job_dir="$(migration_job_dir "${release}")"
+  request="${job_dir}/request.json"
+  install -d -m 0700 "${MIGRATION_ROOT}" "${job_dir}" "${MIGRATION_BACKUP_ROOT}"
+  temporary="${request}.tmp.$$"
+  printf '{"schema":"warehouse.database-migration-request.v1","release_id":"%s","git_sha":"%s","target_revision":"%s","node_role":"%s","requested_at":"%s"}\n' \
+    "${release}" "${git_sha}" "${target_revision}" "${role}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${temporary}"
+  chmod 0600 "${temporary}"
+  mv -f "${temporary}" "${request}"
+}
+
+start_database_migration() {
+  local release="$1" image="$2" role="$3" job_dir request status suffix container state
+  job_dir="$(migration_job_dir "${release}")"
+  request="${job_dir}/request.json"
+  status="${job_dir}/status.json"
+  [[ -f "${request}" ]] || fail "database migration request is missing"
+  [[ -f "${ENV_FILE}" ]] || fail "production environment is missing"
+  state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+  [[ "${state}" != succeeded ]] || return 0
+  suffix="$(printf '%s' "${release}" | sha256sum | awk '{print substr($1,1,16)}')"
+  container="warehouse-os-db-migration-${suffix}"
+  if [[ "$(docker inspect "${container}" --format '{{.State.Running}}' 2>/dev/null || true)" == true ]]; then
+    return 0
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+  docker rm -f "${container}" >/dev/null 2>&1 || true
+  docker run -d \
+    --name "${container}" \
+    --network warehouse-os_default \
+    --env-file "${ENV_FILE}" \
+    -e WAREHOUSE_ENVIRONMENT=production \
+    -e WAREHOUSE_NODE_ROLE="${role}" \
+    -e "WAREHOUSE_MIGRATION_DATABASE_URL=postgresql+psycopg://warehouse_migrator:${WAREHOUSE_MIGRATOR_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    --label org.bonfirework.role=database-migration-controller \
+    --label "org.bonfirework.release=${release}" \
+    -v "${job_dir}:/migration" \
+    -v "${MIGRATION_BACKUP_ROOT}:/backups" \
+    --read-only \
+    --tmpfs /tmp:size=64m,mode=1777 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --pids-limit 96 \
+    --memory 512m \
+    --cpus 0.5 \
+    "${image}" \
+    python -m app.database_migration_controller \
+      --request /migration/request.json \
+      --status /migration/status.json \
+      --backup-dir /backups >/dev/null
+  log_event database_migration queued "${release}" "${role}" "" 0
+}
+
+wait_database_migration() {
+  local release="$1" image="${2:-}" role="${3:-}" status attempt state error recovery
+  local reseed_marker reseed_action
+  status="$(migration_job_dir "${release}")/status.json"
+  reseed_marker="$(migration_job_dir "${release}")/standby-reseed-attempted"
+  reseed_action="${CURRENT}/ops/server/warehouse-standby-reseed"
+  for attempt in $(seq 1 "${MIGRATION_WAIT_SECONDS}"); do
+    state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+    case "${state}" in
+      succeeded)
+        printf 'database_migration=%s release=%s\n' "${state}" "${release}"
+        return 0
+        ;;
+      failed)
+        error="$(migration_json_value "${status}" error 2>/dev/null || printf unknown)"
+        recovery="$(migration_json_value "${status}" recovery_action 2>/dev/null || true)"
+        if [[ "${role}" == standby \
+            && "${recovery}" == reseed_standby_control_database \
+            && -n "${image}" && -x "${reseed_action}" \
+            && ! -e "${reseed_marker}" ]]; then
+          touch "${reseed_marker}"
+          chmod 0600 "${reseed_marker}"
+          printf 'database_migration=recovering action=standby_reseed release=%s\n' \
+            "${release}"
+          WAREHOUSE_CONFIRM_STANDBY_RESEED=YES "${reseed_action}"
+          rm -f "${status}"
+          start_database_migration "${release}" "${image}" "${role}"
+          continue
+        fi
+        printf 'database migration failed: %s\n' "${error}" >&2
+        return 1
+        ;;
+      planning|backing_up|migrating|verifying|"") ;;
+      *) fail "database migration controller returned invalid state: ${state}" ;;
+    esac
+    sleep 1
+  done
+  fail "database migration controller timed out for ${release}"
+}
+
+database_migration_gate() {
+  local release="$1" required="$2" target_revision="$3" status state observed
+  [[ "${required}" == 1 ]] || return 0
+  status="$(migration_job_dir "${release}")/status.json"
+  state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+  observed="$(migration_json_value "${status}" target_revision 2>/dev/null || true)"
+  [[ "${state}" == succeeded && "${observed}" == "${target_revision}" ]] \
+    || fail "database migration is not ready for ${release}: ${state:-missing}"
+}
+
+database_replication_gate() {
+  local release="$1" required="$2" role="$3" target_revision="$4"
+  local status state observed
+  [[ "${required}" == 1 && "${role}" == standby ]] || return 0
+  status="$(migration_job_dir "${release}")/replication.json"
+  state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+  observed="$(migration_json_value "${status}" target_revision 2>/dev/null || true)"
+  [[ "${state}" == succeeded && "${observed}" == "${target_revision}" ]] \
+    || fail "standby database replication is not ready for ${release}: ${state:-missing}"
+}
+
 slot_release() {
   local slot="$1"
   if [[ -f "${STATE}/slot-${slot}-release" ]]; then
@@ -100,22 +241,25 @@ wait_health() {
 }
 
 validate_candidate() {
-  local port="$1" mode="$2" container="$3" response_file
+  local port="$1" mode="$2" container="$3" response_file node_role
   local base="http://127.0.0.1:${port}"
+  node_role="$(configured_node_role)"
   if ! wait_health "${base}/api/health" 60; then
     printf 'candidate health check failed\n' >&2
     return 1
   fi
-  local schema_attempt
-  for ((schema_attempt=1; schema_attempt<=60; schema_attempt++)); do
-    if docker exec "${container}" alembic current 2>/dev/null | grep -q '(head)'; then
-      break
+  if [[ "${node_role}" != standby || "${PLAN_MIGRATION:-0}" != 1 ]]; then
+    local schema_attempt
+    for ((schema_attempt=1; schema_attempt<=60; schema_attempt++)); do
+      if docker exec "${container}" alembic current 2>/dev/null | grep -q '(head)'; then
+        break
+      fi
+      sleep 2
+    done
+    if (( schema_attempt > 60 )); then
+      printf 'candidate Alembic revision is not at head\n' >&2
+      return 1
     fi
-    sleep 2
-  done
-  if (( schema_attempt > 60 )); then
-    printf 'candidate Alembic revision is not at head\n' >&2
-    return 1
   fi
   if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_API_CONTRACT:-0}" == 1 ]]; then
     response_file="$(mktemp)"
@@ -131,7 +275,8 @@ validate_candidate() {
     fi
     rm -f "${response_file}"
   fi
-  if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_AUTH:-0}" == 1 ]]; then
+  if [[ "${node_role}" != standby \
+      && ("${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_AUTH:-0}" == 1) ]]; then
     response_file="$(mktemp)"
     if ! curl --fail --silent --show-error --max-time 10 \
       -H 'Content-Type: application/json' \
@@ -570,14 +715,9 @@ start_slot() {
   . "${ENV_FILE}"
   set +a
 
-  if [[ "${WAREHOUSE_NODE_ROLE:-standby}" == standby ]]; then
-    # The standby application role is deliberately read-only. It waits in
-    # candidate validation for the primary's coordinated migration to reach
-    # the declared head, but never attempts DDL itself.
-    startup_command='exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"'
-  else
-    startup_command='alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"'
-  fi
+  # Database evolution is owned by the detached migration controller.  Web
+  # processes never receive authority to change schema during startup.
+  startup_command='exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"'
 
   docker rm -f "${container}" >/dev/null 2>&1 || true
   docker run -d \
@@ -587,7 +727,8 @@ start_slot() {
     --env-file "${ENV_FILE}" \
     -e WAREHOUSE_ENVIRONMENT=production \
     -e "WAREHOUSE_DATABASE_URL=postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD}@postgres:5432/warehouse_os" \
-    -e "WAREHOUSE_MIGRATION_DATABASE_URL=postgresql+psycopg://warehouse_migrator:${WAREHOUSE_MIGRATOR_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    -e WAREHOUSE_MIGRATION_DATABASE_URL= \
+    -e WAREHOUSE_MIGRATOR_DB_PASSWORD= \
     -e WAREHOUSE_ASSET_STORAGE_ROOT=/data/hdd/digital-assets \
     -e WAREHOUSE_ASSET_CODE_SSD_ROOT=/data/ssd-code/digital-assets \
     -e WAREHOUSE_ASSET_LEGACY_STORAGE_ROOT=/data/legacy-assets \
@@ -644,6 +785,8 @@ start_browser_worker() {
     --network warehouse-os_default \
     --env-file "${ENV_FILE}" \
     -e "WAREHOUSE_DATABASE_URL=postgresql://warehouse_os:${WAREHOUSE_API_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    -e WAREHOUSE_MIGRATION_DATABASE_URL= \
+    -e WAREHOUSE_MIGRATOR_DB_PASSWORD= \
     -e "WAREHOUSE_BROWSER_API_BASE=http://${api_container}:8080" \
     -e WAREHOUSE_BROWSER_RUNTIME_ROOT=/data/browser-runtime \
     -e WAREHOUSE_BROWSER_ALLOWED_ORIGINS=https://bonfirework.org \
@@ -697,6 +840,8 @@ start_runtime_controller() {
     --env-file "${ENV_FILE}" \
     -e WAREHOUSE_ENVIRONMENT=production \
     -e "WAREHOUSE_DATABASE_URL=postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD}@postgres:5432/warehouse_os" \
+    -e WAREHOUSE_MIGRATION_DATABASE_URL= \
+    -e WAREHOUSE_MIGRATOR_DB_PASSWORD= \
     -e WAREHOUSE_ASSET_STORAGE_ROOT=/data/hdd/digital-assets \
     -e WAREHOUSE_ASSET_CODE_SSD_ROOT=/data/ssd-code/digital-assets \
     -e WAREHOUSE_ASSET_LEGACY_STORAGE_ROOT=/data/legacy-assets \
@@ -846,6 +991,7 @@ prepare_release() {
   PLAN_DOWNLOADS=1
   PLAN_FRONTEND=1
   PLAN_INFRASTRUCTURE=1
+  PLAN_MIGRATION=1
   PLAN_RUNTIME_CONTROLLER=1
   PLAN_STORAGE=1
   if [[ "${requested_mode}" == smart ]]; then
@@ -881,11 +1027,6 @@ prepare_release() {
 
   if [[ "${mode}" == quick ]]; then
     quick_guard "${staging}"
-  elif [[ "${requested_mode}" != smart || "${PLAN_BACKUP}" == 1 ]]; then
-    phase_started="${SECONDS}"
-    "${CURRENT}/infra/backup/warehouse-postgres-backup.sh" >/dev/null
-    log_event deploy_phase succeeded "${release}" backup "" \
-      "$((SECONDS - phase_started))"
   fi
 
   mv "${staging}" "${release_dir}"
@@ -926,6 +1067,24 @@ prepare_release() {
   ensure_hosted_database
   log_event deploy_phase succeeded "${release}" hosted_database "" \
     "$((SECONDS - phase_started))"
+
+  local release_manifest release_git_sha release_alembic_head
+  release_manifest="${release_dir}/.warehouse-release/manifest.env"
+  release_git_sha="$(awk -F= '$1 == "git_sha" {print $2; exit}' "${release_manifest}")"
+  release_alembic_head="$(awk -F= '$1 == "alembic_head" {print $2; exit}' "${release_manifest}")"
+  [[ "${release_git_sha}" =~ ^[0-9a-f]{7,40}$ ]] \
+    || fail "candidate release Git SHA is invalid"
+  [[ "${release_alembic_head}" =~ ^[A-Za-z0-9_.-]{4,128}$ ]] \
+    || fail "candidate release Alembic head is invalid"
+  if [[ "${PLAN_MIGRATION:-0}" == 1 ]]; then
+    prepare_database_migration_request \
+      "${release}" "${release_git_sha}" "${release_alembic_head}" "${node_role}"
+    if [[ "${MIGRATION_DEFER}" == 0 ]]; then
+      start_database_migration "${release}" "${image}" "${node_role}"
+      wait_database_migration "${release}" "${image}" "${node_role}"
+      database_migration_gate "${release}" 1 "${release_alembic_head}"
+    fi
+  fi
 
   local previous_slot next_slot next_port container browser_container="" runtime_controller="" previous_release
   previous_slot="$(active_slot)"
@@ -999,6 +1158,9 @@ prepare_release() {
     printf 'PREPARED_PLAN_ADAPTIVE=%q\n' "${PLAN_ADAPTIVE}"
     printf 'PREPARED_PLAN_FRONTEND=%q\n' "${PLAN_FRONTEND}"
     printf 'PREPARED_PLAN_DOWNLOADS=%q\n' "${PLAN_DOWNLOADS}"
+    printf 'PREPARED_PLAN_MIGRATION=%q\n' "${PLAN_MIGRATION:-0}"
+    printf 'PREPARED_ALEMBIC_HEAD=%q\n' "${release_alembic_head}"
+    printf 'PREPARED_API_IMAGE=%q\n' "${image}"
     printf 'PREPARED_AT=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${prepared_temporary}"
   chmod 0600 "${prepared_temporary}"
@@ -1021,11 +1183,159 @@ prepared_status() {
     || fail "prepared release identity mismatch"
   [[ "${PREPARED_NEXT_PORT:-}" =~ ^[0-9]{2,5}$ ]] \
     || fail "prepared release port is invalid"
+  database_migration_gate "${release}" "${PREPARED_PLAN_MIGRATION:-0}" \
+    "${PREPARED_ALEMBIC_HEAD:-unknown}"
+  database_replication_gate \
+    "${release}" "${PREPARED_PLAN_MIGRATION:-0}" "${PREPARED_NODE_ROLE:-}" \
+    "${PREPARED_ALEMBIC_HEAD:-unknown}"
+  if [[ "${PREPARED_NODE_ROLE:-}" == standby \
+      && "${PREPARED_PLAN_MIGRATION:-0}" == 1 ]]; then
+    local replication_attempt
+    for replication_attempt in {1..60}; do
+      if docker exec "${PREPARED_CONTAINER}" alembic current 2>/dev/null \
+          | grep -q '(head)'; then
+        break
+      fi
+      sleep 1
+    done
+    docker exec "${PREPARED_CONTAINER}" alembic current 2>/dev/null \
+      | grep -q '(head)' \
+      || fail "standby schema is ready but primary migration cursor has not replicated"
+  fi
   wait_health "http://127.0.0.1:${PREPARED_NEXT_PORT}/api/health" 3 \
     || fail "prepared API candidate is not healthy"
   printf 'release=%s role=%s slot=%s port=%s status=prepared\n' \
     "${release}" "${PREPARED_NODE_ROLE}" "${PREPARED_NEXT_SLOT}" \
     "${PREPARED_NEXT_PORT}"
+}
+
+load_prepared_migration() {
+  local release="$1" prepared_state="${STATE}/prepared-${release}.env"
+  valid_release_id "${release}" || fail "invalid release id"
+  [[ -f "${prepared_state}" ]] || fail "release is not prepared: ${release}"
+  # shellcheck disable=SC1090
+  . "${prepared_state}"
+  [[ "${PREPARED_RELEASE:-}" == "${release}" ]] \
+    || fail "prepared release identity mismatch"
+  [[ "${PREPARED_PLAN_MIGRATION:-}" =~ ^[01]$ ]] \
+    || fail "prepared database migration plan is invalid"
+}
+
+start_prepared_migration() {
+  local release="$1"
+  load_prepared_migration "${release}"
+  if [[ "${PREPARED_PLAN_MIGRATION}" == 0 ]]; then
+    printf 'release=%s database_migration=not_required\n' "${release}"
+    return 0
+  fi
+  start_database_migration \
+    "${release}" "${PREPARED_API_IMAGE}" "${PREPARED_NODE_ROLE}"
+  printf 'release=%s database_migration=queued\n' "${release}"
+}
+
+show_prepared_migration() {
+  local release="$1" status state target error
+  load_prepared_migration "${release}"
+  if [[ "${PREPARED_PLAN_MIGRATION}" == 0 ]]; then
+    printf 'release=%s database_migration=not_required target=%s\n' \
+      "${release}" "${PREPARED_ALEMBIC_HEAD}"
+    return 0
+  fi
+  status="$(migration_job_dir "${release}")/status.json"
+  state="$(migration_json_value "${status}" status 2>/dev/null || printf deferred)"
+  target="$(migration_json_value "${status}" target_revision 2>/dev/null || true)"
+  printf 'release=%s database_migration=%s target=%s\n' \
+    "${release}" "${state}" "${target:-${PREPARED_ALEMBIC_HEAD}}"
+  if [[ "${state}" == failed ]]; then
+    error="$(migration_json_value "${status}" error 2>/dev/null || printf unknown)"
+    printf 'error=%s\n' "${error}"
+    return 1
+  fi
+}
+
+wait_prepared_migration() {
+  local release="$1"
+  load_prepared_migration "${release}"
+  [[ "${PREPARED_PLAN_MIGRATION}" == 1 ]] || {
+    printf 'release=%s database_migration=not_required\n' "${release}"
+    return 0
+  }
+  wait_database_migration \
+    "${release}" "${PREPARED_API_IMAGE}" "${PREPARED_NODE_ROLE}"
+}
+
+reconcile_prepared_migration() {
+  local release="$1" control_container status temporary state primary_revision
+  local relation_state ready_tables total_tables attempt
+  load_prepared_migration "${release}"
+  if [[ "${PREPARED_PLAN_MIGRATION}" == 0 ]]; then
+    printf 'release=%s database_replication=not_required\n' "${release}"
+    return 0
+  fi
+  [[ "${PREPARED_NODE_ROLE}" == standby ]] \
+    || fail "database replication reconciliation is standby-only"
+  database_migration_gate \
+    "${release}" "${PREPARED_PLAN_MIGRATION}" "${PREPARED_ALEMBIC_HEAD}"
+  control_container="$(
+    docker ps --filter label=com.docker.compose.service=postgres \
+      --format '{{.Names}}' | head -n 1
+  )"
+  [[ -n "${control_container}" ]] || fail "control PostgreSQL container is unavailable"
+  status="$(migration_job_dir "${release}")/replication.json"
+  state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+  [[ "${state}" != succeeded ]] || {
+    printf 'release=%s database_replication=succeeded\n' "${release}"
+    return 0
+  }
+
+  # The replicated primary Alembic cursor is a barrier: when it reaches the
+  # target, primary DDL has committed and a publication refresh can discover
+  # every newly created table.
+  for attempt in $(seq 1 "${MIGRATION_WAIT_SECONDS}"); do
+    primary_revision="$(docker exec "${control_container}" sh -lc \
+      'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select version_num from app.alembic_version"' \
+      2>/dev/null || true)"
+    [[ "${primary_revision}" == "${PREPARED_ALEMBIC_HEAD}" ]] && break
+    sleep 1
+  done
+  [[ "${primary_revision}" == "${PREPARED_ALEMBIC_HEAD}" ]] \
+    || fail "primary migration cursor did not replicate to the standby"
+
+  temporary="${status}.tmp.$$"
+  printf '{"schema":"warehouse.database-replication-state.v1","release_id":"%s","target_revision":"%s","status":"refreshing","updated_at":"%s"}\n' \
+    "${release}" "${PREPARED_ALEMBIC_HEAD}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "${temporary}"
+  chmod 0600 "${temporary}"
+  mv -f "${temporary}" "${status}"
+
+  docker exec "${control_container}" sh -lc \
+    'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ALTER SUBSCRIPTION warehouse_from_mac REFRESH PUBLICATION WITH (copy_data=true)"' \
+    >/dev/null
+  ready_tables=0
+  total_tables=0
+  for attempt in $(seq 1 "${MIGRATION_WAIT_SECONDS}"); do
+    relation_state="$(docker exec "${control_container}" sh -lc \
+      'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select count(*) filter (where srsubstate::text=\$\$r\$\$),count(*) from pg_subscription_rel where srsubid=(select oid from pg_subscription where subname=\$\$warehouse_from_mac\$\$)"' \
+      2>/dev/null || true)"
+    IFS='|' read -r ready_tables total_tables <<<"${relation_state}"
+    if [[ "${total_tables}" =~ ^[1-9][0-9]*$ \
+        && "${ready_tables}" == "${total_tables}" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "${total_tables}" =~ ^[1-9][0-9]*$ \
+      && "${ready_tables}" == "${total_tables}" ]] \
+    || fail "standby publication refresh did not become ready"
+
+  temporary="${status}.tmp.$$"
+  printf '{"schema":"warehouse.database-replication-state.v1","release_id":"%s","target_revision":"%s","status":"succeeded","ready_tables":%s,"completed_at":"%s"}\n' \
+    "${release}" "${PREPARED_ALEMBIC_HEAD}" "${ready_tables}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${temporary}"
+  chmod 0600 "${temporary}"
+  mv -f "${temporary}" "${status}"
+  printf 'release=%s database_replication=succeeded tables=%s\n' \
+    "${release}" "${ready_tables}"
 }
 
 activate_release() {
@@ -1055,8 +1365,14 @@ activate_release() {
     || fail "prepared API container is invalid"
   [[ "${PREPARED_PLAN_ADAPTIVE:-}" =~ ^[01]$ \
       && "${PREPARED_PLAN_FRONTEND:-}" =~ ^[01]$ \
-      && "${PREPARED_PLAN_DOWNLOADS:-}" =~ ^[01]$ ]] \
+      && "${PREPARED_PLAN_DOWNLOADS:-}" =~ ^[01]$ \
+      && "${PREPARED_PLAN_MIGRATION:-}" =~ ^[01]$ ]] \
     || fail "prepared impact plan is invalid"
+  database_migration_gate "${release}" "${PREPARED_PLAN_MIGRATION}" \
+    "${PREPARED_ALEMBIC_HEAD}"
+  database_replication_gate \
+    "${release}" "${PREPARED_PLAN_MIGRATION}" "${PREPARED_NODE_ROLE}" \
+    "${PREPARED_ALEMBIC_HEAD}"
   PLAN_ADAPTIVE="${PREPARED_PLAN_ADAPTIVE}"
   PLAN_FRONTEND="${PREPARED_PLAN_FRONTEND}"
   PLAN_DOWNLOADS="${PREPARED_PLAN_DOWNLOADS}"
@@ -1342,6 +1658,8 @@ show_status() {
   readiness="$(curl --fail --silent --show-error --max-time 10 \
     "http://127.0.0.1:${port}/api/system/readiness")"
   printf 'readiness=%s\n' "${readiness}"
+  printf 'deployment_route=GitHub_to_Mac_runner_to_coordinated_Mac_Vultr\n'
+  printf 'fast_deploy=ops/fast-deploy smart\n'
 }
 
 show_runtime_status() {
@@ -1436,6 +1754,22 @@ case "${command}" in
   prepared-status)
     [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy prepared-status RELEASE"
     prepared_status "$2"
+    ;;
+  migration-start)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy migration-start RELEASE"
+    start_prepared_migration "$2"
+    ;;
+  migration-status)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy migration-status RELEASE"
+    show_prepared_migration "$2"
+    ;;
+  migration-wait)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy migration-wait RELEASE"
+    wait_prepared_migration "$2"
+    ;;
+  migration-reconcile)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy migration-reconcile RELEASE"
+    reconcile_prepared_migration "$2"
     ;;
   activate)
     [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy activate RELEASE"

@@ -34,7 +34,7 @@ run_node() {
   local prefix="$1" label="$2" action="$3" release_file="${4:-}"
   local action_command action_argument
   local host user identity manager incoming target manager_sudo prepare_incoming scp_legacy
-  local known_hosts transport
+  local known_hosts transport migration_defer
   if [[ "${prefix}" == WAREHOUSE_PRIMARY ]]; then
     host="$(node_value "${prefix}" HOST 100.69.250.61)"
     user="$(node_value "${prefix}" USER peiyuan)"
@@ -44,6 +44,7 @@ run_node() {
     manager_sudo="$(node_value "${prefix}" MANAGER_SUDO 0)"
     prepare_incoming="$(node_value "${prefix}" PREPARE_INCOMING 0)"
     scp_legacy="$(node_value "${prefix}" SCP_LEGACY 1)"
+    migration_defer="$(node_value "${prefix}" DATABASE_MIGRATION_DEFER 1)"
   else
     host="$(node_value "${prefix}" HOST 207.148.120.30)"
     user="$(node_value "${prefix}" USER warehouse-deploy)"
@@ -53,13 +54,14 @@ run_node() {
     manager_sudo="$(node_value "${prefix}" MANAGER_SUDO 1)"
     prepare_incoming="$(node_value "${prefix}" PREPARE_INCOMING 1)"
     scp_legacy="$(node_value "${prefix}" SCP_LEGACY 0)"
+    migration_defer="$(node_value "${prefix}" DATABASE_MIGRATION_DEFER 1)"
   fi
   target="$(node_value "${prefix}" TARGET "${label}")"
   known_hosts="$(node_value "${prefix}" KNOWN_HOSTS "${HOME}/.ssh/known_hosts")"
   transport="$(node_value "${prefix}" TRANSPORT ssh)"
   [[ -f "${identity}" ]] || fail "identity is missing for ${label}: ${identity}"
   read -r action_command action_argument <<<"${action}"
-  [[ "${action_command}" =~ ^(prepare|prepared-status|activate|status|rollback)$ ]] \
+  [[ "${action_command}" =~ ^(prepare|prepared-status|migration-start|migration-status|migration-wait|migration-reconcile|activate|status|rollback)$ ]] \
     || fail "unsupported node action: ${action_command}"
   if [[ "${action_command}" =~ ^(status|rollback)$ ]]; then
     [[ -z "${action_argument:-}" ]] || fail "${action_command} takes no argument"
@@ -81,6 +83,7 @@ run_node() {
     WAREHOUSE_DEPLOY_MANAGER_SUDO="${manager_sudo}" \
     WAREHOUSE_DEPLOY_PREPARE_INCOMING="${prepare_incoming}" \
     WAREHOUSE_DEPLOY_SCP_LEGACY="${scp_legacy}" \
+    WAREHOUSE_DATABASE_MIGRATION_DEFER="${migration_defer}" \
     WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic \
     WAREHOUSE_DEPLOY_RELEASE_ID_FILE="${release_file}" \
     "${deploy_command[@]}"
@@ -141,6 +144,17 @@ standby_release="$(tr -d '\r\n' < "${standby_release_file}")"
   || fail "primary prepared release id is invalid"
 [[ "${standby_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
   || fail "standby prepared release id is invalid"
+
+printf '==> background database gate: standby schema, then primary data\n'
+# Both prepares only build and validate code. The database phase is explicit:
+# standby schema first, then primary backup/schema/data, then replication.
+run_node WAREHOUSE_STANDBY vultr-standby "migration-start ${standby_release}" ""
+run_node WAREHOUSE_STANDBY vultr-standby "migration-wait ${standby_release}" ""
+run_node WAREHOUSE_STANDBY vultr-standby "migration-status ${standby_release}" ""
+run_node WAREHOUSE_PRIMARY mac-primary "migration-start ${primary_release}" ""
+run_node WAREHOUSE_PRIMARY mac-primary "migration-wait ${primary_release}" ""
+run_node WAREHOUSE_PRIMARY mac-primary "migration-status ${primary_release}" ""
+run_node WAREHOUSE_STANDBY vultr-standby "migration-reconcile ${standby_release}" ""
 
 printf '==> prepared gate\n'
 run_node WAREHOUSE_PRIMARY mac-primary "prepared-status ${primary_release}" "" \

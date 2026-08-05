@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPOSITORY="${WAREHOUSE_GITHUB_REPOSITORY:-CPYMSU/Warehouse-OS-2.1}"
+WORKFLOW="production-deploy.yml"
+COMMAND="${1:-smart}"
+
+fail() {
+  printf 'fast-deploy: %s\n' "$*" >&2
+  exit 1
+}
+
+require_gh() {
+  command -v gh >/dev/null 2>&1 || fail "GitHub CLI is required"
+  gh auth status >/dev/null 2>&1 || fail "run: gh auth login"
+}
+
+show_route() {
+  cat <<'EOF'
+route=GitHub -> Mac mini production runner -> parallel Mac/Vultr prepare -> standby schema -> primary data -> replication gate -> coordinated activation
+workflow=.github/workflows/production-deploy.yml
+runner=self-hosted,macOS,ARM64,warehouse-production
+command=ops/fast-deploy smart
+EOF
+}
+
+case "${COMMAND}" in
+  route)
+    show_route
+    exit 0
+    ;;
+  status)
+    require_gh
+    show_route
+    gh run list \
+      --repo "${REPOSITORY}" \
+      --workflow "${WORKFLOW}" \
+      --limit 5
+    exit 0
+    ;;
+  local)
+    mode="${2:-smart}"
+    [[ "${mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid mode: ${mode}"
+    exec env \
+      WAREHOUSE_CLUSTER_PREFLIGHT="${WAREHOUSE_CLUSTER_PREFLIGHT:-basic}" \
+      WAREHOUSE_PRIMARY_TRANSPORT="${WAREHOUSE_PRIMARY_TRANSPORT:-local}" \
+      WAREHOUSE_PRIMARY_MANAGER_SUDO="${WAREHOUSE_PRIMARY_MANAGER_SUDO:-0}" \
+      WAREHOUSE_PRIMARY_PREPARE_INCOMING="${WAREHOUSE_PRIMARY_PREPARE_INCOMING:-0}" \
+      "${ROOT}/ops/cluster/rolling-deploy" "${mode}"
+    ;;
+  smart|quick|standard|full)
+    mode="${COMMAND}"
+    ;;
+  *)
+    fail "usage: ops/fast-deploy smart|quick|standard|full|status|route|local [MODE]"
+    ;;
+esac
+
+require_gh
+before="$({
+  gh run list \
+    --repo "${REPOSITORY}" \
+    --workflow "${WORKFLOW}" \
+    --event workflow_dispatch \
+    --limit 1 \
+    --json databaseId \
+    --jq '.[0].databaseId // 0'
+} 2>/dev/null || printf '0')"
+gh workflow run "${WORKFLOW}" \
+  --repo "${REPOSITORY}" \
+  --ref main \
+  --field "mode=${mode}"
+
+run_id=""
+for _ in {1..30}; do
+  run_id="$(gh run list \
+    --repo "${REPOSITORY}" \
+    --workflow "${WORKFLOW}" \
+    --event workflow_dispatch \
+    --limit 1 \
+    --json databaseId \
+    --jq '.[0].databaseId // 0')"
+  [[ "${run_id}" != 0 && "${run_id}" != "${before}" ]] && break
+  sleep 2
+done
+[[ -n "${run_id}" && "${run_id}" != 0 && "${run_id}" != "${before}" ]] \
+  || fail "workflow was dispatched but its run id was not observed"
+printf 'deployment_run=%s mode=%s\n' "${run_id}" "${mode}"
+exec gh run watch "${run_id}" --repo "${REPOSITORY}" --exit-status

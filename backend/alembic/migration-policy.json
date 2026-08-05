@@ -1,0 +1,13 @@
+{
+  "schema": "warehouse.database-migration-policy.v1",
+  "legacy_head": "20260805_0078",
+  "allowed_scopes": [
+    "schema",
+    "primary_data"
+  ],
+  "standby_version_table": "alembic_version_standby",
+  "rules": {
+    "schema": "May change database structure but must not mutate application rows.",
+    "primary_data": "May mutate application rows on the primary but must not change structure. The standby advances only its node-local schema cursor."
+  }
+}

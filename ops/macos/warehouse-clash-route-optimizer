@@ -1,0 +1,387 @@
+#!/opt/homebrew/bin/python3
+"""Select the fastest healthy Singapore Clash route for Cloudflare Tunnel."""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import fcntl
+import json
+import os
+import re
+import socket
+import statistics
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote, urlencode
+
+SOCKET_PATH = Path("/tmp/verge/verge-mihomo.sock")
+TEST_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+PUBLIC_HEALTH_URL = "https://bonfirework.org/api/health"
+PREFERRED_GROUP = "喵喵 - Nachoneko"
+GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance"}
+TUNNEL_LABELS = (
+    "org.bonfirework.cloudflared",
+    "org.bonfirework.cloudflared-pages",
+)
+MIN_IMPROVEMENT_MS = 25
+IMPROVEMENT_CONFIRMATIONS = 2
+IMMEDIATE_FAILOVER_MS = 500
+PROBE_TIMEOUT_MS = 4_000
+PROBE_ROUNDS = 2
+
+
+def now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def decode_chunked(payload: bytes) -> bytes:
+    decoded = bytearray()
+    cursor = 0
+    while True:
+        line_end = payload.find(b"\r\n", cursor)
+        if line_end < 0:
+            raise RuntimeError("Mihomo controller returned malformed chunked data")
+        size_text = payload[cursor:line_end].split(b";", 1)[0]
+        try:
+            size = int(size_text, 16)
+        except ValueError as exc:
+            raise RuntimeError("Mihomo controller returned an invalid chunk size") from exc
+        cursor = line_end + 2
+        if size == 0:
+            return bytes(decoded)
+        chunk_end = cursor + size
+        if chunk_end + 2 > len(payload) or payload[chunk_end : chunk_end + 2] != b"\r\n":
+            raise RuntimeError("Mihomo controller returned a truncated chunk")
+        decoded.extend(payload[cursor:chunk_end])
+        cursor = chunk_end + 2
+
+
+def unix_request(
+    method: str,
+    request_path: str,
+    body: dict[str, object] | None = None,
+    *,
+    timeout: float = 8,
+) -> tuple[int, bytes]:
+    payload = b"" if body is None else json.dumps(body).encode("utf-8")
+    headers = [
+        f"{method} {request_path} HTTP/1.1",
+        "Host: localhost",
+        "Accept: application/json",
+        "Connection: close",
+    ]
+    if payload:
+        headers.extend(
+            [
+                "Content-Type: application/json",
+                f"Content-Length: {len(payload)}",
+            ]
+        )
+    message = ("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + payload
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        connection.connect(str(SOCKET_PATH))
+        connection.sendall(message)
+        response = bytearray()
+        while True:
+            chunk = connection.recv(65_536)
+            if not chunk:
+                break
+            response.extend(chunk)
+    finally:
+        connection.close()
+    head, separator, response_body = bytes(response).partition(b"\r\n\r\n")
+    if not separator:
+        raise RuntimeError("Mihomo controller returned a malformed HTTP response")
+    status_line = head.splitlines()[0].decode("ascii", errors="replace")
+    match = re.match(r"HTTP/\d(?:\.\d)?\s+(\d{3})", status_line)
+    if match is None:
+        raise RuntimeError("Mihomo controller returned an invalid status line")
+    if b"transfer-encoding: chunked" in head.lower():
+        response_body = decode_chunked(response_body)
+    return int(match.group(1)), response_body
+
+
+def controller_json(request_path: str) -> dict[str, Any]:
+    status, payload = unix_request("GET", request_path)
+    if status != 200:
+        raise RuntimeError(f"Mihomo controller GET failed with HTTP {status}")
+    parsed = json.loads(payload)
+    if not isinstance(parsed, dict):
+        raise TypeError("Mihomo controller returned a non-object response")
+    return parsed
+
+
+def singapore_name(name: str) -> bool:
+    return "🇸🇬" in name or re.search(r"(?:^|[^A-Z])SG(?:[^A-Z]|$)", name) is not None
+
+
+def discover_route() -> tuple[str, str, list[str]]:
+    proxies = controller_json("/proxies").get("proxies")
+    if not isinstance(proxies, dict):
+        raise TypeError("Mihomo proxy inventory is unavailable")
+    candidates = sorted(
+        name
+        for name, details in proxies.items()
+        if isinstance(name, str)
+        and isinstance(details, dict)
+        and details.get("type") not in GROUP_TYPES
+        and singapore_name(name)
+    )
+    if not candidates:
+        raise RuntimeError("no Singapore Clash nodes are available")
+    candidate_set = set(candidates)
+    selectors: list[tuple[int, str, dict[str, Any]]] = []
+    for name, details in proxies.items():
+        if not isinstance(name, str) or not isinstance(details, dict):
+            continue
+        if details.get("type") != "Selector" or name == "GLOBAL":
+            continue
+        members = details.get("all") or []
+        count = sum(member in candidate_set for member in members)
+        selectors.append((count, name, details))
+    preferred = next((item for item in selectors if item[1] == PREFERRED_GROUP), None)
+    selected = preferred or (max(selectors, default=None) if selectors else None)
+    if selected is None or selected[0] < 2:
+        raise RuntimeError("no selector contains enough Singapore nodes")
+    current = str(selected[2].get("now") or "")
+    return selected[1], current, candidates
+
+
+def probe_once(name: str) -> int:
+    query = urlencode({"timeout": PROBE_TIMEOUT_MS, "url": TEST_URL})
+    request_path = f"/proxies/{quote(name, safe='')}/delay?{query}"
+    try:
+        status, payload = unix_request(
+            "GET", request_path, timeout=(PROBE_TIMEOUT_MS / 1_000) + 2
+        )
+        if status != 200:
+            return 0
+        delay = int(json.loads(payload).get("delay") or 0)
+        return delay if 0 < delay <= PROBE_TIMEOUT_MS else 0
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return 0
+
+
+def probe_all(candidates: list[str]) -> dict[str, int]:
+    samples: dict[str, list[int]] = {name: [] for name in candidates}
+    workers = min(8, len(candidates))
+    for round_number in range(PROBE_ROUNDS):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(probe_once, name): name for name in candidates}
+            for future in concurrent.futures.as_completed(futures):
+                delay = future.result()
+                if delay:
+                    samples[futures[future]].append(delay)
+        if round_number + 1 < PROBE_ROUNDS:
+            time.sleep(0.2)
+    return {
+        name: round(statistics.median(values)) if values else 0
+        for name, values in samples.items()
+    }
+
+
+def read_state(state_path: Path) -> dict[str, Any]:
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def atomic_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def append_log(log_path: Path, payload: dict[str, object]) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def choose_route(
+    current: str, delays: dict[str, int], previous: dict[str, Any]
+) -> tuple[str, str, int]:
+    healthy = {name: delay for name, delay in delays.items() if delay > 0}
+    if not healthy:
+        raise RuntimeError("all Singapore Clash nodes failed both Cloudflare probes")
+    best = min(healthy, key=healthy.get)  # type: ignore[arg-type]
+    current_delay = healthy.get(current, 0)
+    if current_delay == 0:
+        return best, "current_unhealthy", 0
+    if best == current:
+        return current, "already_fastest", 0
+    improvement = current_delay - healthy[best]
+    if current_delay >= IMMEDIATE_FAILOVER_MS and improvement >= MIN_IMPROVEMENT_MS:
+        return best, "current_degraded", 0
+    if improvement < MIN_IMPROVEMENT_MS:
+        return current, "within_hysteresis", 0
+    pending_streak = (
+        int(previous.get("pending_streak") or 0) + 1
+        if previous.get("pending") == best
+        else 1
+    )
+    if pending_streak >= IMPROVEMENT_CONFIRMATIONS:
+        return best, "confirmed_faster", pending_streak
+    return current, "awaiting_confirmation", pending_streak
+
+
+def select_proxy(group: str, node: str) -> None:
+    status, _ = unix_request(
+        "PUT", f"/proxies/{quote(group, safe='')}", {"name": node}
+    )
+    if status not in {200, 204}:
+        raise RuntimeError(f"Mihomo selector update failed with HTTP {status}")
+
+
+def restart_tunnel(label: str) -> None:
+    subprocess.run(
+        [
+            "/bin/launchctl",
+            "kickstart",
+            "-k",
+            f"gui/{os.getuid()}/{label}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def public_health() -> bool:
+    for _ in range(8):
+        completed = subprocess.run(
+            [
+                "/usr/bin/curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "8",
+                "--output",
+                "/dev/null",
+                PUBLIC_HEALTH_URL,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if completed.returncode == 0:
+            return True
+        time.sleep(2)
+    return False
+
+
+def switch_route(group: str, current: str, selected: str) -> None:
+    select_proxy(group, selected)
+    try:
+        restart_tunnel(TUNNEL_LABELS[0])
+        if not public_health():
+            raise RuntimeError("public health failed after route switch")
+        restart_tunnel(TUNNEL_LABELS[1])
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        rollback_errors: list[str] = []
+        try:
+            select_proxy(group, current)
+        except (OSError, RuntimeError) as rollback_exc:
+            rollback_errors.append(str(rollback_exc))
+        for label in TUNNEL_LABELS:
+            try:
+                restart_tunnel(label)
+            except (OSError, subprocess.SubprocessError) as rollback_exc:
+                rollback_errors.append(str(rollback_exc))
+        detail = f"; rollback errors: {'; '.join(rollback_errors)}" if rollback_errors else ""
+        raise RuntimeError(f"route switch failed and previous node was restored: {exc}{detail}") from exc
+
+
+def run(*, dry_run: bool, state_path: Path, log_path: Path) -> int:
+    event: dict[str, object] = {
+        "schema": "warehouse.clash-route-optimizer-event.v1",
+        "time": now(),
+        "status": "checking",
+        "test_url": TEST_URL,
+    }
+    try:
+        group, current, candidates = discover_route()
+        delays = probe_all(candidates)
+        previous = read_state(state_path)
+        selected, reason, pending_streak = choose_route(current, delays, previous)
+        event.update(
+            {
+                "group": group,
+                "current": current,
+                "selected": selected,
+                "reason": reason,
+                "delays_ms": delays,
+            }
+        )
+        switched = selected != current
+        if switched and not dry_run:
+            switch_route(group, current, selected)
+        event["status"] = "dry_run" if dry_run else "succeeded"
+        event["switched"] = switched and not dry_run
+        state = {
+            **event,
+            "pending": selected if reason == "awaiting_confirmation" else "",
+            "pending_streak": pending_streak if reason == "awaiting_confirmation" else 0,
+        }
+        atomic_json(state_path, state)
+        append_log(log_path, event)
+        print(json.dumps(event, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+        event.update({"status": "failed", "error": " ".join(str(exc).split())[:500]})
+        atomic_json(state_path, event)
+        append_log(log_path, event)
+        print(json.dumps(event, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+        return 1
+
+
+def main() -> None:
+    default_root = Path.home() / "Server" / "bonfirework" / "shared"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--state",
+        type=Path,
+        default=default_root / "state" / "clash-route-optimizer.json",
+    )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        default=default_root / "logs" / "clash-route-optimizer.jsonl",
+    )
+    arguments = parser.parse_args()
+    lock_path = arguments.state.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit(0)
+        raise SystemExit(
+            run(
+                dry_run=arguments.dry_run,
+                state_path=arguments.state,
+                log_path=arguments.log,
+            )
+        )
+
+
+if __name__ == "__main__":
+    main()

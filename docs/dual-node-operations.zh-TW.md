@@ -47,9 +47,11 @@ WAREHOUSE_REBUILD_DATABASE=whdb_<32 hex> \
   ops/cluster/reconcile-hosted-databases-macos
 ```
 
-已有 subscription 的資料庫永遠不由對帳器自動刪除。新增 DDL 必須先以
-expand/contract migration 同時部署兩端，再 refresh publication；新資料庫則先
-對帳 schema，再建立獨立 subscription。
+新增 DDL 由背景資料庫控制器先套用 Vultr schema，再套用 Mac primary；資料回填
+只在 Mac 執行並由 logical replication 傳送。Vultr 使用節點本地 Alembic schema
+游標，不得改寫主庫複製的 `app.alembic_version`。若控制庫已發生無法安全修復的
+schema/replication drift，對帳器會在備份與 read-only fence 驗證後自動重建且僅
+重建 Vultr 控制庫。託管用戶資料庫不在這個自動重建範圍。
 
 首次大量複製若遇到大型租戶，可增加
 `WAREHOUSE_SUBSCRIPTION_WAIT_ATTEMPTS`（每次間隔 5 秒）。只有在同一維護窗口已
@@ -74,9 +76,9 @@ expand/contract migration 同時部署兩端，再 refresh publication；新資�
 
 1. CI 分別建置 `linux/amd64` 與 `linux/arm64`。
 2. 兩種架構全部成功後，發布同一 SHA 的 multi-platform images。
-3. 先部署 `vultr-standby`，確認 readiness、資料庫與 peer inventory。
-4. 允許短暫 release skew，但不允許 schema skew。
-5. 再部署 `mac-primary`。
+3. 兩端平行準備不可變 release；背景控制器先完成 `vultr-standby` schema gate。
+4. Mac 控制器完成主庫備份、migration 與驗證，Vultr 等待複製游標追平。
+5. 兩端同時 activation；允許短暫 release skew，但不允許 schema skew。
 6. `verify-nodes.py` 要求 release、Alembic head、角色、平台及 peer 全部一致。
 
 任何步驟失敗都停止後續部署。應用回滾不自動執行資料庫 downgrade；migration
