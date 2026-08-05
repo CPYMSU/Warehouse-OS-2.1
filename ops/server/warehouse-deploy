@@ -106,6 +106,17 @@ validate_candidate() {
     printf 'candidate health check failed\n' >&2
     return 1
   fi
+  local schema_attempt
+  for ((schema_attempt=1; schema_attempt<=60; schema_attempt++)); do
+    if docker exec "${container}" alembic current 2>/dev/null | grep -q '(head)'; then
+      break
+    fi
+    sleep 2
+  done
+  if (( schema_attempt > 60 )); then
+    printf 'candidate Alembic revision is not at head\n' >&2
+    return 1
+  fi
   if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_API_CONTRACT:-0}" == 1 ]]; then
     response_file="$(mktemp)"
     if ! curl --fail --silent --show-error --max-time 10 \
@@ -132,10 +143,6 @@ validate_candidate() {
       return 1
     fi
     rm -f "${response_file}"
-  fi
-  if ! docker exec "${container}" alembic current | grep -q '(head)'; then
-    printf 'candidate Alembic revision is not at head\n' >&2
-    return 1
   fi
   if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_STORAGE:-0}" == 1 ]]; then
     if ! docker exec "${container}" python -c \
@@ -544,7 +551,7 @@ quick_guard() {
 
 start_slot() {
   local slot="$1" release="$2" image="$3"
-  local port container manifest release_git_sha release_alembic_head
+  local port container manifest release_git_sha release_alembic_head startup_command
   port="$(slot_port "${slot}")"
   container="warehouse-os-api-${slot}"
   manifest="${RELEASES}/${release}/.warehouse-release/manifest.env"
@@ -559,6 +566,15 @@ start_slot() {
   # shellcheck disable=SC1090
   . "${ENV_FILE}"
   set +a
+
+  if [[ "${WAREHOUSE_NODE_ROLE:-standby}" == standby ]]; then
+    # The standby application role is deliberately read-only. It waits in
+    # candidate validation for the primary's coordinated migration to reach
+    # the declared head, but never attempts DDL itself.
+    startup_command='exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"'
+  else
+    startup_command='alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"'
+  fi
 
   docker rm -f "${container}" >/dev/null 2>&1 || true
   docker run -d \
@@ -601,7 +617,7 @@ start_slot() {
     --health-retries=12 \
     --health-start-period=30s \
     "${image}" \
-    /bin/sh -c 'alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"' \
+    /bin/sh -c "${startup_command}" \
     >/dev/null
   printf '%s\n' "${container}"
 }
@@ -782,7 +798,7 @@ healthy_runtime_controller() {
   return 1
 }
 
-install_release() {
+prepare_release() {
   local release="$1" mode="$2" requested_mode install_started phase_started node_role
   install_started="${SECONDS}"
   requested_mode="${mode}"
@@ -908,7 +924,7 @@ install_release() {
   log_event deploy_phase succeeded "${release}" hosted_database "" \
     "$((SECONDS - phase_started))"
 
-  local previous_slot next_slot next_port container browser_container="" runtime_controller="" previous_release smoke_result
+  local previous_slot next_slot next_port container browser_container="" runtime_controller="" previous_release
   previous_slot="$(active_slot)"
   next_slot="$(other_slot "${previous_slot}")"
   next_port="$(slot_port "${next_slot}")"
@@ -939,32 +955,6 @@ install_release() {
     log_event deploy_phase skipped "${release}" browser_worker "${next_slot}" 0
   fi
 
-  phase_started="${SECONDS}"
-  switch_upstream "${next_port}"
-  if [[ "${node_role}" == standby ]]; then
-    smoke_result=0
-    standby_smoke "${next_port}" || smoke_result=$?
-  else
-    smoke_result=0
-    public_smoke || smoke_result=$?
-  fi
-  if [[ "${smoke_result}" != 0 ]]; then
-    if [[ -n "${previous_slot}" ]]; then
-      switch_upstream "$(slot_port "${previous_slot}")"
-    else
-      switch_upstream 8080
-    fi
-    docker rm -f "${container}" >/dev/null 2>&1 || true
-    if [[ -n "${browser_container}" ]]; then
-      docker rm -f "${browser_container}" >/dev/null 2>&1 || true
-    fi
-    log_event deploy rolled_back "${release}" "${mode}" "${next_slot}" \
-      "$((SECONDS - install_started))"
-    fail "public smoke failed; upstream restored"
-  fi
-  log_event deploy_phase succeeded "${release}" public_smoke \
-    "${next_slot}" "$((SECONDS - phase_started))"
-
   if [[ "${node_role}" == standby ]]; then
     log_event deploy_phase skipped "${release}" runtime_controller "${next_slot}" 0
   else
@@ -989,31 +979,151 @@ install_release() {
       "${next_slot}" "$((SECONDS - phase_started))"
   fi
 
-  ln -sfn "${release_dir}" "${CURRENT}"
-  printf '%s\n' "${next_slot}" > "${STATE}/active-slot"
-  printf '%s\n' "${release}" > "${STATE}/slot-${next_slot}-release"
-  printf '%s\n' "${previous_release}" > "${STATE}/previous-release-path"
-  # The fixed channel is versioned with every immutable release.  Replace the
-  # host entry point only after candidate and public verification both pass,
-  # so the next deploy uses the same audited logic as the active release.
-  local manager_candidate
-  manager_candidate="$(mktemp /usr/local/sbin/warehouse-deploy.XXXXXX)"
-  install -m 0755 "${release_dir}/ops/server/warehouse-deploy" "${manager_candidate}"
-  mv -f "${manager_candidate}" "${REMOTE_MANAGER:-/usr/local/sbin/warehouse-deploy}"
-  docker rm -f warehouse-os-api-1 >/dev/null 2>&1 || true
-  if [[ -n "${previous_slot}" && "${previous_slot}" != "${next_slot}" ]]; then
-    docker rm -f "warehouse-os-browser-${previous_slot}" >/dev/null 2>&1 || true
-  fi
-  rm -f "${archive}" "${checksum}"
-  log_event deploy succeeded "${release}" "${mode}" "${next_slot}" \
+  local prepared_state="${STATE}/prepared-${release}.env"
+  local prepared_temporary="${prepared_state}.tmp.$$"
+  {
+    printf 'PREPARED_RELEASE=%q\n' "${release}"
+    printf 'PREPARED_REQUESTED_MODE=%q\n' "${requested_mode}"
+    printf 'PREPARED_MODE=%q\n' "${mode}"
+    printf 'PREPARED_NODE_ROLE=%q\n' "${node_role}"
+    printf 'PREPARED_PREVIOUS_SLOT=%q\n' "${previous_slot}"
+    printf 'PREPARED_NEXT_SLOT=%q\n' "${next_slot}"
+    printf 'PREPARED_NEXT_PORT=%q\n' "${next_port}"
+    printf 'PREPARED_CONTAINER=%q\n' "${container}"
+    printf 'PREPARED_BROWSER_CONTAINER=%q\n' "${browser_container}"
+    printf 'PREPARED_RUNTIME_CONTROLLER=%q\n' "${runtime_controller}"
+    printf 'PREPARED_PREVIOUS_RELEASE=%q\n' "${previous_release}"
+    printf 'PREPARED_PLAN_ADAPTIVE=%q\n' "${PLAN_ADAPTIVE}"
+    printf 'PREPARED_PLAN_FRONTEND=%q\n' "${PLAN_FRONTEND}"
+    printf 'PREPARED_PLAN_DOWNLOADS=%q\n' "${PLAN_DOWNLOADS}"
+    printf 'PREPARED_AT=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "${prepared_temporary}"
+  chmod 0600 "${prepared_temporary}"
+  mv -f "${prepared_temporary}" "${prepared_state}"
+  log_event prepare succeeded "${release}" "${mode}" "${next_slot}" \
     "$((SECONDS - install_started))"
-  printf 'release=%s requested_mode=%s effective_mode=%s adaptive=%s slot=%s port=%s duration_seconds=%s status=healthy\n' \
+  printf 'release=%s requested_mode=%s effective_mode=%s adaptive=%s slot=%s port=%s duration_seconds=%s status=prepared\n' \
     "${release}" "${requested_mode}" "${mode}" "${PLAN_ADAPTIVE}" \
     "${next_slot}" "${next_port}" "$((SECONDS - install_started))"
 }
 
+prepared_status() {
+  local release="$1" prepared_state
+  valid_release_id "${release}" || fail "invalid release id"
+  prepared_state="${STATE}/prepared-${release}.env"
+  [[ -f "${prepared_state}" ]] || fail "release is not prepared: ${release}"
+  # shellcheck disable=SC1090
+  . "${prepared_state}"
+  [[ "${PREPARED_RELEASE:-}" == "${release}" ]] \
+    || fail "prepared release identity mismatch"
+  [[ "${PREPARED_NEXT_PORT:-}" =~ ^[0-9]{2,5}$ ]] \
+    || fail "prepared release port is invalid"
+  wait_health "http://127.0.0.1:${PREPARED_NEXT_PORT}/api/health" 3 \
+    || fail "prepared API candidate is not healthy"
+  printf 'release=%s role=%s slot=%s port=%s status=prepared\n' \
+    "${release}" "${PREPARED_NODE_ROLE}" "${PREPARED_NEXT_SLOT}" \
+    "${PREPARED_NEXT_PORT}"
+}
+
+activate_release() {
+  local release="$1" activate_started prepared_state release_dir archive checksum
+  local smoke_result phase_started manager_candidate
+  activate_started="${SECONDS}"
+  valid_release_id "${release}" || fail "invalid release id"
+  prepared_state="${STATE}/prepared-${release}.env"
+  [[ -f "${prepared_state}" ]] || fail "release is not prepared: ${release}"
+  [[ "$(stat -c '%U:%a' "${prepared_state}")" == "root:600" ]] \
+    || fail "prepared release state permissions are unsafe"
+  # shellcheck disable=SC1090
+  . "${prepared_state}"
+  [[ "${PREPARED_RELEASE:-}" == "${release}" ]] \
+    || fail "prepared release identity mismatch"
+  [[ "${PREPARED_REQUESTED_MODE:-}" =~ ^(smart|quick|standard|full)$ ]] \
+    || fail "prepared requested mode is invalid"
+  [[ "${PREPARED_MODE:-}" =~ ^(quick|standard|full)$ ]] \
+    || fail "prepared effective mode is invalid"
+  [[ "${PREPARED_NODE_ROLE:-}" =~ ^(primary|standby)$ ]] \
+    || fail "prepared node role is invalid"
+  [[ "${PREPARED_NEXT_SLOT:-}" =~ ^(blue|green)$ ]] \
+    || fail "prepared slot is invalid"
+  [[ "${PREPARED_NEXT_PORT:-}" =~ ^(18081|18082)$ ]] \
+    || fail "prepared port is invalid"
+  [[ "${PREPARED_CONTAINER:-}" == "warehouse-os-api-${PREPARED_NEXT_SLOT}" ]] \
+    || fail "prepared API container is invalid"
+  [[ "${PREPARED_PLAN_ADAPTIVE:-}" =~ ^[01]$ \
+      && "${PREPARED_PLAN_FRONTEND:-}" =~ ^[01]$ \
+      && "${PREPARED_PLAN_DOWNLOADS:-}" =~ ^[01]$ ]] \
+    || fail "prepared impact plan is invalid"
+  PLAN_ADAPTIVE="${PREPARED_PLAN_ADAPTIVE}"
+  PLAN_FRONTEND="${PREPARED_PLAN_FRONTEND}"
+  PLAN_DOWNLOADS="${PREPARED_PLAN_DOWNLOADS}"
+  release_dir="${RELEASES}/${release}"
+  archive="${INCOMING}/${release}.tar.gz"
+  checksum="${archive}.sha256"
+  [[ -d "${release_dir}" ]] || fail "prepared release directory is missing"
+  wait_health "http://127.0.0.1:${PREPARED_NEXT_PORT}/api/health" 3 \
+    || fail "prepared API candidate is not healthy"
+  if [[ -n "${PREPARED_BROWSER_CONTAINER:-}" ]]; then
+    wait_health_container "${PREPARED_BROWSER_CONTAINER}" 3 \
+      || fail "prepared Browser Runtime is not healthy"
+  fi
+  if [[ -n "${PREPARED_RUNTIME_CONTROLLER:-}" ]]; then
+    wait_health_container "${PREPARED_RUNTIME_CONTROLLER}" 3 \
+      || fail "prepared Runtime Controller is not healthy"
+  fi
+
+  phase_started="${SECONDS}"
+  switch_upstream "${PREPARED_NEXT_PORT}"
+  smoke_result=0
+  if [[ "${PREPARED_NODE_ROLE}" == standby ]]; then
+    standby_smoke "${PREPARED_NEXT_PORT}" || smoke_result=$?
+  else
+    public_smoke || smoke_result=$?
+  fi
+  if [[ "${smoke_result}" != 0 ]]; then
+    if [[ -n "${PREPARED_PREVIOUS_SLOT}" ]]; then
+      switch_upstream "$(slot_port "${PREPARED_PREVIOUS_SLOT}")"
+    else
+      switch_upstream 8080
+    fi
+    log_event activate rolled_back "${release}" "${PREPARED_MODE}" \
+      "${PREPARED_NEXT_SLOT}" "$((SECONDS - activate_started))"
+    fail "activation smoke failed; upstream restored"
+  fi
+  log_event deploy_phase succeeded "${release}" activation_smoke \
+    "${PREPARED_NEXT_SLOT}" "$((SECONDS - phase_started))"
+
+  ln -sfn "${release_dir}" "${CURRENT}"
+  printf '%s\n' "${PREPARED_NEXT_SLOT}" > "${STATE}/active-slot"
+  printf '%s\n' "${release}" > "${STATE}/slot-${PREPARED_NEXT_SLOT}-release"
+  printf '%s\n' "${PREPARED_PREVIOUS_RELEASE}" > "${STATE}/previous-release-path"
+  # The fixed channel is versioned with every immutable release.  Replace the
+  # host entry point only after candidate and public verification both pass,
+  # so the next deploy uses the same audited logic as the active release.
+  manager_candidate="$(mktemp /usr/local/sbin/warehouse-deploy.XXXXXX)"
+  install -m 0755 "${release_dir}/ops/server/warehouse-deploy" "${manager_candidate}"
+  mv -f "${manager_candidate}" "${REMOTE_MANAGER:-/usr/local/sbin/warehouse-deploy}"
+  docker rm -f warehouse-os-api-1 >/dev/null 2>&1 || true
+  if [[ -n "${PREPARED_PREVIOUS_SLOT}" \
+      && "${PREPARED_PREVIOUS_SLOT}" != "${PREPARED_NEXT_SLOT}" ]]; then
+    docker rm -f "warehouse-os-browser-${PREPARED_PREVIOUS_SLOT}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${archive}" "${checksum}" "${prepared_state}"
+  log_event activate succeeded "${release}" "${PREPARED_MODE}" \
+    "${PREPARED_NEXT_SLOT}" "$((SECONDS - activate_started))"
+  printf 'release=%s requested_mode=%s effective_mode=%s adaptive=%s slot=%s port=%s duration_seconds=%s status=healthy\n' \
+    "${release}" "${PREPARED_REQUESTED_MODE}" "${PREPARED_MODE}" \
+    "${PREPARED_PLAN_ADAPTIVE}" "${PREPARED_NEXT_SLOT}" \
+    "${PREPARED_NEXT_PORT}" "$((SECONDS - activate_started))"
+}
+
+install_release() {
+  prepare_release "$1" "$2"
+  activate_release "$1"
+}
+
 rollback_release() {
-  local current_slot target_slot target_release target_port current_release
+  local current_slot target_slot target_release target_port current_release node_role smoke_result
   current_slot="$(active_slot)"
   [[ -n "${current_slot}" ]] || fail "no blue/green deployment is active"
   target_slot="$(other_slot "${current_slot}")"
@@ -1024,7 +1134,14 @@ rollback_release() {
     || fail "previous slot is not healthy"
   current_release="$(slot_release "${current_slot}")"
   switch_upstream "${target_port}"
-  if ! public_smoke; then
+  node_role="$(configured_node_role)"
+  smoke_result=0
+  if [[ "${node_role}" == standby ]]; then
+    standby_smoke "${target_port}" || smoke_result=$?
+  else
+    public_smoke || smoke_result=$?
+  fi
+  if [[ "${smoke_result}" != 0 ]]; then
     switch_upstream "$(slot_port "${current_slot}")"
     fail "rollback public smoke failed; current upstream restored"
   fi
@@ -1205,7 +1322,7 @@ benchmark_data_disk() {
 }
 
 show_status() {
-  local slot release port
+  local slot release port readiness
   slot="$(active_slot)"
   release="$(slot_release "${slot}")"
   if [[ -n "${slot}" ]]; then port="$(slot_port "${slot}")"; else port=8080; fi
@@ -1219,8 +1336,9 @@ show_status() {
   docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}' \
     --filter label=org.bonfirework.role=runtime-controller
   df -hT "${DATA_MOUNTPOINT}" | tail -n 1
-  curl --fail --silent --show-error --max-time 10 "${DOMAIN}/api/health"
-  printf '\n'
+  readiness="$(curl --fail --silent --show-error --max-time 10 \
+    "http://127.0.0.1:${port}/api/system/readiness")"
+  printf 'readiness=%s\n' "${readiness}"
 }
 
 show_runtime_status() {
@@ -1308,6 +1426,18 @@ flock -w 30 9 || fail "another deployment is running"
 
 command="${1:-status}"
 case "${command}" in
+  prepare)
+    [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy prepare RELEASE MODE"
+    prepare_release "$2" "$3"
+    ;;
+  prepared-status)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy prepared-status RELEASE"
+    prepared_status "$2"
+    ;;
+  activate)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy activate RELEASE"
+    activate_release "$2"
+    ;;
   install)
     [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy install RELEASE MODE"
     install_release "$2" "$3"

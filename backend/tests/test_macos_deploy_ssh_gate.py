@@ -54,14 +54,30 @@ def test_gate_allows_fixed_manager_operations(deploy_root: Path, operation: str)
     assert completed.stdout == f"manager={operation}\n"
 
 
-def test_gate_allows_a_valid_immutable_release_install(deploy_root: Path) -> None:
+@pytest.mark.parametrize("operation", ["install", "prepare"])
+def test_gate_allows_a_valid_immutable_release_install(
+    deploy_root: Path, operation: str
+) -> None:
     manager = deploy_root / "bin" / "warehouse-deploy"
     release = "20260804T120000Z-abcdef123456-mac-primary-smart"
 
-    completed = _gate(deploy_root, f"{manager} install {release} smart")
+    completed = _gate(deploy_root, f"{manager} {operation} {release} smart")
 
     assert completed.returncode == 0
-    assert completed.stdout == f"manager=install {release} smart\n"
+    assert completed.stdout == f"manager={operation} {release} smart\n"
+
+
+@pytest.mark.parametrize("operation", ["prepared-status", "activate"])
+def test_gate_allows_a_valid_prepared_release_operation(
+    deploy_root: Path, operation: str
+) -> None:
+    manager = deploy_root / "bin" / "warehouse-deploy"
+    release = "20260804T120000Z-abcdef123456-mac-primary-smart"
+
+    completed = _gate(deploy_root, f"{manager} {operation} {release}")
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"manager={operation} {release}\n"
 
 
 @pytest.mark.parametrize(
