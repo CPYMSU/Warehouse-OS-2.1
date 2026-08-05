@@ -30,6 +30,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api.deps import ActorContext, current_actor
 from app.core.config import Settings, get_settings
+from app.services.database_browser_gateway import browser_access_configuration
 from app.services.deployment_acceptance import accept_workspace_deployment
 from app.services.digital_asset_hosting import (
     WorkspaceCredential,
@@ -83,7 +84,12 @@ from app.services.object_storage import (
     object_store_for_provider,
     object_store_read_candidates,
 )
-from app.services.pages_runtime import get_pages_site
+from app.services.pages_actions import pages_action_catalog
+from app.services.pages_runtime import (
+    get_pages_site,
+    pages_design_context,
+    pages_source_file,
+)
 from app.services.source_packages import inspect_source_archive
 from app.services.workspace_deployments import (
     activate_workspace_deployment,
@@ -445,18 +451,24 @@ def _require_asset_manage(actor: ActorContext) -> None:
 
 
 def _account_pages_credential(
-    actor: ActorContext, workspace_ref: object
+    actor: ActorContext, workspace_ref: object, *, manage: bool = False
 ) -> WorkspaceCredential:
     """Bind an account session to one tenant workspace without exposing a wak_."""
 
-    _require_asset_read(actor)
+    if manage:
+        _require_asset_manage(actor)
+    else:
+        _require_asset_read(actor)
     identity = workspace_asset_identity(actor, workspace_ref)
     workspace = identity["workspace"]
+    scopes = {"workspace:read", "deploy:read"}
+    if manage:
+        scopes.add("deploy:write")
     return WorkspaceCredential(
         tenant_id=actor.tenant_id,
         workspace_id=UUID(str(workspace["uuid"])),
         credential_id=actor.user_id,
-        scopes=frozenset({"workspace:read", "deploy:read"}),
+        scopes=frozenset(scopes),
         label="warehouse-pages-console",
         key_kind="account_session",
         parent_credential_id=None,
@@ -1301,6 +1313,61 @@ def workspace_database_create(
     return provision_database(actor, workspace_ref, payload)
 
 
+@router.get("/api/workspaces/{workspace_ref}/pages")
+def account_pages_site(
+    workspace_ref: str,
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Read the same Pages site through an account-bound workspace context."""
+
+    return get_pages_site(_account_pages_credential(actor, workspace_ref), settings)
+
+
+@router.get("/api/workspaces/{workspace_ref}/pages/design")
+def account_pages_design(
+    workspace_ref: str,
+    source_ref: str | None = Query(default=None),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return pages_design_context(
+        _account_pages_credential(actor, workspace_ref),
+        settings,
+        source_ref=source_ref,
+    )
+
+
+@router.get("/api/workspaces/{workspace_ref}/pages/files/{file_path:path}")
+def account_pages_source_file(
+    workspace_ref: str,
+    file_path: str,
+    source_ref: str | None = Query(default=None),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return pages_source_file(
+        _account_pages_credential(actor, workspace_ref),
+        settings,
+        file_path,
+        source_ref=source_ref,
+    )
+
+
+@router.post("/api/workspaces/{workspace_ref}/pages/releases/{deployment_id}/activate")
+def account_pages_release_activate(
+    workspace_ref: str,
+    deployment_id: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    """Activate one verified release without exposing a workspace credential."""
+
+    return activate_workspace_deployment(
+        _account_pages_credential(actor, workspace_ref, manage=True),
+        _deployment_reference(deployment_id),
+    )
+
+
 @router.get("/api/workspaces/{workspace_ref}/pages-console")
 def workspace_pages_console(
     workspace_ref: str,
@@ -1381,6 +1448,52 @@ def workspace_pages_console(
         }
         for binding in info["databases"]
     ]
+    browser_state: dict[str, object] = {
+        "project_present": False,
+        "enabled": False,
+        "allowed_origins": [],
+        "origin_count": 0,
+        "origin_limit": 20,
+    }
+    if database_bindings:
+        try:
+            browser_result = browser_access_configuration(
+                actor,
+                workspace_ref,
+                settings=settings,
+            )
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+        else:
+            project = (
+                browser_result.get("project")
+                if isinstance(browser_result.get("project"), dict)
+                else {}
+            )
+            allowed_origins = [str(item) for item in project.get("allowed_origins") or []]
+            browser_state = {
+                "project_present": True,
+                "enabled": bool(project.get("enabled")),
+                "project_id": project.get("project_id"),
+                "allowed_origins": allowed_origins,
+                "origin_count": len(allowed_origins),
+                "origin_limit": 20,
+                "revision": project.get("revision"),
+                "runtime_origin_allowed": site.get("database_origin") in allowed_origins,
+            }
+    database_public = {
+        "count": len(database_bindings),
+        "bindings": database_bindings,
+        "browser": browser_state,
+    }
+    action_catalog = pages_action_catalog(
+        workspace_ref=str(workspace.get("workspace_key") or workspace_ref),
+        site=site,
+        database=database_public,
+        releases=releases,
+        can_manage=can_manage,
+    )
     return {
         "ok": True,
         "schema": "warehouse.pages-console.v1",
@@ -1392,10 +1505,7 @@ def workspace_pages_console(
             "compute_location": "browser" if browser_compute else "warehouse_runtime",
             "idle_server_memory": "near_zero" if browser_compute else "profile_managed",
         },
-        "database": {
-            "count": len(database_bindings),
-            "bindings": database_bindings,
-        },
+        "database": database_public,
         "storage": info["usage"],
         "current_release": current_release,
         "releases": releases,
@@ -1405,11 +1515,7 @@ def workspace_pages_console(
             "can_manage": can_manage,
             "mutations_require_governed_confirmation": True,
         },
-        "actions": {
-            "customize_url": "AI desired_state.pages.site_key",
-            "redesign": "AI pages design context -> immutable source -> preview -> activate",
-            "rollback": "activate a healthy historical deployment after confirmation",
-        },
+        "actions": action_catalog,
     }
 
 

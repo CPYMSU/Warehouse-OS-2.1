@@ -377,7 +377,20 @@ def test_account_pages_console_aggregates_non_secret_release_state(
             "site": {
                 "url": "https://bonfirework.org/apps/design-lab/",
                 "site_key": "design-lab",
+                "database_origin": "https://design-lab.bonfirework.org",
                 "public_alias": {"enabled": False, "url": None},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        digital_assets_api,
+        "browser_access_configuration",
+        lambda *_args, **_kwargs: {
+            "project": {
+                "project_id": "dbp_design_lab",
+                "enabled": True,
+                "allowed_origins": ["https://design-lab.bonfirework.org"],
+                "revision": 3,
             }
         },
     )
@@ -418,6 +431,23 @@ def test_account_pages_console_aggregates_non_secret_release_state(
     assert result["current_release"]["uuid"] == str(active_id)
     assert result["releases"][1]["rollback_eligible"] is True
     assert result["database"]["count"] == 1
+    assert result["database"]["browser"]["runtime_origin_allowed"] is True
+    assert result["actions"]["schema"] == "warehouse.pages-actions.v1"
+    actions = {item["action_key"]: item for item in result["actions"]["items"]}
+    assert actions["pages.site.configure"]["invocation"]["action_context"] == {
+        "schema": "warehouse.pages-action-context.v1",
+        "action_key": "pages.site.configure",
+        "workspace_ref": "design-lab",
+        "suggested_tool_names": [
+            "digital_market_pages_status",
+            "digital_market_pages_configure",
+            "digital_market_database_browser_access",
+        ],
+    }
+    rollback_key = f"pages.release.activate:{historical_id}"
+    assert actions[rollback_key]["invocation"]["tool_name"] == (
+        "digital_market_pages_release_activate"
+    )
     assert "wak_" not in json.dumps(result)
 
 
@@ -442,6 +472,12 @@ def test_pages_api_routes_are_registered_before_the_api_catch_all() -> None:
     assert "/api/workspaces/v1/pages/files/{file_path:path}" in paths
     assert "/api/hosting/v2/sessions/{session_id}/pages" in paths
     assert "/api/hosting/v2/sessions/{session_id}/pages/design" in paths
+    assert "/api/workspaces/{workspace_ref}/pages" in paths
+    assert "/api/workspaces/{workspace_ref}/pages/design" in paths
+    assert "/api/workspaces/{workspace_ref}/pages/files/{file_path:path}" in paths
+    assert (
+        "/api/workspaces/{workspace_ref}/pages/releases/{deployment_id}/activate" in paths
+    )
     assert "/api/workspaces/{workspace_ref}/pages-console" in paths
     assert "/apps/{site_key}/" in paths
     assert "/apps/{site_key}/{runtime_path:path}" in paths

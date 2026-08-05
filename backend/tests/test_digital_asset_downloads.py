@@ -163,6 +163,58 @@ def test_dm_data_contracts_use_native_21_workspace_routes() -> None:
     assert body == {"data": {"name": "Acme"}}
 
 
+def test_pages_commands_share_the_native_console_and_hosting_contracts() -> None:
+    status_entry = legacy_catalog.entry_by_tool_name("digital_market_pages_status")
+    configure = legacy_catalog.entry_by_tool_name("digital_market_pages_configure")
+    design = legacy_catalog.entry_by_tool_name("digital_market_pages_design")
+    design_file = legacy_catalog.entry_by_tool_name("digital_market_pages_design_file")
+    activate = legacy_catalog.entry_by_tool_name("digital_market_pages_release_activate")
+
+    assert status_entry["api_path"] == "/api/workspaces/{workspace_ref}/pages-console"
+    assert design["api_path"] == "/api/workspaces/{workspace_ref}/pages/design"
+    assert design_file["api_path"].endswith("/pages/files/{file_path}")
+    assert configure["api_path"] == "/api/hosting/v2/sessions"
+    assert configure["ai_requires_confirmation"] is True
+    assert activate["ai_requires_confirmation"] is True
+    assert {
+        status_entry["tool_name"],
+        configure["tool_name"],
+        design["tool_name"],
+        design_file["tool_name"],
+        activate["tool_name"],
+    }.issubset(legacy_catalog.COMPOSITE_STORE_TOOL_NAMES)
+    assert all(
+        legacy_catalog.ai_execution_route_ready(entry)
+        for entry in (status_entry, configure, design, design_file, activate)
+    )
+
+    values = legacy_catalog.values_from_tool_args(
+        configure,
+        {
+            "workspace": "mk7-workspace",
+            "site-key": "ai-secretary",
+            "execute": True,
+        },
+    )
+    method, path, body = legacy_catalog.build_request(configure, values)
+    assert (method, path) == ("POST", "/api/hosting/v2/sessions")
+    assert body["workspace_ref"] == "mk7-workspace"
+    assert body["desired_state"] == {"pages": {"site_key": "ai-secretary"}}
+    assert "public_alias_enabled" not in body["desired_state"]["pages"]
+    assert body["execute"] is True
+
+    activate_values = legacy_catalog.values_from_tool_args(
+        activate,
+        {"workspace": "mk7-workspace", "deployment": "release-7"},
+    )
+    method, path, body = legacy_catalog.build_request(activate, activate_values)
+    assert (method, path, body) == (
+        "POST",
+        "/api/workspaces/mk7-workspace/pages/releases/release-7/activate",
+        {},
+    )
+
+
 def test_ai_visible_dm_contracts_do_not_reintroduce_20_hosting() -> None:
     retired = [
         entry for entry in legacy_catalog.COMMANDS if entry.get("lifecycle") == "retired_2_0"

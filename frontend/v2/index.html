@@ -98,7 +98,7 @@ try {
 <!-- 預編譯來源清單只供構建／審計使用；template 內容不下載、不執行。 -->
 <template id="w2-precompile-sources">
 <script type="application/x-warehouse-source" src="lang.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="core.jsx?v=20260804-task-runtime2"></script>
+<script type="application/x-warehouse-source" src="core.jsx?v=20260806-pages-actions1"></script>
 <script type="application/x-warehouse-source" src="passkey.js?v=20260731-rp-scope1"></script>
 <script type="application/x-warehouse-source" src="pages.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-dashboard.jsx?v=20260721185500"></script>
@@ -109,7 +109,7 @@ try {
 <script type="application/x-warehouse-source" src="pages/pages-stocktake.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-erp.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-finance.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="pages/pages-assets.jsx?v=20260805-pages-console1"></script>
+<script type="application/x-warehouse-source" src="pages/pages-assets.jsx?v=20260806-pages-actions1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-research.jsx?v=20260801-object-topology1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-procurement.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-gis.jsx?v=20260721185500"></script>
@@ -132,7 +132,7 @@ try {
 <!-- JSX 在 CI／部署前以同源 Babel 工具確定性預編譯；生產瀏覽器只執行普通 JavaScript。 -->
 <!-- Feature 23 語義拓撲是普通 JavaScript；先註冊重試鉤子，再讓主 bundle 註冊原頁面。 -->
 <script src="pages/pages-optimizer-topology.js?v=20260723mermaid1"></script>
-<script src="dist/app.bundle.js?v=20260805-pages-console1"></script>
+<script src="dist/app.bundle.js?v=20260806-pages-actions1"></script>
 <script>
 /* 非关键增强资源在首屏启动之后异步加载，不阻塞主 bundle 的 DOMContentLoaded。 */
 (function () {

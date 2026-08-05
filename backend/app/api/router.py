@@ -916,6 +916,11 @@ def agent_run_stream(
                 "status": "accepted",
                 "context_mode": payload.context_mode,
                 "language": language.as_dict(),
+                "action_context": (
+                    payload.action_context.model_dump(exclude_none=True, by_alias=True)
+                    if payload.action_context is not None
+                    else None
+                ),
             },
         )
     existing_assistant = next(
@@ -1115,6 +1120,16 @@ def agent_run_stream(
                         context_mode=payload.context_mode,
                         response_locale=language.locale,
                         activity_callback=publish_activity,
+                        **(
+                            {
+                                "action_context": payload.action_context.model_dump(
+                                    exclude_none=True,
+                                    by_alias=True,
+                                )
+                            }
+                            if payload.action_context is not None
+                            else {}
+                        ),
                     )
             except Exception as exc:
                 worker_state["error"] = exc

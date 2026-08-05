@@ -109,10 +109,49 @@ GET /api/workspaces/{workspace_ref}/pages-console
 ```
 
 It returns the canonical URL, isolated runtime policy, current release, bounded
-release history, database binding count, storage usage and account capabilities.
+release history, database binding and browser-origin state, storage usage and a
+state-aware action catalogue.
 It never returns a `wak_`, database password, internal Runtime URL or object-store
 path. Mutations in the control console are handed to the governed AI/action
 workflow for confirmation and audit.
+
+### Unified Pages action protocol
+
+The console response includes `actions.schema = warehouse.pages-actions.v1`.
+Every button is rendered from this server-owned catalogue instead of embedding
+its own workflow prompt in the browser. Stable action keys cover status refresh,
+canonical entry open/copy, site and alias configuration, design review, release
+publication, browser-database origins and activation of eligible historical
+releases.
+
+An action selects one of three presentation-neutral invocation modes:
+
+- `client` performs a local refresh, open or copy operation.
+- `typed_action` opens the ordinary capability confirmation boundary with an
+  exact `tool_name` and typed arguments.
+- `auto_runtime` opens the shared Warehouse Intelligence Runtime with a bounded
+  `warehouse.pages-action-context.v1` hint.
+
+The action context is navigation only. The API accepts only the Pages namespace,
+bounded workspace/release references and active registered capability names.
+The top router may accept, ignore or supplement the suggested capabilities; it
+must still observe current state and can never treat the hint as evidence,
+authorization, completion or a replacement for capability confirmation.
+
+The matching terminal/external-AI contracts are:
+
+```text
+dm pages status
+dm pages configure
+dm pages design
+dm pages file
+dm pages release activate
+```
+
+`dm pages status` is the preferred observation when no intelligent-hosting
+session exists. `dm pages configure` creates a governed hosting session and
+submits `desired_state.pages`, so every control surface uses the same site
+configuration service and exact-origin synchronization behavior.
 
 `PUT .../pages` accepts `site_key` and optional `public_alias_enabled`; the
 canonical URL remains `/apps/{site_key}/` in both cases.

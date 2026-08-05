@@ -6,9 +6,11 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api import router as api_router
 from app.api.deps import ActorContext, current_actor
+from app.api.schemas import AgentRunRequest
 from app.main import app
 from app.services import auto_runtime, integrations, memory_fabric
 from app.services.auto_runtime import RuntimeResult, runtime_capability_map
@@ -1083,12 +1085,126 @@ def test_top_router_receives_compact_recent_turn_referents(monkeypatch) -> None:
     assert route["requires_user_input"] is False
 
 
+def test_pages_action_context_is_bounded_and_advises_the_top_router(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    action_context = auto_runtime._bounded_pages_action_context(
+        {
+            "schema": "warehouse.pages-action-context.v1",
+            "action_key": "pages.site.configure",
+            "workspace_ref": "mk7-workspace",
+            "suggested_tool_names": [
+                "digital_market_pages_status",
+                "not_a_registered_capability",
+                "digital_market_pages_configure",
+            ],
+        }
+    )
+    assert action_context is not None
+    assert action_context["suggested_tool_names"] == [
+        "digital_market_pages_status",
+        "digital_market_pages_configure",
+    ]
+
+    def fake_completion(_connection, **kwargs):
+        captured.update(kwargs)
+        return json.dumps(
+            {
+                "interaction_mode": "operational",
+                "understood_goal": "配置 mk7-workspace Pages 网址",
+                "message": "请提供短名称。",
+                "needs_tools": False,
+                "requires_user_input": True,
+                "selected_domains": [],
+                "selected_families": [],
+                "context_requests": [],
+                "success_criteria": [],
+                "uncertainties": ["短名称尚未提供"],
+                "reasoning": "AI judged one human input is missing",
+                "memory_depth": "index",
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(auto_runtime, "_completion", fake_completion)
+    route, _raw = auto_runtime._route_goal(
+        SimpleNamespace(),
+        "帮我设置这个 Pages 网址",
+        {
+            "L0_permanent_world_map": {
+                "capability_atlas": [],
+                "resource_atlas": [],
+                "expansion_protocol": {},
+            },
+            "L1_current_company_and_people": {},
+            "L2_current_goal": {"action_context": action_context},
+            "L3_execution_working_set": {},
+        },
+        [],
+        context_mode="balanced",
+        activity_callback=None,
+    )
+
+    router_world = json.loads(str(captured["user_prompt"]))["router_world"]
+    candidate_names = [item["tool_name"] for item in router_world["catalogue_candidates"]]
+    assert candidate_names[:2] == [
+        "digital_market_pages_status",
+        "digital_market_pages_configure",
+    ]
+    configure_contract = next(
+        item
+        for item in router_world["catalogue_candidate_contracts"]
+        if item["tool_name"] == "digital_market_pages_configure"
+    )
+    assert configure_contract["parameters"]["required"] == ["workspace", "site-key"]
+    assert router_world["action_context"]["workspace_ref"] == "mk7-workspace"
+    assert "never selects a capability" in str(captured["system_prompt"])
+    assert route["requires_user_input"] is True
+
+
+def test_agent_action_context_schema_rejects_unbounded_presentation_input() -> None:
+    payload = AgentRunRequest(
+        text="配置 Pages",
+        action_context={
+            "schema": "warehouse.pages-action-context.v1",
+            "action_key": "pages.site.configure",
+            "workspace_ref": "mk7-workspace",
+            "suggested_tool_names": ["digital_market_pages_status"],
+        },
+    )
+    assert payload.action_context is not None
+    assert payload.action_context.model_dump(by_alias=True)["schema"] == (
+        "warehouse.pages-action-context.v1"
+    )
+
+    with pytest.raises(ValidationError):
+        AgentRunRequest(
+            text="配置 Pages",
+            action_context={
+                "schema": "warehouse.pages-action-context.v1",
+                "action_key": "database.destroy",
+                "workspace_ref": "mk7-workspace",
+                "suggested_tool_names": [],
+            },
+        )
+
+    with pytest.raises(ValidationError):
+        AgentRunRequest(
+            text="配置 Pages",
+            action_context={
+                "schema": "warehouse.pages-action-context.v1",
+                "action_key": "pages.site.configure",
+                "workspace_ref": "mk7-workspace",
+                "suggested_tool_names": [f"tool_{index}" for index in range(9)],
+            },
+        )
+
+
 def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> None:
     atlas = ai_capability_atlas()
     genes = ai_capability_gene_index()
 
-    assert len(genes) == 515
-    assert sum(int(domain["gene_count"]) for domain in atlas) == 515
+    assert len(genes) == 520
+    assert sum(int(domain["gene_count"]) for domain in atlas) == 520
     assert {gene["scope"] for gene in genes} == {"tenant", "platform"}
     assert all("permission_any" in gene and "availability" in gene for gene in genes)
     observe_gene = next(gene for gene in genes if gene["tool_name"] == "generic_data_observe")
