@@ -19,8 +19,11 @@ PREVIOUS_OVERRIDE="${STATE}/compose.previous.yaml"
 ACTIVE_MANIFEST="${STATE}/active-files.sha256"
 LOCK_DIR="${STATE}/deploy.lock"
 DOCKER="${WAREHOUSE_DOCKER_BIN:-${HOME}/.orbstack/bin/docker}"
-POSTGRES_BIN="${WAREHOUSE_POSTGRES_BIN:-/opt/homebrew/opt/postgresql@18/bin}"
 CLUSTER_VERIFY="${WAREHOUSE_CLUSTER_VERIFY:-${DEPLOY_ROOT}/actions/cluster/verify-cluster}"
+MIGRATION_ROOT="${SHARED}/database-migrations"
+MIGRATION_BACKUP_ROOT="${SHARED}/backups/database-migrations"
+MIGRATION_DEFER="${WAREHOUSE_DATABASE_MIGRATION_DEFER:-0}"
+MIGRATION_WAIT_SECONDS="${WAREHOUSE_DATABASE_MIGRATION_WAIT_SECONDS:-900}"
 
 fail() {
   printf 'warehouse-deploy-macos: %s\n' "$*" >&2
@@ -118,42 +121,161 @@ verify_release_manifest() {
   rm -f "${actual_manifest}"
 }
 
-backup_control_database() {
-  local release="$1" backup_dir timestamp partial final checksum
-  [[ -x "${POSTGRES_BIN}/pg_dump" && -x "${POSTGRES_BIN}/pg_restore" ]] \
-    || fail "PostgreSQL backup tools are unavailable"
+[[ "${MIGRATION_DEFER}" =~ ^[01]$ ]] \
+  || fail "WAREHOUSE_DATABASE_MIGRATION_DEFER must be 0 or 1"
+[[ "${MIGRATION_WAIT_SECONDS}" =~ ^[1-9][0-9]{1,3}$ ]] \
+  || fail "WAREHOUSE_DATABASE_MIGRATION_WAIT_SECONDS must be 10..9999"
 
-  backup_dir="${SHARED}/backups/pre-deploy"
-  mkdir -p "${backup_dir}"
-  chmod 0700 "${backup_dir}"
-  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  final="${backup_dir}/${timestamp}-${release}-control.dump"
-  partial="${final}.partial"
-  checksum="${final}.sha256"
-  rm -f "${partial}"
-  "${POSTGRES_BIN}/pg_dump" \
-    --dbname warehouse_os \
-    --format custom --file "${partial}"
-  "${POSTGRES_BIN}/pg_restore" --list "${partial}" >/dev/null
-  chmod 0600 "${partial}"
-  mv "${partial}" "${final}"
-  (
-    cd "${backup_dir}"
-    shasum -a 256 "$(basename "${final}")" > "$(basename "${checksum}")"
-    shasum -a 256 -c "$(basename "${checksum}")" >/dev/null
-  )
-  chmod 0600 "${checksum}"
-  log_event backup succeeded "${release}" "control=$(basename "${final}")"
-  printf 'backup=%s status=verified\n' "${final}"
+migration_job_dir() {
+  printf '%s/%s\n' "${MIGRATION_ROOT}" "$1"
 }
 
-run_control_migrations() {
-  local image="$1"
+migration_json_value() {
+  local path="$1" key="$2"
+  [[ -f "${path}" ]] || return 1
+  python3 -c \
+    'import json,sys; value=json.load(open(sys.argv[1],encoding="utf-8")).get(sys.argv[2]); print(value if value is not None else "")' \
+    "${path}" "${key}"
+}
+
+prepare_database_migration_request() {
+  local release="$1" git_sha="$2" target_revision="$3" job_dir request temporary
+  job_dir="$(migration_job_dir "${release}")"
+  request="${job_dir}/request.json"
+  mkdir -p "${job_dir}" "${MIGRATION_BACKUP_ROOT}"
+  chmod 0700 "${MIGRATION_ROOT}" "${job_dir}" "${MIGRATION_BACKUP_ROOT}"
+  temporary="${request}.tmp.$$"
+  printf '{"schema":"warehouse.database-migration-request.v1","release_id":"%s","git_sha":"%s","target_revision":"%s","node_role":"primary","requested_at":"%s"}\n' \
+    "${release}" "${git_sha}" "${target_revision}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${temporary}"
+  chmod 0600 "${temporary}"
+  mv -f "${temporary}" "${request}"
+}
+
+start_database_migration() {
+  local release="$1" image="$2" job_dir request status suffix container state
+  job_dir="$(migration_job_dir "${release}")"
+  request="${job_dir}/request.json"
+  status="${job_dir}/status.json"
+  require_file "${request}"
   require_file "${ENV_FILE}"
-  "${DOCKER}" run --rm \
+  state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+  [[ "${state}" != succeeded ]] || return 0
+  suffix="$(printf '%s' "${release}" | shasum -a 256 | awk '{print substr($1,1,16)}')"
+  container="bonfirework-db-migration-${suffix}"
+  if [[ "$(container_value "${container}" '{{.State.Running}}')" == true ]]; then
+    return 0
+  fi
+  "${DOCKER}" rm -f "${container}" >/dev/null 2>&1 || true
+  "${DOCKER}" run -d \
+    --name "${container}" \
     --network bonfirework-runtime \
     --env-file "${ENV_FILE}" \
-    "${image}" alembic upgrade head
+    -e WAREHOUSE_NODE_ROLE=primary \
+    --label org.bonfirework.role=database-migration-controller \
+    --label "org.bonfirework.release=${release}" \
+    -v "${job_dir}:/migration" \
+    -v "${MIGRATION_BACKUP_ROOT}:/backups" \
+    --read-only \
+    --tmpfs /tmp:size=64m,mode=1777 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --pids-limit 96 \
+    --memory 512m \
+    --cpus 0.5 \
+    "${image}" \
+    python -m app.database_migration_controller \
+      --request /migration/request.json \
+      --status /migration/status.json \
+      --backup-dir /backups >/dev/null
+  log_event database_migration queued "${release}" "controller=${container}"
+}
+
+wait_database_migration() {
+  local release="$1" job_dir status attempt state error
+  job_dir="$(migration_job_dir "${release}")"
+  status="${job_dir}/status.json"
+  for attempt in $(seq 1 "${MIGRATION_WAIT_SECONDS}"); do
+    state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+    case "${state}" in
+      succeeded)
+        printf 'database_migration=%s release=%s\n' "${state}" "${release}"
+        return 0
+        ;;
+      failed)
+        error="$(migration_json_value "${status}" error 2>/dev/null || printf unknown)"
+        printf 'database migration failed: %s\n' "${error}" >&2
+        return 1
+        ;;
+      planning|backing_up|migrating|verifying|"") ;;
+      *) fail "database migration controller returned invalid state: ${state}" ;;
+    esac
+    sleep 1
+  done
+  fail "database migration controller timed out for ${release}"
+}
+
+database_migration_gate() {
+  local release="$1" required="$2" target_revision="$3" status state observed
+  [[ "${required}" == 1 ]] || return 0
+  status="$(migration_job_dir "${release}")/status.json"
+  state="$(migration_json_value "${status}" status 2>/dev/null || true)"
+  observed="$(migration_json_value "${status}" target_revision 2>/dev/null || true)"
+  [[ "${state}" == succeeded && "${observed}" == "${target_revision}" ]] \
+    || fail "database migration is not ready for ${release}: ${state:-missing}"
+}
+
+load_prepared_migration() {
+  local release="$1" prepared_state="${STATE}/prepared-${release}.env"
+  valid_release_id "${release}" || fail "invalid release id"
+  require_file "${prepared_state}"
+  # shellcheck disable=SC1090
+  . "${prepared_state}"
+  [[ "${PREPARED_RELEASE:-}" == "${release}" ]] \
+    || fail "prepared release identity mismatch"
+  [[ "${PREPARED_PLAN_MIGRATION:-}" =~ ^[01]$ ]] \
+    || fail "prepared database migration plan is invalid"
+}
+
+start_prepared_migration() {
+  local release="$1"
+  load_prepared_migration "${release}"
+  if [[ "${PREPARED_PLAN_MIGRATION}" == 0 ]]; then
+    printf 'release=%s database_migration=not_required\n' "${release}"
+    return 0
+  fi
+  start_database_migration "${release}" "${PREPARED_API_IMAGE}"
+  printf 'release=%s database_migration=queued\n' "${release}"
+}
+
+show_prepared_migration() {
+  local release="$1" status state target error
+  load_prepared_migration "${release}"
+  if [[ "${PREPARED_PLAN_MIGRATION}" == 0 ]]; then
+    printf 'release=%s database_migration=not_required target=%s\n' \
+      "${release}" "${PREPARED_ALEMBIC_HEAD}"
+    return 0
+  fi
+  status="$(migration_job_dir "${release}")/status.json"
+  state="$(migration_json_value "${status}" status 2>/dev/null || printf deferred)"
+  target="$(migration_json_value "${status}" target_revision 2>/dev/null || true)"
+  printf 'release=%s database_migration=%s target=%s\n' \
+    "${release}" "${state}" "${target:-${PREPARED_ALEMBIC_HEAD}}"
+  if [[ "${state}" == failed ]]; then
+    error="$(migration_json_value "${status}" error 2>/dev/null || printf unknown)"
+    printf 'error=%s\n' "${error}"
+    return 1
+  fi
+}
+
+wait_prepared_migration() {
+  local release="$1"
+  load_prepared_migration "${release}"
+  [[ "${PREPARED_PLAN_MIGRATION}" == 1 ]] || {
+    printf 'release=%s database_migration=not_required\n' "${release}"
+    return 0
+  }
+  wait_database_migration "${release}"
 }
 
 require_arm64_image() {
@@ -210,6 +332,34 @@ compose() {
   "${DOCKER}" compose "${args[@]}" "$@"
 }
 
+reject_runtime_code_overrides() {
+  local rendered bad
+  rendered="$(mktemp "${TMPDIR:-/tmp}/warehouse-compose.XXXXXX")"
+  chmod 0600 "${rendered}"
+  if ! compose config --format json > "${rendered}"; then
+    rm -f "${rendered}"
+    fail "Mac Compose configuration is invalid"
+  fi
+  bad="$(python3 -c '
+import json, sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+roots = ("/service/app", "/service/alembic", "/frontend/v2")
+observed = []
+for service, config in (document.get("services") or {}).items():
+    for volume in config.get("volumes") or []:
+        if not isinstance(volume, dict):
+            continue
+        target = str(volume.get("target") or "").rstrip("/")
+        if any(target == root or target.startswith(root + "/") for root in roots):
+            observed.append(f"{service}:{target}")
+print(",".join(sorted(observed)))
+' "${rendered}")"
+  rm -f "${rendered}"
+  [[ -z "${bad}" ]] \
+    || fail "mutable runtime code override is forbidden: ${bad}"
+}
+
 install_shield_agent() {
   local installer="${CURRENT}/ops/macos/install-shield-agent"
   [[ -x "${installer}" ]] || return 0
@@ -230,6 +380,35 @@ install_control_actions() {
   install -m 0750 "${source}" "${DEPLOY_ROOT}/bin/warehouse-deploy"
 }
 
+install_operator_routes() {
+  local fast_source="${CURRENT}/ops/fast-deploy"
+  local optimizer_source="${CURRENT}/ops/macos/warehouse-clash-route-optimizer"
+  local plist_source="${CURRENT}/ops/macos/org.bonfirework.clash-route-optimizer.plist"
+  local optimizer_target="${DEPLOY_ROOT}/actions/warehouse-clash-route-optimizer"
+  local plist_target="${HOME}/Library/LaunchAgents/org.bonfirework.clash-route-optimizer.plist"
+  local changed=0 uid
+  if [[ -x "${fast_source}" ]]; then
+    ln -sfn "${CURRENT}/ops/fast-deploy" "${DEPLOY_ROOT}/bin/warehouse-fast-deploy"
+  fi
+  [[ -f "${optimizer_source}" && -f "${plist_source}" ]] || return 0
+  cmp -s "${optimizer_source}" "${optimizer_target}" || changed=1
+  cmp -s "${plist_source}" "${plist_target}" || changed=1
+  install -m 0755 "${optimizer_source}" "${optimizer_target}"
+  mkdir -p "${HOME}/Library/LaunchAgents"
+  install -m 0644 "${plist_source}" "${plist_target}"
+  /usr/bin/plutil -lint "${plist_target}" >/dev/null \
+    || fail "Clash route optimizer LaunchAgent is invalid"
+  [[ "${changed}" == 1 ]] || return 0
+  uid="$(id -u)"
+  if /bin/launchctl print \
+      "gui/${uid}/org.bonfirework.clash-route-optimizer" >/dev/null 2>&1; then
+    /bin/launchctl bootout "gui/${uid}" "${plist_target}" >/dev/null
+  fi
+  /bin/launchctl bootstrap "gui/${uid}" "${plist_target}"
+  /bin/launchctl enable "gui/${uid}/org.bonfirework.clash-route-optimizer"
+  /bin/launchctl kickstart "gui/${uid}/org.bonfirework.clash-route-optimizer"
+}
+
 show_status() {
   require_runtime
   local release_path release readiness api_image api_health controller_health
@@ -243,10 +422,13 @@ show_status() {
     "${release_path}" "${release}" "${api_image}" "${api_health}" \
     "${controller_health}" "${readiness}"
   printf 'shield_agent=%s\n' "$([[ -S "${SHARED}/shield/agent.sock" ]] && printf ready || printf offline)"
+  printf 'fast_deploy=%s\n' "${DEPLOY_ROOT}/bin/warehouse-fast-deploy"
+  printf 'deployment_route=GitHub_to_Mac_runner_to_coordinated_Mac_Vultr\n'
 }
 
 bootstrap() {
   require_runtime
+  reject_runtime_code_overrides
   acquire_lock
   mkdir -p "${INCOMING}" "${RELEASES}" "${STATE}" "${LOG_DIR}"
   chmod 0700 "${INCOMING}" "${STATE}"
@@ -254,6 +436,7 @@ bootstrap() {
   release_path="$(current_release_path)"
   write_actual_manifest "${release_path}" "${ACTIVE_MANIFEST}"
   install_shield_agent
+  install_operator_routes
   printf '%s\n' "$(basename "${release_path}")" > "${STATE}/current-release"
   log_event bootstrap succeeded "$(basename "${release_path}")" "active manifest captured without restart"
   show_status
@@ -302,9 +485,17 @@ write_override() {
     printf '      WAREHOUSE_RELEASE_ID: %s\n' "${release}"
     printf '      WAREHOUSE_GIT_SHA: %s\n' "${git_sha}"
     printf '      WAREHOUSE_ALEMBIC_HEAD: "%s"\n' "${alembic_head}"
+    printf '      WAREHOUSE_MIGRATION_DATABASE_URL: ""\n'
+    printf '      WAREHOUSE_MIGRATOR_DB_PASSWORD: ""\n'
     printf '  runtime-controller:\n    image: %s\n' "${api_image}"
+    printf '    environment:\n'
+    printf '      WAREHOUSE_MIGRATION_DATABASE_URL: ""\n'
+    printf '      WAREHOUSE_MIGRATOR_DB_PASSWORD: ""\n'
     if [[ -n "${browser_image}" ]]; then
       printf '  browser-runtime:\n    image: %s\n' "${browser_image}"
+      printf '    environment:\n'
+      printf '      WAREHOUSE_MIGRATION_DATABASE_URL: ""\n'
+      printf '      WAREHOUSE_MIGRATOR_DB_PASSWORD: ""\n'
     fi
     if [[ -n "${research_image}" ]]; then
       printf '  research-executor:\n    image: %s\n' "${research_image}"
@@ -324,6 +515,7 @@ restore_previous() {
   # Restore the host bridge and its Compose contract together with the images.
   # A failed host-agent rollout must not leave the previous API attached to an
   # incompatible transport.
+  install_operator_routes || true
   install_shield_agent || true
   compose up -d --no-build --no-deps api runtime-controller >/dev/null
   wait_healthy bonfirework-mac-api || true
@@ -335,6 +527,7 @@ prepare_release() {
   valid_release_id "${release}" || fail "invalid release id"
   [[ "${requested_mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid deployment mode"
   require_runtime
+  reject_runtime_code_overrides
   acquire_lock
 
   local archive="${INCOMING}/${release}.tar.gz"
@@ -359,7 +552,7 @@ prepare_release() {
   [[ -z "$(find "${staging}" -type l -print -quit)" ]] || fail "release archive contains a symbolic link"
   verify_release_manifest "${staging}"
 
-  local plan_output plan_mode plan_backup plan_api plan_browser plan_research plan_control plan_deploy
+  local plan_output plan_mode plan_api plan_browser plan_research plan_control plan_deploy plan_migration
   require_file "${ACTIVE_MANIFEST}"
   [[ -x "${staging}/ops/deploy-plan" ]] || fail "candidate deploy planner is missing"
   plan_output="$("${staging}/ops/deploy-plan" \
@@ -368,18 +561,15 @@ prepare_release() {
     --format shell)"
   eval "${plan_output}"
   plan_mode="${PLAN_MODE:-full}"
-  plan_backup="${PLAN_BACKUP:-1}"
   plan_api="${PLAN_API:-1}"
   plan_browser="${PLAN_BROWSER:-0}"
   plan_research="${PLAN_RESEARCH_EXECUTOR:-0}"
   plan_control="${PLAN_CONTROL_PLANE:-0}"
+  plan_migration="${PLAN_MIGRATION:-0}"
   plan_deploy="${PLAN_DEPLOY_REQUIRED:-1}"
   [[ "${plan_deploy}" == 1 ]] || fail "candidate contains no runtime-impacting changes"
   if [[ "${requested_mode}" == smart ]]; then
     requested_mode="${plan_mode}"
-  fi
-  if [[ "${plan_backup}" == 1 ]]; then
-    backup_control_database "${release}"
   fi
   [[ "${plan_api}" == 1 || "${plan_browser}" == 1 || "${plan_research}" == 1 \
       || "${plan_control}" == 1 ]] \
@@ -401,7 +591,6 @@ prepare_release() {
   if [[ "${plan_api}" == 1 ]]; then
     "${DOCKER}" build --file "${staging}/backend/Dockerfile" --tag "${api_image}" "${staging}" >/dev/null
     require_arm64_image "${api_image}"
-    run_control_migrations "${api_image}"
   else
     api_image="$(container_value bonfirework-mac-api '{{.Config.Image}}')"
   fi
@@ -420,6 +609,13 @@ prepare_release() {
 
   mv "${staging}" "${release_dir}"
   trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
+  if [[ "${plan_migration}" == 1 ]]; then
+    prepare_database_migration_request "${release}" "${git_sha}" "${alembic_head}"
+    if [[ "${MIGRATION_DEFER}" == 0 ]]; then
+      start_database_migration "${release}" "${api_image}"
+      wait_database_migration "${release}"
+    fi
+  fi
   local prepared_state="${STATE}/prepared-${release}.env"
   local prepared_temporary="${prepared_state}.tmp.$$"
   {
@@ -433,6 +629,7 @@ prepare_release() {
     printf 'PREPARED_PLAN_API=%q\n' "${plan_api}"
     printf 'PREPARED_PLAN_BROWSER=%q\n' "${plan_browser}"
     printf 'PREPARED_PLAN_RESEARCH=%q\n' "${plan_research}"
+    printf 'PREPARED_PLAN_MIGRATION=%q\n' "${plan_migration}"
     printf 'PREPARED_PLAN_RISK=%q\n' "${PLAN_RISK:-unknown}"
     printf 'PREPARED_AT=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${prepared_temporary}"
@@ -456,6 +653,8 @@ prepared_status() {
     || fail "prepared release identity mismatch"
   "${DOCKER}" image inspect "${PREPARED_API_IMAGE}" >/dev/null 2>&1 \
     || fail "prepared API image is unavailable"
+  database_migration_gate "${release}" "${PREPARED_PLAN_MIGRATION:-0}" \
+    "${PREPARED_ALEMBIC_HEAD}"
   printf 'release=%s git_sha=%s alembic_head=%s status=prepared\n' \
     "${release}" "${PREPARED_GIT_SHA}" "${PREPARED_ALEMBIC_HEAD}"
 }
@@ -466,6 +665,7 @@ activate_release() {
   activate_started="${SECONDS}"
   valid_release_id "${release}" || fail "invalid release id"
   require_runtime
+  reject_runtime_code_overrides
   acquire_lock
   prepared_state="${STATE}/prepared-${release}.env"
   require_file "${prepared_state}"
@@ -483,7 +683,8 @@ activate_release() {
     || fail "prepared Alembic head is invalid"
   [[ "${PREPARED_PLAN_API:-}" =~ ^[01]$ \
       && "${PREPARED_PLAN_BROWSER:-}" =~ ^[01]$ \
-      && "${PREPARED_PLAN_RESEARCH:-}" =~ ^[01]$ ]] \
+      && "${PREPARED_PLAN_RESEARCH:-}" =~ ^[01]$ \
+      && "${PREPARED_PLAN_MIGRATION:-}" =~ ^[01]$ ]] \
     || fail "prepared impact plan is invalid"
   release_dir="${RELEASES}/${release}"
   archive="${INCOMING}/${release}.tar.gz"
@@ -491,6 +692,8 @@ activate_release() {
   [[ -d "${release_dir}" ]] || fail "prepared release directory is missing"
   "${DOCKER}" image inspect "${PREPARED_API_IMAGE}" >/dev/null 2>&1 \
     || fail "prepared API image is unavailable"
+  database_migration_gate "${release}" "${PREPARED_PLAN_MIGRATION}" \
+    "${PREPARED_ALEMBIC_HEAD}"
 
   previous_release="$(current_release_path)"
   printf '%s\n' "${previous_release}" > "${STATE}/previous-release"
@@ -504,6 +707,11 @@ activate_release() {
   write_override "${release}" "${PREPARED_GIT_SHA}" "${PREPARED_ALEMBIC_HEAD}" \
     "${PREPARED_API_IMAGE}" "${PREPARED_BROWSER_IMAGE}" \
     "${PREPARED_RESEARCH_IMAGE}"
+  if ! install_operator_routes; then
+    restore_previous "${previous_release}"
+    log_event deploy rolled_back "${release}" "operator route installation failed"
+    fail "candidate fast deployment route failed installation"
+  fi
   if ! install_shield_agent; then
     restore_previous "${previous_release}"
     log_event deploy rolled_back "${release}" "shield agent installation failed"
@@ -618,6 +826,18 @@ case "${1:-}" in
     [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos prepared-status RELEASE"
     prepared_status "$2"
     ;;
+  migration-start)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos migration-start RELEASE"
+    start_prepared_migration "$2"
+    ;;
+  migration-status)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos migration-status RELEASE"
+    show_prepared_migration "$2"
+    ;;
+  migration-wait)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos migration-wait RELEASE"
+    wait_prepared_migration "$2"
+    ;;
   activate)
     [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos activate RELEASE"
     activate_release "$2"
@@ -631,6 +851,6 @@ case "${1:-}" in
     rollback_release
     ;;
   *)
-    fail "usage: warehouse-deploy-macos bootstrap|status|cluster-status [VERIFY_OPTIONS]|manifest|plan CANDIDATE_MANIFEST|history|prepare RELEASE MODE|prepared-status RELEASE|activate RELEASE|install RELEASE MODE|rollback"
+    fail "usage: warehouse-deploy-macos bootstrap|status|cluster-status [VERIFY_OPTIONS]|manifest|plan CANDIDATE_MANIFEST|history|prepare RELEASE MODE|prepared-status RELEASE|migration-start RELEASE|migration-status RELEASE|migration-wait RELEASE|activate RELEASE|install RELEASE MODE|rollback"
     ;;
 esac

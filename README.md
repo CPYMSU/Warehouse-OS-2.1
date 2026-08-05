@@ -59,6 +59,21 @@ searchable as history but cannot be executed or exposed as model tools.
 Local runtime and Cloudflare Tunnel instructions are in
 [`infra/LOCAL_RUNTIME.md`](infra/LOCAL_RUNTIME.md).
 
+## Production fast route
+
+Every authorized computer uses the same visible deployment entry point:
+
+```sh
+ops/fast-deploy smart
+```
+
+The command asks GitHub to schedule the release on the dedicated Mac mini
+production runner. That runner prepares Mac and Vultr together, runs the
+standby-schema/primary-data database gate, verifies replication, and activates
+both nodes. Server SSH keys and migration credentials stay on the Mac mini.
+Use `ops/fast-deploy route` to print the route without changing anything, or
+`ops/fast-deploy status` to see recent runs.
+
 ## Run the connected local stack
 
 Do **not** start `frontend/v2` with a static file server on port 8080. A static

@@ -45,7 +45,7 @@ fi
 
 if [[ "${#command_parts[@]}" -eq 3 \
     && "${command_parts[0]}" == "${MANAGER}" \
-    && "${command_parts[1]}" =~ ^(prepared-status|activate)$ \
+    && "${command_parts[1]}" =~ ^(prepared-status|migration-start|migration-status|migration-wait|activate)$ \
     && "${command_parts[2]}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]]; then
   exec "${MANAGER}" "${command_parts[1]}" "${command_parts[2]}"
 fi

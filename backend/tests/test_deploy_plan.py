@@ -168,46 +168,39 @@ def test_github_automation_is_basic_and_has_no_full_suite() -> None:
     if not workflows.is_dir():
         pytest.skip(".github is intentionally excluded from production release archives")
     production = (workflows / "production-deploy.yml").read_text(encoding="utf-8")
-    target = (workflows / "production-deploy-target.yml").read_text(encoding="utf-8")
     pull_request = (workflows / "backend-contract.yml").read_text(encoding="utf-8")
-    automatic = f"{production}\n{target}\n{pull_request}"
+    automatic = f"{production}\n{pull_request}"
 
-    assert "WAREHOUSE_DEPLOY_LOCAL_VALIDATION: basic" in target
+    assert "WAREHOUSE_CLUSTER_PREFLIGHT: basic" in production
     assert "services:" not in automatic
     assert "pytest" not in automatic
     assert "docker compose" not in automatic
-    assert "run-full-verification" not in f"{production}\n{target}"
+    assert "run-full-verification" not in production
     assert "hosting-smoke-matrix" not in automatic
     assert sorted(path.name for path in workflows.glob("*.yml")) == [
         "backend-contract.yml",
-        "production-deploy-target.yml",
         "production-deploy.yml",
     ]
 
 
-def test_github_deploys_mac_primary_before_vultr_standby() -> None:
+def test_github_uses_one_coordinated_dual_node_route() -> None:
     workflows = REPO_ROOT / ".github" / "workflows"
     if not workflows.is_dir():
         pytest.skip(".github is intentionally excluded from production release archives")
     production = (workflows / "production-deploy.yml").read_text(encoding="utf-8")
-    target = (workflows / "production-deploy-target.yml").read_text(encoding="utf-8")
 
-    assert "environment: mac-production" in production
-    assert "target: mac-primary" in production
-    assert "needs: [freshness, deploy-mac-primary]" in production
-    assert "environment: production" in production
-    assert "target: vultr-standby" in production
     assert "runs-on: [self-hosted, macOS, ARM64, warehouse-production]" in production
-    assert "runs-on: ${{ fromJSON(inputs.runs_on) }}" in target
-    assert "transport: local" in production
-    assert "transport: ssh" in production
-    assert "use_tailscale: true" not in production
-    assert "tailscale/github-action" not in target
-    assert "homebrew_bin=/opt/homebrew/bin" in target
-    assert "actions/setup-python" not in target
-    assert "actions/setup-node" not in target
-    assert "ops/deploy plan" in target
-    assert "run: ops/deploy smart" in target
+    assert "workflow_dispatch:" in production
+    assert "WAREHOUSE_PRIMARY_TRANSPORT: local" in production
+    assert "WAREHOUSE_STANDBY_TRANSPORT: ssh" in production
+    assert 'ops/cluster/rolling-deploy "${DEPLOY_MODE}"' in production
+    assert "run-full-verification" not in production
+    assert "tailscale/github-action" not in production
+
+    fast_deploy = (REPO_ROOT / "ops" / "fast-deploy").read_text(encoding="utf-8")
+    assert 'WORKFLOW="production-deploy.yml"' in fast_deploy
+    assert "gh workflow run" in fast_deploy
+    assert "gh run watch" in fast_deploy
 
 
 def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
@@ -255,6 +248,13 @@ def test_dependency_free_alembic_head_matches_the_declared_graph() -> None:
 
     assert completed.stdout.strip() == "20260805_0078 (head)"
 
+    policy = json.loads(
+        (REPO_ROOT / "backend" / "alembic" / "migration-policy.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert policy["legacy_head"] == "20260805_0078"
+
 
 def test_full_verification_can_use_an_ephemeral_environment() -> None:
     source = (REPO_ROOT / "ops" / "run-full-verification").read_text(
@@ -276,6 +276,17 @@ def test_macos_manager_versions_the_forced_command_gate() -> None:
     assert '"${DEPLOY_ROOT}/actions/warehouse-deploy-ssh-gate"' in source
 
 
+def test_macos_manager_rejects_mutable_runtime_code_overrides() -> None:
+    source = (REPO_ROOT / "ops" / "macos" / "warehouse-deploy-macos").read_text(
+        encoding="utf-8"
+    )
+
+    assert "reject_runtime_code_overrides()" in source
+    assert '("/service/app", "/service/alembic", "/frontend/v2")' in source
+    assert "mutable runtime code override is forbidden" in source
+    assert source.count("reject_runtime_code_overrides\n") == 3
+
+
 def test_standby_deploy_skips_database_writing_workers() -> None:
     source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
         encoding="utf-8"
@@ -289,6 +300,108 @@ def test_standby_deploy_skips_database_writing_workers() -> None:
     assert 'standby_smoke "${PREPARED_NEXT_PORT}"' in source
     assert 'public_smoke || smoke_result=$?' in source
     assert 'startup_command=\'exec uvicorn' in source
+
+
+def test_standby_reseed_uses_the_prepared_candidate_action() -> None:
+    source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'reseed_action="${RELEASES}/${release}/ops/server/warehouse-standby-reseed"' in source
+    assert 'reseed_action="${CURRENT}/ops/server/warehouse-standby-reseed"' not in source
+
+
+def test_database_migrations_are_detached_from_web_startup_and_deploy_process() -> None:
+    compose = (REPO_ROOT / "compose.production.yaml").read_text(encoding="utf-8")
+    macos = (REPO_ROOT / "ops" / "macos" / "warehouse-deploy-macos").read_text(
+        encoding="utf-8"
+    )
+    server = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+    deploy = (REPO_ROOT / "ops" / "deploy").read_text(encoding="utf-8")
+
+    assert "alembic upgrade head && exec uvicorn" not in compose
+    assert "alembic upgrade head && exec uvicorn" not in server
+    assert "run_control_migrations" not in macos
+    assert "backup_control_database" not in macos
+    assert "python -m app.database_migration_controller" in macos
+    assert "python -m app.database_migration_controller" in server
+    assert "WAREHOUSE_MIGRATION_DATABASE_URL: \"\"" in compose
+    assert "WAREHOUSE_MIGRATOR_DB_PASSWORD: \"\"" in compose
+    assert "migration-start|migration-status|migration-wait" in deploy
+
+
+def test_cluster_database_gate_runs_standby_schema_before_primary_data() -> None:
+    source = (REPO_ROOT / "ops" / "cluster" / "rolling-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    prepare = source.index("parallel prepare: mac-primary + vultr-standby")
+    database_gate = source.index("background database gate: standby schema, then primary data")
+    activation = source.index("coordinated activation")
+    assert prepare < database_gate < activation
+    assert "WAREHOUSE_DATABASE_MIGRATION_DEFER" in source
+    standby_start = source.index(
+        'run_node WAREHOUSE_STANDBY vultr-standby '
+        '"migration-start ${standby_release}"'
+    )
+    primary_start = source.index(
+        'run_node WAREHOUSE_PRIMARY mac-primary '
+        '"migration-start ${primary_release}"'
+    )
+    assert database_gate < standby_start < primary_start < activation
+    assert 'run_node WAREHOUSE_PRIMARY mac-primary "migration-start ${primary_release}"' in source
+    assert 'run_node WAREHOUSE_PRIMARY mac-primary "migration-wait ${primary_release}"' in source
+    assert (
+        'run_node WAREHOUSE_STANDBY vultr-standby '
+        '"migration-reconcile ${standby_release}"' in source
+    )
+    assert "database_replication_gate" in (
+        REPO_ROOT / "ops" / "server" / "warehouse-deploy"
+    ).read_text(encoding="utf-8")
+
+
+def test_mac_release_installs_the_visible_fast_route_and_optimizer() -> None:
+    source = (REPO_ROOT / "ops" / "macos" / "warehouse-deploy-macos").read_text(
+        encoding="utf-8"
+    )
+
+    assert "install_operator_routes()" in source
+    assert 'bin/warehouse-fast-deploy' in source
+    assert "org.bonfirework.clash-route-optimizer.plist" in source
+    assert "deployment_route=GitHub_to_Mac_runner_to_coordinated_Mac_Vultr" in source
+
+
+def test_standby_validation_never_writes_a_passkey_challenge() -> None:
+    source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if [[ "${node_role}" != standby \\' in source
+    assert '"${base}/api/auth/passkeys/login/options"' in source
+
+
+def test_standby_reseed_is_bounded_to_the_disposable_control_subscriber() -> None:
+    source = (REPO_ROOT / "ops" / "server" / "warehouse-standby-reseed").read_text(
+        encoding="utf-8"
+    )
+    manager = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'WAREHOUSE_CONFIRM_STANDBY_RESEED:-}" == YES' in source
+    assert 'WAREHOUSE_NODE_ROLE:-}" == standby' in source
+    assert "standby application role is not fenced read-only" in source
+    assert "standby migrator role is not fenced read-only" in source
+    assert 'DATABASE=warehouse_os' in source
+    assert 'CONTROL_CONTAINER=warehouse-os-postgres-1' in source
+    assert "warehouse-os-hosted-postgres" not in source
+    assert "standby-before-reseed.dump" in source
+    assert "copy_data=true" in source
+    assert "critical table counts differ after reseed" in source
+    assert "reseed_standby_control_database" in manager
+    assert "standby-reseed-attempted" in manager
 
 
 def test_server_deploy_has_a_persistent_prepare_activate_contract() -> None:

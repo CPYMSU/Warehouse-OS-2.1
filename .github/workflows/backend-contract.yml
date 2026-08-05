@@ -1,0 +1,31 @@
+name: Backend contract
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify committed release contract
+        run: |
+          set -euo pipefail
+          node scripts/build_v2_frontend.cjs --check
+          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/python-cache" \
+            python3 -m compileall -q backend/app backend/alembic/versions \
+              ops/macos/warehouse-clash-route-optimizer
+          bash -n \
+            ops/deploy \
+            ops/fast-deploy \
+            ops/cluster/rolling-deploy \
+            ops/macos/warehouse-deploy-macos \
+            ops/macos/warehouse-deploy-ssh-gate \
+            ops/server/warehouse-deploy \
+            ops/server/warehouse-standby-reseed
+          python3 ops/deploy-plan --changed-file frontend/v2/app.jsx --format json \
+            >/dev/null

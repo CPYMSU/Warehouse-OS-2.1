@@ -49,6 +49,11 @@ Production secrets live only in
 files and local environment backups are ignored by Git and excluded from
 release archives.
 
+Runtime code must come only from the immutable release image. The Mac manager
+rejects Compose mounts targeting `/service/app`, `/service/alembic`, or
+`/frontend/v2`; durable data mounts remain supported. This prevents an old
+host-side hotfix from silently shadowing a newer release.
+
 ## Fixed deployment channel
 
 The database and deployment identities are intentionally separate. The
@@ -69,6 +74,7 @@ ops/deploy rollback
 ops/deploy storage-activate
 ops/deploy hosted-db-activate
 ops/deploy hosted-db-migrate
+ops/deploy migration-status RELEASE
 ```
 
 - `smart` compares the candidate tree with the active release manifest. A
@@ -80,8 +86,8 @@ ops/deploy hosted-db-migrate
 - `quick` rebuilds the frontend and runs contract tests. The server refuses it
   if migrations, dependencies, infrastructure, authentication, security,
   configuration, or tenant templates changed.
-- `standard` runs the normal backend suite and creates a verified database
-  backup before deployment.
+- `standard` runs the normal backend suite. It does not change the database;
+  migration requests are handled by the detached controller.
 - `full` additionally creates a disposable PostgreSQL 18 database, migrates it
   from zero, runs the complete integration suite, and verifies candidate
   restart recovery before switching traffic.
@@ -96,9 +102,10 @@ cache. The first release onto an older manager conservatively bootstraps through
 the selected legacy lane; later releases use the active-manifest contract.
 
 Every release is an immutable, checksummed archive with a per-file SHA-256
-manifest and release metadata. The inactive slot must pass health, OpenAPI,
-WebAuthn RP, and Alembic checks before Nginx switches. A public TLS smoke test
-then runs; any failure restores the former upstream and removes the candidate.
+manifest and release metadata. The inactive slot must pass health, OpenAPI and
+the detached database-controller gate before Nginx switches. Standby
+validation never calls a write-producing WebAuthn endpoint. A public TLS smoke
+test then runs; any failure restores the former upstream and removes the candidate.
 Deployment and rollback events are recorded as JSON Lines on the server,
 including `duration_seconds`. `ops/deploy history` therefore shows whether a
 specific change class is getting slower instead of hiding all work behind one
@@ -108,11 +115,9 @@ total timeout.
 
 Pull requests run syntax, generated-frontend and deployment-planner checks with
 a five-minute ceiling. They do not install application dependencies, start
-PostgreSQL, run pytest or build a Compose stack. Pushes to `main` use
-`.github/workflows/production-deploy.yml`, which first deploys the Mac primary
-through the `mac-production` Environment and then deploys the Vultr standby
-through `production`. Both jobs run with read-only repository permissions and
-share the target-neutral `.github/workflows/production-deploy-target.yml`.
+PostgreSQL, run pytest or build a Compose stack. Pushes to `main` and
+`ops/fast-deploy` both use `.github/workflows/production-deploy.yml`, which
+invokes one coordinated dual-node route.
 
 The production workflow requests a dedicated Mac mini self-hosted runner with
 the labels `self-hosted`, `macOS`, `ARM64` and `warehouse-production` for every
@@ -123,26 +128,20 @@ The runner host provides Homebrew Python 3.12–3.14 and Node.js 20 or newer
 under `/opt/homebrew/bin`; production jobs reuse those installations instead
 of downloading a fresh toolchain for every deployment.
 
-The Mac-primary job uses the deploy client's `local` transport: the runner
-invokes `/Users/<user>/Server/bonfirework/bin/warehouse-deploy` directly and
-places the immutable archive in the local incoming directory. No Tailscale or
-SSH credential is involved. After Mac health and the public endpoint pass, the
-same runner executes the Vultr job over its existing restricted SSH channel.
-Its known-hosts file is isolated under `RUNNER_TEMP`, so the job never replaces
-the Mac user's personal SSH configuration. The deploy client also passes
-`-F /dev/null`, preventing personal SSH `Include`, proxy or multiplexing rules
-from changing or blocking the automated connection.
+The runner uses local transport for Mac and its restricted SSH channel for
+Vultr. Both candidates are prepared in parallel; standby schema runs before
+primary data, replication is refreshed and verified, and activation is sent
+to both nodes together. Dispatching computers only need GitHub authorization.
 
 The workflow refuses stale queued revisions, serializes the entire two-target
 release and requires each node's live manifest. It fixes
-`WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic`, so GitHub performs only Python
+`WAREHOUSE_CLUSTER_PREFLIGHT=basic`, so GitHub performs only Python
 compilation, shell parsing, committed frontend-bundle verification, packaging
 and deployment. Standard/full pytest and disposable-database verification are
 local pre-Draft responsibilities and are never selected by GitHub. Each target
 manager independently recomputes the impact plan and remains responsible for
 checksummed extraction, required backups, candidate health, database revision
-and automatic restoration on failure. Vultr is not updated unless the Mac
-primary has already passed its target and public health checks.
+and automatic restoration on failure.
 
 ## Hosted-data disk activation
 

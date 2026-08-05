@@ -1,6 +1,7 @@
 # Warehouse OS deployment control plane
 
-The deployment and database channels are deliberately separate:
+The deployment and database channels are deliberately separate. Web/API
+containers never run Alembic and never receive the migration DSN:
 
 - `warehouse-sync` can only forward local TCP `55432` to server PostgreSQL
   `5432`.
@@ -34,6 +35,10 @@ ops/deploy full
 ops/deploy status
 ops/deploy history
 ops/deploy rollback
+ops/deploy migration-start RELEASE
+ops/deploy migration-status RELEASE
+ops/deploy migration-wait RELEASE
+ops/deploy migration-reconcile RELEASE
 ```
 
 The dual-node PostgreSQL control plane is intentionally separate from release
@@ -53,8 +58,11 @@ ops/cluster/verify-nodes.py --inventory ops/cluster/nodes.json
 The reconciler mirrors newly provisioned hosted database topology and schema,
 while each database receives its own logical subscription. It refuses local-
 only databases and schema drift, and never rebuilds a subscribed database.
-Logical replication does not copy DDL or sequence state; migrations remain an
-explicit release concern and sequence levels are synchronized at cutover.
+Logical replication does not copy DDL or sequence state. The detached database
+controller applies standby-safe schema revisions first, then runs the verified
+primary backup/data phase and waits for replication before activation.
+Sequence levels are synchronized at cutover. See
+`docs/database-migration-controller.md`.
 
 The root-owned release manager also exposes one host-specific, idempotent data
 disk command through the restricted deployment channel:
@@ -88,12 +96,11 @@ locally before a Draft PR is created:
   shell syntax, verifies the committed frontend bundles and parses one sample
   deployment plan. It does not start PostgreSQL, install the backend, run
   pytest or build a Compose stack.
-- `.github/workflows/production-deploy.yml` rejects stale revisions and then
-  serially deploys the Mac primary before the Vultr standby.
-- `.github/workflows/production-deploy-target.yml` is the shared target job. It
-  compares the clean checkout with each target's own active manifest, packages
-  an immutable release only when required and invokes `ops/deploy smart`.
-- Every production job uses the dedicated Mac mini runner labels
+- `.github/workflows/production-deploy.yml` rejects stale revisions and invokes
+  the single coordinated `ops/cluster/rolling-deploy` route.
+- `ops/fast-deploy` lets any authenticated computer dispatch and watch that
+  workflow without receiving server SSH keys.
+- The production job uses the dedicated Mac mini runner labels
   `self-hosted`, `macOS`, `ARM64` and `warehouse-production`. GitHub remains the
   scheduler and audit UI; all checkout, planning, packaging and deployment
   compute runs on the Mac mini.
@@ -101,43 +108,9 @@ locally before a Draft PR is created:
   the `warehouse-production` label. The production runner accepts only the
   `main` push/dispatch workflow and its Environments are restricted to `main`.
 
-Both the `mac-production` and `production` GitHub Environments define the same
-target contract:
-
-```text
-Variables:
-  WAREHOUSE_DEPLOY_HOST
-  WAREHOUSE_DEPLOY_USER
-  WAREHOUSE_REMOTE_DEPLOY_MANAGER
-  WAREHOUSE_DEPLOY_INCOMING
-  WAREHOUSE_DEPLOY_MANAGER_SUDO
-  WAREHOUSE_DEPLOY_PREPARE_INCOMING
-  WAREHOUSE_DEPLOY_SCP_LEGACY
-
-Secrets:
-  WAREHOUSE_DEPLOY_SSH_KEY
-  WAREHOUSE_DEPLOY_KNOWN_HOSTS
-```
-
-The existing `production` environment remains the Vultr standby and keeps
-`WAREHOUSE_DEPLOY_MANAGER_SUDO=1`,
-`WAREHOUSE_DEPLOY_PREPARE_INCOMING=1` and
-`WAREHOUSE_DEPLOY_SCP_LEGACY=0`. That job runs on the Mac mini but still uses
-the restricted Vultr SSH identity. The `mac-production` environment uses:
-
-```text
-WAREHOUSE_REMOTE_DEPLOY_MANAGER=/Users/<user>/Server/bonfirework/bin/warehouse-deploy
-WAREHOUSE_DEPLOY_INCOMING=/Users/<user>/Server/bonfirework/incoming
-WAREHOUSE_DEPLOY_MANAGER_SUDO=0
-WAREHOUSE_DEPLOY_PREPARE_INCOMING=0
-WAREHOUSE_DEPLOY_SCP_LEGACY=0
-```
-
-The Mac job sets `WAREHOUSE_DEPLOY_TRANSPORT=local`; it invokes the local
-manager and copies the immutable archive into the local incoming directory.
-It does not require Tailscale, a Mac SSH key or Mac host keys. The Vultr job
-sets `WAREHOUSE_DEPLOY_TRANSPORT=ssh` and receives its identity and isolated
-known-hosts file from the `production` Environment.
+The runner invokes the Mac manager through local transport and the Vultr
+manager through its existing restricted SSH identity. Those credentials live
+only on the runner host; GitHub and dispatching terminals never receive them.
 
 The existing Mac forced-command key remains available for audited operator
 access, but GitHub Actions no longer depends on it:
@@ -146,21 +119,28 @@ access, but GitHub Actions no longer depends on it:
 restrict,command="/Users/<user>/Server/bonfirework/actions/warehouse-deploy-ssh-gate" ssh-ed25519 AAAA...
 ```
 
-The gate permits only immutable release upload plus `manifest`, `install`,
-`status`, `history` and `rollback`.
+The gate permits only immutable release upload plus the fixed release and
+database-controller status commands; it never permits arbitrary SQL or a
+general shell.
 
 The deployment workflow refuses stale queued commits, serializes production
 changes and requires each target's active manifest.
-`WAREHOUSE_DEPLOY_LOCAL_VALIDATION` is fixed to `basic`, so GitHub never runs
+
+The Mac mini also runs `warehouse-clash-route-optimizer` every five minutes.
+It probes only Singapore routes against Cloudflare, applies hysteresis before
+switching, reconnects the Tunnel, and automatically restores the former route
+if the public health check fails. See `docs/clash-route-optimizer.md`.
+The workflow fixes the activation preflight to `basic`, so GitHub never reruns
 the standard/full pytest lanes or `ops/run-full-verification`. Both target
 managers independently recompute the smart plan before installing anything.
 
-Each deploy uploads a checksummed archive, verifies every file, builds a tagged
-image and starts the inactive API slot. Nginx switches only after candidate
-health, OpenAPI, WebAuthn RP and Alembic checks succeed. The former slot stays
-running, making `rollback` an upstream switch rather than a rebuild.
+Each deploy uploads a checksummed archive, verifies every file and builds a
+tagged image. Database jobs finish before the inactive API slot is eligible for
+activation. Nginx switches only after candidate health, OpenAPI and schema
+gates succeed. The former slot stays running, making `rollback` an upstream
+switch rather than a rebuild.
 
 Database migrations must remain expand/contract compatible: application
-rollback never attempts an automatic database downgrade. Standard and full
-deployments create a verified PostgreSQL custom-format backup before starting
-the candidate.
+rollback never attempts an automatic database downgrade. The background
+primary controller, not the deploy process, creates and verifies the
+PostgreSQL custom-format backup before changing schema or data.
