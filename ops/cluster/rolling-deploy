@@ -32,6 +32,7 @@ node_value() {
 
 run_node() {
   local prefix="$1" label="$2" action="$3" release_file="${4:-}"
+  local plan_file="${5:-}"
   local action_command action_argument
   local host user identity manager incoming target manager_sudo prepare_incoming scp_legacy
   local known_hosts transport migration_defer
@@ -88,6 +89,7 @@ run_node() {
     WAREHOUSE_DATABASE_MIGRATION_DEFER="${migration_defer}" \
     WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic \
     WAREHOUSE_DEPLOY_RELEASE_ID_FILE="${release_file}" \
+    WAREHOUSE_DEPLOY_PLAN_FILE="${plan_file}" \
     "${deploy_command[@]}"
 }
 
@@ -125,11 +127,15 @@ run_preflight
 
 primary_release_file="${WORK_DIR}/primary.release"
 standby_release_file="${WORK_DIR}/standby.release"
+primary_plan_file="${WORK_DIR}/primary.plan"
+standby_plan_file="${WORK_DIR}/standby.plan"
 printf '==> parallel prepare: mac-primary + vultr-standby\n'
-run_node WAREHOUSE_PRIMARY mac-primary "prepare ${MODE}" "${primary_release_file}" \
+run_node WAREHOUSE_PRIMARY mac-primary "prepare ${MODE}" \
+  "${primary_release_file}" "${primary_plan_file}" \
   >"${WORK_DIR}/primary.prepare.log" 2>&1 &
 primary_pid=$!
-run_node WAREHOUSE_STANDBY vultr-standby "prepare ${MODE}" "${standby_release_file}" \
+run_node WAREHOUSE_STANDBY vultr-standby "prepare ${MODE}" \
+  "${standby_release_file}" "${standby_plan_file}" \
   >"${WORK_DIR}/standby.prepare.log" 2>&1 &
 standby_pid=$!
 wait_phase "${primary_pid}" "${standby_pid}"
@@ -146,17 +152,27 @@ standby_release="$(tr -d '\r\n' < "${standby_release_file}")"
   || fail "primary prepared release id is invalid"
 [[ "${standby_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
   || fail "standby prepared release id is invalid"
+primary_migration="$(awk -F= '$1 == "migration_required" {print $2; exit}' "${primary_plan_file}")"
+standby_migration="$(awk -F= '$1 == "migration_required" {print $2; exit}' "${standby_plan_file}")"
+[[ "${primary_migration}" =~ ^[01]$ && "${standby_migration}" =~ ^[01]$ ]] \
+  || fail "prepared migration impact is invalid"
+[[ "${primary_migration}" == "${standby_migration}" ]] \
+  || fail "node migration impact plans disagree"
 
-printf '==> background database gate: standby schema, then primary data\n'
-# Both prepares only build and validate code. The database phase is explicit:
-# standby schema first, then primary backup/schema/data, then replication.
-run_node WAREHOUSE_STANDBY vultr-standby "migration-start ${standby_release}" ""
-run_node WAREHOUSE_STANDBY vultr-standby "migration-wait ${standby_release}" ""
-run_node WAREHOUSE_STANDBY vultr-standby "migration-status ${standby_release}" ""
-run_node WAREHOUSE_PRIMARY mac-primary "migration-start ${primary_release}" ""
-run_node WAREHOUSE_PRIMARY mac-primary "migration-wait ${primary_release}" ""
-run_node WAREHOUSE_PRIMARY mac-primary "migration-status ${primary_release}" ""
-run_node WAREHOUSE_STANDBY vultr-standby "migration-reconcile ${standby_release}" ""
+if [[ "${primary_migration}" == 1 ]]; then
+  printf '==> background database gate: standby schema, then primary data\n'
+  # Both prepares only build and validate code. The database phase is explicit:
+  # standby schema first, then primary backup/schema/data, then replication.
+  run_node WAREHOUSE_STANDBY vultr-standby "migration-start ${standby_release}" ""
+  run_node WAREHOUSE_STANDBY vultr-standby "migration-wait ${standby_release}" ""
+  run_node WAREHOUSE_STANDBY vultr-standby "migration-status ${standby_release}" ""
+  run_node WAREHOUSE_PRIMARY mac-primary "migration-start ${primary_release}" ""
+  run_node WAREHOUSE_PRIMARY mac-primary "migration-wait ${primary_release}" ""
+  run_node WAREHOUSE_PRIMARY mac-primary "migration-status ${primary_release}" ""
+  run_node WAREHOUSE_STANDBY vultr-standby "migration-reconcile ${standby_release}" ""
+else
+  printf '==> database phase skipped (code-only release)\n'
+fi
 
 printf '==> prepared gate\n'
 run_node WAREHOUSE_PRIMARY mac-primary "prepared-status ${primary_release}" "" \
