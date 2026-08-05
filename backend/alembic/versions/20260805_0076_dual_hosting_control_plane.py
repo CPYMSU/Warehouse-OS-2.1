@@ -12,7 +12,10 @@ from alembic import op
 
 
 revision = "20260805_0076"
-down_revision = "20260805_0075"
+# The production mainline is currently at 0071.  Revisions 0072-0075 belong
+# to an unreleased branch and are intentionally not part of this release, so
+# the dual-hosting control plane must attach directly to the deployed head.
+down_revision = "20260804_0071"
 branch_labels = None
 depends_on = None
 
