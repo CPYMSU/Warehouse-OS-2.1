@@ -19,8 +19,7 @@ ENV PATH="/usr/lib/postgresql/18/bin:${PATH}" \
 RUN pg_dump --version | grep -Eq '^pg_dump \(PostgreSQL\) 18\.' \
     && pg_restore --version | grep -Eq '^pg_restore \(PostgreSQL\) 18\.'
 COPY backend/pyproject.toml ./pyproject.toml
-RUN --mount=type=cache,id=warehouse-pip-cache,target=/root/.cache/pip,sharing=locked \
-    mkdir -p app/api app/core app/db app/services app/templates app/terminal \
+RUN mkdir -p app/api app/core app/db app/services app/templates app/terminal \
     && touch app/__init__.py app/api/__init__.py app/core/__init__.py \
       app/db/__init__.py app/services/__init__.py app/templates/__init__.py \
       app/terminal/__init__.py \

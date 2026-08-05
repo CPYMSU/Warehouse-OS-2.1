@@ -16,6 +16,8 @@ MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:-1}"
 PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:-1}"
 SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:-0}"
 ALEMBIC="${WAREHOUSE_DEPLOY_ALEMBIC:-${ROOT}/backend/.venv/bin/alembic}"
+REQUIRE_CANONICAL_MAIN="${WAREHOUSE_REQUIRE_CANONICAL_MAIN:-0}"
+EXPECTED_GIT_SHA="${WAREHOUSE_EXPECTED_GIT_SHA:-}"
 
 ssh_options=(
   -F /dev/null
@@ -33,6 +35,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ops/deploy smart       # change-aware tests and evidence-driven server verification
+  ops/deploy sync        # make the tracked local tree exactly match origin/main
   ops/deploy quick       # frontend or low-risk application change
   ops/deploy standard    # manually force the complete non-destructive suite
   ops/deploy full        # disposable PG18 integration suite plus full server checks
@@ -119,6 +122,26 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
+ensure_canonical_source() {
+  [[ "${REQUIRE_CANONICAL_MAIN}" == 1 || -n "${EXPECTED_GIT_SHA}" ]] || return 0
+  require_command git
+  local head short_head expected_short main_head
+  head="$(git rev-parse HEAD)"
+  short_head="$(git rev-parse --short=12 HEAD)"
+  if [[ -n "${EXPECTED_GIT_SHA}" ]]; then
+    expected_short="${EXPECTED_GIT_SHA:0:12}"
+    [[ "${head}" == "${EXPECTED_GIT_SHA}" || "${short_head}" == "${expected_short}" ]] \
+      || fail "checkout ${short_head} is not the expected cloud revision ${expected_short}"
+  fi
+  if [[ "${REQUIRE_CANONICAL_MAIN}" == 1 ]]; then
+    main_head="$(git rev-parse origin/main 2>/dev/null || true)"
+    [[ -n "${main_head}" && "${head}" == "${main_head}" ]] \
+      || fail "deployment source is not origin/main; run ops/deploy sync first"
+    git diff --quiet --ignore-submodules -- \
+      || fail "tracked local changes are not allowed in a canonical deployment"
+  fi
+}
+
 [[ "${TARGET}" =~ ^[A-Za-z0-9._-]{1,40}$ ]] \
   || fail "WAREHOUSE_DEPLOY_TARGET is invalid"
 [[ "${TRANSPORT}" =~ ^(ssh|local)$ ]] \
@@ -144,6 +167,17 @@ fi
 case "${MODE}" in
   -h|--help|help)
     usage
+    exit 0
+    ;;
+  sync|cloud-sync)
+    require_command git
+    cd "${ROOT}"
+    git diff --quiet --ignore-submodules -- \
+      || fail "tracked local changes exist; commit or stash them before cloud sync"
+    git fetch origin main
+    git switch main
+    git reset --hard origin/main
+    printf 'cloud_source=origin/main\nrevision=%s\n' "$(git rev-parse --short=12 HEAD)"
     exit 0
     ;;
   status|runtime-status|api-logs|history|rollback)
@@ -283,6 +317,7 @@ trap cleanup EXIT
 printf '==> local validation (%s)\n' "${MODE}"
 cd "${ROOT}"
 git diff --check
+ensure_canonical_source
 
 PLAN_MODE="${MODE}"
 PLAN_RISK="manual"

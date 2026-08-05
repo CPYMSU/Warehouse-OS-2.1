@@ -47,6 +47,8 @@ jobs:
       WAREHOUSE_DEPLOY_SCP_LEGACY: ${{ vars.WAREHOUSE_DEPLOY_SCP_LEGACY }}
       WAREHOUSE_REQUIRE_ACTIVE_MANIFEST: "1"
       WAREHOUSE_DEPLOY_LOCAL_VALIDATION: basic
+      WAREHOUSE_REQUIRE_CANONICAL_MAIN: "1"
+      WAREHOUSE_EXPECTED_GIT_SHA: ${{ github.sha }}
 
     steps:
       - name: Check out the triggering revision

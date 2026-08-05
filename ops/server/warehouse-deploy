@@ -832,13 +832,13 @@ install_release() {
   local browser_image="warehouse-os-browser:${release}"
   phase_started="${SECONDS}"
   if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_API}" == 1 ]]; then
-    docker build --file "${release_dir}/backend/Dockerfile" --tag "${image}" "${release_dir}" >/dev/null
+    DOCKER_BUILDKIT=1 docker build --file "${release_dir}/backend/Dockerfile" --tag "${image}" "${release_dir}" >/dev/null
   else
     image="$(active_api_image)" \
       || fail "unchanged API has no healthy source image"
   fi
   if [[ "${PLAN_ADAPTIVE}" != 1 || "${PLAN_BROWSER}" == 1 ]]; then
-    docker build --file "${release_dir}/browser-runtime/Dockerfile" --tag "${browser_image}" "${release_dir}" >/dev/null
+    DOCKER_BUILDKIT=1 docker build --file "${release_dir}/browser-runtime/Dockerfile" --tag "${browser_image}" "${release_dir}" >/dev/null
   else
     browser_image="$(active_browser_image)" \
       || fail "unchanged Browser Runtime has no healthy source image"
