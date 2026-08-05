@@ -92,7 +92,10 @@
       "glob": "backend/app/runtime_controller*.py",
       "risk": "high",
       "impacts": ["api", "runtime_controller"],
-      "tests": ["backend/tests/test_runtime_controller_docker_engine.py"]
+      "tests": [
+        "backend/tests/test_runtime_controller_docker_engine.py",
+        "backend/tests/test_runtime_compute_metering.py"
+      ]
     },
     {
       "glob": "backend/app/services/hosted_database.py",

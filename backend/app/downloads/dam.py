@@ -17,7 +17,14 @@
   GET|PUT /api/workspaces/v1/database/control|policy
   GET  /api/workspaces/v1/deployments[/{id}]
   GET  /api/hosting/v2/manifest
+  GET  /api/hosting/v2/auto-runtime-guide.md
   GET  /api/hosting/v2/requirements
+  GET  /api/hosting/v2/hosting
+  GET  /api/hosting/v2/notifications
+  GET  /api/hosting/v2/compute-usage
+  POST /api/hosting/v2/notifications/{id}/ack
+  GET  /api/hosting/v2/terminal-actions/{id}
+  POST /api/hosting/v2/terminal-actions/{id}/complete
   POST /api/hosting/v2/sessions[/{id}/messages]
   GET  /api/hosting/v2/sessions/{id}[/events]
   GET  /api/workspaces/v1/fabric/manifest
@@ -36,15 +43,243 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import sys
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
 VERSION = "2.6.0"
 DEFAULT_BASE = "__WAREHOUSE_BASE__"
+
+# ``hosting prepare`` is deliberately a preparation boundary, not an
+# execution boundary.  Keep the local expansion limits in the standalone
+# client so a hostile/misconfigured archive cannot turn a manifest download
+# into an unbounded disk write.  These limits match the default Warehouse
+# workspace quota and the server-side source-package validator.
+MAX_TERMINAL_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_TERMINAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_TERMINAL_ARCHIVE_ENTRIES = 20_000
+MAX_TERMINAL_COMPRESSION_RATIO = 200
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _terminal_manifest_inputs(manifest: object) -> tuple[str, str]:
+    """Validate the least-privilege terminal manifest before downloading.
+
+    The source route is checked against the source id instead of being
+    treated as an arbitrary URL.  Runtime commands are intentionally not
+    interpreted here; this helper only returns the immutable source identity
+    and digest needed for a safe local preparation.
+    """
+
+    if not isinstance(manifest, dict):
+        raise SystemExit("終端 Manifest 格式錯誤：預期 JSON 物件")
+    if str(manifest.get("hosting_mode") or "").lower() != "terminal":
+        raise SystemExit("終端 Manifest 不是 terminal hosting")
+    if str(manifest.get("execution_target") or "").lower() != "user_terminal":
+        raise SystemExit("終端 Manifest 的 execution_target 不受信任")
+    source_id = str(manifest.get("source_version_id") or "").strip()
+    if not source_id or not _SOURCE_ID_RE.fullmatch(source_id):
+        raise SystemExit("終端 Manifest 缺少有效的 source_version_id")
+    source_sha256 = str(manifest.get("source_sha256") or "").strip().lower()
+    if not _SHA256_RE.fullmatch(source_sha256):
+        raise SystemExit("終端 Manifest 缺少有效的 source_sha256")
+    expected_route = (
+        f"/api/workspaces/v1/sources/{urllib.parse.quote(source_id, safe='')}/download"
+    )
+    if str(manifest.get("source_download") or "") != expected_route:
+        raise SystemExit("終端 Manifest 的 source_download 路由不受信任")
+    return source_id, source_sha256
+
+
+def _safe_archive_member(name: str) -> PurePosixPath:
+    """Return a normalized archive member path or reject traversal/special paths."""
+
+    normalized = str(name).replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        not normalized
+        or "\x00" in normalized
+        or normalized.startswith("/")
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or any(len(part) == 2 and part[1] == ":" for part in path.parts[:1])
+    ):
+        raise SystemExit("源碼壓縮包包含不安全的路徑")
+    return path
+
+
+def _safe_archive_target(root: Path, member: PurePosixPath) -> Path:
+    """Resolve a member beneath a newly-created extraction root."""
+
+    root_resolved = root.resolve()
+    target = root.joinpath(*member.parts)
+    resolved = target.resolve()
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise SystemExit("源碼壓縮包路徑跳出準備目錄")
+    return target
+
+
+def _materialize_terminal_archive(
+    archive_path: Path,
+    destination: Path,
+    *,
+    max_archive_bytes: int = MAX_TERMINAL_ARCHIVE_BYTES,
+    max_uncompressed_bytes: int = MAX_TERMINAL_UNCOMPRESSED_BYTES,
+) -> dict[str, object]:
+    """Safely unpack a ZIP/TAR for inspection; never invokes its commands.
+
+    Archive links, devices and FIFOs are rejected.  The destination must not
+    already exist, so rerunning preparation cannot delete or overwrite a
+    user's files.  Every output file is written with non-executable mode.
+    """
+
+    archive_path = archive_path.expanduser().resolve()
+    if not archive_path.is_file():
+        raise SystemExit(f"找不到源碼壓縮包：{archive_path}")
+    packed_bytes = archive_path.stat().st_size
+    if packed_bytes > max_archive_bytes:
+        raise SystemExit("源碼壓縮包超過本機準備大小限制")
+    destination = destination.expanduser().resolve()
+    if destination.exists():
+        raise SystemExit(f"準備目錄已存在，為避免覆寫而停止：{destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(mode=0o750)
+
+    entries = 0
+    files = 0
+    unpacked = 0
+    seen: set[str] = set()
+    archive_format: str
+
+    def begin_member(name: str, *, is_directory: bool) -> tuple[PurePosixPath, Path] | None:
+        nonlocal entries
+        entries += 1
+        if entries > MAX_TERMINAL_ARCHIVE_ENTRIES:
+            raise SystemExit("源碼壓縮包包含過多檔案項目")
+        raw_name = name.rstrip("/")
+        if raw_name in {"", "."} and is_directory:
+            return None
+        member = _safe_archive_member(raw_name)
+        key = member.as_posix()
+        if key in seen:
+            raise SystemExit("源碼壓縮包包含重複路徑")
+        seen.add(key)
+        return member, _safe_archive_target(destination, member)
+
+    def check_size(size: int) -> None:
+        nonlocal unpacked
+        if size < 0 or unpacked + size > max_uncompressed_bytes:
+            raise SystemExit("源碼壓縮包展開後超過本機準備大小限制")
+        unpacked += size
+
+    try:
+        if zipfile.is_zipfile(archive_path):
+            archive_format = "zip"
+            with zipfile.ZipFile(archive_path) as archive:
+                for item in archive.infolist():
+                    mode = item.external_attr >> 16
+                    if stat.S_ISLNK(mode):
+                        raise SystemExit("源碼壓縮包不得包含符號連結")
+                    prepared = begin_member(item.filename, is_directory=item.is_dir())
+                    if prepared is None:
+                        continue
+                    member, target = prepared
+                    if item.is_dir():
+                        if target.exists():
+                            if not target.is_dir():
+                                raise SystemExit("源碼壓縮包路徑類型衝突")
+                        else:
+                            target.mkdir(parents=True, exist_ok=False, mode=0o750)
+                        continue
+                    if stat.S_IFMT(mode) not in {0, stat.S_IFREG}:
+                        raise SystemExit("源碼壓縮包不得包含特殊檔案")
+                    declared_size = int(item.file_size)
+                    check_size(declared_size)
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+                    with archive.open(item) as source, target.open("xb") as output:
+                        copied = 0
+                        while True:
+                            chunk = source.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            copied += len(chunk)
+                            if copied > declared_size or copied > max_uncompressed_bytes:
+                                raise SystemExit("源碼壓縮包展開長度不符合宣告")
+                            output.write(chunk)
+                    if copied != declared_size:
+                        raise SystemExit("源碼壓縮包檔案長度不符合宣告")
+                    target.chmod(0o640)
+                    files += 1
+        elif tarfile.is_tarfile(archive_path):
+            archive_format = "tar"
+            with tarfile.open(archive_path, mode="r:*") as archive:
+                for item in archive:
+                    if item.issym() or item.islnk() or item.isdev() or item.isfifo():
+                        raise SystemExit("源碼壓縮包不得包含連結或特殊檔案")
+                    prepared = begin_member(item.name, is_directory=item.isdir())
+                    if prepared is None:
+                        continue
+                    _member, target = prepared
+                    if item.isdir():
+                        if target.exists():
+                            if not target.is_dir():
+                                raise SystemExit("源碼壓縮包路徑類型衝突")
+                        else:
+                            target.mkdir(parents=True, exist_ok=False, mode=0o750)
+                        continue
+                    if not item.isfile():
+                        raise SystemExit("源碼壓縮包包含不支援的檔案類型")
+                    declared_size = int(item.size)
+                    check_size(declared_size)
+                    source = archive.extractfile(item)
+                    if source is None:
+                        raise SystemExit("源碼壓縮包檔案無法讀取")
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+                    with source, target.open("xb") as output:
+                        copied = 0
+                        while True:
+                            chunk = source.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            copied += len(chunk)
+                            if copied > declared_size or copied > max_uncompressed_bytes:
+                                raise SystemExit("源碼壓縮包展開長度不符合宣告")
+                            output.write(chunk)
+                    if copied != declared_size:
+                        raise SystemExit("源碼壓縮包檔案長度不符合宣告")
+                    target.chmod(0o640)
+                    files += 1
+        else:
+            raise SystemExit("源碼必須是 ZIP 或 TAR 壓縮包")
+    except BaseException:
+        # The destination was created solely by this bounded preparation.  It
+        # is safe to clean it on a failed extraction; pre-existing user paths
+        # were rejected before creation.
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
+    if files == 0:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise SystemExit("源碼壓縮包不包含檔案")
+    if unpacked > max(1, packed_bytes) * MAX_TERMINAL_COMPRESSION_RATIO:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise SystemExit("源碼壓縮包展開比例不安全")
+    return {
+        "format": archive_format,
+        "entries": entries,
+        "files": files,
+        "uncompressed_bytes": unpacked,
+        "directory": str(destination),
+        "executed": False,
+    }
 
 
 def _json_object(raw: str, *, source: str) -> dict[str, object]:
@@ -245,7 +480,15 @@ class Client:
             raise SystemExit("服務端返回格式錯誤：預期 JSON 物件")
         return value
 
-    def download_source(self, source_id: str, output: Path | None) -> dict[str, object]:
+    def download_source(
+        self,
+        source_id: str,
+        output: Path | None,
+        *,
+        expected_sha256: str | None = None,
+        max_bytes: int | None = None,
+        overwrite: bool = True,
+    ) -> dict[str, object]:
         safe_source = urllib.parse.quote(source_id, safe="")
         request = urllib.request.Request(
             self.base + f"/api/workspaces/v1/sources/{safe_source}/download",
@@ -270,6 +513,8 @@ class Client:
                     target = target / remote_name
                 target = target.expanduser().resolve()
                 target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() and not overwrite:
+                    raise SystemExit(f"輸出檔案已存在，為避免覆寫而停止：{target}")
                 temporary = target.with_name(target.name + ".part")
                 digest = hashlib.sha256()
                 size = 0
@@ -279,6 +524,8 @@ class Client:
                             chunk = response.read(1024 * 1024)
                             if not chunk:
                                 break
+                            if max_bytes is not None and size + len(chunk) > max_bytes:
+                                raise SystemExit("下載源碼超過本機準備大小限制")
                             destination.write(chunk)
                             digest.update(chunk)
                             size += len(chunk)
@@ -287,6 +534,11 @@ class Client:
                     if expected and expected != actual:
                         raise SystemExit(
                             f"下載 SHA-256 不一致：expected={expected} actual={actual}"
+                        )
+                    if expected_sha256 and expected_sha256.lower() != actual:
+                        raise SystemExit(
+                            "下載 SHA-256 不一致："
+                            f"expected={expected_sha256.lower()} actual={actual}"
                         )
                     temporary.replace(target)
                 finally:
@@ -301,6 +553,100 @@ class Client:
             "size_bytes": size,
             "sha256": actual,
         }
+
+    def terminal_manifest(self, deployment_id: str) -> dict[str, object]:
+        safe_deployment = urllib.parse.quote(deployment_id, safe="")
+        return self.request("GET", f"/api/hosting/v2/terminal-actions/{safe_deployment}")
+
+    def download_text(
+        self,
+        path: str,
+        *,
+        output: Path | None = None,
+        default_filename: str = "warehouse-guide.md",
+        max_bytes: int = 8 * 1024 * 1024,
+    ) -> dict[str, object]:
+        """Download a UTF-8 document without making ``request`` parse Markdown.
+
+        With no output path the command returns only safe metadata, avoiding a
+        large document being copied into a shell/AI transcript.  Passing an
+        explicit output path writes the verified bytes locally and returns the
+        path and digest.  This method is read-only from the Warehouse API's
+        perspective; it never submits a session or mutates hosting state.
+        """
+
+        if not path.startswith("/") or "?" in path or "#" in path:
+            raise SystemExit("文件下载路径必须是同源的绝对 API 路径")
+        request = urllib.request.Request(
+            self.base + path,
+            method="GET",
+            headers={
+                "Authorization": "Bearer " + self.key,
+                "Accept": "text/markdown, text/plain;q=0.9, */*;q=0.1",
+                "User-Agent": f"WarehouseOS-dam/{VERSION}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                content_type = str(response.headers.get_content_type() or "text/plain")
+                disposition = response.headers.get("Content-Disposition", "")
+                filename_match = re.search(r'filename="?([^";]+)', disposition)
+                remote_name = Path(
+                    urllib.parse.unquote(filename_match.group(1))
+                    if filename_match
+                    else default_filename
+                ).name
+                chunks: list[bytes] = []
+                size = 0
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise SystemExit("文件下载超过本地大小限制")
+                    chunks.append(chunk)
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            try:
+                detail = json.loads(raw)
+                detail = detail.get("detail") or detail.get("error") or detail
+                message = (
+                    json.dumps(detail, ensure_ascii=False)
+                    if isinstance(detail, (dict, list))
+                    else str(detail)
+                )
+            except (json.JSONDecodeError, AttributeError):
+                message = raw or str(exc.reason)
+            raise SystemExit(f"HTTP {exc.code}：{message}") from exc
+        except urllib.error.URLError as exc:
+            raise SystemExit(f"無法連接 {self.base}：{exc.reason}") from exc
+
+        content = b"".join(chunks)
+        digest = hashlib.sha256(content).hexdigest()
+        result: dict[str, object] = {
+            "ok": True,
+            "source": path,
+            "filename": remote_name,
+            "media_type": content_type,
+            "size_bytes": len(content),
+            "sha256": digest,
+            "downloaded": output is not None,
+        }
+        if output is not None:
+            target = output.expanduser().resolve()
+            if target.exists() and target.is_dir():
+                raise SystemExit(f"输出路径是目录，请指定文件：{target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(target.name + ".part")
+            try:
+                with temporary.open("xb") as destination:
+                    destination.write(content)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            result["path"] = str(target)
+        return result
 
 
 def _show(value: object) -> None:
@@ -419,6 +765,60 @@ def _parser() -> argparse.ArgumentParser:
     hosting_subcommands.add_parser(
         "requirements",
         help="下載同版本的人類可讀標準與機器可讀契約",
+    )
+    hosting_guide = hosting_subcommands.add_parser(
+        "guide",
+        help="下載 cloud/terminal/hybrid 與 Auto Runtime AI 秘書連接指南",
+    )
+    hosting_guide.add_argument(
+        "--output",
+        type=Path,
+        help="將指南保存到本地文件；省略時只輸出安全元數據",
+    )
+    hosting_subcommands.add_parser("mode", help="查看目前 cloud/terminal 托管模式")
+    hosting_set = hosting_subcommands.add_parser("set", help="用智能接口切換托管模式")
+    hosting_set.add_argument("mode", choices=("cloud", "terminal"))
+    hosting_set.add_argument(
+        "--compute-node",
+        choices=("warehouse", "vultr", "mac_mini", "user_terminal"),
+    )
+    hosting_set.add_argument(
+        "--notify-targets",
+        help="terminal、ai 或逗號分隔的兩者",
+    )
+    hosting_set.add_argument("--cloud-fallback", choices=("ask", "never"))
+    hosting_set.add_argument("--compute-budget", help="JSON 物件，例如 '{\"max_cost_cny\":20}'")
+    hosting_notifications = hosting_subcommands.add_parser(
+        "notifications", help="讀取終端或 AI 的托管提醒"
+    )
+    hosting_notifications.add_argument("--target", choices=("terminal", "ai"))
+    hosting_notifications.add_argument(
+        "--status",
+        choices=("pending", "acknowledged", "expired", "cancelled"),
+    )
+    hosting_notifications.add_argument("--limit", type=int, default=100, choices=range(1, 501))
+    hosting_subcommands.add_parser("usage", help="查看独立的云计算用量记录")
+    hosting_ack = hosting_subcommands.add_parser("ack", help="確認一條托管提醒")
+    hosting_ack.add_argument("notification_id")
+    hosting_complete = hosting_subcommands.add_parser(
+        "complete", help="提交終端執行結果，不啟動雲端 Runtime"
+    )
+    hosting_complete.add_argument("deployment_id")
+    hosting_complete.add_argument("--status", choices=("succeeded", "failed"), default="succeeded")
+    hosting_complete.add_argument("--result", help="結果 JSON 物件")
+    hosting_complete.add_argument("--result-file", help="結果 JSON 文件；- 代表 stdin")
+    hosting_action = hosting_subcommands.add_parser(
+        "action", help="讀取一個終端部署的最小執行 Manifest"
+    )
+    hosting_action.add_argument("deployment_id")
+    hosting_prepare = hosting_subcommands.add_parser(
+        "prepare", help="下載並校驗終端部署源碼，不在本機自動執行"
+    )
+    hosting_prepare.add_argument("deployment_id")
+    hosting_prepare.add_argument(
+        "--directory",
+        default=".warehouse-terminal",
+        help="Manifest 與源碼壓縮包輸出目錄",
     )
 
     deploy_commands = commands.add_parser("deploy", help="提交及觀察部署")
@@ -632,7 +1032,121 @@ def main() -> None:
                 component=args.component,
             )
     elif args.command == "hosting":
-        result = client.request("GET", "/api/hosting/v2/requirements")
+        if args.hosting_command == "guide":
+            result = client.download_text(
+                "/api/hosting/v2/auto-runtime-guide.md",
+                output=args.output,
+                default_filename="warehouse-hosting-mechanisms-2.3.zh-TW.md",
+            )
+        elif args.hosting_command == "requirements":
+            result = client.request("GET", "/api/hosting/v2/requirements")
+        elif args.hosting_command == "mode":
+            result = client.request("GET", "/api/hosting/v2/hosting")
+        elif args.hosting_command == "set":
+            hosting = {
+                key: value
+                for key, value in {
+                    "mode": args.mode,
+                    "compute_node": args.compute_node,
+                    "notify_targets": args.notify_targets,
+                    "cloud_fallback": args.cloud_fallback,
+                    "compute_budget": (
+                        _json_object(args.compute_budget, source="--compute-budget")
+                        if args.compute_budget
+                        else None
+                    ),
+                }.items()
+                if value is not None
+            }
+            result = client.request(
+                "POST",
+                "/api/hosting/v2/sessions",
+                payload={
+                    "message": f"Set hosting mode to {args.mode}",
+                    "client_kind": "terminal_ai",
+                    "desired_state": {"hosting": hosting},
+                    "execute": True,
+                },
+            )
+        elif args.hosting_command == "notifications":
+            result = client.request(
+                "GET",
+                "/api/hosting/v2/notifications",
+                query={"target": args.target, "status": args.status, "limit": args.limit},
+            )
+        elif args.hosting_command == "usage":
+            result = client.request("GET", "/api/hosting/v2/compute-usage")
+        elif args.hosting_command == "ack":
+            notification_id = urllib.parse.quote(args.notification_id, safe="")
+            result = client.request(
+                "POST",
+                f"/api/hosting/v2/notifications/{notification_id}/ack",
+            )
+        elif args.hosting_command == "action":
+            result = client.terminal_manifest(args.deployment_id)
+        elif args.hosting_command == "prepare":
+            action = client.terminal_manifest(args.deployment_id)
+            manifest = action.get("manifest")
+            source_id, expected_sha256 = _terminal_manifest_inputs(manifest)
+            directory = Path(args.directory).expanduser().resolve()
+            directory.mkdir(parents=True, exist_ok=True)
+            if not directory.is_dir():
+                raise SystemExit(f"輸出路徑不是目錄：{directory}")
+            archive_path = directory / f"source-{source_id}.archive"
+            manifest_file = directory / "terminal-manifest.json"
+            source_directory = directory / "source"
+            if manifest_file.exists():
+                raise SystemExit(f"Manifest 輸出檔案已存在，為避免覆寫而停止：{manifest_file}")
+            if source_directory.exists():
+                raise SystemExit(f"源碼準備目錄已存在，為避免覆寫而停止：{source_directory}")
+            download = client.download_source(
+                source_id,
+                archive_path,
+                expected_sha256=expected_sha256,
+                max_bytes=MAX_TERMINAL_ARCHIVE_BYTES,
+                overwrite=False,
+            )
+            prepared = _materialize_terminal_archive(archive_path, source_directory)
+            record = {
+                "manifest": manifest,
+                "deployment": action.get("deployment"),
+                "download": download,
+                "prepared_source": prepared,
+                "executed": False,
+            }
+            with manifest_file.open("x", encoding="utf-8") as output:
+                json.dump(record, output, ensure_ascii=False, indent=2, default=str)
+                output.write("\n")
+            result = {
+                "ok": True,
+                "prepared": True,
+                "manifest_file": str(manifest_file),
+                "source_directory": str(source_directory),
+                "download": download,
+                "archive": str(archive_path),
+                "executed": False,
+                "next_action": "review_manifest_then_execute_in_a_sandbox",
+            }
+        else:
+            if args.result and args.result_file:
+                raise SystemExit("--result 與 --result-file 只能選一個")
+            if args.result:
+                terminal_result = _json_object(args.result, source="--result")
+            elif args.result_file:
+                raw = (
+                    sys.stdin.read()
+                    if args.result_file == "-"
+                    else Path(args.result_file).read_text(encoding="utf-8")
+                )
+                terminal_result = _json_object(raw, source=args.result_file)
+            else:
+                terminal_result = {}
+            deployment_id = urllib.parse.quote(args.deployment_id, safe="")
+            result = client.request(
+                "POST",
+                f"/api/hosting/v2/terminal-actions/{deployment_id}/complete",
+                payload={"status": args.status, "result": terminal_result},
+            )
     elif args.command == "info":
         result = client.request("GET", "/api/workspaces/v1/info")
     elif args.command == "usage":

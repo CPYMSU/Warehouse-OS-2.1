@@ -1087,8 +1087,8 @@ def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> N
     atlas = ai_capability_atlas()
     genes = ai_capability_gene_index()
 
-    assert len(genes) == 515
-    assert sum(int(domain["gene_count"]) for domain in atlas) == 515
+    assert len(genes) == 516
+    assert sum(int(domain["gene_count"]) for domain in atlas) == 516
     assert {gene["scope"] for gene in genes} == {"tenant", "platform"}
     assert all("permission_any" in gene and "availability" in gene for gene in genes)
     observe_gene = next(gene for gene in genes if gene["tool_name"] == "generic_data_observe")
@@ -1138,10 +1138,12 @@ def test_router_discovery_uses_query_salience_for_a_requested_deliverable() -> N
     candidates = ai_capability_candidates("部署指南 我需要下载", limit=5)
     expanded = ai_capability_candidates("部署指南 我需要下载", limit=10)
 
-    assert {
-        "digital_market_guide",
-        "digital_market_hosting_requirements",
-    }.issubset({str(item["tool_name"]) for item in candidates})
+    candidate_names = {str(item["tool_name"]) for item in candidates}
+    assert {"digital_market_guide", "digital_market_hosting_guide"}.issubset(candidate_names)
+    requirements = ai_capability_candidates("託管技術要求", limit=5)
+    assert "digital_market_hosting_requirements" in {
+        str(item["tool_name"]) for item in requirements
+    }
     assert "digital_market_hosting_start" in {str(item["tool_name"]) for item in expanded}
     assert {str(item["domain"]) for item in candidates}.issubset({"dam", "system"})
     assert "generic_data_observe" in {str(item["tool_name"]) for item in expanded}
