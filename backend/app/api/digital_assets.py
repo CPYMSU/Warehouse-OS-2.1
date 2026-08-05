@@ -83,6 +83,7 @@ from app.services.object_storage import (
     object_store_for_provider,
     object_store_read_candidates,
 )
+from app.services.pages_runtime import get_pages_site
 from app.services.source_packages import inspect_source_archive
 from app.services.workspace_deployments import (
     activate_workspace_deployment,
@@ -441,6 +442,25 @@ def _require_asset_manage(actor: ActorContext) -> None:
     }.intersection(actor.permissions):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+
+def _account_pages_credential(
+    actor: ActorContext, workspace_ref: object
+) -> WorkspaceCredential:
+    """Bind an account session to one tenant workspace without exposing a wak_."""
+
+    _require_asset_read(actor)
+    identity = workspace_asset_identity(actor, workspace_ref)
+    workspace = identity["workspace"]
+    return WorkspaceCredential(
+        tenant_id=actor.tenant_id,
+        workspace_id=UUID(str(workspace["uuid"])),
+        credential_id=actor.user_id,
+        scopes=frozenset({"workspace:read", "deploy:read"}),
+        label="warehouse-pages-console",
+        key_kind="account_session",
+        parent_credential_id=None,
+    )
 
 
 def _require_ai_use(actor: ActorContext) -> None:
@@ -1279,6 +1299,118 @@ def workspace_database_create(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     return provision_database(actor, workspace_ref, payload)
+
+
+@router.get("/api/workspaces/{workspace_ref}/pages-console")
+def workspace_pages_console(
+    workspace_ref: str,
+    limit: int = Query(default=20, ge=1, le=50),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Return the non-secret Pages control-plane view for an account session."""
+
+    credential = _account_pages_credential(actor, workspace_ref)
+    info = workspace_info(credential)
+    site = get_pages_site(credential, settings)["site"]
+    deployment_rows = list_workspace_deployments(credential, limit=limit)["deployments"]
+    workspace = info["workspace"]
+    active_deployment_id = str(workspace.get("active_deployment_id") or "")
+    can_manage = actor.role_level >= 10 or bool(
+        {"assets.manage", "asset_mgmt.manage"}.intersection(actor.permissions)
+    )
+    releases = []
+    for deployment in deployment_rows:
+        deployment_id = str(deployment.get("uuid") or "")
+        is_active = bool(active_deployment_id and deployment_id == active_deployment_id)
+        is_ready = (
+            str(deployment.get("status") or "") == "ready"
+            and str(deployment.get("health") or "") == "healthy"
+        )
+        releases.append(
+            {
+                "id": deployment.get("id"),
+                "uuid": deployment_id,
+                "status": deployment.get("status"),
+                "health": deployment.get("health"),
+                "release_digest": deployment.get("release_digest"),
+                "source_version_id": deployment.get("source_version_id"),
+                "runtime_profile_key": deployment.get("runtime_profile_key"),
+                "created_at": deployment.get("created_at"),
+                "completed_at": deployment.get("completed_at"),
+                "public_url": deployment.get("verified_application_url"),
+                "active": is_active,
+                "rollback_eligible": bool(can_manage and is_ready and not is_active),
+            }
+        )
+    current_release = next(
+        (release for release in releases if release["active"]),
+        None,
+    )
+    config = workspace.get("config") if isinstance(workspace.get("config"), dict) else {}
+    runtime_type = str(config.get("runtime_type") or "static")
+    browser_compute = runtime_type == "static"
+    workspace_public = {
+        key: workspace.get(key)
+        for key in (
+            "id",
+            "uuid",
+            "workspace_key",
+            "status",
+            "runtime_status",
+            "active_deployment_id",
+            "storage_quota_bytes",
+            "storage_used_bytes",
+            "entry_path",
+            "entry_url",
+        )
+    }
+    database_bindings = [
+        {
+            key: binding.get(key)
+            for key in (
+                "id",
+                "logical_name",
+                "engine",
+                "provider_key",
+                "isolation_mode",
+                "status",
+                "created_at",
+                "updated_at",
+            )
+        }
+        for binding in info["databases"]
+    ]
+    return {
+        "ok": True,
+        "schema": "warehouse.pages-console.v1",
+        "workspace": workspace_public,
+        "site": site,
+        "runtime": {
+            "type": runtime_type,
+            "mode": "static_browser" if browser_compute else "dedicated_runtime",
+            "compute_location": "browser" if browser_compute else "warehouse_runtime",
+            "idle_server_memory": "near_zero" if browser_compute else "profile_managed",
+        },
+        "database": {
+            "count": len(database_bindings),
+            "bindings": database_bindings,
+        },
+        "storage": info["usage"],
+        "current_release": current_release,
+        "releases": releases,
+        "release_count": len(releases),
+        "permissions": {
+            "can_read": True,
+            "can_manage": can_manage,
+            "mutations_require_governed_confirmation": True,
+        },
+        "actions": {
+            "customize_url": "AI desired_state.pages.site_key",
+            "redesign": "AI pages design context -> immutable source -> preview -> activate",
+            "rollback": "activate a healthy historical deployment after confirmation",
+        },
+    }
 
 
 @router.post("/api/workspaces/{workspace_ref}/database/migrate-hdd")

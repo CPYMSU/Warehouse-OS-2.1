@@ -32,6 +32,11 @@ from app.services.digital_asset_hosting import (
 )
 from app.services.hosting_fabric import apply_fabric_resource, observe_fabric
 from app.services.hosting_requirements import requirement_downloads
+from app.services.pages_runtime import (
+    configure_pages_site,
+    get_pages_site,
+    validate_site_key,
+)
 from app.services.workspace_deployments import (
     activate_workspace_deployment,
     configure_workspace_runtime,
@@ -68,7 +73,7 @@ def assistant_manifest() -> dict[str, object]:
 
     return {
         "schema": "warehouse.intelligent-hosting.v2",
-        "version": "2.3",
+        "version": "2.4",
         "purpose": (
             "Converse about one hosting goal, submit a desired state, attach source, "
             "and observe exact deployment evidence without composing low-level routes."
@@ -97,7 +102,41 @@ def assistant_manifest() -> dict[str, object]:
             "source": "POST /api/hosting/v2/sessions/{session_id}/sources",
             "cancel": "POST /api/hosting/v2/sessions/{session_id}/cancel",
         },
+        "pages_runtime": {
+            "workspace_key_api": {
+                "site": "GET /api/workspaces/v1/pages",
+                "configure_site": "PUT /api/workspaces/v1/pages",
+                "design_context": "GET /api/workspaces/v1/pages/design",
+                "read_file": "GET /api/workspaces/v1/pages/files/{path}",
+            },
+            "hosting_session_api": {
+                "site": "GET /api/hosting/v2/sessions/{session_id}/pages",
+                "configure_site": "PUT /api/hosting/v2/sessions/{session_id}/pages",
+                "design_context": (
+                    "GET /api/hosting/v2/sessions/{session_id}/pages/design"
+                ),
+                "read_file": (
+                    "GET /api/hosting/v2/sessions/{session_id}/pages/files/{path}"
+                ),
+            },
+            "stable_url": "https://bonfirework.org/apps/{site_key}/",
+            "entry_mode": "warehouse_os",
+            "isolated_runtime_origin": "https://{site_key}.apps.bonfirework.org/",
+            "public_alias_default": False,
+            "code_policy": "read source; upload a new immutable version; verify; activate",
+            "active_release_editable_in_place": False,
+        },
         "desired_state": {
+            "pages": {
+                "site_key": (
+                    "optional globally unique route name for "
+                    "https://bonfirework.org/apps/{site_key}/"
+                ),
+                "public_alias_enabled": (
+                    "optional boolean; defaults to false; advertises the isolated "
+                    "{site_key}.apps.bonfirework.org runtime origin as an extra URL"
+                ),
+            },
             "storage": {"verify": "boolean; defaults to true before deployment"},
             "runtime": {
                 "type": "auto|static|web|api|worker|agent|job|container|compose",
@@ -215,7 +254,7 @@ def _merge_desired_state(current: dict[str, object], supplied: object) -> dict[s
                 clean_resources.append(dict(item))
             merged[key] = clean_resources
             continue
-        if key not in {"storage", "runtime", "deployment"}:
+        if key not in {"storage", "runtime", "deployment", "pages"}:
             raise HTTPException(
                 status_code=422,
                 detail={"reason": "unsupported_desired_state", "field": str(key)},
@@ -224,6 +263,26 @@ def _merge_desired_state(current: dict[str, object], supplied: object) -> dict[s
             raise HTTPException(status_code=422, detail=f"desired_state.{key} must be an object")
         base = merged.get(key) if isinstance(merged.get(key), dict) else {}
         merged[key] = {**base, **value}
+    pages = merged.get("pages") if isinstance(merged.get("pages"), dict) else {}
+    if pages:
+        unsupported = set(pages) - {"site_key", "public_alias_enabled"}
+        if unsupported:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "reason": "unsupported_pages_desired_state",
+                    "fields": sorted(unsupported),
+                },
+            )
+        pages["site_key"] = validate_site_key(pages.get("site_key"))
+        if "public_alias_enabled" in pages and not isinstance(
+            pages["public_alias_enabled"], bool
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="desired_state.pages.public_alias_enabled must be a boolean",
+            )
+        merged["pages"] = pages
     runtime = merged.get("runtime") if isinstance(merged.get("runtime"), dict) else {}
     runtime_type = str(runtime.get("type") or "auto").lower()
     if runtime_type not in RUNTIME_TYPES:
@@ -499,6 +558,7 @@ def observe_workspace(credential: WorkspaceCredential) -> dict[str, object]:
         "deployments", lambda: list_workspace_deployments(credential, limit=20)
     )
     fabric = _safe_call("fabric", lambda: observe_fabric(credential))
+    pages = _safe_call("pages", lambda: get_pages_site(credential))
     return {
         "workspace": info.get("workspace"),
         "components": info.get("components", []),
@@ -507,6 +567,7 @@ def observe_workspace(credential: WorkspaceCredential) -> dict[str, object]:
         "sources": sources,
         "deployments": deployments,
         "fabric": fabric,
+        "pages": pages,
     }
 
 
@@ -543,6 +604,46 @@ def _plan(desired_state: dict[str, object], snapshot: dict[str, object]) -> dict
             "effect": "read",
         }
     ]
+    pages_options = (
+        desired_state.get("pages") if isinstance(desired_state.get("pages"), dict) else {}
+    )
+    if pages_options.get("site_key"):
+        pages_observation = (
+            snapshot.get("pages") if isinstance(snapshot.get("pages"), dict) else {}
+        )
+        current_site = (
+            pages_observation.get("site")
+            if isinstance(pages_observation.get("site"), dict)
+            else {}
+        )
+        steps.append(
+            {
+                "step": "configure_pages_site",
+                "status": (
+                    "succeeded"
+                    if (
+                        current_site.get("site_key") == pages_options.get("site_key")
+                        and (
+                            "public_alias_enabled" not in pages_options
+                            or bool(
+                                (
+                                    current_site.get("public_alias")
+                                    if isinstance(
+                                        current_site.get("public_alias"), dict
+                                    )
+                                    else {}
+                                ).get("enabled")
+                            )
+                            == bool(pages_options.get("public_alias_enabled"))
+                        )
+                    )
+                    else "pending"
+                ),
+                "effect": "stable_warehouse_os_entry",
+                "site_key": pages_options["site_key"],
+                "public_alias_enabled": pages_options.get("public_alias_enabled"),
+            }
+        )
     if resources:
         steps.append(
             {
@@ -854,6 +955,14 @@ def _refresh_state(
             and latest.get("health") == "healthy"
         ):
             deployment_ref = latest.get("uuid") or latest.get("id")
+            pages_observation = (
+                snapshot.get("pages") if isinstance(snapshot.get("pages"), dict) else {}
+            )
+            pages_site = (
+                pages_observation.get("site")
+                if isinstance(pages_observation.get("site"), dict)
+                else {}
+            )
             deployment_options = (
                 desired_state.get("deployment")
                 if isinstance(desired_state.get("deployment"), dict)
@@ -879,7 +988,8 @@ def _refresh_state(
                 "completed",
                 {
                     "deployment_id": str(deployment_ref),
-                    "application_url": latest.get("verified_application_url")
+                    "application_url": pages_site.get("url")
+                    or latest.get("verified_application_url")
                     or latest.get("public_url"),
                     "health": "healthy",
                 },
@@ -921,6 +1031,8 @@ def get_session(
         "events": f"/api/hosting/v2/sessions/{row['id']}/events",
         "source": f"/api/hosting/v2/sessions/{row['id']}/sources",
         "messages": f"/api/hosting/v2/sessions/{row['id']}/messages",
+        "pages": f"/api/hosting/v2/sessions/{row['id']}/pages",
+        "pages_design": f"/api/hosting/v2/sessions/{row['id']}/pages/design",
     }
     return {"ok": True, "session": public}
 
@@ -1099,7 +1211,60 @@ def execute_message(
             state=snapshot,
             diagnosis={},
         )
+    pages_options = (
+        desired_state.get("pages") if isinstance(desired_state.get("pages"), dict) else {}
+    )
+    if pages_options.get("site_key"):
+        try:
+            _event(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                "step_started",
+                "pages.configure",
+                "running",
+                {"site_key": pages_options["site_key"]},
+            )
+            pages_result = configure_pages_site(credential, pages_options, settings)
+            snapshot["pages"] = pages_result
+            _event(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                "step_succeeded",
+                "pages.configure",
+                "succeeded",
+                pages_result,
+            )
+        except Exception as exc:
+            diagnostic = failure_diagnostic("pages.configure", exc)
+            _update_session(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                status_value=str(diagnostic["status"]),
+                stage="pages.configure",
+                state=snapshot,
+                diagnosis=diagnostic,
+            )
+            _event(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                "diagnosis",
+                "pages.configure",
+                str(diagnostic["status"]),
+                diagnostic,
+            )
+            return get_session(principal, row["id"], refresh=False)
     if not _wants_ready(desired_state):
+        if pages_options.get("site_key"):
+            _update_session(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                status_value="completed",
+                stage="pages.ready",
+                state=snapshot,
+                diagnosis={},
+                completed=True,
+            )
+            return get_session(principal, row["id"], refresh=False)
         return get_session(principal, row["id"], refresh=True)
     if plan.get("blocked"):
         diagnostic = dict(plan.get("diagnosis") or {})

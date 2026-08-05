@@ -26,6 +26,12 @@ from app.services.hosting_fabric import (
     workspace_database_control,
 )
 from app.services.object_storage import object_store_read_candidates
+from app.services.pages_runtime import (
+    configure_pages_site,
+    get_pages_site,
+    pages_design_context,
+    pages_source_file,
+)
 from app.services.workspace_deployments import (
     activate_workspace_deployment,
     cancel_workspace_deployment,
@@ -154,6 +160,51 @@ def customer_source_download(
             "Content-SHA256": str(descriptor["sha256"]),
             "X-Warehouse-Source-Version": str(descriptor["id"]),
         },
+    )
+
+
+@router.get("/api/workspaces/v1/pages")
+def customer_pages_site(
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return get_pages_site(credential, settings)
+
+
+@router.put("/api/workspaces/v1/pages")
+def customer_pages_site_configure(
+    payload: dict[str, object] = Body(default={}),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return configure_pages_site(credential, payload, settings)
+
+
+@router.get("/api/workspaces/v1/pages/design")
+def customer_pages_design(
+    source_ref: str | None = Query(default=None),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return pages_design_context(
+        credential,
+        settings,
+        source_ref=source_ref,
+    )
+
+
+@router.get("/api/workspaces/v1/pages/files/{file_path:path}")
+def customer_pages_source_file(
+    file_path: str,
+    source_ref: str | None = Query(default=None),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return pages_source_file(
+        credential,
+        settings,
+        file_path,
+        source_ref=source_ref,
     )
 
 

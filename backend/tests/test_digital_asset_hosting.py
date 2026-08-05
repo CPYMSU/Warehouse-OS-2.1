@@ -695,10 +695,17 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
         assert ready.json()["deployment"]["runtime_available"] is True
         assert ready.json()["deployment"]["runtime_claimed"] is True
         entry_path = provisioned.json()["workspace"]["entry_path"]
+        assert entry_path == "/apps/workspace-deployment-app/"
         landing = client.get(entry_path)
         assert landing.status_code == 200
-        assert "Workspace Deployment" in landing.text
-        assert landing.headers["x-warehouse-deployment"] == deployed["uuid"]
+        assert landing.headers["x-warehouse-pages-site"] == "workspace-deployment-app"
+        assert landing.headers["x-warehouse-pages-frame"] == (
+            "https://workspace-deployment-app.apps.bonfirework.org/"
+        )
+        fallback = client.get(provisioned.json()["workspace"]["fallback_path"])
+        assert fallback.status_code == 200
+        assert "Workspace Deployment" in fallback.text
+        assert fallback.headers["x-warehouse-deployment"] == deployed["uuid"]
 
         unsafe = _source_zip({"../escape.txt": "blocked"})
         rejected = client.post(
@@ -875,7 +882,7 @@ def test_workspace_key_runtime_contract_supports_api_web_worker_and_agent(
                 ),
                 {"workspace_id": provisioned.json()["workspace"]["uuid"]},
             )
-        failed_entry = client.get(provisioned.json()["workspace"]["entry_path"])
+        failed_entry = client.get(provisioned.json()["workspace"]["fallback_path"])
         assert failed_entry.status_code == 200
         assert "部署失敗，入口仍保留" in failed_entry.text
         assert "源碼與 Runtime 不相容" in failed_entry.text
@@ -1159,14 +1166,17 @@ def test_full_stack_workspace_database_key_and_deployment_round_trip(tmp_path) -
         assert workspace["storage"]["code"]["selection"] == "default"
         assert workspace["storage"]["data"]["medium"] == "hdd"
         assert provisioned["storage"]["data_storage_enforced"] == "hdd"
-        assert workspace["entry_path"] == (f"/assets/{actor.tenant_slug}/customer-operations/")
-        assert workspace["entry_url"].endswith(f"/assets/{actor.tenant_slug}/customer-operations/")
+        assert workspace["entry_path"] == "/apps/customer-operations/"
+        assert workspace["entry_url"].endswith("/apps/customer-operations/")
 
         landing = client.get(workspace["entry_path"])
         assert landing.status_code == 200
-        assert "Customer Operations Application" in landing.text
-        assert "512 MB" in landing.text
-        assert "等待上傳源碼" not in landing.text
+        assert landing.headers["x-warehouse-pages-site"] == "customer-operations"
+        fallback = client.get(workspace["fallback_path"])
+        assert fallback.status_code == 200
+        assert "Customer Operations Application" in fallback.text
+        assert "512 MB" in fallback.text
+        assert "等待上傳源碼" not in fallback.text
 
         resized = client.post(
             f"/api/digital-assets/{asset['asset_no']}/workspace-quota",
@@ -1268,7 +1278,7 @@ def test_full_stack_workspace_database_key_and_deployment_round_trip(tmp_path) -
         assert listed.json()["source"] == "digital_asset_postgresql"
         assert listed.json()["assets"][0]["workspace"]["workspace_key"] == ("customer-operations")
         assert listed.json()["assets"][0]["workspace"]["entry_url"].endswith(
-            f"/assets/{actor.tenant_slug}/customer-operations/"
+            "/apps/customer-operations/"
         )
         assert listed.json()["assets"][0]["workspace"]["storage_quota_mb"] == 1024
 
@@ -1575,7 +1585,7 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
         assert listed.status_code == 200
         assert listed.json()["records"][0]["data"]["answer"] == 4
 
-        landing = client.get(workspace["entry_path"])
+        landing = client.get(workspace["fallback_path"])
         assert landing.status_code == 200
         assert "DB HDD" in landing.text
         usage_match = re.search(r"([0-9]+\.[0-9]{2}) / 512 MB", landing.text)

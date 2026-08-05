@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -12,6 +13,8 @@ class Settings(BaseSettings):
     app_name: str = "Warehouse OS 2.1 API"
     environment: Literal["development", "test", "production"] = "development"
     public_origin: str = ""
+    pages_root_domain: str = "apps.bonfirework.org"
+    pages_scheme: Literal["http", "https"] = "https"
     database_url: str = (
         "postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os"
     )
@@ -119,6 +122,20 @@ class Settings(BaseSettings):
     def normalize_public_origin(cls, value: object) -> object:
         return str(value or "").strip().rstrip("/")
 
+    @field_validator("pages_root_domain", mode="before")
+    @classmethod
+    def normalize_pages_root_domain(cls, value: object) -> object:
+        domain = str(value or "").strip().lower().rstrip(".")
+        if "://" in domain or "/" in domain or ":" in domain:
+            raise ValueError("WAREHOUSE_PAGES_ROOT_DOMAIN must be a bare DNS name")
+        labels = domain.split(".")
+        if len(labels) < 2 or any(
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in labels
+        ):
+            raise ValueError("WAREHOUSE_PAGES_ROOT_DOMAIN must be a valid DNS name")
+        return domain
+
     @model_validator(mode="after")
     def require_production_secret(self) -> Settings:
         if not self.public_origin:
@@ -136,6 +153,8 @@ class Settings(BaseSettings):
         ):
             raise ValueError("WAREHOUSE_INTEGRATION_SECRET must be a unique 32+ character secret")
         if self.environment == "production":
+            if self.pages_scheme != "https":
+                raise ValueError("WAREHOUSE_PAGES_SCHEME must be https in production")
             if not self.public_origin.startswith("https://"):
                 raise ValueError("WAREHOUSE_PUBLIC_ORIGIN must be an HTTPS origin")
             if self.webauthn_rp_id in {"localhost", "127.0.0.1"}:

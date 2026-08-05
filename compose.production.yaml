@@ -53,6 +53,8 @@ services:
     environment:
       WAREHOUSE_ENVIRONMENT: production
       WAREHOUSE_PUBLIC_ORIGIN: ${WAREHOUSE_PUBLIC_ORIGIN:-https://bonfirework.org}
+      WAREHOUSE_PAGES_ROOT_DOMAIN: ${WAREHOUSE_PAGES_ROOT_DOMAIN:-apps.bonfirework.org}
+      WAREHOUSE_PAGES_SCHEME: https
       WAREHOUSE_DATABASE_URL: postgresql+psycopg://warehouse_os:${WAREHOUSE_API_DB_PASSWORD:?required}@postgres:5432/warehouse_os
       WAREHOUSE_MIGRATION_DATABASE_URL: postgresql+psycopg://warehouse_migrator:${WAREHOUSE_MIGRATOR_DB_PASSWORD:?required}@postgres:5432/warehouse_os
       WAREHOUSE_ASSET_STORAGE_ROOT: /data/hdd/digital-assets

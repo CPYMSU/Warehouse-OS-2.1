@@ -47,6 +47,7 @@ from app.services.object_storage import (
     object_store_for_provider,
     object_store_read_candidates,
 )
+from app.services.pages_runtime import mark_pages_deployment_active
 from app.services.source_packages import SourceArchive, inspect_source_archive
 
 WORKSPACE_RUNTIME_TYPES = frozenset(
@@ -2227,6 +2228,12 @@ def activate_workspace_deployment(
                 """
             ),
             {"deployment_id": resolved_id, "workspace_id": credential.workspace_id},
+        )
+        mark_pages_deployment_active(
+            session,
+            tenant_id=credential.tenant_id,
+            workspace_id=credential.workspace_id,
+            deployment_id=resolved_id,
         )
         session.execute(
             text(

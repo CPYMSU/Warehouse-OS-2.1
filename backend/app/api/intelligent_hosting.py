@@ -48,6 +48,12 @@ from app.services.intelligent_hosting import (
     session_credential,
 )
 from app.services.object_storage import object_store_for_provider
+from app.services.pages_runtime import (
+    configure_pages_site,
+    get_pages_site,
+    pages_design_context,
+    pages_source_file,
+)
 from app.services.source_packages import inspect_source_archive
 from app.services.workspace_deployments import (
     register_workspace_source,
@@ -304,6 +310,67 @@ def intelligent_hosting_events(
 ) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
     return list_events(principal, session_id, after=after)
+
+
+@router.get("/api/hosting/v2/sessions/{session_id}/pages")
+def intelligent_hosting_pages_site(
+    session_id: str,
+    response: Response,
+    principal: HostingPrincipal = Depends(hosting_principal),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    return get_pages_site(credential, settings)
+
+
+@router.put("/api/hosting/v2/sessions/{session_id}/pages")
+def intelligent_hosting_pages_site_configure(
+    session_id: str,
+    response: Response,
+    payload: dict[str, object] = Body(default={}),
+    principal: HostingPrincipal = Depends(hosting_principal),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    return configure_pages_site(credential, payload, settings)
+
+
+@router.get("/api/hosting/v2/sessions/{session_id}/pages/design")
+def intelligent_hosting_pages_design(
+    session_id: str,
+    response: Response,
+    source_ref: str | None = Query(default=None),
+    principal: HostingPrincipal = Depends(hosting_principal),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    return pages_design_context(
+        credential,
+        settings,
+        source_ref=source_ref,
+    )
+
+
+@router.get("/api/hosting/v2/sessions/{session_id}/pages/files/{file_path:path}")
+def intelligent_hosting_pages_source_file(
+    session_id: str,
+    file_path: str,
+    response: Response,
+    source_ref: str | None = Query(default=None),
+    principal: HostingPrincipal = Depends(hosting_principal),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    return pages_source_file(
+        credential,
+        settings,
+        file_path,
+        source_ref=source_ref,
+    )
 
 
 @router.post(

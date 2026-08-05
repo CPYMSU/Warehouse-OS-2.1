@@ -31,6 +31,7 @@ from app.services.database_release import (
 from app.services.hosted_database import migration_database_url, runtime_database_url
 from app.services.hosting_fabric import reconcile_repository_resources, runtime_environment
 from app.services.object_storage import object_store_read_candidates
+from app.services.pages_runtime import set_pages_deployment_pointer
 from app.services.source_packages import application_root, materialize_source_archive
 from app.services.workspace_usage import measure_workspace_runtime_storage
 
@@ -1548,6 +1549,12 @@ class RuntimeController:
                     ),
                     {"deployment_id": deployment_id, "workspace_id": snapshot["workspace_id"]},
                 )
+                set_pages_deployment_pointer(
+                    session,
+                    tenant_id=tenant_id,
+                    workspace_id=snapshot["workspace_id"],
+                    deployment_id=deployment_id,
+                )
             else:
                 session.execute(
                     text(
@@ -1678,6 +1685,12 @@ class RuntimeController:
                         """
                     ),
                     {"previous": previous, "workspace_id": snapshot["workspace_id"]},
+                )
+                set_pages_deployment_pointer(
+                    session,
+                    tenant_id=tenant_id,
+                    workspace_id=snapshot["workspace_id"],
+                    deployment_id=previous,
                 )
                 session.execute(
                     text(
