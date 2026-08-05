@@ -59,7 +59,9 @@ run_node() {
   target="$(node_value "${prefix}" TARGET "${label}")"
   known_hosts="$(node_value "${prefix}" KNOWN_HOSTS "${HOME}/.ssh/known_hosts")"
   transport="$(node_value "${prefix}" TRANSPORT ssh)"
-  [[ -f "${identity}" ]] || fail "identity is missing for ${label}: ${identity}"
+  if [[ "${transport}" == ssh ]]; then
+    [[ -f "${identity}" ]] || fail "identity is missing for ${label}: ${identity}"
+  fi
   read -r action_command action_argument <<<"${action}"
   [[ "${action_command}" =~ ^(prepare|prepared-status|migration-start|migration-status|migration-wait|migration-reconcile|activate|status|rollback)$ ]] \
     || fail "unsupported node action: ${action_command}"

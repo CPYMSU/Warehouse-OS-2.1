@@ -235,6 +235,8 @@ def test_cluster_deploy_prepares_and_activates_both_nodes_in_parallel() -> None:
     assert 'run_node WAREHOUSE_PRIMARY mac-primary "activate ${primary_release}"' in source
     assert 'run_node WAREHOUSE_STANDBY vultr-standby "activate ${standby_release}"' in source
     assert "activation_duration <= ACTIVATION_SLO_SECONDS" in source
+    assert 'if [[ "${transport}" == ssh ]]; then' in source
+    assert 'identity is missing for ${label}: ${identity}' in source
 
 
 def test_dependency_free_alembic_head_matches_the_declared_graph() -> None:
