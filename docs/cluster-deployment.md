@@ -22,3 +22,5 @@ ops/cluster/rolling-deploy smart
 - `WAREHOUSE_PRIMARY_*`、`WAREHOUSE_STANDBY_*`：覆盖节点地址、用户、密钥、manager 和 incoming 路径。
 
 服务器上的传统 `install RELEASE MODE` 仍保留兼容性，内部等价于连续执行 `prepare` 和 `activate`。日常生产发布应始终使用集群入口。
+
+Mac 的受限 SSH forced-command gate 与 manager 同属 release 控制面；每次成功激活会同时更新两者，避免 manager 已支持新协议但实际授权入口仍停留在旧版本。
