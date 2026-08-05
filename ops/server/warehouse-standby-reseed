@@ -14,6 +14,7 @@ DATABASE=warehouse_os
 SUBSCRIPTION=warehouse_from_mac
 ARCHIVE_ROOT=/mnt/warehouse-data/hosted/archive/standby-reseed
 STATE_ROOT="${SHARED}/database-reseed"
+PUBLISHER_STATE="${STATE_ROOT}/publisher-conninfo"
 WAIT_SECONDS="${WAREHOUSE_STANDBY_RESEED_WAIT_SECONDS:-900}"
 
 fail() {
@@ -36,6 +37,7 @@ set -a
 set +a
 [[ "${WAREHOUSE_NODE_ROLE:-}" == standby ]] \
   || fail "refusing to reseed a node that is not configured as standby"
+install -d -m 0700 "${STATE_ROOT}"
 
 control_psql() {
   docker exec "${CONTROL_CONTAINER}" sh -lc \
@@ -56,14 +58,20 @@ grep -Fq 'warehouse_migrator=default_transaction_read_only=true' <<<"${role_fenc
 
 subscription_count="$(control_psql -At -c \
   "select count(*) from pg_subscription where subname='${SUBSCRIPTION}'")"
-[[ "${subscription_count}" == 1 ]] || fail "expected exactly one control subscription"
-
-conninfo="$(control_psql -At -c \
-  "select subconninfo from pg_subscription where subname='${SUBSCRIPTION}'")"
-publication="$(control_psql -At -c \
-  "select array_to_string(subpublications,',') from pg_subscription where subname='${SUBSCRIPTION}'")"
-slot_name="$(control_psql -At -c \
-  "select subslotname from pg_subscription where subname='${SUBSCRIPTION}'")"
+if [[ "${subscription_count}" == 1 ]]; then
+  conninfo="$(control_psql -At -c \
+    "select subconninfo from pg_subscription where subname='${SUBSCRIPTION}'")"
+  publication="$(control_psql -At -c \
+    "select array_to_string(subpublications,',') from pg_subscription where subname='${SUBSCRIPTION}'")"
+  slot_name="$(control_psql -At -c \
+    "select subslotname from pg_subscription where subname='${SUBSCRIPTION}'")"
+elif [[ "${subscription_count}" == 0 && -s "${PUBLISHER_STATE}" ]]; then
+  conninfo="$(<"${PUBLISHER_STATE}")"
+  publication=warehouse_control_pub
+  slot_name=vultr_control
+else
+  fail "control subscription and protected publisher recovery state are unavailable"
+fi
 [[ "${publication}" == warehouse_control_pub ]] \
   || fail "unexpected publisher publication: ${publication}"
 [[ "${slot_name}" == vultr_control ]] \
@@ -120,6 +128,11 @@ publisher_tables="$(publisher_command \
 [[ "${publisher_tables}" =~ ^[1-9][0-9]*$ ]] \
   || fail "publisher table inventory is empty"
 
+publisher_state_temporary="${PUBLISHER_STATE}.tmp.$$"
+printf '%s\n' "${conninfo}" > "${publisher_state_temporary}"
+chmod 0600 "${publisher_state_temporary}"
+mv -f "${publisher_state_temporary}" "${PUBLISHER_STATE}"
+
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 work_dir="$(mktemp -d /var/tmp/warehouse-standby-reseed.XXXXXX)"
 backup_dir="${ARCHIVE_ROOT}/${timestamp}"
@@ -157,12 +170,28 @@ while IFS= read -r container; do
   [[ -z "${container}" ]] || docker stop --time 20 "${container}" >/dev/null
 done <<<"${api_containers}"
 
-control_psql -c "DROP SUBSCRIPTION ${SUBSCRIPTION}" >/dev/null
+if [[ "${subscription_count}" == 1 ]]; then
+  control_psql -c "DROP SUBSCRIPTION ${SUBSCRIPTION}" >/dev/null
+fi
 postgres_psql -c \
   "select pg_terminate_backend(pid) from pg_stat_activity where datname='${DATABASE}' and pid<>pg_backend_pid()" \
   >/dev/null
 postgres_psql -c "DROP DATABASE ${DATABASE}" >/dev/null
 postgres_psql -c "CREATE DATABASE ${DATABASE} OWNER warehouse_admin" >/dev/null
+postgres_psql -c '
+DO $warehouse$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '\''peiyuan'\'') THEN
+    CREATE ROLE peiyuan NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname = '\''warehouse_control_replica'\''
+  ) THEN
+    CREATE ROLE warehouse_control_replica
+      NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  END IF;
+END
+$warehouse$;' >/dev/null
 docker exec -i "${CONTROL_CONTAINER}" sh -lc \
   'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
   < "${schema_dump}" >/dev/null
