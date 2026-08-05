@@ -44,6 +44,7 @@ from app.services.database_browser_gateway import origin_is_allowed
 from app.services.pages_runtime import (
     pages_hostname_site_key,
     pages_internal_path,
+    pages_runtime_hostname_site_key,
     resolve_pages_hostname,
 )
 from app.terminal.readiness import configure_native_capability_routes
@@ -84,10 +85,17 @@ async def pages_hostname_route(request: Request, call_next):
     """Map the isolated Pages runtime origin to the stable deployment route."""
 
     host = request.headers.get("host", "")
-    if pages_hostname_site_key(host, settings) is None:
+    alias_site_key = pages_hostname_site_key(host, settings)
+    runtime_site_key = pages_runtime_hostname_site_key(host, settings)
+    if alias_site_key is None and runtime_site_key is None:
         return await call_next(request)
     route = resolve_pages_hostname(host, settings)
     if route is None:
+        # The one-level runtime wildcard shares the zone with explicit
+        # infrastructure hosts. Unknown runtime labels must fall through so a
+        # future first-party subdomain is never shadowed by Pages middleware.
+        if alias_site_key is None:
+            return await call_next(request)
         return JSONResponse(
             status_code=404,
             content={

@@ -32,7 +32,22 @@ if TYPE_CHECKING:
 
 SITE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 RESERVED_SITE_KEYS = frozenset(
-    {"admin", "api", "assets", "docs", "mail", "static", "status", "www"}
+    {
+        "admin",
+        "api",
+        "app",
+        "assets",
+        "auth",
+        "cdn",
+        "docs",
+        "mac-origin",
+        "mail",
+        "origin",
+        "pages",
+        "static",
+        "status",
+        "www",
+    }
 )
 MAX_TEXT_FILE_BYTES = 256 * 1024
 MAX_IMAGE_FILE_BYTES = 2 * 1024 * 1024
@@ -128,6 +143,16 @@ def pages_url(site_key: str, settings: Settings | None = None) -> str:
     return f"{configured.pages_scheme}://{pages_hostname(site_key, configured)}"
 
 
+def pages_runtime_hostname(site_key: str, settings: Settings | None = None) -> str:
+    configured = settings or get_settings()
+    return f"{validate_site_key(site_key)}.{configured.pages_runtime_root_domain}"
+
+
+def pages_runtime_url(site_key: str, settings: Settings | None = None) -> str:
+    configured = settings or get_settings()
+    return f"{configured.pages_scheme}://{pages_runtime_hostname(site_key, configured)}"
+
+
 def pages_entry_path(site_key: str, runtime_path: str = "") -> str:
     base = f"/apps/{validate_site_key(site_key)}/"
     suffix = str(runtime_path or "").lstrip("/")
@@ -151,6 +176,19 @@ def pages_hostname_site_key(hostname: str, settings: Settings) -> str | None:
     if not clean.endswith(suffix):
         return None
     candidate = clean[: -len(suffix)]
+    return candidate if SITE_KEY_RE.fullmatch(candidate) else None
+
+
+def pages_runtime_hostname_site_key(hostname: str, settings: Settings) -> str | None:
+    clean = str(hostname or "").strip().lower().rstrip(".")
+    if ":" in clean:
+        clean = clean.split(":", 1)[0]
+    suffix = "." + settings.pages_runtime_root_domain
+    if not clean.endswith(suffix):
+        return None
+    candidate = clean[: -len(suffix)]
+    if candidate in RESERVED_SITE_KEYS:
+        return None
     return candidate if SITE_KEY_RE.fullmatch(candidate) else None
 
 
@@ -282,7 +320,8 @@ def _route_public(route: dict[str, object], settings: Settings) -> dict[str, obj
     fallback_path = f"/assets/{route['tenant_slug']}/{route['workspace_key']}/"
     internal_path = pages_entry_path(site_key)
     internal_url = pages_entry_url(site_key, settings)
-    isolated_origin = pages_url(site_key, settings)
+    isolated_origin = pages_runtime_url(site_key, settings)
+    alias_origin = pages_url(site_key, settings)
     alias_enabled = bool(route.get("public_alias_enabled", False))
     return {
         "schema": "warehouse.pages-site.v1",
@@ -295,7 +334,7 @@ def _route_public(route: dict[str, object], settings: Settings) -> dict[str, obj
         "public_alias": {
             "enabled": alias_enabled,
             "hostname": pages_hostname(site_key, settings) if alias_enabled else None,
-            "url": isolated_origin + "/" if alias_enabled else None,
+            "url": alias_origin + "/" if alias_enabled else None,
         },
         "status": route["status"],
         "active_deployment_id": (
@@ -397,8 +436,8 @@ def configure_pages_site(
                     .mappings()
                     .one()
                 )
-            previous_origin = pages_url(previous_key, configured)
-            requested_origin = pages_url(requested, configured)
+            previous_origin = pages_runtime_url(previous_key, configured)
+            requested_origin = pages_runtime_url(requested, configured)
             browser_app = (
                 session.execute(
                     text(
@@ -510,7 +549,7 @@ def configure_pages_site(
                 and database_origin_state["enabled"]
                 and not database_origin_state.get("origin_allowed")
             ),
-            "origin": pages_url(requested, configured),
+            "origin": pages_runtime_url(requested, configured),
             "reason": (
                 "The Warehouse OS entry embeds an isolated runtime origin; browser "
                 "database projects keep using its exact-origin allowlist"
@@ -665,7 +704,9 @@ def resolve_pages_hostname(
     hostname: str, settings: Settings | None = None
 ) -> dict[str, object] | None:
     configured = settings or get_settings()
-    site_key = pages_hostname_site_key(hostname, configured)
+    site_key = pages_hostname_site_key(hostname, configured) or pages_runtime_hostname_site_key(
+        hostname, configured
+    )
     return resolve_pages_site_key(site_key) if site_key is not None else None
 
 

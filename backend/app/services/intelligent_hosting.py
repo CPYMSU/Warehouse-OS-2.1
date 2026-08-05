@@ -121,7 +121,7 @@ def assistant_manifest() -> dict[str, object]:
             },
             "stable_url": "https://bonfirework.org/apps/{site_key}/",
             "entry_mode": "warehouse_os",
-            "isolated_runtime_origin": "https://{site_key}.apps.bonfirework.org/",
+            "isolated_runtime_origin": "https://{site_key}.bonfirework.org/",
             "public_alias_default": False,
             "code_policy": "read source; upload a new immutable version; verify; activate",
             "active_release_editable_in_place": False,
