@@ -25,26 +25,35 @@ OS URL while project code cannot read Warehouse OS LocalStorage or execute as
 the signed-in management UI. Root-relative assets and APIs continue to work
 inside the isolated frame.
 
-The isolated hostname is runtime infrastructure, not the default public URL.
-`public_alias_enabled` defaults to `false`; when explicitly enabled the same
-hostname may also be advertised as an independent public alias. Database browser
-access always requires the exact isolated HTTPS origin in the project's
-allowlist; there is no wildcard database-origin permission.
+The isolated runtime hostname is one DNS level below the platform root:
+`https://workspace-key.bonfirework.org/`. It is frame infrastructure, not the
+default public URL. Every site receives a distinct browser Origin, so code,
+storage, service workers and browser-database permissions remain isolated
+between workspaces.
+
+`public_alias_enabled` defaults to `false`. When explicitly enabled, the
+separate `workspace-key.apps.bonfirework.org` alias may also be advertised.
+Database browser access always requires the exact runtime HTTPS origin in the
+project's allowlist; there is no wildcard database-origin permission.
 
 ## Cloudflare and origin prerequisites
 
-Production requires all of the following before Pages smoke testing, even when
-the independent alias is not advertised, because the Warehouse OS shell uses
-the isolated origin as its browser security boundary:
+Production requires all of the following before Pages smoke testing because the
+Warehouse OS shell uses a distinct per-site origin as its browser security
+boundary:
 
-- A proxied wildcard DNS record for `*.apps.bonfirework.org` targeting the
-  Warehouse origin or tunnel.
-- An edge certificate that explicitly covers `*.apps.bonfirework.org`.
+- A proxied wildcard DNS record for `*.bonfirework.org` targeting the Warehouse
+  origin or tunnel. Explicit infrastructure records continue to take
+  precedence over the wildcard.
+- A standard edge certificate covering `*.bonfirework.org` (Cloudflare
+  Universal SSL covers this one-level wildcard).
 - The original `Host` header forwarded to FastAPI.
 - `WAREHOUSE_PAGES_ROOT_DOMAIN=apps.bonfirework.org` and
+  `WAREHOUSE_PAGES_RUNTIME_ROOT_DOMAIN=bonfirework.org` and
   `WAREHOUSE_PAGES_SCHEME=https`.
 
-The origin nginx template accepts both `/apps/...` and `*.apps.bonfirework.org`.
+The origin nginx template accepts `/apps/...`, `*.bonfirework.org`, and the
+optional `*.apps.bonfirework.org` alias.
 The `/apps/...` shell is never cached. HTML and service workers in the isolated
 runtime revalidate immediately, fingerprinted assets are immutable, and other
 static files use bounded CDN caching with release-specific ETags. If the
@@ -94,7 +103,9 @@ bound to the old origin.
 
 1. Back up PostgreSQL and apply Alembic through `20260805_0077`.
 2. Deploy the API and Runtime Controller together.
-3. Configure wildcard DNS and TLS at Cloudflare.
+3. Configure the one-level wildcard DNS and TLS at Cloudflare. Configure an
+   advanced `*.apps.bonfirework.org` certificate only if independent aliases
+   are enabled.
 4. Verify one existing workspace through `/apps/{site_key}/`, its isolated
    runtime origin, and the fallback path.
 5. Verify ETag revalidation, database exact-origin enforcement, activation and

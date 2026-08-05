@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     public_origin: str = ""
     pages_root_domain: str = "apps.bonfirework.org"
+    # The runtime frame uses a one-label-per-site origin so Cloudflare's
+    # universal ``*.bonfirework.org`` certificate is sufficient while browser
+    # storage and database Origin policy remain isolated between sites.
+    pages_runtime_root_domain: str = "bonfirework.org"
     pages_scheme: Literal["http", "https"] = "https"
     database_url: str = (
         "postgresql+psycopg://warehouse_os:local-only-change-me@127.0.0.1:5432/warehouse_os"
@@ -122,18 +126,18 @@ class Settings(BaseSettings):
     def normalize_public_origin(cls, value: object) -> object:
         return str(value or "").strip().rstrip("/")
 
-    @field_validator("pages_root_domain", mode="before")
+    @field_validator("pages_root_domain", "pages_runtime_root_domain", mode="before")
     @classmethod
-    def normalize_pages_root_domain(cls, value: object) -> object:
+    def normalize_pages_domains(cls, value: object) -> object:
         domain = str(value or "").strip().lower().rstrip(".")
         if "://" in domain or "/" in domain or ":" in domain:
-            raise ValueError("WAREHOUSE_PAGES_ROOT_DOMAIN must be a bare DNS name")
+            raise ValueError("Warehouse Pages domains must be bare DNS names")
         labels = domain.split(".")
         if len(labels) < 2 or any(
             not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
             for label in labels
         ):
-            raise ValueError("WAREHOUSE_PAGES_ROOT_DOMAIN must be a valid DNS name")
+            raise ValueError("Warehouse Pages domains must be valid DNS names")
         return domain
 
     @model_validator(mode="after")

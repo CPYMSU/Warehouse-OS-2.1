@@ -22,7 +22,7 @@ from app.api import digital_assets as legacy
 from app.core.config import Settings, get_settings
 from app.services.pages_runtime import (
     pages_entry_path,
-    pages_url,
+    pages_runtime_url,
     resolve_pages_site_key,
 )
 from app.services.workspace_deployments import active_workspace_runtime
@@ -185,7 +185,7 @@ def _pages_shell_document(
     encoded_path = quote(
         str(runtime_path or "").lstrip("/"), safe="/-._~!$&'()*+,;=:@"
     )
-    frame_url = pages_url(site_key, settings) + "/" + encoded_path
+    frame_url = pages_runtime_url(site_key, settings) + "/" + encoded_path
     if query:
         frame_url += "?" + query
     safe_frame_url = escape(frame_url, quote=True)
@@ -240,7 +240,7 @@ def _pages_shell_response(
         query=request.url.query,
         settings=settings,
     )
-    frame_origin = pages_url(str(route["site_key"]), settings)
+    frame_origin = pages_runtime_url(str(route["site_key"]), settings)
     return HTMLResponse(
         document,
         headers={

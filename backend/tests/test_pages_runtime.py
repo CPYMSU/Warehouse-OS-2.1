@@ -54,6 +54,7 @@ def test_pages_site_key_and_hostname_are_single_dns_label() -> None:
     settings = Settings(
         public_origin="https://bonfirework.org",
         pages_root_domain="Apps.Bonfirework.org.",
+        pages_runtime_root_domain="Bonfirework.org.",
         pages_scheme="https",
     )
 
@@ -66,6 +67,15 @@ def test_pages_site_key_and_hostname_are_single_dns_label() -> None:
     ) == "workspace-key"
     assert pages_runtime.pages_hostname_site_key(
         "nested.workspace-key.apps.bonfirework.org", settings
+    ) is None
+    assert pages_runtime.pages_runtime_hostname("workspace-key", settings) == (
+        "workspace-key.bonfirework.org"
+    )
+    assert pages_runtime.pages_runtime_hostname_site_key(
+        "workspace-key.bonfirework.org:443", settings
+    ) == "workspace-key"
+    assert pages_runtime.pages_runtime_hostname_site_key(
+        "mac-origin.bonfirework.org", settings
     ) is None
     assert pages_runtime.pages_entry_path("workspace-key") == "/apps/workspace-key/"
     assert pages_runtime.pages_entry_url("workspace-key", settings) == (
@@ -84,6 +94,29 @@ def test_pages_root_domain_rejects_urls_and_normalizes_dns() -> None:
     )
     with pytest.raises(ValueError, match="bare DNS name"):
         Settings(pages_root_domain="https://apps.bonfirework.org")
+    assert Settings(
+        pages_runtime_root_domain="Bonfirework.org."
+    ).pages_runtime_root_domain == "bonfirework.org"
+    with pytest.raises(ValueError, match="bare DNS name"):
+        Settings(pages_runtime_root_domain="https://bonfirework.org")
+
+
+def test_runtime_hostname_resolves_the_same_pages_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {"site_key": "design-lab", "workspace_key": "design-lab"}
+    monkeypatch.setattr(
+        pages_runtime,
+        "resolve_pages_site_key",
+        lambda site_key: expected if site_key == "design-lab" else None,
+    )
+
+    assert pages_runtime.resolve_pages_hostname(
+        "design-lab.bonfirework.org", Settings()
+    ) == expected
+    assert pages_runtime.resolve_pages_hostname(
+        "design-lab.apps.bonfirework.org", Settings()
+    ) == expected
 
 
 def test_pages_internal_path_preserves_platform_compatibility_path() -> None:
@@ -114,12 +147,12 @@ def test_warehouse_pages_shell_keeps_the_short_url_and_isolates_runtime() -> Non
     )
 
     assert frame_url == (
-        "https://design-lab.apps.bonfirework.org/reports/today"
+        "https://design-lab.bonfirework.org/reports/today"
         "?view=compact&name=%3Cunsafe%3E"
     )
     assert 'sandbox="' in document
     assert "allow-same-origin" in document
-    assert "https://design-lab.apps.bonfirework.org/reports/today" in document
+    assert "https://design-lab.bonfirework.org/reports/today" in document
     assert "name=%3Cunsafe%3E" in document
 
 
@@ -145,9 +178,7 @@ def test_pages_public_contract_defaults_to_warehouse_os_entry() -> None:
         "hostname": None,
         "url": None,
     }
-    assert public["database_origin"] == (
-        "https://design-lab.apps.bonfirework.org"
-    )
+    assert public["database_origin"] == "https://design-lab.bonfirework.org"
 
     route["public_alias_enabled"] = True
     with_alias = pages_runtime._route_public(route, settings)
@@ -212,7 +243,7 @@ def test_design_context_excludes_secrets_and_describes_immutable_changes(
         lambda *_args: {
             "site": {
                 "site_key": "design-lab",
-                "database_origin": "https://design-lab.apps.bonfirework.org",
+                "database_origin": "https://design-lab.bonfirework.org",
             }
         },
     )
@@ -230,7 +261,7 @@ def test_design_context_excludes_secrets_and_describes_immutable_changes(
     assert result["change_policy"]["active_release_mutable"] is False
     assert any(
         item["id"] == "bind-exact-database-origin"
-        and item["origin"] == "https://design-lab.apps.bonfirework.org"
+        and item["origin"] == "https://design-lab.bonfirework.org"
         for item in result["recommendations"]
     )
 
@@ -275,6 +306,9 @@ def test_secretary_contract_supports_pages_configuration_and_design_reads() -> N
     assert manifest["version"] == "2.4"
     assert manifest["pages_runtime"]["stable_url"] == (
         "https://bonfirework.org/apps/{site_key}/"
+    )
+    assert manifest["pages_runtime"]["isolated_runtime_origin"] == (
+        "https://{site_key}.bonfirework.org/"
     )
     assert manifest["pages_runtime"]["public_alias_default"] is False
     assert manifest["pages_runtime"]["active_release_editable_in_place"] is False

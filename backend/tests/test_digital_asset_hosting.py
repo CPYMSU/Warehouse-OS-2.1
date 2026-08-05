@@ -700,7 +700,7 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
         assert landing.status_code == 200
         assert landing.headers["x-warehouse-pages-site"] == "workspace-deployment-app"
         assert landing.headers["x-warehouse-pages-frame"] == (
-            "https://workspace-deployment-app.apps.bonfirework.org/"
+            "https://workspace-deployment-app.bonfirework.org/"
         )
         fallback = client.get(provisioned.json()["workspace"]["fallback_path"])
         assert fallback.status_code == 200
