@@ -241,6 +241,8 @@ def test_standby_deploy_skips_database_writing_workers() -> None:
     assert 'log_event deploy_phase skipped "${release}" browser_worker' in source
     assert 'if [[ "${node_role}" == standby ]]; then\n    log_event deploy_phase skipped' in source
     assert '"${release}" runtime_controller "${next_slot}" 0' in source
+    assert 'standby_smoke "${next_port}"' in source
+    assert 'public_smoke || smoke_result=$?' in source
 
 
 def test_deploy_plan_local_transport_does_not_require_ssh_identity(
