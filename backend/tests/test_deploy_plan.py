@@ -231,6 +231,18 @@ def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
     assert "${USER}@${HOST}:/var/lib/warehouse-deploy/incoming/" not in source
 
 
+def test_standby_deploy_skips_database_writing_workers() -> None:
+    source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'node_role="$(configured_node_role)"' in source
+    assert 'if [[ "${node_role}" == primary ]]; then\n    install_browser_runtime_config' in source
+    assert 'log_event deploy_phase skipped "${release}" browser_worker' in source
+    assert 'if [[ "${node_role}" == standby ]]; then\n    log_event deploy_phase skipped' in source
+    assert '"${release}" runtime_controller "${next_slot}" 0' in source
+
+
 def test_deploy_plan_local_transport_does_not_require_ssh_identity(
     tmp_path: Path,
 ) -> None:
