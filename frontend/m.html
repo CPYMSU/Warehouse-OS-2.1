@@ -1,0 +1,1960 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"/>
+<meta name="theme-color" content="#F5F2EA"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<title>WAREHOUSE OS 2.0</title>
+<link rel="icon" type="image/png" href="v2/brand/bonfire-platform-mark.png"/>
+<script>
+if (window.location.protocol === "file:") {
+  window.location.replace("http://127.0.0.1:8082/m.html");
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600;700;900&family=Playfair+Display:ital,wght@0,600;0,800;1,500&display=swap" rel="stylesheet"/>
+<style>
+/* ============================================================
+   手機版首頁 — 雜誌版式 (Editorial Edition)
+   紙張底色 + 宋體標題 + 報紙細線 + Canvas 動畫(墨塵/等高線/儀表弧)
+   只有:儀表板 + AI 秘書。所有業務操作經 /api/agent/run/stream 內核。
+   ============================================================ */
+:root {
+  --paper: #F5F2EA;
+  --paper-2: #EFEBE0;
+  --ink: #191813;
+  --ink-soft: #4D4B42;
+  --muted: #8B887B;
+  --accent: #B5341C;          /* 朱紅 */
+  --green: #2E6E4C;
+  --red: #A92F1F;
+  --orange: #9A6310;
+  --hair: rgba(25, 24, 19, .22);
+  --hair-soft: rgba(25, 24, 19, .12);
+  --serif: "Noto Serif TC", "Songti TC", "SimSun", serif;
+  --display: "Playfair Display", Georgia, "Noto Serif TC", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  font-family: var(--sans);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.5;
+  overscroll-behavior-y: none;
+}
+button { font: inherit; border: 0; background: none; cursor: pointer; color: inherit; padding: 0; }
+input, textarea, select { font: inherit; color: inherit; }
+.hidden { display: none !important; }
+
+/* 背景 Canvas:墨塵 + 等高線 */
+#bg-canvas { position: fixed; inset: 0; width: 100vw; height: 100dvh; z-index: 0; pointer-events: none; }
+.layer { position: relative; z-index: 1; }
+
+/* 細線體系(報紙式) */
+.rule { height: 1px; background: var(--hair); border: 0; margin: 0; }
+.rule-double { border-top: 2.5px solid var(--ink); border-bottom: 1px solid var(--ink); height: 4px; }
+.kicker {
+  font-family: var(--sans); font-size: 10.5px; font-weight: 700;
+  letter-spacing: 3px; text-transform: uppercase; color: var(--ink-soft);
+}
+
+/* ---------- 登入(封面) ---------- */
+.login-wrap {
+  min-height: 100dvh; display: flex; flex-direction: column; justify-content: center;
+  padding: calc(28px + var(--safe-top)) 26px calc(34px + var(--safe-bottom));
+  max-width: 480px; margin: 0 auto;
+}
+.cover-issue { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 10px; }
+.cover-issue span { font-family: var(--display); font-style: italic; font-size: 12.5px; color: var(--ink-soft); letter-spacing: .5px; }
+.cover-title {
+  font-family: var(--serif); font-weight: 900; font-size: 44px; line-height: 1.12;
+  letter-spacing: 2px; margin: 22px 0 8px;
+}
+.cover-sub { font-family: var(--serif); font-size: 14px; color: var(--ink-soft); margin-bottom: 26px; }
+.cover-sub i { font-family: var(--display); font-style: italic; }
+.auth-tabs { display: flex; gap: 26px; border-bottom: 1px solid var(--hair); margin-bottom: 22px; }
+.auth-tabs button {
+  font-family: var(--serif); font-size: 15.5px; font-weight: 700; color: var(--muted);
+  padding: 0 2px 11px; position: relative; letter-spacing: 1px;
+}
+.auth-tabs button.is-active { color: var(--ink); }
+.auth-tabs button.is-active::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2.5px; background: var(--accent);
+}
+.login-form-stack { display: flex; flex-direction: column; gap: 4px; }
+.field {
+  width: 100%; border: 0; border-bottom: 1px solid var(--hair);
+  background: transparent; padding: 13px 2px 11px; outline: none; font-size: 15.5px;
+  border-radius: 0; font-family: var(--sans);
+}
+.field::placeholder { color: #A9A697; }
+.field:focus { border-bottom-color: var(--ink); }
+select.field { appearance: none; -webkit-appearance: none; }
+textarea.field { resize: none; min-height: 60px; }
+.reg-only { display: none; }
+.login-form.is-register .reg-only { display: block; }
+.login-err { color: var(--red); font-size: 13px; min-height: 20px; padding-top: 8px; font-family: var(--serif); }
+.login-ok { color: var(--green); font-size: 13px; padding-top: 8px; font-family: var(--serif); }
+.btn-primary {
+  width: 100%; margin-top: 14px; padding: 16px; color: var(--paper);
+  background: var(--ink); font-family: var(--serif); font-weight: 700;
+  font-size: 16px; letter-spacing: 6px; text-indent: 6px;
+  transition: transform .12s ease, opacity .12s ease;
+}
+.btn-primary:active { transform: scale(.98); }
+.btn-primary:disabled { opacity: .5; }
+.login-foot { font-size: 11px; color: var(--muted); text-align: center; margin-top: 18px; letter-spacing: .5px; }
+
+/* ---------- 主頁(內頁) ---------- */
+.home {
+  max-width: 520px; margin: 0 auto;
+  padding: calc(16px + var(--safe-top)) 22px calc(130px + var(--safe-bottom));
+}
+
+/* 報頭 */
+.mast-top { display: flex; align-items: center; justify-content: space-between; padding-bottom: 9px; }
+.mast-date { font-family: var(--display); font-style: italic; font-size: 12px; color: var(--ink-soft); letter-spacing: .5px; }
+.top-actions { display: flex; align-items: center; gap: 7px; }
+.tenant-select {
+  border: 1px solid var(--hair); background: transparent; border-radius: 0;
+  font-size: 11.5px; font-weight: 600; padding: 6px 8px; max-width: 120px; color: var(--ink);
+  font-family: var(--sans); appearance: none; -webkit-appearance: none;
+}
+.icon-btn {
+  width: 32px; height: 32px; border: 1px solid var(--hair); border-radius: 0;
+  display: flex; align-items: center; justify-content: center; color: var(--ink-soft);
+  background: transparent;
+}
+.icon-btn:active { background: var(--ink); color: var(--paper); }
+.mast-title {
+  font-family: var(--serif); font-weight: 900; font-size: 37px; line-height: 1.1;
+  letter-spacing: 3px; margin: 10px 0 6px;
+}
+.mast-sub {
+  display: flex; align-items: baseline; gap: 10px; padding-bottom: 12px;
+  font-family: var(--serif); font-size: 13px; color: var(--ink-soft);
+}
+.mast-sub .dash { flex: 1; border-bottom: 1px dotted var(--hair); transform: translateY(-3px); }
+.mast-sub em { font-family: var(--display); font-style: italic; font-size: 11.5px; letter-spacing: 1px; color: var(--muted); }
+
+/* 章節標題 */
+.sec-head { display: flex; align-items: baseline; gap: 12px; margin: 26px 0 4px; }
+.sec-no { font-family: var(--display); font-style: italic; font-weight: 600; font-size: 20px; color: var(--accent); }
+.sec-name { font-family: var(--serif); font-weight: 900; font-size: 16.5px; letter-spacing: 2px; }
+.sec-en { font-family: var(--sans); font-size: 9.5px; letter-spacing: 2.5px; text-transform: uppercase; color: var(--muted); margin-left: auto; }
+.sec-rule { height: 1px; background: var(--ink); margin: 6px 0 0; }
+
+/* 預算版面 */
+.hero-flex { display: flex; align-items: center; gap: 10px; padding: 18px 0 6px; }
+.hero-main { flex: 1; min-width: 0; }
+.hero-label { font-family: var(--serif); font-size: 13px; color: var(--ink-soft); letter-spacing: 1px; }
+.hero-value {
+  font-family: var(--display); font-weight: 800; font-size: 46px; line-height: 1.05;
+  letter-spacing: -.5px; margin: 4px 0 6px; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.hero-value .cur { font-size: 24px; font-weight: 600; font-style: italic; margin-right: 3px; }
+.hero-sub { font-size: 12px; color: var(--muted); font-family: var(--sans); letter-spacing: .3px; }
+#gauge { width: 104px; height: 104px; flex: none; }
+.hero-meta {
+  display: flex; justify-content: space-between; border-top: 1px solid var(--hair-soft);
+  margin-top: 12px; padding-top: 9px; font-size: 11.5px; color: var(--ink-soft);
+  font-variant-numeric: tabular-nums; font-family: var(--sans);
+}
+
+/* KPI:細線表格 */
+.kpi-grid { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--ink); margin-top: 14px; }
+.kpi {
+  padding: 14px 12px 13px 2px; border-bottom: 1px solid var(--hair-soft);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.kpi:nth-child(odd) { border-right: 1px solid var(--hair-soft); }
+.kpi:nth-child(even) { padding-left: 14px; }
+.kpi-label { font-family: var(--serif); font-size: 12px; color: var(--ink-soft); letter-spacing: 1.5px; }
+.kpi-value {
+  font-family: var(--display); font-weight: 800; font-size: 25px;
+  font-variant-numeric: tabular-nums; letter-spacing: -.3px; line-height: 1.15;
+}
+.kpi-en { font-size: 8.5px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); font-family: var(--sans); }
+
+/* 快捷問(目錄式) */
+.chips { display: flex; gap: 0; overflow-x: auto; scrollbar-width: none; margin-top: 14px; border-top: 1px solid var(--ink); }
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex: none; font-family: var(--serif); font-size: 13.5px; font-weight: 600; color: var(--ink);
+  padding: 13px 16px 13px 0; margin-right: 16px; border-bottom: 1px solid transparent;
+  display: flex; align-items: center; gap: 7px; white-space: nowrap;
+}
+.chip i { font-family: var(--display); font-style: italic; font-size: 12px; color: var(--accent); }
+.chip:active { color: var(--accent); }
+
+/* 清單(索引式) */
+.rowlist { display: flex; flex-direction: column; }
+.rowitem { display: flex; align-items: baseline; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--hair-soft); }
+.row-no { font-family: var(--display); font-style: italic; font-size: 13px; color: var(--muted); flex: none; width: 20px; }
+.row-main { flex: 1; min-width: 0; }
+.row-title { font-family: var(--serif); font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.row-right { font-size: 11.5px; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; flex: none; font-family: var(--sans); }
+.row-mark { width: 7px; height: 7px; flex: none; transform: translateY(-1px); }
+.empty-line { font-family: var(--serif); font-size: 12.5px; color: var(--muted); padding: 12px 0; }
+.badge-count { font-family: var(--display); font-style: italic; font-size: 14px; color: var(--accent); }
+
+.page-end {
+  text-align: center; margin-top: 34px; font-family: var(--sans);
+  font-size: 9px; letter-spacing: 4px; text-transform: uppercase; color: var(--muted);
+}
+.page-end::before, .page-end::after { content: "—"; margin: 0 10px; color: var(--hair); }
+
+.skeleton { color: transparent !important; background: linear-gradient(90deg, #E7E2D5 25%, #EFEBE0 50%, #E7E2D5 75%); background-size: 200% 100%; animation: shimmer 1.2s infinite; user-select: none; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(112px + var(--safe-bottom));
+  background: var(--ink); color: var(--paper); font-size: 12.5px; font-family: var(--serif);
+  padding: 11px 20px; max-width: 86vw; z-index: 80;
+  box-shadow: 4px 4px 0 rgba(25,24,19,.18); opacity: 0; pointer-events: none; transition: opacity .25s;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.toast.show { opacity: 1; }
+
+/* ---------- AI 秘書按鈕(墨章) ---------- */
+.fab {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(24px + var(--safe-bottom)); z-index: 60;
+  display: flex; align-items: center; gap: 10px;
+  padding: 15px 30px; color: var(--paper);
+  background: var(--ink);
+  font-family: var(--serif); font-weight: 700; font-size: 15.5px; letter-spacing: 4px; text-indent: 4px;
+  box-shadow: 5px 5px 0 rgba(181, 52, 28, .85);
+  transition: box-shadow .15s ease, transform .15s ease;
+}
+.fab:active { transform: translateX(-50%) translate(3px, 3px); box-shadow: 2px 2px 0 rgba(181,52,28,.85); }
+.fab .star { font-family: var(--display); font-style: italic; color: #E8C9B0; }
+
+/* ---------- 聊天面板(稿紙) ---------- */
+.sheet-mask {
+  position: fixed; inset: 0; background: rgba(25, 24, 19, .42);
+  backdrop-filter: blur(2px); z-index: 90; opacity: 0; pointer-events: none; transition: opacity .25s;
+}
+.sheet-mask.open { opacity: 1; pointer-events: auto; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 95;
+  height: min(92dvh, 880px);
+  background: var(--paper);
+  border-top: 2.5px solid var(--ink);
+  display: flex; flex-direction: column;
+  transform: translateY(105%); transition: transform .32s cubic-bezier(.2,.85,.25,1);
+  box-shadow: 0 -16px 40px rgba(25,24,19,.25);
+}
+.sheet.open { transform: translateY(0); }
+.sheet-head {
+  padding: 14px 18px 12px; display: flex; align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--ink); background: var(--paper);
+}
+.ai-avatar {
+  width: 40px; height: 40px; background: var(--ink); color: var(--paper); flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--display); font-style: italic; font-size: 19px;
+}
+.sheet-title { flex: 1; }
+.sheet-title b { font-family: var(--serif); font-size: 17px; font-weight: 900; letter-spacing: 2px; display: block; }
+.ai-status { font-size: 10.5px; color: var(--muted); display: flex; align-items: center; gap: 5px; letter-spacing: .5px; }
+.ai-status i { width: 6px; height: 6px; border-radius: 99px; background: var(--green); display: inline-block; }
+.ai-status.busy i { background: var(--orange); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+.sheet-actions { display: flex; gap: 7px; }
+
+.chat-scroll { flex: 1; overflow-y: auto; padding: 18px 16px 12px; display: flex; flex-direction: column; gap: 14px; -webkit-overflow-scrolling: touch; }
+.msg { max-width: 88%; display: flex; flex-direction: column; gap: 4px; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.msg.ai { align-self: flex-start; align-items: flex-start; }
+.bubble {
+  padding: 11px 14px; font-size: 14.5px; line-height: 1.6;
+  word-break: break-word; white-space: pre-wrap;
+}
+.msg.user .bubble { background: var(--ink); color: var(--paper); font-family: var(--sans); box-shadow: 3px 3px 0 rgba(181,52,28,.5); }
+.msg.ai .bubble { background: transparent; border-left: 2.5px solid var(--ink); padding-left: 13px; font-family: var(--serif); }
+.msg.ai .bubble.is-error { border-left-color: var(--red); color: var(--red); }
+
+/* 執行步驟(校樣批註) */
+.steps { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.step-pill {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; font-weight: 600; color: var(--ink-soft);
+  border-bottom: 1px dotted var(--hair); padding: 5px 2px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.step-pill .st { flex: none; width: 14px; text-align: center; }
+.step-pill.ok .st { color: var(--green); }
+.step-pill.fail { color: var(--red); border-bottom-color: rgba(169,47,31,.4); }
+.step-pill.run .st { animation: spin 1s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.step-cmd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.typing { display: inline-flex; gap: 4px; padding: 4px 2px; }
+.typing i { width: 5px; height: 5px; border-radius: 99px; background: var(--muted); animation: bounce 1.2s infinite; }
+.typing i:nth-child(2) { animation-delay: .15s; }
+.typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .5; } 30% { transform: translateY(-4px); opacity: 1; } }
+
+.chat-suggest { display: flex; flex-wrap: wrap; gap: 0 18px; padding: 2px 2px; }
+.chat-suggest .chip { padding: 9px 0; margin: 0; font-size: 13px; }
+
+.chat-input-bar {
+  padding: 12px 14px calc(14px + var(--safe-bottom)); background: var(--paper);
+  border-top: 1px solid var(--ink); display: flex; align-items: flex-end; gap: 10px;
+}
+.chat-input {
+  flex: 1; border: 0; border-bottom: 1px solid var(--hair); background: transparent;
+  padding: 10px 2px; font-size: 15px; resize: none; outline: none; border-radius: 0;
+  max-height: 110px; min-height: 42px; line-height: 1.4; font-family: var(--sans);
+}
+.chat-input:focus { border-bottom-color: var(--ink); }
+.send-btn {
+  width: 46px; height: 46px; flex: none;
+  background: var(--ink); color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 3px 3px 0 rgba(181,52,28,.7);
+}
+.send-btn:disabled { opacity: .4; box-shadow: none; }
+.send-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(181,52,28,.7); }
+.mic-btn { background: transparent; color: var(--ink); border: 1.5px solid var(--ink); box-shadow: none; }
+.chat-input.partial { color: var(--muted); font-style: italic; }
+.mic-btn.listening { background: var(--accent); color: var(--paper); border-color: var(--accent); animation: mic-pulse 1.1s ease-in-out infinite; }
+.mic-btn.standby { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+@keyframes mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(181,52,28,.45); } 50% { box-shadow: 0 0 0 9px rgba(181,52,28,0); } }
+.icon-btn.voice-on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01s !important; transition-duration: .01s !important; }
+}
+
+/* ===== 記賬本 Ledger ===== */
+.ledger-top { display: flex; gap: 30px; margin-top: 8px; }
+.lg-label { font-size: 11px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.lg-value { font-family: var(--display); font-size: 30px; font-weight: 800; color: var(--ink); line-height: 1.15; }
+.lg-value .cur { font-size: 18px; color: var(--muted); margin-right: 1px; }
+.lg-sub { font-size: 12px; color: var(--muted); margin-top: 7px; line-height: 1.55; }
+.lg-block { margin-top: 18px; }
+.lg-h { font-size: 12px; color: var(--ink-soft); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.lg-tag { color: var(--accent); font-size: 11px; font-family: var(--sans); letter-spacing: 0; text-transform: none; }
+.bar { margin-bottom: 11px; }
+.bar-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; margin-bottom: 4px; color: var(--ink); }
+.bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-amt { color: var(--muted); flex-shrink: 0; font-family: var(--sans); font-size: 12px; }
+.bar-track { height: 7px; background: var(--hair-soft); border-radius: 5px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 5px; transition: width .6s cubic-bezier(.22,1,.36,1); }
+.settle-row { display: flex; align-items: center; gap: 9px; padding: 7px 0; font-size: 14px; border-top: 1px solid var(--hair-soft); }
+.settle-row .from { color: var(--red); }
+.settle-row .to { color: var(--green); }
+.settle-row .arr { color: var(--muted); }
+.settle-row b { margin-left: auto; font-family: var(--sans); }
+.exp-item { padding: 9px 0; border-top: 1px solid var(--hair-soft); }
+.exp-item:first-child { border-top: none; }
+.exp-head { display: flex; justify-content: space-between; gap: 10px; }
+.exp-name { font-weight: 600; color: var(--ink); }
+.exp-head b { font-family: var(--sans); flex-shrink: 0; }
+.exp-sub { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.55; }
+.lg-settle-btn { margin-top: 12px; width: 100%; justify-content: center; }
+
+/* ---- 對賬:消費明細 視圖切換 + 付款人篩選 ---- */
+.recon-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 9px; overflow: hidden; background: rgba(25,24,19,.03); flex: none; }
+.seg-btn { font: inherit; font-size: 12px; padding: 6px 13px; border: none; background: transparent; color: var(--muted); cursor: pointer; -webkit-appearance: none; }
+.seg-btn + .seg-btn { border-left: 1px solid var(--hair-soft); }
+.seg-btn.on { background: var(--ink); color: var(--paper); }
+.recon-filter { font: inherit; font-size: 12px; color: var(--ink); padding: 6px 10px; border: 1px solid var(--hair); border-radius: 9px; background: rgba(25,24,19,.03); max-width: 52%; }
+
+/* ---- 結構化賬單卡 ---- */
+.exp-pay { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.exp-payer { color: var(--accent); font-weight: 700; }
+.split-lead { font-size: 11px; color: var(--muted); margin: 8px 0 5px; letter-spacing: .03em; }
+.split-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.split-chip { font-size: 11.5px; font-family: var(--sans); color: var(--ink-soft); background: rgba(25,24,19,.04); border: 1px solid var(--hair-soft); border-radius: 7px; padding: 3px 8px; display: inline-flex; gap: 6px; align-items: baseline; }
+.split-chip b { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.split-chip.is-payer { border-color: rgba(181,52,28,.35); background: rgba(181,52,28,.06); }
+.split-chip.is-payer .nm { color: var(--accent); }
+.split-none { font-size: 11.5px; color: var(--muted); margin-top: 7px; }
+
+/* ---- 按付款人分組 ---- */
+.pgroup { border: 1px solid var(--hair-soft); border-radius: 12px; padding: 0 14px; margin-bottom: 12px; background: rgba(255,255,255,.4); }
+.pgroup-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 12px 0 11px; cursor: pointer; }
+.pgroup-name { font-family: var(--serif); font-weight: 700; font-size: 15px; color: var(--ink); display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.pgroup-name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pgroup-cnt { font-size: 11px; color: var(--muted); font-family: var(--sans); font-weight: 400; flex: none; }
+.pgroup-total { font-family: var(--sans); font-weight: 700; font-size: 14px; color: var(--ink); font-variant-numeric: tabular-nums; flex: none; }
+.pgroup-body { border-top: 1px solid var(--hair-soft); padding-bottom: 4px; }
+.pgroup.collapsed .pgroup-body { display: none; }
+.pgroup-chev { color: var(--muted); font-size: 10px; transition: transform .2s; flex: none; transform: translateY(-1px); }
+.pgroup.collapsed .pgroup-chev { transform: translateY(-1px) rotate(-90deg); }
+.recon-empty { font-size: 12.5px; color: var(--muted); padding: 10px 0; }
+
+/* ===== 秘書回覆 Markdown 渲染 ===== */
+.msg.ai .bubble h3, .msg.ai .bubble h4 { font-family: var(--display); margin: 11px 0 6px; line-height: 1.25; color: var(--ink); }
+.msg.ai .bubble h3 { font-size: 17px; }
+.msg.ai .bubble h4 { font-size: 15px; }
+.msg.ai .bubble p { margin: 6px 0; }
+.msg.ai .bubble strong { font-weight: 700; color: var(--ink); }
+.msg.ai .bubble code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .86em; background: rgba(25,24,19,.07); padding: 1px 5px; border-radius: 4px; }
+.msg.ai .bubble pre { background: rgba(25,24,19,.06); border: 1px solid var(--hair-soft); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+.msg.ai .bubble pre code { background: none; padding: 0; font-size: .85em; line-height: 1.5; }
+.msg.ai .bubble ul, .msg.ai .bubble ol { margin: 6px 0; padding-left: 20px; }
+.msg.ai .bubble li { margin: 3px 0; }
+.msg.ai .bubble a { color: var(--accent); text-decoration: underline; }
+.msg.ai .bubble blockquote { margin: 8px 0; padding: 3px 12px; border-left: 3px solid var(--hair); color: var(--ink-soft); }
+.msg.ai .bubble table { border-collapse: collapse; margin: 8px 0; font-size: 13px; display: block; overflow-x: auto; max-width: 100%; }
+.msg.ai .bubble th, .msg.ai .bubble td { border: 1px solid var(--hair-soft); padding: 5px 9px; text-align: left; white-space: nowrap; }
+.msg.ai .bubble th { background: rgba(25,24,19,.05); font-weight: 700; }
+.msg.ai .bubble > :first-child { margin-top: 0; }
+.msg.ai .bubble > :last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+
+<canvas id="bg-canvas"></canvas>
+
+<!-- ===================== 登入(封面) ===================== -->
+<div id="view-login" class="login-wrap layer hidden">
+  <div class="cover-issue">
+    <span>Operations Daily</span>
+    <span id="cover-date">—</span>
+  </div>
+  <div class="rule-double"></div>
+  <div class="cover-title" id="auth-title">智能工作台</div>
+  <div class="cover-sub" id="auth-sub">儀表板與 AI 秘書 · <i>The Intelligent Workbench</i></div>
+
+  <form id="login-form" class="login-form login-form-stack">
+    <div class="auth-tabs">
+      <button type="button" id="tab-login" class="is-active">登入</button>
+      <button type="button" id="tab-register">申請註冊</button>
+    </div>
+
+    <div class="reg-only"><input id="reg-company" class="field" placeholder="企業代碼,例如 uhv / acme" autocomplete="organization"/></div>
+    <div class="reg-only"><input id="reg-name" class="field" placeholder="顯示名稱(姓名或工作名)"/></div>
+
+    <input id="login-user" class="field" placeholder="帳號 / 郵箱" autocomplete="username"/>
+    <input id="login-pass" class="field" type="password" placeholder="密碼" autocomplete="current-password"/>
+
+    <div class="reg-only"><input id="reg-pass2" class="field" type="password" placeholder="再次輸入密碼" autocomplete="new-password"/></div>
+    <div class="reg-only">
+      <select id="reg-role" class="field"><option value="">期望角色:由管理員指定</option></select>
+    </div>
+    <div class="reg-only"><input id="reg-dept" class="field" placeholder="部門 / 班組(方便管理員核實)"/></div>
+    <div class="reg-only"><input id="reg-contact" class="field" placeholder="聯絡方式(手機 / 郵箱)"/></div>
+    <div class="reg-only"><textarea id="reg-reason" class="field" placeholder="申請理由,簡述用途,供管理員審批"></textarea></div>
+
+    <div id="login-notice" class="login-ok hidden"></div>
+    <div id="login-err" class="login-err"></div>
+    <button id="login-btn" class="btn-primary" type="submit">登入</button>
+    <div class="login-foot">公共設備使用後請登出 · 會話失效時會自動回到本頁</div>
+  </form>
+</div>
+
+<!-- ===================== 首頁(內頁) ===================== -->
+<div id="view-home" class="home layer hidden">
+  <header>
+    <div class="mast-top">
+      <span class="mast-date" id="mast-date">—</span>
+      <div class="top-actions">
+        <select id="tenant-select" class="tenant-select"></select>
+        <button id="btn-refresh" class="icon-btn" title="刷新" aria-label="刷新">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+        </button>
+        <button id="btn-logout" class="icon-btn" title="登出" aria-label="登出">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="rule-double"></div>
+    <h1 class="mast-title">智能工作台</h1>
+    <div class="mast-sub">
+      <span><span id="hello-kicker">您好</span>,<b id="hello-name">—</b></span>
+      <span class="dash"></span>
+      <em>DAILY REVIEW</em>
+    </div>
+    <hr class="rule"/>
+  </header>
+
+  <!-- 01 預算 -->
+  <section>
+    <div class="sec-head"><span class="sec-no">01</span><span class="sec-name">預算概況</span><span class="sec-en">Budget</span></div>
+    <div class="sec-rule"></div>
+    <div class="hero-flex">
+      <div class="hero-main">
+        <div class="hero-label">當前可用預算</div>
+        <div class="hero-value skeleton" id="hero-budget"><span class="cur">¥</span>—</div>
+        <div class="hero-sub" id="hero-sub">—</div>
+      </div>
+      <canvas id="gauge"></canvas>
+    </div>
+    <div class="hero-meta">
+      <span id="hero-total">總額 —</span>
+      <span id="hero-used">已佔用 —</span>
+    </div>
+  </section>
+
+  <!-- 02 核心指標 -->
+  <section>
+    <div class="sec-head"><span class="sec-no">02</span><span class="sec-name">核心指標</span><span class="sec-en">Indicators</span></div>
+    <div class="kpi-grid">
+      <div class="kpi"><span class="kpi-en">Profit</span><span class="kpi-label">本期利潤</span><span class="kpi-value skeleton" id="kpi-profit">—</span></div>
+      <div class="kpi"><span class="kpi-en">Revenue</span><span class="kpi-label">營業收入</span><span class="kpi-value skeleton" id="kpi-revenue">—</span></div>
+      <div class="kpi"><span class="kpi-en">Stock</span><span class="kpi-label">庫存件數</span><span class="kpi-value skeleton" id="kpi-stock">—</span></div>
+      <div class="kpi"><span class="kpi-en">Alerts</span><span class="kpi-label">未關閉預警</span><span class="kpi-value skeleton" id="kpi-alerts">—</span></div>
+    </div>
+  </section>
+
+  <!-- 目錄式快捷問 -->
+  <div class="chips" id="quick-chips">
+    <button class="chip" data-ask="請總結今天整個系統的狀態,告訴我最該優先處理的三件事。"><i>Q.</i>今天先做什麼?</button>
+    <button class="chip" data-ask="檢查庫存,列出低庫存和異常情況,並給出補貨建議。"><i>Q.</i>庫存有什麼異常?</button>
+    <button class="chip" data-ask="幫我看本月財務狀況:收入、利潤、應收應付是否健康。"><i>Q.</i>本月財務狀況</button>
+    <button class="chip" data-ask="列出目前所有未關閉的預警並按嚴重程度排序,告訴我怎麼處理。"><i>Q.</i>處理預警</button>
+    <button class="chip" data-ask="幫我整理需要跟進的協作消息和待辦任務。"><i>Q.</i>待辦與協作</button>
+    <button class="chip" data-ask="我要記一筆共享開銷:某人墊付了 ¥金額 用於 某項目,和某些人分攤。請按「墊付＋分攤」幫我記進賬,缺信息就問我。"><i>＋</i>記一筆花費</button>
+    <button class="chip" data-ask="幫我算匯率:把 ____ 外幣換成人民幣是多少?(ECB 沒有的小幣種如尼泊爾盧比 NPR,我會先告訴你今天的匯率讓你設定)"><i>¥</i>算匯率</button>
+  </div>
+  <hr class="rule"/>
+
+  <!-- 03 風險信號 -->
+  <section>
+    <div class="sec-head"><span class="sec-no">03</span><span class="sec-name">風險信號</span><span class="sec-en">Signals</span><span class="badge-count" id="alerts-badge" style="margin-left:8px">0</span></div>
+    <div class="sec-rule"></div>
+    <div class="rowlist" id="alerts-list"><div class="empty-line">正在載入…</div></div>
+  </section>
+
+  <!-- 04 待處理事項 -->
+  <section>
+    <div class="sec-head"><span class="sec-no">04</span><span class="sec-name">待處理事項</span><span class="sec-en">Agenda</span><span class="badge-count" id="todo-badge" style="margin-left:8px">0</span></div>
+    <div class="sec-rule"></div>
+    <div class="rowlist" id="todo-list"><div class="empty-line">正在載入…</div></div>
+  </section>
+
+  <!-- 05 記賬本 -->
+  <section>
+    <div class="sec-head"><span class="sec-no">05</span><span class="sec-name">記賬本</span><span class="sec-en">Ledger</span><span class="badge-count" id="ledger-badge" style="margin-left:8px">—</span></div>
+    <div class="sec-rule"></div>
+    <div class="ledger-top">
+      <div><div class="lg-label">總支出</div><div class="lg-value" id="ledger-total"><span class="cur">¥</span>—</div></div>
+      <div><div class="lg-label">筆數</div><div class="lg-value" id="ledger-count">—</div></div>
+    </div>
+    <div class="lg-sub" id="ledger-period">正在載入…</div>
+
+    <div class="lg-block" id="lg-cats-block" style="display:none">
+      <div class="lg-h">花在什麼上 <span class="lg-tag">占比</span></div>
+      <div id="ledger-cats"></div>
+    </div>
+
+    <div class="lg-block" id="lg-payers-block" style="display:none">
+      <div class="lg-h">誰花的 <span class="lg-tag">墊付占比</span></div>
+      <div id="ledger-payers"></div>
+    </div>
+
+    <div class="lg-block" id="lg-fx-block" style="display:none">
+      <div class="lg-h">按幣種 <span class="lg-tag">折人民幣</span></div>
+      <div class="rowlist" id="ledger-currencies"></div>
+    </div>
+
+    <div class="lg-block" id="lg-settle-block" style="display:none">
+      <div class="lg-h">往來結算 <span class="lg-tag" id="ledger-settle-tag"></span></div>
+      <div class="rowlist" id="ledger-balances"></div>
+      <div id="ledger-plan"></div>
+      <button class="chip lg-settle-btn" id="ledger-settle-btn" style="display:none"><i>✦</i>讓秘書登記結算</button>
+    </div>
+
+    <div class="lg-block" id="lg-recent-block" style="display:none">
+      <div class="lg-h">消費明細 <span class="lg-tag" id="ledger-recent-tag"></span></div>
+      <div class="recon-bar">
+        <div class="seg" id="recon-view">
+          <button type="button" class="seg-btn on" data-mode="payer">按付款人</button>
+          <button type="button" class="seg-btn" data-mode="time">按時間</button>
+        </div>
+        <select class="recon-filter" id="recon-payer" aria-label="只看某個付款人"></select>
+      </div>
+      <div id="ledger-recent"></div>
+    </div>
+  </section>
+
+  <div class="page-end">Fin · 智能工作台</div>
+</div>
+
+<!-- ===================== AI 秘書 ===================== -->
+<button id="fab" class="fab layer hidden"><span class="star">✦</span>AI 秘書</button>
+
+<div id="sheet-mask" class="sheet-mask"></div>
+<div id="sheet" class="sheet" role="dialog" aria-label="AI 秘書">
+  <div class="sheet-head">
+    <div class="ai-avatar">✦</div>
+    <div class="sheet-title">
+      <b>AI 秘書</b>
+      <div class="ai-status" id="ai-status"><i></i><span>在線 · 可執行全部業務操作</span></div>
+    </div>
+    <div class="sheet-actions">
+      <button id="btn-voicemode" class="icon-btn" title="語音對話:回覆自動朗讀,說完自動聆聽" aria-label="語音對話">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+      </button>
+      <button id="btn-newchat" class="icon-btn" title="新對話" aria-label="新對話">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button id="btn-close" class="icon-btn" title="關閉" aria-label="關閉">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="chat-scroll" id="chat-scroll"></div>
+  <div class="chat-input-bar">
+    <button id="bill-btn" class="send-btn mic-btn" aria-label="拍賬單" title="拍/選一張賬單照片,自動識別後記賬">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+    </button>
+    <input id="bill-file" type="file" accept="image/*" multiple style="display:none"/>
+    <button id="mic-btn" class="send-btn mic-btn" aria-label="語音輸入" title="點一下說話,再點一下結束">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </button>
+    <textarea id="chat-input" class="chat-input" rows="1" placeholder="說出要查什麼或做什麼…"></textarea>
+    <button id="send-btn" class="send-btn" aria-label="發送">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </button>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   邏輯層:與後端 100% 兼容,後端零改動。
+   - 會話:warehouse_auth_token / warehouse_current_tenant(跨頁共享)
+   - AI 秘書:POST /api/agent/run/stream(NDJSON 內核流)
+   - 對話 id:沿用桌面秘書同一 key,跨端同一條對話
+   ============================================================ */
+const API_BASE = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+  ? "http://127.0.0.1:8090" : "";
+const KEY_TOKEN = "warehouse_auth_token";
+const KEY_TENANT = "warehouse_current_tenant";
+const REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const $ = (id) => document.getElementById(id);
+const state = { user: null, companies: [], tenant: localStorage.getItem(KEY_TENANT) || "", busy: false, chatLoaded: false };
+
+const token = () => localStorage.getItem(KEY_TOKEN) || "";
+const setToken = (t) => t ? localStorage.setItem(KEY_TOKEN, t) : localStorage.removeItem(KEY_TOKEN);
+const setTenant = (s) => { state.tenant = s || ""; s ? localStorage.setItem(KEY_TENANT, s) : localStorage.removeItem(KEY_TENANT); };
+const convKey = () => `warehouse.agent.conversationId.${state.tenant || "uhv"}.${state.user?.id || "anon"}`;
+const fmtMoney = (v) => "¥" + Number(v || 0).toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+const fmtNum = (v) => Number(v || 0).toLocaleString("zh-CN");
+
+async function api(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (token()) headers.set("Authorization", "Bearer " + token());
+  if (state.tenant) headers.set("X-Tenant-Slug", state.tenant);
+  // 不強制 credentials:部署後同源自動帶會話 cookie;本地跨域純走 Bearer token。
+  const res = await fetch(API_BASE + path, { ...options, headers });
+  if (res.status === 401) { setToken(""); showLogin(); throw new Error("請先登入"); }
+  return res;
+}
+async function apiJson(path, options) {
+  const res = await api(path, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText || "請求失敗");
+  return data;
+}
+
+let toastTimer = null;
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+/* ============================================================
+   Canvas 背景:墨塵粒子 + 漂移等高線(雜誌紙面的呼吸感)
+   ============================================================ */
+(function initBackdrop() {
+  const cv = $("bg-canvas");
+  const ctx = cv.getContext("2d");
+  let W = 0, H = 0, dpr = 1, raf = null, t = 0;
+  const DOTS = [];
+  const DOT_N = 42;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    cv.style.width = W + "px"; cv.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function seed() {
+    DOTS.length = 0;
+    for (let i = 0; i < DOT_N; i++) {
+      DOTS.push({
+        x: Math.random() * W, y: Math.random() * H,
+        r: .6 + Math.random() * 1.5,
+        vy: .08 + Math.random() * .22,
+        sway: Math.random() * Math.PI * 2,
+        swayAmp: 6 + Math.random() * 14,
+        a: .04 + Math.random() * .07,
+      });
+    }
+  }
+  function contour(yBase, amp, phase, alpha) {
+    ctx.beginPath();
+    for (let x = -10; x <= W + 10; x += 7) {
+      const y = yBase
+        + Math.sin(x * .009 + phase) * amp
+        + Math.sin(x * .021 - phase * .7) * amp * .4;
+      x === -10 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = `rgba(25, 24, 19, ${alpha})`;
+    ctx.lineWidth = .7;
+    ctx.stroke();
+  }
+  function frame() {
+    t += .0042;
+    ctx.clearRect(0, 0, W, H);
+    // 等高線:三組,緩慢漂移
+    contour(H * .18, 26, t, .045);
+    contour(H * .21, 22, t + 2.1, .032);
+    contour(H * .82, 30, -t * .8 + 1, .04);
+    contour(H * .86, 24, -t * .8 + 3.4, .028);
+    // 墨塵:緩慢上浮 + 輕微搖曳
+    for (const d of DOTS) {
+      d.y -= d.vy;
+      d.sway += .006;
+      if (d.y < -8) { d.y = H + 8; d.x = Math.random() * W; }
+      const x = d.x + Math.sin(d.sway) * d.swayAmp;
+      ctx.beginPath();
+      ctx.arc(x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(25, 24, 19, ${d.a})`;
+      ctx.fill();
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  function start() { if (!raf && !REDUCED) raf = requestAnimationFrame(frame); }
+  function stop() { if (raf) { cancelAnimationFrame(raf); raf = null; } }
+  window.addEventListener("resize", () => { resize(); seed(); });
+  document.addEventListener("visibilitychange", () => document.hidden ? stop() : start());
+  resize(); seed();
+  if (REDUCED) { t = 1; frame && (function(){ /* 靜態畫一幀 */ t += .001; ctx.clearRect(0,0,W,H); contour(H*.18,26,1,.045); contour(H*.82,30,2,.04); })(); }
+  else start();
+})();
+
+/* ============================================================
+   Canvas 儀表弧:預算使用率(細線 + 朱紅弧 + 刻度)
+   ============================================================ */
+const gauge = (function () {
+  const cv = $("gauge");
+  const ctx = cv.getContext("2d");
+  const SIZE = 104;
+  let current = 0, target = 0, raf = null, animStart = 0, from = 0;
+
+  function setup() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = SIZE * dpr; cv.height = SIZE * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function draw(pct) {
+    const c = SIZE / 2, r = 40;
+    const a0 = Math.PI * .75, a1 = Math.PI * 2.25;   // 270° 弧
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    // 刻度
+    for (let i = 0; i <= 10; i++) {
+      const a = a0 + (a1 - a0) * (i / 10);
+      const inner = i % 5 === 0 ? r - 7 : r - 4;
+      ctx.beginPath();
+      ctx.moveTo(c + Math.cos(a) * inner, c + Math.sin(a) * inner);
+      ctx.lineTo(c + Math.cos(a) * (r - 1), c + Math.sin(a) * (r - 1));
+      ctx.strokeStyle = "rgba(25,24,19,.35)";
+      ctx.lineWidth = i % 5 === 0 ? 1.2 : .6;
+      ctx.stroke();
+    }
+    // 軌道
+    ctx.beginPath();
+    ctx.arc(c, c, r + 5, a0, a1);
+    ctx.strokeStyle = "rgba(25,24,19,.16)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 數值弧
+    const av = a0 + (a1 - a0) * Math.min(1, Math.max(0, pct / 100));
+    ctx.beginPath();
+    ctx.arc(c, c, r + 5, a0, av);
+    ctx.strokeStyle = "#B5341C";
+    ctx.lineWidth = 3;
+    ctx.lineCap = "butt";
+    ctx.stroke();
+    // 指針端點
+    ctx.beginPath();
+    ctx.arc(c + Math.cos(av) * (r + 5), c + Math.sin(av) * (r + 5), 2.6, 0, Math.PI * 2);
+    ctx.fillStyle = "#191813";
+    ctx.fill();
+    // 中心文字
+    ctx.fillStyle = "#191813";
+    ctx.textAlign = "center";
+    ctx.font = "italic 800 19px 'Playfair Display', Georgia, serif";
+    ctx.fillText(Math.round(pct) + "%", c, c + 5);
+    ctx.font = "9px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(25,24,19,.5)";
+    ctx.fillText("USAGE", c, c + 18);
+  }
+  function tick(now) {
+    const k = Math.min(1, (now - animStart) / 1100);
+    const ease = 1 - Math.pow(1 - k, 3);
+    current = from + (target - from) * ease;
+    draw(current);
+    if (k < 1) raf = requestAnimationFrame(tick);
+    else raf = null;
+  }
+  setup(); draw(0);
+  return {
+    set(pct) {
+      target = pct;
+      if (REDUCED) { current = pct; draw(pct); return; }
+      from = current; animStart = performance.now();
+      if (!raf) raf = requestAnimationFrame(tick);
+    },
+  };
+})();
+
+/* 數字滾動(雜誌計數器) */
+function countUp(el, value, format) {
+  el.classList.remove("skeleton");
+  const target = Number(value || 0);
+  if (REDUCED || Math.abs(target) < 1) { el.textContent = format(target); return; }
+  const t0 = performance.now();
+  const D = 950;
+  function tick(now) {
+    const k = Math.min(1, (now - t0) / D);
+    const ease = 1 - Math.pow(1 - k, 3);
+    el.textContent = format(target * ease);
+    if (k < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ---------- 視圖切換 ---------- */
+function showLogin() {
+  $("view-login").classList.remove("hidden");
+  $("view-home").classList.add("hidden");
+  $("fab").classList.add("hidden");
+  closeSheet();
+}
+function showHome() {
+  $("view-login").classList.add("hidden");
+  $("view-home").classList.remove("hidden");
+  $("fab").classList.remove("hidden");
+}
+
+/* 刊頭日期 */
+(function () {
+  const d = new Date();
+  const week = ["日", "一", "二", "三", "四", "五", "六"][d.getDay()];
+  const line = `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 · 週${week}`;
+  $("mast-date").textContent = line;
+  $("cover-date").textContent = line;
+})();
+
+/* ---------- 登入 / 申請註冊 ---------- */
+let authMode = "login";
+function setAuthMode(mode) {
+  authMode = mode;
+  const isReg = mode === "register";
+  $("login-form").classList.toggle("is-register", isReg);
+  $("tab-login").classList.toggle("is-active", !isReg);
+  $("tab-register").classList.toggle("is-active", isReg);
+  $("auth-title").textContent = isReg ? "申請註冊" : "智能工作台";
+  $("auth-sub").innerHTML = isReg
+    ? "提交後由企業管理員審批,通過即可登入 · <i>Application</i>"
+    : "儀表板與 AI 秘書 · <i>The Intelligent Workbench</i>";
+  $("login-btn").textContent = isReg ? "提交申請" : "登入";
+  $("login-pass").autocomplete = isReg ? "new-password" : "current-password";
+  $("login-err").textContent = "";
+  $("login-notice").classList.add("hidden");
+  $("login-pass").value = "";
+  $("reg-pass2").value = "";
+}
+$("tab-login").addEventListener("click", () => setAuthMode("login"));
+$("tab-register").addEventListener("click", () => setAuthMode("register"));
+if (location.hash === "#register") setAuthMode("register");  // 註冊直達鏈接:m.html#register
+
+// 企業代碼 → 防抖拉取該公司可申請的角色列表
+let roleTimer = null;
+$("reg-company").addEventListener("input", () => {
+  clearTimeout(roleTimer);
+  const code = $("reg-company").value.trim().toLowerCase();
+  const sel = $("reg-role");
+  if (code.length < 3) { sel.length = 1; return; }
+  roleTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(API_BASE + `/api/auth/roles?tenant=${encodeURIComponent(code)}`);
+      const data = await res.json().catch(() => ({}));
+      sel.length = 1;
+      (data.roles || []).forEach(role => {
+        const opt = document.createElement("option");
+        opt.value = role.id;
+        opt.textContent = role.role_name;
+        sel.appendChild(opt);
+      });
+    } catch { sel.length = 1; }
+  }, 250);
+});
+
+$("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const username = $("login-user").value.trim();
+  const password = $("login-pass").value;
+  const errEl = $("login-err");
+  const noticeEl = $("login-notice");
+  errEl.textContent = "";
+  noticeEl.classList.add("hidden");
+  if (!username) { errEl.textContent = "請輸入帳號或郵箱"; return; }
+  if (!password) { errEl.textContent = "請輸入密碼"; return; }
+
+  if (authMode === "register") {
+    const companyCode = $("reg-company").value.trim().toLowerCase();
+    if (!companyCode) { errEl.textContent = "請填寫企業代碼"; return; }
+    if (password !== $("reg-pass2").value) { errEl.textContent = "兩次輸入的密碼不一致"; return; }
+    $("login-btn").disabled = true;
+    try {
+      const res = await fetch(API_BASE + "/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username,
+          tenant_slug: companyCode,
+          display_name: $("reg-name").value.trim() || username,
+          password,
+          department: $("reg-dept").value.trim(),
+          contact: $("reg-contact").value.trim(),
+          reason: $("reg-reason").value.trim(),
+          requested_role_id: $("reg-role").value || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "註冊申請提交失敗");
+      setAuthMode("login");
+      noticeEl.textContent = data.message || "申請已提交,等待管理員審批後即可登入";
+      noticeEl.classList.remove("hidden");
+    } catch (err) {
+      errEl.textContent = err.message || String(err);
+    } finally {
+      $("login-btn").disabled = false;
+    }
+    return;
+  }
+
+  $("login-btn").disabled = true;
+  try {
+    const res = await fetch(API_BASE + "/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "登入失敗");
+    setToken(data.token);
+    const active = (data.companies || []).filter(c => c.status === "active");
+    setTenant(data.default_tenant || active[0]?.slug || "");
+    state.user = data.user;
+    state.companies = active;
+    enterHome();
+  } catch (err) {
+    errEl.textContent = err.message || String(err);
+  } finally {
+    $("login-btn").disabled = false;
+  }
+});
+
+/* ---------- 啟動:檢查會話 ---------- */
+async function boot() {
+  try {
+    const status = await apiJson("/api/auth/me");
+    if (!status.authenticated || !status.user) { setToken(""); showLogin(); return; }
+    state.user = status.user;
+    state.companies = (status.companies || []).filter(c => c.status === "active");
+    const nextTenant = state.tenant || status.tenant || state.companies[0]?.slug || "";
+    setTenant(nextTenant);
+    enterHome();
+  } catch {
+    showLogin();
+  }
+}
+
+function enterHome() {
+  showHome();
+  $("hello-name").textContent = state.user?.display_name || state.user?.username || "—";
+  const hour = new Date().getHours();
+  $("hello-kicker").textContent = hour < 6 ? "凌晨好" : hour < 12 ? "早安" : hour < 14 ? "午安" : hour < 18 ? "下午好" : "晚上好";
+  const sel = $("tenant-select");
+  sel.innerHTML = "";
+  state.companies.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c.slug;
+    opt.textContent = c.name || c.slug;
+    sel.appendChild(opt);
+  });
+  sel.value = state.tenant;
+  sel.disabled = state.companies.length <= 1;
+  state.chatLoaded = false;
+  $("chat-scroll").innerHTML = "";
+  loadDashboard();
+}
+
+$("tenant-select").addEventListener("change", async (e) => {
+  setTenant(e.target.value);
+  state.chatLoaded = false;
+  $("chat-scroll").innerHTML = "";
+  await loadDashboard();
+  toast("已切換公司:" + (state.companies.find(c => c.slug === state.tenant)?.name || state.tenant));
+});
+$("btn-refresh").addEventListener("click", () => loadDashboard());
+$("btn-logout").addEventListener("click", () => {
+  api("/api/auth/logout", { method: "POST" }).catch(() => {});
+  setToken(""); setTenant("");
+  state.user = null;
+  showLogin();
+});
+
+/* ---------- 儀表板數據(全部走現有後端端點,失敗各自降級) ---------- */
+async function loadDashboard() {
+  const d = new Date();
+  const period = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const [bootstrap, erp, income, ap, ar, collab] = await Promise.all([
+    apiJson("/api/bootstrap").catch(() => ({})),
+    apiJson("/api/erp/overview").catch(() => ({})),
+    apiJson(`/api/erp/gl/income?period=${encodeURIComponent(period)}`).catch(() => ({})),
+    apiJson("/api/erp/gl/ap").catch(() => ({})),
+    apiJson("/api/erp/gl/ar").catch(() => ({})),
+    apiJson("/api/collab/messages?box=all&status=active&limit=30").catch(() => ({ messages: [] })),
+  ]);
+
+  // 01 預算
+  const s = erp.summary || {};
+  const total = Number(s.budget_amount || 0);
+  const used = Number(s.budget_reserved || 0) + Number(s.budget_spent || 0);
+  const usage = total ? Math.min(100, Math.round(used / total * 100)) : 0;
+  const heroEl = $("hero-budget");
+  heroEl.classList.remove("skeleton");
+  // hero 帶 ¥ 前綴的數字滾動
+  (function () {
+    const target = Number(s.budget_available || 0);
+    const render = (v) => { heroEl.innerHTML = '<span class="cur">¥</span>' + Math.round(v).toLocaleString("zh-CN"); };
+    if (REDUCED) { render(target); return; }
+    const t0 = performance.now();
+    function tick(now) {
+      const k = Math.min(1, (now - t0) / 950);
+      render(target * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  })();
+  $("hero-sub").textContent = `進行工單 ${fmtNum(s.work_tasks_open)} · 採購申請 ${fmtNum(s.purchase_open)}`;
+  $("hero-total").textContent = "總額 " + fmtMoney(total);
+  $("hero-used").textContent = "已佔用 " + fmtMoney(used);
+  gauge.set(usage);
+
+  // 02 KPI
+  const profitEl = $("kpi-profit");
+  countUp(profitEl, income.profit, v => fmtMoney(v));
+  profitEl.style.color = Number(income.profit || 0) >= 0 ? "var(--green)" : "var(--red)";
+  countUp($("kpi-revenue"), income.revenue, v => fmtMoney(v));
+  const inventory = bootstrap.INVENTORY || [];
+  const totalStock = inventory.reduce((sum, it) => sum + Number(it.stock || 0), 0);
+  countUp($("kpi-stock"), totalStock, v => fmtNum(Math.round(v)));
+  const alerts = bootstrap.ALERTS || [];
+  const alertsEl = $("kpi-alerts");
+  countUp(alertsEl, alerts.length, v => fmtNum(Math.round(v)));
+  alertsEl.style.color = alerts.length ? "var(--orange)" : "var(--green)";
+
+  // 03 風險信號
+  $("alerts-badge").textContent = alerts.length;
+  const alertsList = $("alerts-list");
+  alertsList.innerHTML = "";
+  if (!alerts.length) {
+    alertsList.innerHTML = '<div class="empty-line">暫無真實預警 ✓</div>';
+  } else {
+    alerts.slice(0, 5).forEach((a, i) => {
+      const tone = a.level === "red" ? "var(--red)" : "var(--orange)";
+      alertsList.appendChild(rowItem(i + 1, tone, a.item || "—", a.suggest || a.type || "—", `${a.stock ?? "—"}/${a.safe ?? "—"}`));
+    });
+  }
+
+  // 04 待處理事項
+  const todo = [];
+  if (Number(s.open_alerts || 0) > 0) todo.push(["var(--red)", "未關閉預警", `${s.open_alerts} 項需要處理`, ""]);
+  if (Number(s.inventory_unlinked || 0) > 0) todo.push(["var(--orange)", "庫存未掛預算", `${s.inventory_unlinked} 張單據待閉環`, ""]);
+  const incoming = (collab.messages || []).filter(m => m.is_incoming && ["sent", "read"].includes(m.status || ""));
+  if (incoming.length) todo.push(["var(--accent)", "待回覆協作消息", `${incoming.length} 條等待你回覆`, ""]);
+  if (Number(ar.total_outstanding || 0) > 0) todo.push(["var(--ink)", "應收賬款", "客戶欠款待催收", fmtMoney(ar.total_outstanding)]);
+  if (Number(ap.total_outstanding || 0) > 0) todo.push(["var(--orange)", "應付賬款", "供應商款項待支付", fmtMoney(ap.total_outstanding)]);
+  $("todo-badge").textContent = todo.length;
+  const todoList = $("todo-list");
+  todoList.innerHTML = "";
+  if (!todo.length) {
+    todoList.innerHTML = '<div class="empty-line">暫無高優先級待辦 ✓</div>';
+  } else {
+    todo.forEach(([tone, title, sub, right], i) => todoList.appendChild(rowItem(i + 1, tone, title, sub, right)));
+  }
+
+  loadLedger().catch(() => {});   // 05 記賬本:獨立載入,失敗不影響其他卡片
+}
+
+/* ---------- 記賬本:AA 分賬(占比 / 往來結算 / 明細),走 /api/erp/finance/ledger-summary ---------- */
+async function loadLedger() {
+  const L = await apiJson("/api/erp/finance/ledger-summary?limit=all").catch(() => ({}));
+  const cats = L.by_category || [], payers = L.by_payer || [];
+  const balances = L.balances || [], plan = L.settlement || [], recent = L.recent || [];
+  $("ledger-total").innerHTML = '<span class="cur">¥</span>' + Math.round(Number(L.total_spent || 0)).toLocaleString("zh-CN");
+  $("ledger-count").textContent = fmtNum(L.expense_count || 0);
+  $("ledger-badge").textContent = L.expense_count || 0;
+  const empty = !(L.expense_count || 0) && !balances.length;
+  $("ledger-period").textContent = empty
+    ? "還沒有記賬數據 — 點右下「✦ AI 秘書」拍一張賬單照片,或直接說「阿迪絲墊付 740 高鐵票,我和她平攤」,我幫你記進賬。"
+    : ((L.period ? L.period + " 期間" : "全部期間") + (Math.abs(L.imbalance || 0) >= 0.01 ? ` · ⚠ 淨額未平 ${fmtMoney(L.imbalance)},可能有開銷沒記分攤` : ""));
+
+  const TONES = ["var(--accent)", "var(--ink)", "var(--green)", "var(--orange)", "var(--ink-soft)", "#7a6f57", "#2e6e4c", "#9a6310"];
+  $("lg-cats-block").style.display = cats.length ? "" : "none";
+  renderBars($("ledger-cats"), cats, TONES);
+  $("lg-payers-block").style.display = payers.length ? "" : "none";
+  renderBars($("ledger-payers"), payers, ["var(--ink)"]);
+
+  const ccys = L.by_currency || [];
+  const showFx = ccys.length > 1 || ccys.some(c => (c.currency || "CNY") !== "CNY");
+  $("lg-fx-block").style.display = showFx ? "" : "none";
+  if (showFx) {
+    const el = $("ledger-currencies"); el.innerHTML = "";
+    ccys.forEach((c, i) => {
+      const sub = (c.currency === "CNY")
+        ? `人民幣 · ${c.cnt} 筆`
+        : `原 ${Number(c.orig_total || 0).toLocaleString("zh-CN")} ${c.currency} · ${c.cnt} 筆`;
+      el.appendChild(rowItem(i + 1, "var(--ink)", c.currency, sub, fmtMoney(c.cny_total)));
+    });
+  }
+
+  $("lg-settle-block").style.display = balances.length ? "" : "none";
+  if (balances.length) {
+    const balEl = $("ledger-balances"); balEl.innerHTML = "";
+    balances.forEach((b, i) => {
+      const tone = b.net > 0 ? "var(--green)" : (b.net < 0 ? "var(--red)" : "var(--muted)");
+      const right = (b.net > 0 ? "應收 " : b.net < 0 ? "應付 " : "") + fmtMoney(Math.abs(b.net));
+      balEl.appendChild(rowItem(i + 1, tone, b.party, `墊付 ${fmtMoney(b.paid_for_group)} · 分攤 ${fmtMoney(b.your_share)}`, right));
+    });
+    const planEl = $("ledger-plan"); planEl.innerHTML = "";
+    $("ledger-settle-tag").textContent = plan.length ? `最少 ${plan.length} 筆擺平` : "已平,無需轉賬";
+    plan.forEach(t => {
+      const row = document.createElement("div"); row.className = "settle-row";
+      row.innerHTML = '<span class="from"></span><span class="arr">→</span><span class="to"></span><b></b>';
+      row.querySelector(".from").textContent = t.from;
+      row.querySelector(".to").textContent = t.to;
+      row.querySelector("b").textContent = fmtMoney(t.amount);
+      planEl.appendChild(row);
+    });
+    const btn = $("ledger-settle-btn");
+    btn.style.display = plan.length ? "" : "none";
+    btn.onclick = () => openSheet("請按最優結算方案把這幾筆轉賬登記平賬(fin settle-record),登記前把每一筆複述給我確認。");
+  }
+
+  $("lg-recent-block").style.display = recent.length ? "" : "none";
+  state.recent = recent;
+  $("ledger-recent-tag").textContent = recent.length ? `全部 ${recent.length} 筆` : "";
+  buildReconFilter(recent);
+  renderRecon();
+}
+
+/* ---------- 消費明細:按付款人分組 / 按時間 + 付款人篩選(對賬用) ---------- */
+function buildReconFilter(recent) {
+  const sel = $("recon-payer"); if (!sel) return;
+  const prev = sel.value;
+  const names = [...new Set(recent.map(r => r.payer).filter(Boolean))];
+  sel.innerHTML = "";
+  const all = document.createElement("option"); all.value = ""; all.textContent = "全部付款人"; sel.appendChild(all);
+  names.forEach(n => { const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o); });
+  sel.value = names.includes(prev) ? prev : "";
+}
+
+function renderRecon() {
+  const recent = state.recent || [];
+  const mode = state.reconMode || "payer";
+  const filter = ($("recon-payer") && $("recon-payer").value) || "";
+  const list = filter ? recent.filter(r => r.payer === filter) : recent;
+  const el = $("ledger-recent"); el.innerHTML = "";
+  if (!list.length) { el.innerHTML = '<div class="recon-empty">沒有符合的賬單。</div>'; return; }
+  if (mode === "payer") renderReconByPayer(el, list);
+  else list.forEach(r => el.appendChild(expCard(r, true)));
+}
+
+// 一張結構化賬單卡:商品/金額 → 誰墊付·日期 → 替誰分攤(每人各自承擔多少)
+function expCard(r, showPayer) {
+  const div = document.createElement("div"); div.className = "exp-item";
+  const head = document.createElement("div"); head.className = "exp-head";
+  const nm = document.createElement("span"); nm.className = "exp-name"; nm.textContent = r.item || "支出";
+  const amt = document.createElement("b"); amt.textContent = fmtMoney(r.amount);
+  head.append(nm, amt); div.appendChild(head);
+
+  const origNote = (r.orig_currency && r.orig_currency !== "CNY")
+    ? ` · 原 ${Number(r.orig_amount || 0).toLocaleString("zh-CN")} ${r.orig_currency}` : "";
+  const pay = document.createElement("div"); pay.className = "exp-pay";
+  if (showPayer) {
+    const payer = document.createElement("span"); payer.className = "exp-payer"; payer.textContent = r.payer || "—";
+    const meta = document.createElement("span"); meta.textContent = ` 墊付 · ${r.event_date || ""}${origNote}`;
+    pay.append(payer, meta);
+  } else {
+    pay.textContent = `${r.event_date || ""}${origNote}`;
+  }
+  div.appendChild(pay);
+
+  const split = r.split || [];
+  if (split.length) {
+    const lead = document.createElement("div"); lead.className = "split-lead"; lead.textContent = "替誰墊（各自承擔）";
+    const chips = document.createElement("div"); chips.className = "split-chips";
+    split.forEach(s => {
+      const c = document.createElement("span"); c.className = "split-chip" + (s.name === r.payer ? " is-payer" : "");
+      const n = document.createElement("span"); n.className = "nm"; n.textContent = s.name || "—";
+      const b = document.createElement("b"); b.textContent = fmtMoney(s.amount);
+      c.append(n, b); chips.appendChild(c);
+    });
+    div.append(lead, chips);
+  } else {
+    const none = document.createElement("div"); none.className = "split-none"; none.textContent = "未登記分攤(個人開銷)";
+    div.appendChild(none);
+  }
+  return div;
+}
+
+function renderReconByPayer(el, list) {
+  const groups = new Map();
+  list.forEach(r => {
+    const k = r.payer || "—";
+    if (!groups.has(k)) groups.set(k, { name: k, items: [], total: 0 });
+    const g = groups.get(k); g.items.push(r); g.total += Number(r.amount || 0);
+  });
+  [...groups.values()].sort((a, b) => b.total - a.total).forEach(g => {
+    const box = document.createElement("div"); box.className = "pgroup";
+    const head = document.createElement("div"); head.className = "pgroup-head";
+    head.innerHTML = '<div class="pgroup-name"><span class="pgroup-chev">▾</span><span class="nm"></span><span class="pgroup-cnt"></span></div><div class="pgroup-total"></div>';
+    head.querySelector(".nm").textContent = g.name;
+    head.querySelector(".pgroup-cnt").textContent = `墊付 ${g.items.length} 筆`;
+    head.querySelector(".pgroup-total").textContent = fmtMoney(g.total);
+    const body = document.createElement("div"); body.className = "pgroup-body";
+    g.items.forEach(r => body.appendChild(expCard(r, false)));
+    head.addEventListener("click", () => box.classList.toggle("collapsed"));
+    box.append(head, body); el.appendChild(box);
+  });
+}
+
+function renderBars(container, items, tones) {
+  container.innerHTML = "";
+  if (!items.length) { container.innerHTML = '<div class="empty-line">暫無數據</div>'; return; }
+  items.slice(0, 8).forEach((it, i) => {
+    const bar = document.createElement("div"); bar.className = "bar";
+    bar.innerHTML = '<div class="bar-row"><span class="bar-label"></span><span class="bar-amt"></span></div><div class="bar-track"><div class="bar-fill"></div></div>';
+    bar.querySelector(".bar-label").textContent = it.name || "—";
+    bar.querySelector(".bar-amt").textContent = fmtMoney(it.amount) + " · " + (it.pct || 0) + "%";
+    const fill = bar.querySelector(".bar-fill");
+    fill.style.width = Math.max(2, Math.min(100, Number(it.pct) || 0)) + "%";
+    fill.style.background = tones[i % tones.length];
+    container.appendChild(bar);
+  });
+}
+
+function rowItem(no, tone, title, sub, right) {
+  const row = document.createElement("div");
+  row.className = "rowitem";
+  row.innerHTML =
+    `<span class="row-no">${String(no).padStart(2, "0")}</span>` +
+    `<svg class="row-mark" viewBox="0 0 8 8"><rect width="8" height="8" fill="${tone.startsWith("var") ? "" : tone}" style="fill:${tone}"/></svg>` +
+    `<div class="row-main"><div class="row-title"></div><div class="row-sub"></div></div>` +
+    (right ? `<div class="row-right"></div>` : "");
+  row.querySelector(".row-title").textContent = title;
+  row.querySelector(".row-sub").textContent = sub;
+  if (right) row.querySelector(".row-right").textContent = right;
+  return row;
+}
+
+/* ---------- 聊天面板 ---------- */
+function openSheet(prefill) {
+  $("sheet-mask").classList.add("open");
+  $("sheet").classList.add("open");
+  if (!state.chatLoaded) { state.chatLoaded = true; loadChatHistory(); }
+  if (prefill) {
+    $("chat-input").value = prefill;
+    autosize();
+    setTimeout(() => sendMessage(), 350);
+  } else {
+    setTimeout(() => $("chat-input").focus(), 350);
+  }
+}
+function closeSheet() {
+  $("sheet-mask").classList.remove("open");
+  $("sheet").classList.remove("open");
+  $("chat-input").blur();
+}
+$("fab").addEventListener("click", () => openSheet());
+$("sheet-mask").addEventListener("click", closeSheet);
+$("btn-close").addEventListener("click", closeSheet);
+$("btn-newchat").addEventListener("click", () => {
+  localStorage.removeItem(convKey());
+  $("chat-scroll").innerHTML = "";
+  renderSuggestions();
+  toast("已開啟新對話");
+});
+document.querySelectorAll("#quick-chips .chip").forEach(chip => {
+  chip.addEventListener("click", () => openSheet(chip.dataset.ask));
+});
+
+// 消費明細:視圖切換(按付款人 / 按時間)+ 付款人篩選
+state.reconMode = "payer";
+document.querySelectorAll("#recon-view .seg-btn").forEach(b => {
+  b.addEventListener("click", () => {
+    state.reconMode = b.dataset.mode;
+    document.querySelectorAll("#recon-view .seg-btn").forEach(x => x.classList.toggle("on", x === b));
+    renderRecon();
+  });
+});
+$("recon-payer").addEventListener("change", renderRecon);
+
+/* ---------- 拍賬單照片 → 視覺識別 → 交給秘書記賬 ---------- */
+$("bill-btn").addEventListener("click", () => $("bill-file").click());
+$("bill-file").addEventListener("change", (e) => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = "";
+  if (!files.length) return;
+  if (files.length > 1) scanBills(files); else scanBill(files[0]);
+});
+async function scanBills(files) {
+  if (!files || !files.length) return;
+  if (state.busy) { toast("AI 正在忙,稍候再傳"); return; }
+  toast("識別 " + files.length + " 張賬單中…");
+  try {
+    const fd = new FormData();
+    files.slice(0, 30).forEach((f, i) => fd.append("file" + i, f));
+    const res = await api("/api/erp/finance/bills-scan", { method: "POST", body: fd });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) throw new Error(j.error || "識別失敗");
+    const lines = (j.bills || []).map((b, i) => b.ok
+      ? `${i + 1}. ${b.merchant || "賬單"} ${b.date || ""} 合計 ${b.total != null ? ("¥" + b.total) : "?"}${b.items && b.items.length ? (" · " + b.items.map(it => it.name + " " + it.amount).join("、")) : ""}`
+      : `${i + 1}. (識別失敗)`).join("\n");
+    openSheet("我一次傳了 " + (j.recognized || 0) + " 張賬單,識別結果如下:\n" + lines +
+      "\n請逐筆問我這些分別是誰墊付、和誰分攤(默認平攤),整理好後用 fin expense-bulk 一次入賬,有重複的去重。");
+  } catch (err) {
+    toast("識別失敗");
+    openSheet("我有一疊賬單想批量記(照片識別失敗:" + (err.message || err) + ")。我直接逐筆說:");
+  }
+}
+async function scanBill(file) {
+  if (!file) return;
+  if (state.busy) { toast("AI 正在忙,稍候再傳"); return; }
+  toast("識別賬單中…");
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await api("/api/erp/finance/bill-scan", { method: "POST", body: fd });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) throw new Error(j.error || "識別失敗");
+    openSheet("我拍了一張賬單,識別結果:" + (j.summary || "(見圖)") +
+      "。請按「墊付＋分攤」幫我記進賬:先問我這筆是誰墊付的、和哪些人分攤(默認平攤),確認後再記。");
+  } catch (err) {
+    toast("識別失敗");
+    openSheet("我有一筆賬單想記,但照片沒識別成功(" + (err.message || err) + ")。我直接說明:");
+  }
+}
+
+const chatScroll = $("chat-scroll");
+function scrollBottom() { chatScroll.scrollTop = chatScroll.scrollHeight; }
+
+// 輕量 Markdown 渲染(秘書回覆用):先 HTML 轉義防 XSS,再套用格式;只生成我們自己的標籤。
+function mdEsc(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function mdInline(s) {  // s 已轉義
+  return s
+    .replace(/`([^`]+)`/g, (m, c) => "<code>" + c + "</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, t, u) => '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + t + "</a>");
+}
+function mdToHtml(text) {
+  const lines = String(text == null ? "" : text).replace(/\r\n/g, "\n").split("\n");
+  let html = "", i = 0;
+  const isSep = (s) => /-/.test(s) && /^[\s|:-]+$/.test(s.trim());
+  const cells = (r) => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(c => c.trim());
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      const buf = []; i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++;
+      html += "<pre><code>" + mdEsc(buf.join("\n")) + "</code></pre>";
+      continue;
+    }
+    if (/\|/.test(line) && i + 1 < lines.length && isSep(lines[i + 1]) && /\|/.test(lines[i + 1])) {
+      const header = line, rows = []; i += 2;
+      while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== "") { rows.push(lines[i]); i++; }
+      let t = "<table><thead><tr>";
+      cells(header).forEach(c => { t += "<th>" + mdInline(mdEsc(c)) + "</th>"; });
+      t += "</tr></thead><tbody>";
+      rows.forEach(r => { t += "<tr>"; cells(r).forEach(c => { t += "<td>" + mdInline(mdEsc(c)) + "</td>"; }); t += "</tr>"; });
+      html += t + "</tbody></table>";
+      continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { const tag = "h" + Math.min(h[1].length + 2, 4); html += "<" + tag + ">" + mdInline(mdEsc(h[2])) + "</" + tag + ">"; i++; continue; }
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, "")); i++; }
+      html += "<ul>" + items.map(it => "<li>" + mdInline(mdEsc(it)) + "</li>").join("") + "</ul>";
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, "")); i++; }
+      html += "<ol>" + items.map(it => "<li>" + mdInline(mdEsc(it)) + "</li>").join("") + "</ol>";
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+      html += "<blockquote>" + mdInline(mdEsc(buf.join(" "))) + "</blockquote>";
+      continue;
+    }
+    if (line.trim() === "") { i++; continue; }
+    const para = [line]; i++;
+    while (i < lines.length && lines[i].trim() !== "" && !/^(#{1,6}\s|```|\s*[-*+]\s|\s*\d+\.\s|\s*>\s)/.test(lines[i]) && !/\|/.test(lines[i])) {
+      para.push(lines[i]); i++;
+    }
+    html += "<p>" + mdInline(mdEsc(para.join("\n"))).replace(/\n/g, "<br>") + "</p>";
+  }
+  return html || "";
+}
+
+function addMsg(role, text, isError) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + (role === "user" ? "user" : "ai");
+  const bubble = document.createElement("div");
+  bubble.className = "bubble" + (isError ? " is-error" : "");
+  if (role === "user" || isError) {
+    bubble.textContent = text;   // 用戶/錯誤:純文字
+  } else {
+    bubble.innerHTML = mdToHtml(text);   // 秘書回覆:渲染 Markdown(已轉義)
+  }
+  wrap.appendChild(bubble);
+  chatScroll.appendChild(wrap);
+  scrollBottom();
+  return bubble;
+}
+
+function addSteps() {
+  const wrap = document.createElement("div");
+  wrap.className = "msg ai";
+  wrap.style.maxWidth = "94%";
+  const steps = document.createElement("div");
+  steps.className = "steps";
+  wrap.appendChild(steps);
+  chatScroll.appendChild(wrap);
+  return steps;
+}
+
+function addTyping() {
+  const wrap = document.createElement("div");
+  wrap.className = "msg ai";
+  wrap.innerHTML = '<div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div>';
+  chatScroll.appendChild(wrap);
+  scrollBottom();
+  return wrap;
+}
+
+const SUGGESTIONS = [
+  "今天整體狀態怎麼樣?",
+  "查一下庫存裡數量最少的 5 種物資",
+  "幫我記一筆入庫",
+  "本月收入和利潤是多少?",
+  "列出所有未關閉的預警",
+  "幫我寫一份本週工作摘要",
+];
+function renderSuggestions() {
+  const box = document.createElement("div");
+  box.className = "msg ai";
+  box.style.maxWidth = "100%";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.style.whiteSpace = "normal";
+  bubble.textContent = "您好,我是您的 AI 秘書。儀表板只做展示,所有查詢和操作都可以直接吩咐我——查庫存、記賬、開單、出報表都可以。";
+  box.appendChild(bubble);
+  chatScroll.appendChild(box);
+  const sug = document.createElement("div");
+  sug.className = "chat-suggest";
+  SUGGESTIONS.forEach(text => {
+    const chip = document.createElement("button");
+    chip.className = "chip";
+    chip.innerHTML = '<i>Q.</i>';
+    chip.appendChild(document.createTextNode(text));
+    chip.addEventListener("click", () => { $("chat-input").value = text; autosize(); sendMessage(); });
+    sug.appendChild(chip);
+  });
+  chatScroll.appendChild(sug);
+  scrollBottom();
+}
+
+async function loadChatHistory() {
+  let convId = Number(localStorage.getItem(convKey())) || null;
+  // 跨設備續聊:優先採用服務器上「最新的 agent 對話」,與網頁版/終端共享同一條對話線
+  try {
+    const r = await apiJson("/api/ai/conversations?channel=agent&limit=1");
+    const latest = (r.rows && r.rows[0]) ? r.rows[0].id : null;
+    if (latest) { convId = latest; localStorage.setItem(convKey(), String(latest)); }
+  } catch (_) { /* 未登入或無歷史:退回本地 */ }
+  if (!convId) { renderSuggestions(); return; }
+  try {
+    const result = await apiJson(`/api/ai/conversation?id=${encodeURIComponent(convId)}`);
+    const messages = (result.messages || []).filter(m => m.role === "user" || m.role === "assistant");
+    if (!messages.length) { renderSuggestions(); return; }
+    messages.slice(-30).forEach(m => addMsg(m.role, m.content || ""));
+    scrollBottom();
+  } catch {
+    localStorage.removeItem(convKey());
+    renderSuggestions();
+  }
+}
+
+/* ---------- 發送:AI 秘書內核流(NDJSON) ---------- */
+const input = $("chat-input");
+function autosize() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 110) + "px";
+}
+input.addEventListener("input", autosize);
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+$("send-btn").addEventListener("click", sendMessage);
+
+function setBusy(busy) {
+  state.busy = busy;
+  $("send-btn").disabled = busy;
+  const st = $("ai-status");
+  st.classList.toggle("busy", busy);
+  st.querySelector("span").textContent = busy ? "正在執行…" : "在線 · 可執行全部業務操作";
+}
+
+async function sendMessage() {
+  const text = input.value.trim();
+  if (!text || state.busy) return;
+  input.value = "";
+  autosize();
+  addMsg("user", text);
+  setBusy(true);
+
+  const typing = addTyping();
+  let stepsBox = null;
+  const stepEls = {};
+  let gotFinal = false;
+  let ranSteps = false;
+
+  try {
+    const res = await api("/api/agent/run/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        conversation_id: Number(localStorage.getItem(convKey())) || null,
+      }),
+    });
+    if (!res.ok || !res.body) {
+      let msg = res.statusText;
+      try { msg = (await res.json()).error || msg; } catch {}
+      throw new Error(msg || "請求失敗");
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    // NDJSON 事件:後端把 payload 字典合併進頂層 → {"event":"step", ...字段}
+    const handle = (event) => {
+      const name = event.event;
+      if (name === "run_start" && event.conversation_id) {
+        localStorage.setItem(convKey(), String(event.conversation_id));
+      }
+      if (name === "step_start") {
+        if (!stepsBox) { stepsBox = addSteps(); }
+        const pill = document.createElement("div");
+        pill.className = "step-pill run";
+        pill.innerHTML = '<span class="st">◐</span><span class="step-cmd"></span>';
+        pill.querySelector(".step-cmd").textContent = event.command || event.tool_name || "執行中";
+        stepsBox.appendChild(pill);
+        stepEls[event.step_no] = pill;
+        scrollBottom();
+      }
+      if (name === "step") {
+        ranSteps = true;
+        const pill = stepEls[event.step_no];
+        if (pill) {
+          pill.classList.remove("run");
+          pill.classList.add(event.ok ? "ok" : "fail");
+          pill.querySelector(".st").textContent = event.ok ? "✓" : "✗";
+          if (!event.ok && event.error) {
+            const errSpan = document.createElement("span");
+            errSpan.textContent = " " + String(event.error).slice(0, 60);
+            pill.appendChild(errSpan);
+          }
+        }
+        scrollBottom();
+      }
+      if (name === "final") {
+        gotFinal = true;
+        typing.remove();
+        if (event.conversation_id) localStorage.setItem(convKey(), String(event.conversation_id));
+        addMsg("assistant", event.message || "已完成。", event.status === "failed");
+        if (event.status !== "failed") voiceSpeak(event.message || "已完成。");
+        else voiceLoopNext();
+      }
+      if (name === "error") {
+        gotFinal = true;
+        typing.remove();
+        addMsg("assistant", event.error || "出錯了,請稍後再試。", true);
+      }
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        try { handle(JSON.parse(line)); } catch {}
+      }
+    }
+    if (buf.trim()) { try { handle(JSON.parse(buf.trim())); } catch {} }
+    if (!gotFinal) { typing.remove(); addMsg("assistant", "連接中斷,已執行的步驟仍然有效。請重試。", true); }
+    if (ranSteps) loadDashboard().catch(() => {});  // 秘書動過手就靜默刷新面板
+  } catch (err) {
+    typing.remove();
+    addMsg("assistant", err.message || String(err), true);
+  } finally {
+    setBusy(false);
+    scrollBottom();
+  }
+}
+
+/* ============================================================
+   語音對話:雲端(後端 /api/voice/* 代理,真人感)→ 瀏覽器原生兜底。
+   - 麥克風:點一下說話、再點結束;雲端走 MediaRecorder→轉寫,
+     未配置雲端則用 Web Speech 實時識別
+   - 語音對話模式(喇叭鍵):回覆自動朗讀,朗讀完自動再聆聽 → 免手連續對話
+   - 單次語音輸入的回覆也朗讀一次(說話進、說話出)
+   ============================================================ */
+/* ============================================================
+   語音會話引擎(狀態機):點一下 mic 進入連續對話,麥克風全程不關。
+   phase: off → idle(待命聆聽) ⇄ user(您在說) → wait(識別/思考)
+          → ai(秘書在說,可隨時插話打斷) → idle …
+   - 持久 getUserMedia + AnalyserNode:零重啟間隙,真人對話節奏
+   - 端點:開口 ≥0.4s 後持續靜音 1.8s 才定稿發送(防說一半被搶話)
+   - Barge-in:AI 說話時同一路麥克風監聽,插話 0.35s 即掐斷轉聆聽
+   ============================================================ */
+const voiceState = {
+  cloud: false, on: false, phase: "off", gen: 0,
+  stream: null, ac: null, an: null, buf: null, raf: null,
+  recorder: null, chunks: [], mime: "", partialBusy: false, lastPartialAt: 0,
+  noise: 6, frames: 0, silenceSince: 0, utterStart: 0, aboveMs: 0, lastTick: 0,
+  audio: null, lastInputWasVoice: false, recog: null,
+};
+
+async function voiceInit() {
+  try {
+    const s = await apiJson("/api/voice/status");
+    voiceState.cloud = !!(s.configured && s.asr);
+  } catch { voiceState.cloud = false; }
+}
+
+function voiceTrim(text) {
+  // 只讀文字:去 markdown 標記/項目符號/分隔線/表格線/emoji,保留中文與數字
+  let t = (text || "")
+    .replace(/```[\s\S]*?```/g, "。代碼略過。")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*+•·▪◦]\s+/gm, "")
+    .replace(/^\s*\d+[.)、]\s+/gm, "")
+    .replace(/^\s*>+\s*/gm, "")
+    .replace(/^\s*[-=_*]{3,}\s*$/gm, "")
+    .replace(/\|/g, " ")
+    .replace(/\*\*|\*|__|_|~~/g, "")
+    .replace(/(^|[^\w\d])[-–—]+(?=[^\w\d]|$)/g, "$1 ")
+    .replace(/[#>`*_~|►▶▸◀◆◇■□●○★☆✓✔✗✘✦✧※→←↑↓➤➔◐]+/g, "")
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*\n\s*/g, "。")
+    .replace(/\s*\n\s*/g, " ")
+    .replace(/。(?:\s*。)+/g, "。")
+    .trim();
+  if (t.length > 280) {
+    const cut = t.slice(0, 280);
+    const pos = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("!"), cut.lastIndexOf("?"), cut.lastIndexOf("!"));
+    t = pos > 80 ? cut.slice(0, pos + 1) : cut;
+  }
+  return t;
+}
+
+function pickZhVoice() {
+  const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+  return vs.find(v => /xiaoxiao|曉|晓/i.test(v.name) && /natural|online/i.test(v.name))
+      || vs.find(v => /^zh/i.test(v.lang) && /natural|online/i.test(v.name))
+      || vs.find(v => /^zh/i.test(v.lang)) || null;
+}
+
+function voiceUI() {
+  const mic = $("mic-btn");
+  mic.classList.toggle("listening", voiceState.phase === "user");
+  mic.classList.toggle("standby", voiceState.on && voiceState.phase !== "user");
+  $("btn-voicemode").classList.toggle("voice-on", voiceState.on);
+  if (!voiceState.on) { mic.style.boxShadow = ""; input.placeholder = "說出要查什麼或做什麼…"; }
+  else input.placeholder = voiceState.phase === "user" ? "正在聽您說…(停頓即發送)"
+    : voiceState.phase === "ai" ? "秘書回覆中…直接開口可打斷"
+    : voiceState.phase === "wait" ? "正在識別/思考…" : "對話中:直接開口即可";
+}
+
+function setPhase(p) { voiceState.phase = p; voiceUI(); }
+
+/* ---- 進入/退出會話 ---- */
+async function enterVoice() {
+  if (voiceState.on) return;
+  voiceState.gen += 1;
+  if (voiceState.cloud && navigator.mediaDevices && window.MediaRecorder) {
+    try {
+      voiceState.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+    } catch { toast("無法使用麥克風(請允許權限)"); return; }
+    voiceState.ac = new (window.AudioContext || window.webkitAudioContext)();
+    voiceState.an = voiceState.ac.createAnalyser();
+    voiceState.an.fftSize = 256;
+    voiceState.ac.createMediaStreamSource(voiceState.stream).connect(voiceState.an);
+    voiceState.buf = new Uint8Array(voiceState.an.frequencyBinCount);
+    voiceState.mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm"
+      : (MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "");
+    voiceState.on = true;
+    voiceState.noise = 6;
+    setPhase("idle");
+    voiceState.lastTick = Date.now();
+    voiceState.raf = requestAnimationFrame(voiceMasterLoop);
+    toast("對話模式已開:直接說話,停頓即發送;再點麥克風退出");
+    return;
+  }
+  // 原生兜底:持續識別循環(靠瀏覽器自身斷句)
+  const R = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!R) { toast("此瀏覽器不支持語音,建議配置雲端語音或用 Chrome/Edge"); return; }
+  voiceState.on = true;
+  setPhase("idle");
+  startNativeRecog();
+  toast("對話模式已開(瀏覽器識別):直接說話即可");
+}
+
+function exitVoice() {
+  voiceState.on = false;
+  voiceState.gen += 1;
+  if (voiceState.raf) cancelAnimationFrame(voiceState.raf);
+  if (voiceState.recorder && voiceState.recorder.state !== "inactive") { try { voiceState.recorder.stop(); } catch {} }
+  if (voiceState.recog) { try { voiceState.recog.abort ? voiceState.recog.abort() : voiceState.recog.stop(); } catch {} }
+  if (voiceState.stream) { voiceState.stream.getTracks().forEach(t => t.stop()); voiceState.stream = null; }
+  if (voiceState.ac) { try { voiceState.ac.close(); } catch {} voiceState.ac = null; }
+  if (voiceState.audio) { try { voiceState.audio.pause(); } catch {} }
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  setPhase("off");
+  toast("對話模式已退出");
+}
+
+/* ---- 主循環:一路麥克風,聽/說/待命全狀態復用 ---- */
+function voiceMasterLoop() {
+  if (!voiceState.on || !voiceState.an) return;
+  const gen = voiceState.gen;
+  voiceState.an.getByteFrequencyData(voiceState.buf);
+  let s = 0;
+  for (let i = 0; i < voiceState.buf.length; i++) s += voiceState.buf[i];
+  const avg = s / voiceState.buf.length;
+  const now = Date.now();
+  const dt = Math.min(100, now - voiceState.lastTick);
+  voiceState.lastTick = now;
+  if (avg < voiceState.noise * 1.5) voiceState.noise = voiceState.noise * 0.97 + avg * 0.03;
+  const startTh = Math.max(voiceState.noise * 2.2, 11);
+  const endTh = Math.max(voiceState.noise * 1.5, 8);
+
+  if (voiceState.phase === "idle") {
+    $("mic-btn").style.boxShadow = "";
+    voiceState.frames = avg > startTh ? voiceState.frames + 1 : 0;
+    if (voiceState.frames >= 2 && !state.busy) beginUtterance();
+  } else if (voiceState.phase === "user") {
+    const level = Math.min(1, avg / 64);
+    $("mic-btn").style.boxShadow = `0 0 0 ${(3 + level * 16).toFixed(1)}px rgba(181,52,28,${(0.10 + level * 0.32).toFixed(2)})`;
+    const spokeLong = now - voiceState.utterStart > 400;
+    if (avg < endTh) {
+      if (!voiceState.silenceSince) voiceState.silenceSince = now;
+      else if (spokeLong && now - voiceState.silenceSince > 2300) { endUtterance(); }  // 停頓2.3s才算說完,容忍說話中的自然停頓
+      else if (!spokeLong && now - voiceState.silenceSince > 2800) { cancelUtterance(); }
+    } else voiceState.silenceSince = 0;
+    if (now - voiceState.utterStart > 60000) endUtterance();
+  } else if (voiceState.phase === "ai") {
+    if (avg > Math.max(startTh, 22)) voiceState.aboveMs += dt; else voiceState.aboveMs = Math.max(0, voiceState.aboveMs - dt * 2);
+    if (voiceState.aboveMs > 350) {
+      voiceState.aboveMs = 0;
+      if (voiceState.audio) { try { voiceState.audio.pause(); } catch {} }
+      if (window.speechSynthesis) speechSynthesis.cancel();
+      beginUtterance();
+    }
+  }
+  if (voiceState.gen === gen && voiceState.on) voiceState.raf = requestAnimationFrame(voiceMasterLoop);
+}
+
+function beginUtterance() {
+  voiceState.frames = 0;
+  voiceState.silenceSince = 0;
+  voiceState.utterStart = Date.now();
+  voiceState.chunks = [];
+  voiceState.lastPartialAt = 0;
+  const gen = voiceState.gen;
+  const rec = new MediaRecorder(voiceState.stream, voiceState.mime ? { mimeType: voiceState.mime } : undefined);
+  rec.ondataavailable = (e) => {
+    if (e.data && e.data.size) voiceState.chunks.push(e.data);
+    const now = Date.now();
+    if (rec.state === "recording" && now - voiceState.lastPartialAt > 2200) {
+      voiceState.lastPartialAt = now;
+      voiceTranscribe(gen, false);
+    }
+  };
+  rec.onstop = () => {
+    if (voiceState.gen !== gen) return;
+    const waitIdle = () => voiceState.partialBusy ? setTimeout(waitIdle, 120) : voiceTranscribe(gen, true);
+    waitIdle();
+  };
+  voiceState.recorder = rec;
+  rec.start(1000);
+  input.value = "";
+  input.classList.remove("partial");
+  setPhase("user");
+}
+
+function endUtterance() {
+  if (voiceState.recorder && voiceState.recorder.state !== "inactive") { try { voiceState.recorder.stop(); } catch {} }
+  setPhase("wait");
+}
+
+function cancelUtterance() {
+  const rec = voiceState.recorder;
+  if (rec && rec.state !== "inactive") { rec.onstop = null; try { rec.stop(); } catch {} }
+  voiceState.chunks = [];
+  input.classList.remove("partial");
+  setPhase("idle");
+}
+
+async function voiceTranscribe(gen, isFinal) {
+  if (!isFinal && (voiceState.partialBusy || !voiceState.chunks.length)) return;
+  const blob = new Blob(voiceState.chunks, { type: voiceState.mime || "audio/webm" });
+  if (blob.size < 2500) { if (isFinal) setPhase("idle"); return; }
+  voiceState.partialBusy = true;
+  try {
+    const res = await api("/api/voice/transcribe?lang=zh" + (isFinal ? "&correct=1" : ""), {
+      method: "POST", headers: { "Content-Type": blob.type }, body: blob,
+    });
+    const d = await res.json().catch(() => ({}));
+    if (voiceState.gen !== gen) return;
+    if (d.ok && d.text) {
+      input.value = d.text;
+      input.classList.toggle("partial", !isFinal);
+      autosize();
+      if (isFinal) {
+        voiceState.lastInputWasVoice = true;
+        sendMessage();
+      }
+    } else if (isFinal) { toast(d.error || "沒聽清,請再說一次"); setPhase("idle"); }
+  } catch { if (isFinal) { toast("語音識別失敗"); setPhase("idle"); } }
+  finally { voiceState.partialBusy = false; }
+}
+
+/* ---- 原生識別會話(無雲端 key 的兜底) ---- */
+function startNativeRecog() {
+  const R = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const r = new R();
+  r.lang = "zh-CN";
+  r.interimResults = true;
+  r.continuous = true;
+  r.onresult = (e) => {
+    let interim = "", final = "";
+    for (const res of e.results) (res.isFinal ? (final += res[0].transcript) : (interim += res[0].transcript));
+    if (interim) { input.value = interim; input.classList.add("partial"); autosize(); }
+    if (final.trim()) {
+      if (voiceState.phase === "ai" && window.speechSynthesis) speechSynthesis.cancel();
+      input.value = final.trim();
+      input.classList.remove("partial");
+      autosize();
+      voiceState.lastInputWasVoice = true;
+      setPhase("wait");
+      sendMessage();
+    }
+  };
+  r.onend = () => { if (voiceState.on) { try { r.start(); } catch {} } };
+  r.onerror = () => {};
+  voiceState.recog = r;
+  try { r.start(); setPhase("idle"); } catch {}
+}
+
+/* ---- 朗讀(會話中自動;會話外僅語音輸入回讀) ---- */
+async function voiceSpeak(text) {
+  if (!voiceState.on && !voiceState.lastInputWasVoice) return;
+  const clean = voiceTrim(text);
+  const backIdle = () => { if (voiceState.on) setPhase("idle"); voiceState.lastInputWasVoice = false; };
+  if (!clean) { backIdle(); return; }
+  const gen = voiceState.gen;
+  if (voiceState.on) setPhase("ai");
+  voiceState.aboveMs = 0;
+  try {
+    if (voiceState.cloud) {
+      const res = await api("/api/voice/speak", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: clean }),
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (voiceState.gen !== gen || (voiceState.on && voiceState.phase !== "ai")) return;
+        const url = URL.createObjectURL(blob);
+        voiceState.audio = new Audio(url);
+        voiceState.audio.onended = () => { URL.revokeObjectURL(url); if (voiceState.gen === gen && (!voiceState.on || voiceState.phase === "ai")) backIdle(); };
+        voiceState.audio.onerror = () => { URL.revokeObjectURL(url); backIdle(); };
+        await voiceState.audio.play();
+        return;
+      }
+    }
+  } catch {}
+  if (voiceState.gen !== gen) return;
+  if ("speechSynthesis" in window) {
+    const u = new SpeechSynthesisUtterance(clean);
+    const v = pickZhVoice();
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = "zh-TW";
+    u.rate = 1.05;
+    u.onend = () => { if (voiceState.gen === gen) backIdle(); };
+    u.onerror = () => { if (voiceState.gen === gen) backIdle(); };
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  } else backIdle();
+}
+
+function voiceLoopNext() { if (voiceState.on) setPhase("idle"); voiceState.lastInputWasVoice = false; }
+
+$("mic-btn").addEventListener("click", () => voiceState.on ? exitVoice() : enterVoice());
+$("btn-voicemode").addEventListener("click", () => voiceState.on ? exitVoice() : enterVoice());
+document.addEventListener("visibilitychange", () => { if (document.hidden && voiceState.on) exitVoice(); });
+if (window.speechSynthesis) speechSynthesis.getVoices();  // 預熱語音列表
+
+boot();
+voiceInit();
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /service
+COPY backend/pyproject.toml ./pyproject.toml
+RUN --mount=type=cache,id=warehouse-pip-cache,target=/root/.cache/pip,sharing=locked \
+    mkdir -p app/api app/core app/db app/services app/templates app/terminal \
+    && touch app/__init__.py app/api/__init__.py app/core/__init__.py \
+      app/db/__init__.py app/services/__init__.py app/templates/__init__.py \
+      app/terminal/__init__.py \
+    && pip install . "numpy>=2,<3" "pandas>=2,<3" "scipy>=1.15,<2" \
+    && rm -rf app
+COPY backend/app ./app
+
+CMD ["python", "-m", "app.research_executor"]

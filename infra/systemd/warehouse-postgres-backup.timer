@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Warehouse OS PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=warehouse-postgres-backup.service
+
+[Install]
+WantedBy=timers.target

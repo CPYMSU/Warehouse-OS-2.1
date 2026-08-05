@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_DIR="${1:-}"
+TENANT="${2:-bonfire}"
+WORKSPACE_KEY="${3:-}"
+RUNTIME_TYPE="${4:-auto}"
+COMPONENT="${5:-frontend}"
+ENTRYPOINT="${6:-index.html}"
+EXPECT_TEXT="${7:-}"
+ASSET_NAME="${8:-${WORKSPACE_KEY}}"
+VERSION="${9:-smoke-$(date -u +%Y%m%dT%H%M%SZ)}"
+HOST="${WAREHOUSE_DEPLOY_HOST:-207.148.120.30}"
+USER="${WAREHOUSE_DEPLOY_USER:-warehouse-deploy}"
+IDENTITY="${WAREHOUSE_DEPLOY_IDENTITY:-${HOME}/.ssh/warehouse_os_deploy_ed25519}"
+REMOTE_MANAGER="${WAREHOUSE_REMOTE_DEPLOY_MANAGER:-/usr/local/sbin/warehouse-deploy}"
+
+usage() {
+  printf '%s\n' \
+    "Usage: ops/hosting-smoke SOURCE_DIR TENANT WORKSPACE_KEY RUNTIME_TYPE COMPONENT ENTRYPOINT EXPECT_TEXT [ASSET_NAME] [VERSION]"
+}
+
+[[ -n "${SOURCE_DIR}" && -d "${SOURCE_DIR}" ]] || { usage >&2; exit 2; }
+[[ -n "${WORKSPACE_KEY}" && -n "${EXPECT_TEXT}" ]] || { usage >&2; exit 2; }
+[[ -f "${IDENTITY}" ]] || { printf 'hosting smoke identity is missing\n' >&2; exit 2; }
+
+ssh_options=(
+  -i "${IDENTITY}"
+  -o BatchMode=yes
+  -o IdentitiesOnly=yes
+  -o StrictHostKeyChecking=yes
+  -o ConnectTimeout=15
+  -o ServerAliveInterval=20
+  -o ServerAliveCountMax=3
+)
+
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-hosting-smoke.XXXXXX")"
+archive_name="hosting-smoke-${WORKSPACE_KEY}-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+archive="${work_dir}/${archive_name}"
+cleanup() { rm -rf "${work_dir}"; }
+trap cleanup EXIT
+
+COPYFILE_DISABLE=1 tar -C "${SOURCE_DIR}" -czf "${archive}" .
+digest="$(shasum -a 256 "${archive}" | awk '{print $1}')"
+ssh "${ssh_options[@]}" "${USER}@${HOST}" \
+  "mkdir -p /var/lib/warehouse-deploy/incoming"
+scp "${ssh_options[@]}" "${archive}" \
+  "${USER}@${HOST}:/var/lib/warehouse-deploy/incoming/${archive_name}"
+
+remote_args=(
+  sudo -n "${REMOTE_MANAGER}" hosting-smoke
+  "${archive_name}" "${digest}" "${TENANT}" "${WORKSPACE_KEY}"
+  "${RUNTIME_TYPE}" "${COMPONENT}" "${ENTRYPOINT}" "${VERSION}"
+  "${EXPECT_TEXT}" "${ASSET_NAME}"
+)
+printf -v remote_command '%q ' "${remote_args[@]}"
+ssh "${ssh_options[@]}" "${USER}@${HOST}" "${remote_command}"

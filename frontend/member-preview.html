@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'">
+  <title>Warehouse Member · H5 体验台</title>
+  <style>
+    :root{--paper:#f5f2eb;--card:#faf8f2;--ink:#141414;--muted:#85806f;--line:#d8d3c7;--red:#e0261c;--green:#1f7a42}
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--paper);color:var(--ink);font-family:Inter,"PingFang SC","Noto Sans CJK SC",Arial,sans-serif}
+    button,input,select{font:inherit}button{cursor:pointer}.shell{min-height:100vh;display:grid;grid-template-columns:minmax(300px,430px) minmax(280px,1fr)}
+    .phone{min-height:100vh;border-right:2px solid var(--ink);display:flex;flex-direction:column;background:var(--paper)}
+    .top{position:sticky;top:0;z-index:5;background:rgba(245,242,235,.96);border-bottom:2px solid var(--ink);padding:18px 20px 14px}
+    .brand{display:flex;align-items:center;justify-content:space-between;gap:12px}.brand-mark{width:38px;height:38px;display:grid;place-items:center;background:var(--red);color:#fff;font-weight:900}
+    .brand-name{flex:1;font-size:18px;font-weight:900;letter-spacing:-.5px}.preview-chip{border:1px solid var(--red);padding:5px 7px;color:var(--red);font-size:10px;font-weight:800;letter-spacing:1.5px}
+    .company-select{width:100%;margin-top:14px;border:0;border-bottom:2px solid var(--ink);border-radius:0;background:transparent;padding:9px 2px;font-weight:800;color:var(--ink)}
+    main{flex:1;padding:24px 20px 105px}.eyebrow{color:var(--red);font-size:10px;font-weight:900;letter-spacing:3px}.title{font-size:34px;font-weight:900;line-height:1.05;margin:8px 0 18px;letter-spacing:-1.4px}
+    .rule{height:4px;background:var(--ink);margin:0 0 20px}.card{border:1px solid var(--ink);border-top:5px solid var(--ink);background:var(--card);padding:18px;margin-bottom:16px}
+    .row{display:flex;justify-content:space-between;gap:14px;align-items:center}.muted{color:var(--muted)}.mono{font-family:"DIN Alternate","Arial Narrow",monospace;font-variant-numeric:tabular-nums}
+    .balance-label{margin-top:42px;color:var(--muted);font-size:11px;letter-spacing:2px}.balance{font-size:58px;font-weight:900;line-height:1;margin:7px 0 13px}.balance b{font-size:24px;color:var(--red);vertical-align:top;margin-right:5px}
+    .level-chip{border:1px solid var(--ink);padding:5px 8px;font-size:11px;font-weight:800}.grid{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--ink);border-left:1px solid var(--ink)}
+    .tile{min-height:92px;border:0;border-right:1px solid var(--ink);border-bottom:1px solid var(--ink);background:transparent;text-align:left;padding:13px;display:flex;flex-direction:column;justify-content:space-between;font-weight:900}.tile.red{background:var(--red);color:#fff}.tile.black{background:var(--ink);color:var(--paper)}.tile small{font-size:9px;letter-spacing:2px}
+    .section{margin-top:28px}.section-head{display:flex;gap:12px;align-items:baseline;margin-bottom:12px}.section-head small{color:var(--red);font-weight:900}.section-head h2{font-size:20px;margin:0}.field{margin:14px 0}.field label{display:block;color:var(--muted);font-size:11px;letter-spacing:1px;margin-bottom:7px}.field input{width:100%;border:1px solid var(--ink);border-radius:0;background:var(--card);padding:13px;color:var(--ink)}
+    .amounts{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.amount{border:1px solid var(--ink);background:transparent;padding:11px 4px;font-weight:800}.amount.active{background:var(--ink);color:var(--paper)}
+    .btn{width:100%;border:1px solid var(--ink);border-radius:0;background:var(--ink);color:var(--paper);padding:13px;font-weight:900;margin-top:10px}.btn.red{background:var(--red);border-color:var(--red)}.btn.light{background:transparent;color:var(--ink)}.btn:disabled{opacity:.35;cursor:not-allowed}
+    .notice{border-left:6px solid var(--red);background:var(--card);padding:12px;font-size:12px;line-height:1.55;margin-bottom:16px}.notice.green{border-left-color:var(--green)}
+    .code{font-size:32px;font-weight:900;letter-spacing:5px;text-align:center;padding:28px 4px;border:2px dashed var(--ink);background:#fff;margin:16px 0}.ledger-row,.reward-row{padding:14px 0;border-bottom:1px solid var(--line)}.ledger-row:last-child,.reward-row:last-child{border-bottom:0}.positive{color:var(--green)}.negative{color:var(--red)}
+    .progress{height:10px;border:1px solid var(--ink);margin:12px 0}.progress span{display:block;height:100%;background:var(--red)}.topology{display:flex;align-items:center;gap:4px;overflow:auto;padding:14px 0}.node{min-width:72px;border:1px solid var(--ink);padding:9px;text-align:center;font-size:10px;font-weight:800}.node.active{background:var(--ink);color:var(--paper)}.edge{height:1px;min-width:18px;background:var(--ink)}
+    .campaign{padding:14px 0;border-top:3px solid var(--ink)}.prize{display:inline-block;border:1px solid var(--line);padding:6px 8px;margin:5px 5px 0 0;font-size:10px}.result{border:2px solid var(--red);padding:18px;margin-top:14px;text-align:center}.result strong{display:block;font-size:24px;margin:6px 0}
+    .tabbar{position:fixed;left:0;bottom:0;width:min(430px,100vw);display:grid;grid-template-columns:repeat(6,1fr);background:var(--ink);color:var(--paper);z-index:10;padding-bottom:env(safe-area-inset-bottom)}.tab{border:0;background:transparent;color:inherit;padding:11px 2px 9px;font-size:9px;opacity:.6}.tab span{display:block;font-size:15px;margin-bottom:4px}.tab.active{opacity:1;background:var(--red)}
+    .lab{padding:42px clamp(26px,6vw,86px);background:#fff;min-height:100vh}.lab-index{color:var(--red);font-weight:900;letter-spacing:4px;font-size:11px}.lab h1{font-size:clamp(38px,6vw,82px);line-height:.93;letter-spacing:-4px;margin:18px 0 28px;max-width:850px}.lab p{max-width:700px;line-height:1.7;color:#555}.lab-grid{display:grid;grid-template-columns:repeat(2,minmax(180px,1fr));gap:1px;background:var(--ink);border:1px solid var(--ink);margin:32px 0;max-width:800px}.lab-cell{background:#fff;padding:18px}.lab-cell b{display:block;font-size:26px;margin-top:8px}.lab-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:24px}.lab-actions button{border:1px solid var(--ink);background:#fff;padding:10px 14px;font-weight:800}.lab-actions button:hover{background:var(--ink);color:#fff}.server-form{display:flex;gap:7px;max-width:600px;margin-top:18px}.server-form input{flex:1;border:1px solid var(--ink);padding:11px}.server-form button{border:1px solid var(--ink);background:var(--red);color:#fff;padding:10px 14px;font-weight:900}.server-result{margin-top:10px;font-size:12px;min-height:20px}
+    .hidden{display:none!important}@media(max-width:760px){.shell{display:block}.phone{border-right:0}.lab{display:none}.tabbar{width:100%}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="phone" aria-label="会员小程序 H5 体验区">
+      <header class="top">
+        <div class="brand"><div class="brand-mark">B</div><div class="brand-name">WAREHOUSE MEMBER.</div><div class="preview-chip">H5 PREVIEW</div></div>
+        <select id="companySelect" class="company-select" aria-label="切换公司"></select>
+      </header>
+      <main id="screen"></main>
+      <nav class="tabbar" aria-label="体验台导航">
+        <button class="tab active" data-page="home"><span>01</span>首页</button>
+        <button class="tab" data-page="recharge"><span>02</span>充值</button>
+        <button class="tab" data-page="pay"><span>03</span>付款</button>
+        <button class="tab" data-page="level"><span>04</span>等级</button>
+        <button class="tab" data-page="lottery"><span>05</span>抽奖</button>
+        <button class="tab" data-page="profile"><span>06</span>我的</button>
+      </nav>
+    </section>
+    <aside class="lab">
+      <div class="lab-index">WAREHOUSE / MEMBER / 00</div>
+      <h1>Swiss H5<br>Test Bench.</h1>
+      <p>这是原生微信小程序的浏览器体验台，用于在开发阶段快速检查版式和主要交互。所有充值、消费及抽奖都只修改当前浏览器的演示数据，不会调用真实支付或写入会员资金账本。</p>
+      <div class="lab-grid">
+        <div class="lab-cell"><small>MODE</small><b>演示数据</b></div><div class="lab-cell"><small>REAL PAYMENT</small><b>禁用</b></div>
+        <div class="lab-cell"><small>VIEWPORT</small><b>390 PX</b></div><div class="lab-cell"><small>STYLE</small><b>SWISS</b></div>
+      </div>
+      <h3>读取服务器上的公开公司</h3>
+      <p>可输入会员公司代码，仅调用公开预览接口读取公司名称；账户、充值和抽奖仍保持本地演示模式。</p>
+      <form id="serverCompanyForm" class="server-form"><input id="serverCompanyCode" maxlength="48" placeholder="例如 company-a"><button type="submit">读取</button></form>
+      <div id="serverResult" class="server-result"></div>
+      <div class="lab-actions"><button id="resetDemo">重置演示数据</button><button id="openMiniDocs">返回 Warehouse</button></div>
+    </aside>
+  </div>
+  <script>
+    (() => {
+      'use strict';
+      const STORAGE_KEY = 'warehouse.member.h5.preview.v1';
+      const yuan = value => (Number(value || 0) / 100).toFixed(2);
+      const nowText = () => new Date().toLocaleString('zh-CN', {hour12:false});
+      const safe = value => String(value == null ? '' : value).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+      const randomInt = max => {
+        const data = new Uint32Array(1);
+        crypto.getRandomValues(data);
+        return max > 0 ? data[0] % max : 0;
+      };
+      const seed = () => ({
+        selected:'bonfire-demo', page:'home',
+        companies:{
+          'bonfire-demo':{code:'bonfire-demo',name:'Bonfire Workshop',mode:'Warehouse 2.0 已绑定 · 财务草稿联动',memberNo:'M-20260716-001',balance:36800,spend:126000,points:1260,draws:2,rewards:[],ledger:[
+            {type:'充值',amount:30000,time:'2026/7/16 10:20:00'},{type:'消费',amount:-3200,time:'2026/7/16 13:42:00'},{type:'充值',amount:10000,time:'2026/7/15 18:12:00'}]},
+          'south-asia-demo':{code:'south-asia-demo',name:'South Asia Travel',mode:'独立运行',memberNo:'M-20260716-018',balance:8800,spend:42000,points:420,draws:1,rewards:[],ledger:[{type:'充值',amount:10000,time:'2026/7/14 09:05:00'},{type:'消费',amount:-1200,time:'2026/7/15 17:30:00'}]}
+        }
+      });
+      let state;
+      try { state = JSON.parse(localStorage.getItem(STORAGE_KEY)) || seed(); } catch (_) { state = seed(); }
+      if (!state.companies || !state.companies[state.selected]) state = seed();
+      const save = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const company = () => state.companies[state.selected];
+      const levels = [
+        {name:'BASIC',min:0,rate:1},{name:'SILVER',min:50000,rate:1.2},{name:'GOLD',min:100000,rate:1.5},{name:'BLACK',min:300000,rate:2}
+      ];
+      const levelIndex = item => Math.max(0, levels.reduce((found, row, index) => item.spend >= row.min ? index : found, 0));
+      const title = (index, text) => `<div class="eyebrow">${index} — MEMBER SPACE</div><div class="title">${safe(text)}</div><div class="rule"></div>`;
+      const notice = '<div class="notice">H5 演示数据模式：不会调用微信登录、真实充值、消费或抽奖接口。</div>';
+
+      function syncCompanySelect(){
+        const select = document.getElementById('companySelect');
+        select.innerHTML = Object.values(state.companies).map(item => `<option value="${safe(item.code)}"${item.code===state.selected?' selected':''}>${safe(item.name)}</option>`).join('');
+      }
+      function go(page){ state.page=page; save(); document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active',tab.dataset.page===page)); render(); }
+      function home(){
+        const item=company(), li=levelIndex(item);
+        return title('01',item.name)+notice+`<div class="card"><div class="row"><span class="mono">${safe(item.memberNo)}</span><span class="level-chip">${levels[li].name}</span></div><div class="balance-label">可用余额 / CNY</div><div class="balance mono"><b>¥</b>${yuan(item.balance)}</div><div class="muted mono">积分 ${item.points} · 累计消费 ¥${yuan(item.spend)}</div></div><div class="grid"><button class="tile red" data-go="recharge"><small>A</small>充值</button><button class="tile black" data-go="pay"><small>B</small>付款码</button><button class="tile" data-action="ledger"><small>C</small>资金流水</button><button class="tile" data-go="level"><small>D</small>会员等级</button></div><div class="section"><div class="section-head"><small>E</small><h2>公司空间</h2></div><div class="card"><b>${safe(item.name)}</b><div class="muted" style="margin-top:8px">${safe(item.mode)}</div></div></div>`;
+      }
+      function recharge(){ return title('02','会员充值')+notice+`<div class="field"><label>选择演示金额 / CNY</label><div class="amounts">${[10,50,100,300].map((n,i)=>`<button class="amount${i===0?' active':''}" data-amount="${n}">¥${n}</button>`).join('')}</div></div><div class="field"><label>自定义金额</label><input id="rechargeAmount" inputmode="decimal" value="10" placeholder="请输入金额"></div><button class="btn red" data-action="recharge">模拟充值</button><div class="section"><div class="card"><div class="muted">充值后演示余额</div><div class="balance mono"><b>¥</b>${yuan(company().balance)}</div></div></div>`; }
+      function pay(){ return title('03','动态付款码')+notice+`<div class="field"><label>本次授权消费金额</label><input id="payAmount" inputmode="decimal" value="12" placeholder="请输入金额"></div><button class="btn" data-action="code">生成一次性演示码</button><div id="codeArea"></div>`; }
+      function level(){
+        const item=company(), li=levelIndex(item), next=levels[li+1], start=levels[li].min, ratio=next?Math.min(100,Math.max(0,(item.spend-start)/(next.min-start)*100)):100;
+        return title('04','会员等级')+`<div class="card"><div class="row"><div><div class="muted">当前等级</div><h2>${levels[li].name}</h2></div><div class="mono">${item.points} PTS</div></div><div class="progress"><span style="width:${ratio}%"></span></div><div class="muted">${next?`距离 ${next.name} 还需消费 ¥${yuan(next.min-item.spend)}`:'已达到最高等级'}</div></div><div class="section"><div class="section-head"><small>A</small><h2>等级拓扑</h2></div><div class="topology">${levels.map((row,index)=>`${index?'<i class="edge"></i>':''}<div class="node${index===li?' active':''}">${row.name}<br>¥${yuan(row.min)}</div>`).join('')}</div></div><div class="card"><b>${levels[li].rate}× 积分倍率</b><p class="muted">演示规则：每消费 1 元，按当前等级获得积分。</p></div>`;
+      }
+      function lottery(){
+        const item=company();
+        return title('05','会员抽奖')+notice+`<div class="campaign"><div class="row"><div><b>SUMMER / 2026</b><div class="muted">剩余 ${item.draws} 次</div></div><span class="level-chip">进行中</span></div><div><span class="prize">500 积分</span><span class="prize">¥20 优惠券</span><span class="prize">谢谢参与</span></div><button class="btn red" data-action="draw" ${item.draws<=0?'disabled':''}>${item.draws>0?'开始演示抽奖':'次数已用完'}</button><div id="drawResult"></div></div><div class="section"><div class="section-head"><small>B</small><h2>我的奖品</h2></div><div class="card">${item.rewards.length?item.rewards.map(row=>`<div class="reward-row"><div class="row"><b>${safe(row.name)}</b><span class="level-chip">${safe(row.status)}</span></div><div class="muted mono">${safe(row.time)}</div></div>`).join(''):'<div class="muted">暂未获得可核销奖品</div>'}</div></div>`;
+      }
+      function profile(){
+        const item=company();
+        return title('06','我的会员账户')+`<div class="card"><div class="row"><span class="muted">会员编号</span><b class="mono">${safe(item.memberNo)}</b></div><div class="ledger-row row"><span class="muted">当前公司</span><b>${safe(item.name)}</b></div><div class="ledger-row row"><span class="muted">数据模式</span><b>浏览器本地演示</b></div></div><button class="btn light" data-action="ledger">查看资金流水</button><button class="btn light" data-action="reset">重置演示数据</button>`;
+      }
+      function ledger(){
+        const item=company();
+        return title('03C','资金流水')+`<button class="btn light" data-go="home">← 返回首页</button><div class="section card">${item.ledger.map(row=>`<div class="ledger-row row"><div><b>${safe(row.type)}</b><div class="muted mono">${safe(row.time)}</div></div><strong class="mono ${row.amount>=0?'positive':'negative'}">${row.amount>=0?'+':'−'} ¥${yuan(Math.abs(row.amount))}</strong></div>`).join('')}</div>`;
+      }
+      const pages={home,recharge,pay,level,lottery,profile,ledger};
+      function render(){ syncCompanySelect(); document.getElementById('screen').innerHTML=(pages[state.page]||home)(); bindScreen(); }
+      function bindScreen(){
+        document.querySelectorAll('[data-go]').forEach(el=>el.addEventListener('click',()=>go(el.dataset.go)));
+        document.querySelectorAll('[data-action="ledger"]').forEach(el=>el.addEventListener('click',()=>go('ledger')));
+        document.querySelectorAll('[data-amount]').forEach(el=>el.addEventListener('click',()=>{document.querySelectorAll('[data-amount]').forEach(x=>x.classList.remove('active'));el.classList.add('active');document.getElementById('rechargeAmount').value=el.dataset.amount}));
+        const rechargeButton=document.querySelector('[data-action="recharge"]'); if(rechargeButton) rechargeButton.addEventListener('click',()=>{
+          const value=Number(document.getElementById('rechargeAmount').value); if(!Number.isFinite(value)||value<=0||value>1000){alert('演示金额必须在 0.01–1000 元之间');return} const cents=Math.round(value*100); const item=company(); item.balance+=cents; item.ledger.unshift({type:'演示充值',amount:cents,time:nowText()}); save(); alert('演示充值完成，不涉及真实资金'); render();
+        });
+        const codeButton=document.querySelector('[data-action="code"]'); if(codeButton) codeButton.addEventListener('click',()=>{
+          const value=Number(document.getElementById('payAmount').value); const cents=Math.round(value*100); if(!Number.isFinite(value)||cents<=0||cents>company().balance){alert('请输入不超过余额的有效金额');return} const code='M '+String(randomInt(1000)).padStart(3,'0')+' '+String(randomInt(1000)).padStart(3,'0')+' '+String(randomInt(10000)).padStart(4,'0'); document.getElementById('codeArea').innerHTML=`<div class="code mono">${code}</div><div class="notice green">演示授权金额 ¥${yuan(cents)}，有效期 2 分钟。</div><button class="btn light" id="simulateConsume">模拟收银员核销</button>`; document.getElementById('simulateConsume').onclick=()=>{const item=company(); if(item.balance<cents){alert('余额不足');return} item.balance-=cents; item.spend+=cents; item.points+=Math.floor(value*levels[levelIndex(item)].rate); item.ledger.unshift({type:'演示消费',amount:-cents,time:nowText()}); save(); alert('演示核销完成'); go('home')};
+        });
+        const drawButton=document.querySelector('[data-action="draw"]'); if(drawButton) drawButton.addEventListener('click',()=>{
+          const item=company(); if(item.draws<=0)return; item.draws-=1; const roll=randomInt(100); let name='谢谢参与',status='已完成'; if(roll<20){name='¥20 优惠券';status='待核销';item.rewards.unshift({name,status,time:nowText()})}else if(roll<60){name='500 积分';item.points+=500} save(); document.getElementById('drawResult').innerHTML=`<div class="result"><small>DRAW RESULT</small><strong>${safe(name)}</strong><span class="muted">演示随机结果</span></div>`; drawButton.disabled=true; drawButton.textContent='本次抽奖已完成';
+        });
+        document.querySelectorAll('[data-action="reset"]').forEach(el=>el.addEventListener('click',reset));
+      }
+      function reset(){ if(!confirm('确认重置全部浏览器演示数据？'))return; state=seed();save();go('home') }
+      document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>go(tab.dataset.page)));
+      document.getElementById('companySelect').addEventListener('change',event=>{state.selected=event.target.value;save();render()});
+      document.getElementById('resetDemo').addEventListener('click',reset);
+      document.getElementById('openMiniDocs').addEventListener('click',()=>location.href='/');
+      document.getElementById('serverCompanyForm').addEventListener('submit',async event=>{
+        event.preventDefault(); const output=document.getElementById('serverResult'); const code=document.getElementById('serverCompanyCode').value.trim().toLowerCase(); if(!/^[a-z0-9][a-z0-9-]{0,47}$/.test(code)){output.textContent='公司代码格式不正确';return} output.textContent='正在读取公开公司…';
+        try{const response=await fetch(`/api/miniapp/v1/companies/${encodeURIComponent(code)}`,{credentials:'omit',headers:{Accept:'application/json'}});const body=await response.json();if(!response.ok)throw new Error(body.error||`HTTP ${response.status}`);const remote=body.company;state.companies[code]={code,name:String(remote.name||code).slice(0,120),mode:remote.mode==='warehouse_linked'?'Warehouse 2.0 已绑定 · 财务草稿联动':'独立运行',memberNo:`H5-${Date.now()}`,balance:0,spend:0,points:0,draws:1,rewards:[],ledger:[]};state.selected=code;save();output.textContent=`已读取「${state.companies[code].name}」，账户仍为本地演示数据。`;go('home')}catch(error){output.textContent=`读取失败：${error.message}`}
+      });
+      go(state.page||'home');
+    })();
+  </script>
+</body>
+</html>

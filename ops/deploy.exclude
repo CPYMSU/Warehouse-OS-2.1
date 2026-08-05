@@ -1,0 +1,27 @@
+.DS_Store
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.pyc
+*.pyo
+*.log
+*.rtf
+*.dump
+*.dump.sha256
+* 2.*
+.env
+.env.*
+.venv/
+backend/.venv/
+backend/warehouse_os_api.egg-info/
+node_modules/
+postgres-data/
+backend/var/
+frontend/v2/var/
+frontend-api-contract-report.json
+Terminal Saved Output.txt
+GITHUB KEY.txt
+Vultr Key.rtf
+Password.rtf
+Test API.rtf

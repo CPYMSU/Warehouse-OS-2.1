@@ -1,0 +1,16 @@
+[Unit]
+Description=Warehouse OS PostgreSQL backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/warehouse-os/current/infra/backup/warehouse-postgres-backup.sh
+Environment=BACKUP_DIR=/opt/warehouse-os/backups
+Environment=HOSTED_BACKUP_DIR=/mnt/warehouse-data/hosted/archive/database-backups
+Environment=RETENTION_DAYS=14
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+PrivateTmp=true
+NoNewPrivileges=true

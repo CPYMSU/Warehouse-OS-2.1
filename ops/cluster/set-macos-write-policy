@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "$(uname -s)" == "Darwin" ]] || {
+  printf 'this policy command is only for macOS\n' >&2
+  exit 2
+}
+: "${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?local hosted admin password is required}"
+
+mode="${1:-}"
+[[ "${mode}" == "standby" || "${mode}" == "primary" ]] || {
+  printf 'usage: %s standby|primary\n' "$0" >&2
+  exit 2
+}
+if [[ "${mode}" == "primary" ]]; then
+  [[ "${WAREHOUSE_CONFIRM_PROMOTION:-}" == "YES" ]] || {
+    printf 'primary mode requires WAREHOUSE_CONFIRM_PROMOTION=YES after fencing the old writer\n' >&2
+    exit 2
+  }
+  control_setting="RESET default_transaction_read_only"
+  hosted_setting="RESET default_transaction_read_only"
+else
+  control_setting="SET default_transaction_read_only = on"
+  hosted_setting="SET default_transaction_read_only = on"
+fi
+
+psql_bin="${PSQL_BIN:-/opt/homebrew/opt/postgresql@18/bin/psql}"
+"${psql_bin}" -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 \
+  -U peiyuan -d warehouse_os \
+  -c "ALTER ROLE warehouse_os ${control_setting}" \
+  -c "ALTER ROLE warehouse_migrator ${control_setting}" >/dev/null
+
+role_sql="$(PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+  "${psql_bin}" -X -h 127.0.0.1 -p 5433 -U warehouse_hosted_admin \
+    -d postgres -Atc "
+select format('ALTER ROLE %I ${hosted_setting};',rolname)
+from pg_roles
+where rolname ~ '^wh[ar]_[0-9a-f]{32}$'
+order by rolname")"
+[[ -z "${role_sql}" ]] \
+  || printf '%s\n' "${role_sql}" \
+    | PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+      "${psql_bin}" -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5433 \
+        -U warehouse_hosted_admin -d postgres >/dev/null
+
+printf 'macos_write_policy=%s\ncontrol_roles=2\nhosted_roles=%s\n' \
+  "${mode}" "$(printf '%s\n' "${role_sql}" | sed '/^$/d' | wc -l | tr -d ' ')"

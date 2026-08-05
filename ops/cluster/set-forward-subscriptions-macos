@@ -1,0 +1,85 @@
+#!/bin/zsh
+set -Eeuo pipefail
+
+[[ "$(uname -s)" == Darwin ]] || {
+  print -u2 'this forward subscription manager is only for macOS'
+  exit 2
+}
+: "${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?local hosted admin password is required}"
+
+mode="${1:-verify}"
+[[ "${mode}" == disable || "${mode}" == enable || "${mode}" == verify ]] || {
+  print -u2 "usage: $0 disable|enable|verify"
+  exit 2
+}
+if [[ "${mode}" != verify && "${WAREHOUSE_CONFIRM_DIRECTION_CHANGE:-}" != YES ]]; then
+  print -u2 "${mode} requires WAREHOUSE_CONFIRM_DIRECTION_CHANGE=YES"
+  exit 2
+fi
+
+PSQL="${PSQL_BIN:-/opt/homebrew/opt/postgresql@18/bin/psql}"
+subscription=warehouse_from_vultr
+
+control_psql() {
+  "${PSQL}" -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 \
+    -U peiyuan -d warehouse_os "$@"
+}
+hosted_psql() {
+  local database="$1"
+  shift
+  PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+    "${PSQL}" -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5433 \
+      -U warehouse_hosted_admin -d "${database}" "$@"
+}
+
+control_count="$(control_psql -At -c \
+  "select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}'")"
+[[ "${control_count}" == 1 ]] || {
+  print -u2 "unexpected control forward subscription count=${control_count}"
+  exit 2
+}
+databases="$(PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+  "${PSQL}" -X -At -h 127.0.0.1 -p 5433 -U warehouse_hosted_admin \
+    -d postgres -c "select datname from pg_database where datname ~ '^whdb_[0-9a-f]{32}$' order by 1")"
+[[ -n "${databases}" ]] || {
+  print -u2 'no hosted databases found'
+  exit 2
+}
+
+hosted_count=0
+while IFS= read -r database; do
+  count="$(hosted_psql "${database}" -At -c \
+    "select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}'")"
+  [[ "${count}" == 1 ]] || {
+    print -u2 "unexpected hosted forward subscription count database=${database} count=${count}"
+    exit 2
+  }
+  (( hosted_count += 1 ))
+done <<<"${databases}"
+
+if [[ "${mode}" == disable ]]; then
+  control_psql -c "ALTER SUBSCRIPTION ${subscription} DISABLE" >/dev/null
+  while IFS= read -r database; do
+    hosted_psql "${database}" -c "ALTER SUBSCRIPTION ${subscription} DISABLE" >/dev/null
+  done <<<"${databases}"
+elif [[ "${mode}" == enable ]]; then
+  control_psql -c "ALTER SUBSCRIPTION ${subscription} ENABLE" >/dev/null
+  while IFS= read -r database; do
+    hosted_psql "${database}" -c "ALTER SUBSCRIPTION ${subscription} ENABLE" >/dev/null
+  done <<<"${databases}"
+fi
+
+control_state="$(control_psql -At -c \
+  "select count(*) filter (where subenabled),count(*),(select count(*) from pg_stat_subscription where pid is not null and relid is null and subid in (select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}')) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}'")"
+hosted_enabled=0
+hosted_workers=0
+while IFS= read -r database; do
+  IFS='|' read -r enabled workers <<<"$(hosted_psql "${database}" -At -c \
+    "select count(*) filter (where subenabled),(select count(*) from pg_stat_subscription where pid is not null and relid is null and subid in (select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}')) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}'")"
+  hosted_enabled=$((hosted_enabled + enabled))
+  hosted_workers=$((hosted_workers + workers))
+done <<<"${databases}"
+
+print "forward_subscription_mode=${mode}"
+print "control_forward=${control_state}"
+print "hosted_forward=${hosted_enabled}|${hosted_count}|${hosted_workers}"

@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "$(uname -s)" == "Darwin" ]] || {
+  printf 'this reconciler is only for the macOS standby\n' >&2
+  exit 2
+}
+: "${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?local hosted admin password is required}"
+
+psql_bin="${PSQL_BIN:-/opt/homebrew/opt/postgresql@18/bin/psql}"
+createdb_bin="${CREATEDB_BIN:-/opt/homebrew/opt/postgresql@18/bin/createdb}"
+local_host="${WAREHOUSE_HOSTED_LOCAL_HOST:-127.0.0.1}"
+local_port="${WAREHOUSE_HOSTED_LOCAL_PORT:-5433}"
+local_user="${WAREHOUSE_HOSTED_LOCAL_USER:-warehouse_hosted_admin}"
+publisher_host="${WAREHOUSE_HOSTED_PUBLISHER_HOST:-100.98.166.49}"
+publisher_port="${WAREHOUSE_HOSTED_PUBLISHER_PORT:-15433}"
+replica_user="${WAREHOUSE_HOSTED_REPLICA_USER:-warehouse_hosted_replica}"
+keychain_account="${WAREHOUSE_HOSTED_REPLICA_KEYCHAIN_ACCOUNT:-warehouse-hosted-replica}"
+keychain_service="${WAREHOUSE_HOSTED_REPLICA_KEYCHAIN_SERVICE:-bonfirework-hosted-replication}"
+ssh_host="${WAREHOUSE_PRODUCTION_SSH_HOST:-207.148.120.30}"
+ssh_user="${WAREHOUSE_PRODUCTION_SSH_USER:-root}"
+ssh_identity="${WAREHOUSE_PRODUCTION_SSH_IDENTITY:-${HOME}/.ssh/bonfirework_vultr_migration_ed25519}"
+remote_container="${HOSTED_POSTGRES_CONTAINER:-warehouse-os-hosted-postgres}"
+remote_admin="${HOSTED_POSTGRES_ADMIN:-warehouse_hosted_admin}"
+
+replica_password="$(security find-generic-password \
+  -a "${keychain_account}" -s "${keychain_service}" -w)"
+[[ "${replica_password}" =~ ^[0-9a-f]{64}$ ]] || {
+  printf 'hosted replication password is absent or malformed\n' >&2
+  exit 2
+}
+[[ -f "${ssh_identity}" ]] || {
+  printf 'production SSH identity is missing\n' >&2
+  exit 2
+}
+
+local_psql() {
+  local database="$1"
+  shift
+  PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+    "${psql_bin}" -X -v ON_ERROR_STOP=1 \
+      -h "${local_host}" -p "${local_port}" -U "${local_user}" \
+      -d "${database}" "$@"
+}
+
+remote_psql() {
+  local database="$1"
+  shift
+  PGPASSWORD="${replica_password}" \
+    "${psql_bin}" -X -v ON_ERROR_STOP=1 \
+      -h "${publisher_host}" -p "${publisher_port}" -U "${replica_user}" \
+      -d "${database}" "$@"
+}
+
+remote_exec() {
+  ssh -n -i "${ssh_identity}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    "${ssh_user}@${ssh_host}" "$@"
+}
+
+database_query="select datname from pg_database where datname ~ '^whdb_[0-9a-f]{32}$' order by datname"
+remote_databases="$(remote_psql postgres -Atc "${database_query}")"
+local_databases="$(local_psql postgres -Atc "${database_query}")"
+
+unexpected_local="$(comm -23 \
+  <(printf '%s\n' "${local_databases}") \
+  <(printf '%s\n' "${remote_databases}"))"
+[[ -z "${unexpected_local}" ]] || {
+  printf 'local-only hosted databases require manual review:\n%s\n' "${unexpected_local}" >&2
+  exit 2
+}
+
+missing_databases="$(comm -13 \
+  <(printf '%s\n' "${local_databases}") \
+  <(printf '%s\n' "${remote_databases}"))"
+
+schema_signature_query="
+select md5(string_agg(
+  namespace.nspname || '.' || relation.relname || ':' ||
+  attribute.attname || ':' ||
+  pg_catalog.format_type(attribute.atttypid, attribute.atttypmod),
+  '|' order by namespace.nspname, relation.relname, attribute.attnum
+))
+from pg_class as relation
+join pg_namespace as namespace on namespace.oid=relation.relnamespace
+join pg_attribute as attribute on attribute.attrelid=relation.oid
+where relation.relkind in ('r','p')
+  and namespace.nspname <> 'information_schema'
+  and namespace.nspname not like 'pg_%'
+  and attribute.attnum > 0
+  and not attribute.attisdropped"
+
+repair_databases=""
+while IFS= read -r database; do
+  [[ "${database}" =~ ^whdb_[0-9a-f]{32}$ ]] || exit 2
+  local_exists="$(local_psql postgres -Atc \
+    "select count(*) from pg_database where datname='${database}'")"
+  [[ "${local_exists}" == "1" ]] || continue
+  subscription_count="$(local_psql "${database}" -Atc \
+    "select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database())")"
+  [[ "${subscription_count}" == "0" ]] || continue
+  remote_signature="$(remote_psql "${database}" -Atc "${schema_signature_query}")"
+  local_signature="$(local_psql "${database}" -Atc "${schema_signature_query}")"
+  [[ -n "${remote_signature}" && "${remote_signature}" == "${local_signature}" ]] && continue
+  [[ "${WAREHOUSE_REBUILD_UNSUBSCRIBED:-}" == "YES" ]] || {
+    printf 'unsubscribed schema mismatch database=%s; set WAREHOUSE_REBUILD_UNSUBSCRIBED=YES to rebuild\n' \
+      "${database}" >&2
+    exit 2
+  }
+  [[ -z "${WAREHOUSE_REBUILD_DATABASE:-}" \
+    || "${WAREHOUSE_REBUILD_DATABASE}" == "${database}" ]] || {
+    printf 'schema mismatch outside approved rebuild target database=%s\n' \
+      "${database}" >&2
+    exit 2
+  }
+  PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+    /opt/homebrew/opt/postgresql@18/bin/dropdb \
+      -h "${local_host}" -p "${local_port}" -U "${local_user}" \
+      --force "${database}"
+  repair_databases="${repair_databases}${repair_databases:+$'\n'}${database}"
+  printf 'removed_unsubscribed_schema_mismatch=%s\n' "${database}"
+done <<<"${remote_databases}"
+
+if [[ -n "${repair_databases}" ]]; then
+  missing_databases="$(
+    printf '%s\n%s\n' "${missing_databases}" "${repair_databases}" \
+      | sed '/^$/d' | sort -u
+  )"
+fi
+if [[ -z "${missing_databases}" ]]; then
+  printf 'hosted_database_topology=converged databases=%s\n' \
+    "$(printf '%s\n' "${remote_databases}" | wc -l | tr -d ' ')"
+  exit 0
+fi
+
+# Publisher schema dumps retain replication SELECT grants.  Keep a local
+# NOLOGIN placeholder so those ACLs restore cleanly without exposing a second
+# inbound replication credential on the standby.
+if [[ "$(local_psql postgres -Atc \
+  "select count(*) from pg_roles where rolname='warehouse_hosted_replica'")" == "0" ]]; then
+  local_psql postgres -c "CREATE ROLE warehouse_hosted_replica NOLOGIN"
+fi
+
+created=0
+while IFS= read -r database; do
+  [[ "${database}" =~ ^whdb_[0-9a-f]{32}$ ]] || exit 2
+  suffix="${database#whdb_}"
+  runtime_role="whr_${suffix}"
+
+  remote_owner="$(remote_psql postgres -Atc \
+    "select pg_get_userbyid(datdba) from pg_database where datname='${database}'")"
+  [[ "${remote_owner}" == "${runtime_role}" ]] || {
+    printf 'unexpected publisher owner database=%s owner=%s\n' \
+      "${database}" "${remote_owner}" >&2
+    exit 2
+  }
+
+  database_roles="$(remote_psql "${database}" -Atc \
+    "select rolname from pg_roles where right(rolname,32)=substring(current_database(),6) order by rolname")"
+  [[ -n "${database_roles}" ]] || {
+    printf 'publisher database roles are missing database=%s\n' "${database}" >&2
+    exit 2
+  }
+  while IFS= read -r database_role; do
+    [[ "${database_role}" =~ ^wh[abr]_${suffix}$ ]] || {
+      printf 'unexpected publisher database role=%s\n' "${database_role}" >&2
+      exit 2
+    }
+    if [[ "$(local_psql postgres -Atc \
+      "select count(*) from pg_roles where rolname='${database_role}'")" == "0" ]]; then
+      local_psql postgres -c "CREATE ROLE ${database_role} LOGIN"
+    fi
+
+    # Extract only the validated database role's ALTER statement.  It carries
+    # the SCRAM verifier through encrypted SSH and is never printed.
+    role_statement="$(
+      remote_exec docker exec "${remote_container}" pg_dumpall \
+        -U "${remote_admin}" --roles-only \
+        | awk -v target="${database_role}" \
+            '$1 == "ALTER" && $2 == "ROLE" && $3 == target { print }'
+    )"
+    [[ "${role_statement}" == ALTER\ ROLE\ "${database_role}"\ WITH* ]] || {
+      printf 'could not obtain role verifier role=%s\n' "${database_role}" >&2
+      exit 2
+    }
+    printf '%s\n' "${role_statement}" | local_psql postgres >/dev/null
+    if [[ "${database_role}" == wha_* || "${database_role}" == whr_* ]]; then
+      local_psql postgres -c \
+        "ALTER ROLE ${database_role} SET default_transaction_read_only = on" \
+        >/dev/null
+    fi
+  done <<<"${database_roles}"
+
+  PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+    "${createdb_bin}" -h "${local_host}" -p "${local_port}" \
+      -U "${local_user}" -T template0 -O "${runtime_role}" "${database}"
+
+  remote_exec docker exec "${remote_container}" pg_dump \
+    -U "${remote_admin}" -d "${database}" --schema-only \
+    --no-publications --no-subscriptions \
+    | local_psql "${database}" >/dev/null
+
+  remote_signature="$(remote_psql "${database}" -Atc "${schema_signature_query}")"
+  local_signature="$(local_psql "${database}" -Atc "${schema_signature_query}")"
+  [[ -n "${remote_signature}" && "${remote_signature}" == "${local_signature}" ]] || {
+    printf 'publisher schema changed during bootstrap database=%s; reconcile again\n' \
+      "${database}" >&2
+    exit 1
+  }
+
+  (( created += 1 ))
+  printf 'hosted_database_created=%s owner=%s\n' "${database}" "${runtime_role}"
+done <<<"${missing_databases}"
+
+final_remote="$(remote_psql postgres -Atc "${database_query}")"
+final_local="$(local_psql postgres -Atc "${database_query}")"
+[[ "${final_remote}" == "${final_local}" ]] || {
+  printf 'hosted database topology changed during reconciliation; run again\n' >&2
+  exit 1
+}
+printf 'hosted_database_topology=converged created=%s databases=%s\n' \
+  "${created}" "$(printf '%s\n' "${final_local}" | wc -l | tr -d ' ')"

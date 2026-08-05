@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="theme-color" content="#F5F7FB"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<title>WAREHOUSE OS 2.0</title>
+<link rel="icon" type="image/png" href="v2/brand/bonfire-platform-mark.png"/>
+<link rel="manifest" href="mobile-manifest.json"/>
+<link rel="apple-touch-icon" href="v2/brand/bonfire-platform-mark.png"/>
+<script>
+if (window.location.protocol === "file:") {
+  window.location.replace("http://127.0.0.1:8080/mobile-platform.html");
+}
+window.WAREHOUSE_MOBILE_PLATFORM = true;
+if ("serviceWorker" in navigator && window.location.protocol === "https:") {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("mobile-sw.js").catch(function () {});
+  });
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css"/>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+<link rel="stylesheet" href="mobile-platform.css"/>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+</head>
+<body class="mobile-platform-body">
+<div class="app-bg"></div>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script>
+  window.WAREHOUSE_API_BASE =
+    (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+      ? "http://127.0.0.1:8090"
+      : "";
+</script>
+
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="i18n.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="agent-assistant.jsx?v=20260718memory1"></script>
+<script type="text/babel" src="shell.jsx"></script>
+<script type="text/babel" src="page-erp.jsx?v=20260718chain1"></script>
+<script type="text/babel" src="page-finance.jsx?v=20260718chain1"></script>
+<script type="text/babel" src="page-overview.jsx"></script>
+<script type="text/babel" src="page-inventory.jsx"></script>
+<script type="text/babel" src="page-inbound.jsx?v=20260718chain1"></script>
+<script type="text/babel" src="page-outbound.jsx?v=20260712fin1"></script>
+<script type="text/babel" src="page-alerts.jsx"></script>
+<script type="text/babel" src="page-stocktake.jsx"></script>
+<script type="text/babel" src="page-map.jsx"></script>
+<script type="text/babel" src="page-warehouse-gis.jsx"></script>
+<script type="text/babel" src="page-ai.jsx?v=20260628kernel-unify"></script>
+<script type="text/babel" src="page-collab.jsx"></script>
+<script type="text/babel" src="page-procurement.jsx?v=20260720passkeyredirect1"></script>
+<script type="text/babel" src="page-ledgers.jsx?v=20260628kernel-unify"></script>
+<script type="text/babel" src="page-perms.jsx"></script>
+<script type="text/babel" src="page-reports.jsx"></script>
+<script type="text/babel" src="page-logs.jsx"></script>
+<script type="text/babel" src="page-settings.jsx"></script>
+<script type="text/babel" src="page-shield.jsx?v=20260619shield"></script>
+<script type="text/babel" src="page-terminal.jsx?v=20260715finconfirm1"></script>
+<script type="text/babel" src="page-companies.jsx"></script>
+<script type="text/babel" src="page-custom-module.jsx"></script>
+<script type="text/babel" src="page-datahub.jsx"></script>
+<script type="text/babel" src="app.jsx?v=20260718chain1"></script>
+</body>
+</html>
