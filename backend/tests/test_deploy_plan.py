@@ -220,7 +220,7 @@ def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
     assert 'MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:' in source
     assert 'PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:' in source
     assert 'SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:' in source
-    assert 'manager_remote install "${release_id}" "${INSTALL_MODE}"' in source
+    assert 'manager_remote "${DEPLOY_ACTION}" "${release_id}" "${INSTALL_MODE}"' in source
     assert 'if [[ "${TRANSPORT}" == local ]]' in source
     assert 'install -m 0600 "${package}" "${REMOTE_INCOMING}/$(basename "${package}")"' in source
     assert (
@@ -229,6 +229,41 @@ def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
     )
     assert '"${USER}@${HOST}:${REMOTE_INCOMING}/"' in source
     assert "${USER}@${HOST}:/var/lib/warehouse-deploy/incoming/" not in source
+
+
+def test_cluster_deploy_prepares_and_activates_both_nodes_in_parallel() -> None:
+    source = (REPO_ROOT / "ops" / "cluster" / "rolling-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert "parallel prepare: mac-primary + vultr-standby" in source
+    assert 'run_node WAREHOUSE_PRIMARY mac-primary "prepare ${MODE}"' in source
+    assert 'run_node WAREHOUSE_STANDBY vultr-standby "prepare ${MODE}"' in source
+    assert 'run_node WAREHOUSE_PRIMARY mac-primary "activate ${primary_release}"' in source
+    assert 'run_node WAREHOUSE_STANDBY vultr-standby "activate ${standby_release}"' in source
+    assert "activation_duration <= ACTIVATION_SLO_SECONDS" in source
+
+
+def test_dependency_free_alembic_head_matches_the_declared_graph() -> None:
+    completed = subprocess.run(
+        [str(REPO_ROOT / "ops" / "alembic-head"), "heads"],
+        cwd=REPO_ROOT / "backend",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.strip() == "20260805_0077 (head)"
+
+
+def test_full_verification_can_use_an_ephemeral_environment() -> None:
+    source = (REPO_ROOT / "ops" / "run-full-verification").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'VENV="${WAREHOUSE_TEST_VENV:-${ROOT}/backend/.venv}"' in source
+    assert '"${VENV}/bin/alembic" upgrade head' in source
+    assert '"${VENV}/bin/pytest" -q' in source
 
 
 def test_standby_deploy_skips_database_writing_workers() -> None:
@@ -241,8 +276,22 @@ def test_standby_deploy_skips_database_writing_workers() -> None:
     assert 'log_event deploy_phase skipped "${release}" browser_worker' in source
     assert 'if [[ "${node_role}" == standby ]]; then\n    log_event deploy_phase skipped' in source
     assert '"${release}" runtime_controller "${next_slot}" 0' in source
-    assert 'standby_smoke "${next_port}"' in source
+    assert 'standby_smoke "${PREPARED_NEXT_PORT}"' in source
     assert 'public_smoke || smoke_result=$?' in source
+    assert 'startup_command=\'exec uvicorn' in source
+
+
+def test_server_deploy_has_a_persistent_prepare_activate_contract() -> None:
+    source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert "prepare_release()" in source
+    assert "prepared_status()" in source
+    assert "activate_release()" in source
+    assert 'status=prepared\\n' in source
+    assert 'prepared-${release}.env' in source
+    assert 'switch_upstream "${PREPARED_NEXT_PORT}"' in source
 
 
 def test_deploy_plan_local_transport_does_not_require_ssh_identity(

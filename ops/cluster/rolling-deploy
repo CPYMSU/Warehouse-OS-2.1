@@ -3,57 +3,202 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODE="${1:-smart}"
-EXPECTED_RELEASE="${WAREHOUSE_EXPECTED_RELEASE:-}"
+ACTIVATION_SLO_SECONDS="${WAREHOUSE_CLUSTER_ACTIVATION_SLO_SECONDS:-60}"
+PREFLIGHT="${WAREHOUSE_CLUSTER_PREFLIGHT:-full}"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-cluster-deploy.XXXXXX")"
 
 fail() {
   printf 'cluster deploy error: %s\n' "$*" >&2
   exit 1
 }
 
-require_node() {
-  local prefix="$1"
-  local name variable
-  for name in HOST USER IDENTITY REMOTE_MANAGER; do
-    variable="${prefix}_${name}"
-    [[ -n "${!variable:-}" ]] || fail "${variable} is required"
-  done
+cleanup() {
+  rm -rf "${WORK_DIR}"
+}
+trap cleanup EXIT
+
+[[ "${MODE}" =~ ^(smart|quick|standard|full)$ ]] \
+  || fail "mode must be smart, quick, standard or full"
+[[ "${ACTIVATION_SLO_SECONDS}" =~ ^[1-9][0-9]?$ ]] \
+  || fail "activation SLO must be between 1 and 99 seconds"
+[[ -z "$(git -C "${ROOT}" status --porcelain=v1)" ]] \
+  || fail "controller checkout must be clean"
+
+node_value() {
+  local prefix="$1" name="$2" fallback="$3" variable
+  variable="${prefix}_${name}"
+  printf '%s\n' "${!variable:-${fallback}}"
 }
 
-deploy_node() {
-  local prefix="$1"
-  local label="$2"
-  local role="$3"
-  local host_var="${prefix}_HOST"
-  local user_var="${prefix}_USER"
-  local identity_var="${prefix}_IDENTITY"
-  local manager_var="${prefix}_REMOTE_MANAGER"
-  printf '==> deploy node=%s role=%s host=%s\n' "${label}" "${role}" "${!host_var}"
-  WAREHOUSE_DEPLOY_HOST="${!host_var}" \
-  WAREHOUSE_DEPLOY_USER="${!user_var}" \
-  WAREHOUSE_DEPLOY_IDENTITY="${!identity_var}" \
-  WAREHOUSE_REMOTE_DEPLOY_MANAGER="${!manager_var}" \
-    "${ROOT}/ops/deploy" "${MODE}"
+run_node() {
+  local prefix="$1" label="$2" action="$3" release_file="${4:-}"
+  local action_command action_argument
+  local host user identity manager incoming target manager_sudo prepare_incoming scp_legacy
+  local known_hosts transport
+  if [[ "${prefix}" == WAREHOUSE_PRIMARY ]]; then
+    host="$(node_value "${prefix}" HOST 100.69.250.61)"
+    user="$(node_value "${prefix}" USER peiyuan)"
+    identity="$(node_value "${prefix}" IDENTITY "${HOME}/.ssh/id_ed25519")"
+    manager="$(node_value "${prefix}" REMOTE_MANAGER /Users/peiyuan/Server/bonfirework/bin/warehouse-deploy)"
+    incoming="$(node_value "${prefix}" INCOMING /Users/peiyuan/Server/bonfirework/incoming)"
+    manager_sudo="$(node_value "${prefix}" MANAGER_SUDO 0)"
+    prepare_incoming="$(node_value "${prefix}" PREPARE_INCOMING 0)"
+    scp_legacy="$(node_value "${prefix}" SCP_LEGACY 1)"
+  else
+    host="$(node_value "${prefix}" HOST 207.148.120.30)"
+    user="$(node_value "${prefix}" USER warehouse-deploy)"
+    identity="$(node_value "${prefix}" IDENTITY "${HOME}/.ssh/warehouse_os_deploy_ed25519")"
+    manager="$(node_value "${prefix}" REMOTE_MANAGER /usr/local/sbin/warehouse-deploy)"
+    incoming="$(node_value "${prefix}" INCOMING /var/lib/warehouse-deploy/incoming)"
+    manager_sudo="$(node_value "${prefix}" MANAGER_SUDO 1)"
+    prepare_incoming="$(node_value "${prefix}" PREPARE_INCOMING 1)"
+    scp_legacy="$(node_value "${prefix}" SCP_LEGACY 0)"
+  fi
+  target="$(node_value "${prefix}" TARGET "${label}")"
+  known_hosts="$(node_value "${prefix}" KNOWN_HOSTS "${HOME}/.ssh/known_hosts")"
+  transport="$(node_value "${prefix}" TRANSPORT ssh)"
+  [[ -f "${identity}" ]] || fail "identity is missing for ${label}: ${identity}"
+  read -r action_command action_argument <<<"${action}"
+  [[ "${action_command}" =~ ^(prepare|prepared-status|activate|status|rollback)$ ]] \
+    || fail "unsupported node action: ${action_command}"
+  if [[ "${action_command}" =~ ^(status|rollback)$ ]]; then
+    [[ -z "${action_argument:-}" ]] || fail "${action_command} takes no argument"
+  else
+    [[ -n "${action_argument:-}" ]] || fail "${action_command} requires an argument"
+  fi
+
+  local deploy_command=("${ROOT}/ops/deploy" "${action_command}")
+  [[ -z "${action_argument:-}" ]] || deploy_command+=("${action_argument}")
+  env \
+    WAREHOUSE_DEPLOY_HOST="${host}" \
+    WAREHOUSE_DEPLOY_USER="${user}" \
+    WAREHOUSE_DEPLOY_IDENTITY="${identity}" \
+    WAREHOUSE_DEPLOY_KNOWN_HOSTS="${known_hosts}" \
+    WAREHOUSE_DEPLOY_TARGET="${target}" \
+    WAREHOUSE_DEPLOY_TRANSPORT="${transport}" \
+    WAREHOUSE_REMOTE_DEPLOY_MANAGER="${manager}" \
+    WAREHOUSE_DEPLOY_INCOMING="${incoming}" \
+    WAREHOUSE_DEPLOY_MANAGER_SUDO="${manager_sudo}" \
+    WAREHOUSE_DEPLOY_PREPARE_INCOMING="${prepare_incoming}" \
+    WAREHOUSE_DEPLOY_SCP_LEGACY="${scp_legacy}" \
+    WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic \
+    WAREHOUSE_DEPLOY_RELEASE_ID_FILE="${release_file}" \
+    "${deploy_command[@]}"
 }
 
-verify_cluster() {
-  local extra=()
-  [[ -z "${EXPECTED_RELEASE}" ]] || extra+=(--release "${EXPECTED_RELEASE}")
-  [[ -z "${WAREHOUSE_EXPECTED_GIT_SHA:-}" ]] \
-    || extra+=(--git-sha "${WAREHOUSE_EXPECTED_GIT_SHA}")
-  "${ROOT}/ops/cluster/verify-nodes.py" \
-    --inventory "${ROOT}/ops/cluster/nodes.json" "${extra[@]}"
+wait_phase() {
+  local primary_pid="$1" standby_pid="$2"
+  if wait "${primary_pid}"; then PRIMARY_STATUS=0; else PRIMARY_STATUS=$?; fi
+  if wait "${standby_pid}"; then STANDBY_STATUS=0; else STANDBY_STATUS=$?; fi
 }
 
-require_node WAREHOUSE_STANDBY
-require_node WAREHOUSE_PRIMARY
+run_preflight() {
+  printf '==> controller preflight policy=%s\n' "${PREFLIGHT}"
+  git -C "${ROOT}" diff --check
+  node "${ROOT}/scripts/build_v2_frontend.cjs" --check
+  bash -n \
+    "${ROOT}/ops/deploy" \
+    "${ROOT}/ops/cluster/rolling-deploy" \
+    "${ROOT}/ops/macos/warehouse-deploy-macos" \
+    "${ROOT}/ops/macos/warehouse-deploy-ssh-gate" \
+    "${ROOT}/ops/server/warehouse-deploy"
+  case "${PREFLIGHT}" in
+    full)
+      "${ROOT}/ops/run-full-verification"
+      ;;
+    basic)
+      PYTHONPYCACHEPREFIX="${WORK_DIR}/python-cache" \
+        python3 -m compileall -q "${ROOT}/backend/app" "${ROOT}/backend/alembic/versions"
+      ;;
+    *)
+      fail "WAREHOUSE_CLUSTER_PREFLIGHT must be full or basic"
+      ;;
+  esac
+}
 
-# A failed standby deployment stops the release before the primary is touched.
-deploy_node WAREHOUSE_STANDBY vultr-standby standby
+run_preflight
 
-# During the rolling window release skew is expected, but both nodes must be ready.
-"${ROOT}/ops/cluster/verify-nodes.py" \
-  --inventory "${ROOT}/ops/cluster/nodes.json" --allow-version-skew
+primary_release_file="${WORK_DIR}/primary.release"
+standby_release_file="${WORK_DIR}/standby.release"
+printf '==> parallel prepare: mac-primary + vultr-standby\n'
+run_node WAREHOUSE_PRIMARY mac-primary "prepare ${MODE}" "${primary_release_file}" \
+  >"${WORK_DIR}/primary.prepare.log" 2>&1 &
+primary_pid=$!
+run_node WAREHOUSE_STANDBY vultr-standby "prepare ${MODE}" "${standby_release_file}" \
+  >"${WORK_DIR}/standby.prepare.log" 2>&1 &
+standby_pid=$!
+wait_phase "${primary_pid}" "${standby_pid}"
+primary_status="${PRIMARY_STATUS}"
+standby_status="${STANDBY_STATUS}"
+cat "${WORK_DIR}/primary.prepare.log"
+cat "${WORK_DIR}/standby.prepare.log"
+[[ "${primary_status}" == 0 && "${standby_status}" == 0 ]] \
+  || fail "parallel prepare failed (primary=${primary_status}, standby=${standby_status})"
 
-deploy_node WAREHOUSE_PRIMARY mac-primary primary
-verify_cluster
-printf '==> cluster deployment complete\n'
+primary_release="$(tr -d '\r\n' < "${primary_release_file}")"
+standby_release="$(tr -d '\r\n' < "${standby_release_file}")"
+[[ "${primary_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
+  || fail "primary prepared release id is invalid"
+[[ "${standby_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
+  || fail "standby prepared release id is invalid"
+
+printf '==> prepared gate\n'
+run_node WAREHOUSE_PRIMARY mac-primary "prepared-status ${primary_release}" "" \
+  >"${WORK_DIR}/primary.gate.log" 2>&1 &
+primary_pid=$!
+run_node WAREHOUSE_STANDBY vultr-standby "prepared-status ${standby_release}" "" \
+  >"${WORK_DIR}/standby.gate.log" 2>&1 &
+standby_pid=$!
+wait_phase "${primary_pid}" "${standby_pid}"
+primary_status="${PRIMARY_STATUS}"
+standby_status="${STANDBY_STATUS}"
+cat "${WORK_DIR}/primary.gate.log"
+cat "${WORK_DIR}/standby.gate.log"
+[[ "${primary_status}" == 0 && "${standby_status}" == 0 ]] \
+  || fail "prepared gate failed (primary=${primary_status}, standby=${standby_status})"
+
+printf '==> coordinated activation (SLO=%ss)\n' "${ACTIVATION_SLO_SECONDS}"
+activation_started="${SECONDS}"
+run_node WAREHOUSE_PRIMARY mac-primary "activate ${primary_release}" "" \
+  >"${WORK_DIR}/primary.activate.log" 2>&1 &
+primary_pid=$!
+run_node WAREHOUSE_STANDBY vultr-standby "activate ${standby_release}" "" \
+  >"${WORK_DIR}/standby.activate.log" 2>&1 &
+standby_pid=$!
+wait_phase "${primary_pid}" "${standby_pid}"
+primary_status="${PRIMARY_STATUS}"
+standby_status="${STANDBY_STATUS}"
+activation_duration="$((SECONDS - activation_started))"
+cat "${WORK_DIR}/primary.activate.log"
+cat "${WORK_DIR}/standby.activate.log"
+
+if [[ "${primary_status}" != 0 || "${standby_status}" != 0 ]]; then
+  printf '==> coordinated rollback after partial activation failure\n' >&2
+  if [[ "${primary_status}" == 0 ]]; then
+    run_node WAREHOUSE_PRIMARY mac-primary rollback "" || true
+  fi
+  if [[ "${standby_status}" == 0 ]]; then
+    run_node WAREHOUSE_STANDBY vultr-standby rollback "" || true
+  fi
+  fail "activation failed (primary=${primary_status}, standby=${standby_status})"
+fi
+
+printf '==> post-activation identity gate\n'
+run_node WAREHOUSE_PRIMARY mac-primary status "" >"${WORK_DIR}/primary.status"
+run_node WAREHOUSE_STANDBY vultr-standby status "" >"${WORK_DIR}/standby.status"
+cat "${WORK_DIR}/primary.status"
+cat "${WORK_DIR}/standby.status"
+git_sha="$(git -C "${ROOT}" rev-parse --short=12 HEAD)"
+grep -Fq "\"node_id\":\"mac-primary\"" "${WORK_DIR}/primary.status" \
+  || fail "primary identity gate failed"
+grep -Fq "\"node_id\":\"vultr-standby\"" "${WORK_DIR}/standby.status" \
+  || fail "standby identity gate failed"
+grep -Fq "\"git_sha\":\"${git_sha}\"" "${WORK_DIR}/primary.status" \
+  || fail "primary Git baseline does not match ${git_sha}"
+grep -Fq "\"git_sha\":\"${git_sha}\"" "${WORK_DIR}/standby.status" \
+  || fail "standby Git baseline does not match ${git_sha}"
+
+(( activation_duration <= ACTIVATION_SLO_SECONDS )) \
+  || fail "activation SLO breached: ${activation_duration}s > ${ACTIVATION_SLO_SECONDS}s"
+printf '==> cluster deployment complete git_sha=%s activation_seconds=%s\n' \
+  "${git_sha}" "${activation_duration}"

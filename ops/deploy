@@ -2,7 +2,17 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODE="${1:-smart}"
+COMMAND="${1:-smart}"
+DEPLOY_ACTION=install
+MODE="${COMMAND}"
+if [[ "${COMMAND}" == prepare ]]; then
+  [[ "$#" -eq 2 ]] || {
+    printf 'deploy error: usage: ops/deploy prepare smart|quick|standard|full\n' >&2
+    exit 1
+  }
+  DEPLOY_ACTION=prepare
+  MODE="$2"
+fi
 LOCAL_VALIDATION="${WAREHOUSE_DEPLOY_LOCAL_VALIDATION:-adaptive}"
 TARGET="${WAREHOUSE_DEPLOY_TARGET:-vultr-production}"
 TRANSPORT="${WAREHOUSE_DEPLOY_TRANSPORT:-ssh}"
@@ -16,6 +26,10 @@ MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:-1}"
 PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:-1}"
 SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:-0}"
 ALEMBIC="${WAREHOUSE_DEPLOY_ALEMBIC:-${ROOT}/backend/.venv/bin/alembic}"
+if [[ ! -x "${ALEMBIC}" ]]; then
+  ALEMBIC="${ROOT}/ops/alembic-head"
+fi
+RELEASE_ID_FILE="${WAREHOUSE_DEPLOY_RELEASE_ID_FILE:-}"
 
 ssh_options=(
   -F /dev/null
@@ -36,6 +50,9 @@ Usage:
   ops/deploy quick       # frontend or low-risk application change
   ops/deploy standard    # manually force the complete non-destructive suite
   ops/deploy full        # disposable PG18 integration suite plus full server checks
+  ops/deploy prepare smart # validate, back up, build and health-check without switching
+  ops/deploy prepared-status RELEASE # verify a prepared candidate remains healthy
+  ops/deploy activate RELEASE # atomically switch to an already prepared candidate
   ops/deploy plan        # compare this checkout with the target's active manifest
   ops/deploy status      # current release, slots and service health
   ops/deploy runtime-status # Runtime Controller state and recent logs
@@ -71,6 +88,7 @@ Environment:
   WAREHOUSE_DEPLOY_SCP_LEGACY        # 1 for scp -O when a forced-command gate is used
   WAREHOUSE_DEPLOY_LOCAL_VALIDATION  # adaptive (local default) or basic (GitHub)
   WAREHOUSE_DEPLOY_ALEMBIC           # absolute Alembic executable used for release evidence
+  WAREHOUSE_DEPLOY_RELEASE_ID_FILE   # optional controller-owned output path for prepare
 EOF
 }
 
@@ -149,6 +167,12 @@ case "${MODE}" in
   status|runtime-status|api-logs|history|rollback)
     require_deploy_access
     manager_remote "${MODE}"
+    exit 0
+    ;;
+  prepared-status|activate)
+    [[ "$#" -eq 2 ]] || fail "${MODE} requires RELEASE"
+    require_deploy_access
+    manager_remote "${MODE}" "$2"
     exit 0
     ;;
   plan)
@@ -349,6 +373,9 @@ if [[ "${LOCAL_VALIDATION}" == basic ]]; then
     python3 -m compileall -q backend/app backend/alembic/versions
   bash -n \
     ops/deploy \
+    ops/cluster/rolling-deploy \
+    ops/macos/warehouse-deploy-macos \
+    ops/macos/warehouse-deploy-ssh-gate \
     ops/run-full-verification \
     ops/server/warehouse-deploy \
     infra/backup/warehouse-postgres-backup.sh
@@ -390,6 +417,8 @@ dirty="false"
 if ! git diff --quiet --ignore-submodules -- || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
   dirty="true"
 fi
+[[ "${dirty}" == false || "${WAREHOUSE_ALLOW_DIRTY_DEPLOY:-0}" == 1 ]] \
+  || fail "refusing to deploy a dirty checkout"
 release_id="$(date -u +%Y%m%dT%H%M%SZ)-${git_sha}-${TARGET}-${MODE}"
 package="${work_dir}/${release_id}.tar.gz"
 checksum_file="${package}.sha256"
@@ -460,7 +489,18 @@ else
     "${USER}@${HOST}:${REMOTE_INCOMING}/"
 fi
 
-printf '==> server install and verification\n'
-manager_remote install "${release_id}" "${INSTALL_MODE}"
-printf '==> deployed %s to %s in %ss\n' \
-  "${release_id}" "${TARGET}" "$((SECONDS - deploy_started))"
+if [[ -n "${RELEASE_ID_FILE}" ]]; then
+  [[ "${RELEASE_ID_FILE}" == /* ]] \
+    || fail "WAREHOUSE_DEPLOY_RELEASE_ID_FILE must be an absolute path"
+  printf '%s\n' "${release_id}" > "${RELEASE_ID_FILE}"
+fi
+
+printf '==> server %s and verification\n' "${DEPLOY_ACTION}"
+manager_remote "${DEPLOY_ACTION}" "${release_id}" "${INSTALL_MODE}"
+if [[ "${DEPLOY_ACTION}" == prepare ]]; then
+  printf '==> prepared %s on %s in %ss\n' \
+    "${release_id}" "${TARGET}" "$((SECONDS - deploy_started))"
+else
+  printf '==> deployed %s to %s in %ss\n' \
+    "${release_id}" "${TARGET}" "$((SECONDS - deploy_started))"
+fi

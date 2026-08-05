@@ -326,7 +326,7 @@ restore_previous() {
   wait_healthy bonfirework-mac-runtime-controller || true
 }
 
-install_release() {
+prepare_release() {
   local release="$1" requested_mode="$2"
   valid_release_id "${release}" || fail "invalid release id"
   [[ "${requested_mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid deployment mode"
@@ -390,8 +390,10 @@ install_release() {
   [[ "${alembic_head}" =~ ^[A-Za-z0-9._-]{3,120}$ ]] || fail "candidate Alembic head is invalid"
 
   api_image="bonfirework-api-mac:${release}"
-  browser_image=""
+  browser_image="$(container_value bonfirework-mac-browser '{{.Config.Image}}')"
+  [[ "${browser_image}" != missing ]] || browser_image=""
   research_image="$(container_value bonfirework-mac-research '{{.Config.Image}}')"
+  [[ "${research_image}" != missing ]] || research_image=""
   if [[ "${plan_api}" == 1 ]]; then
     "${DOCKER}" build --file "${staging}/backend/Dockerfile" --tag "${api_image}" "${staging}" >/dev/null
     require_arm64_image "${api_image}"
@@ -412,7 +414,80 @@ install_release() {
     require_arm64_image "${browser_image}"
   fi
 
+  mv "${staging}" "${release_dir}"
+  trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
+  local prepared_state="${STATE}/prepared-${release}.env"
+  local prepared_temporary="${prepared_state}.tmp.$$"
+  {
+    printf 'PREPARED_RELEASE=%q\n' "${release}"
+    printf 'PREPARED_MODE=%q\n' "${requested_mode}"
+    printf 'PREPARED_GIT_SHA=%q\n' "${git_sha}"
+    printf 'PREPARED_ALEMBIC_HEAD=%q\n' "${alembic_head}"
+    printf 'PREPARED_API_IMAGE=%q\n' "${api_image}"
+    printf 'PREPARED_BROWSER_IMAGE=%q\n' "${browser_image}"
+    printf 'PREPARED_RESEARCH_IMAGE=%q\n' "${research_image}"
+    printf 'PREPARED_PLAN_API=%q\n' "${plan_api}"
+    printf 'PREPARED_PLAN_BROWSER=%q\n' "${plan_browser}"
+    printf 'PREPARED_PLAN_RESEARCH=%q\n' "${plan_research}"
+    printf 'PREPARED_PLAN_RISK=%q\n' "${PLAN_RISK:-unknown}"
+    printf 'PREPARED_AT=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "${prepared_temporary}"
+  chmod 0600 "${prepared_temporary}"
+  mv -f "${prepared_temporary}" "${prepared_state}"
+  rmdir "${LOCK_DIR}"
+  trap - EXIT
+  log_event prepare succeeded "${release}" "mode=${requested_mode};risk=${PLAN_RISK:-unknown}"
+  printf 'release=%s git_sha=%s alembic_head=%s status=prepared\n' \
+    "${release}" "${git_sha}" "${alembic_head}"
+}
+
+prepared_status() {
+  local release="$1" prepared_state
+  valid_release_id "${release}" || fail "invalid release id"
+  prepared_state="${STATE}/prepared-${release}.env"
+  require_file "${prepared_state}"
+  # shellcheck disable=SC1090
+  . "${prepared_state}"
+  [[ "${PREPARED_RELEASE:-}" == "${release}" ]] \
+    || fail "prepared release identity mismatch"
+  "${DOCKER}" image inspect "${PREPARED_API_IMAGE}" >/dev/null 2>&1 \
+    || fail "prepared API image is unavailable"
+  printf 'release=%s git_sha=%s alembic_head=%s status=prepared\n' \
+    "${release}" "${PREPARED_GIT_SHA}" "${PREPARED_ALEMBIC_HEAD}"
+}
+
+activate_release() {
+  local release="$1" activate_started prepared_state release_dir archive checksum
   local previous_release
+  activate_started="${SECONDS}"
+  valid_release_id "${release}" || fail "invalid release id"
+  require_runtime
+  acquire_lock
+  prepared_state="${STATE}/prepared-${release}.env"
+  require_file "${prepared_state}"
+  [[ "$(stat -f '%Su:%Lp' "${prepared_state}")" == "$(id -un):600" ]] \
+    || fail "prepared release state permissions are unsafe"
+  # shellcheck disable=SC1090
+  . "${prepared_state}"
+  [[ "${PREPARED_RELEASE:-}" == "${release}" ]] \
+    || fail "prepared release identity mismatch"
+  [[ "${PREPARED_MODE:-}" =~ ^(quick|standard|full)$ ]] \
+    || fail "prepared mode is invalid"
+  [[ "${PREPARED_GIT_SHA:-}" =~ ^[A-Za-z0-9._-]{3,80}$ ]] \
+    || fail "prepared git SHA is invalid"
+  [[ "${PREPARED_ALEMBIC_HEAD:-}" =~ ^[A-Za-z0-9._-]{3,120}$ ]] \
+    || fail "prepared Alembic head is invalid"
+  [[ "${PREPARED_PLAN_API:-}" =~ ^[01]$ \
+      && "${PREPARED_PLAN_BROWSER:-}" =~ ^[01]$ \
+      && "${PREPARED_PLAN_RESEARCH:-}" =~ ^[01]$ ]] \
+    || fail "prepared impact plan is invalid"
+  release_dir="${RELEASES}/${release}"
+  archive="${INCOMING}/${release}.tar.gz"
+  checksum="${archive}.sha256"
+  [[ -d "${release_dir}" ]] || fail "prepared release directory is missing"
+  "${DOCKER}" image inspect "${PREPARED_API_IMAGE}" >/dev/null 2>&1 \
+    || fail "prepared API image is unavailable"
+
   previous_release="$(current_release_path)"
   printf '%s\n' "${previous_release}" > "${STATE}/previous-release"
   if [[ -f "${OVERRIDE_FILE}" ]]; then
@@ -421,11 +496,10 @@ install_release() {
     rm -f "${PREVIOUS_OVERRIDE}"
   fi
 
-  mv "${staging}" "${release_dir}"
-  trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
   ln -sfn "${release_dir}" "${CURRENT}"
-  write_override "${release}" "${git_sha}" "${alembic_head}" \
-    "${api_image}" "${browser_image}" "${research_image}"
+  write_override "${release}" "${PREPARED_GIT_SHA}" "${PREPARED_ALEMBIC_HEAD}" \
+    "${PREPARED_API_IMAGE}" "${PREPARED_BROWSER_IMAGE}" \
+    "${PREPARED_RESEARCH_IMAGE}"
   if ! install_shield_agent; then
     restore_previous "${previous_release}"
     log_event deploy rolled_back "${release}" "shield agent installation failed"
@@ -436,18 +510,20 @@ install_release() {
     fail "Mac Compose override validation failed"
   }
 
-  if [[ "${plan_api}" == 1 ]]; then
-    compose up -d --no-build --no-deps api >/dev/null
-    if ! wait_healthy bonfirework-mac-api; then
-      restore_previous "${previous_release}"
-      log_event deploy rolled_back "${release}" "api health check failed"
-      fail "candidate API failed its health check; previous release restored"
-    fi
-    if ! validate_primary_api; then
-      restore_previous "${previous_release}"
-      log_event deploy rolled_back "${release}" "primary API contract validation failed"
-      fail "candidate API failed primary-node contract validation; previous release restored"
-    fi
+  # Every release refreshes API metadata even when it reuses the immutable
+  # application image, keeping both nodes on one auditable Git baseline.
+  compose up -d --no-build --no-deps api >/dev/null
+  if ! wait_healthy bonfirework-mac-api; then
+    restore_previous "${previous_release}"
+    log_event activate rolled_back "${release}" "api health check failed"
+    fail "candidate API failed its health check; previous release restored"
+  fi
+  if ! validate_primary_api; then
+    restore_previous "${previous_release}"
+    log_event activate rolled_back "${release}" "primary API contract validation failed"
+    fail "candidate API failed primary-node contract validation; previous release restored"
+  fi
+  if [[ "${PREPARED_PLAN_API}" == 1 ]]; then
     compose up -d --no-build --no-deps runtime-controller >/dev/null
     if ! wait_healthy bonfirework-mac-runtime-controller; then
       restore_previous "${previous_release}"
@@ -455,7 +531,7 @@ install_release() {
       fail "candidate Runtime Controller failed its health check; previous release restored"
     fi
   fi
-  if [[ "${plan_research}" == 1 ]]; then
+  if [[ "${PREPARED_PLAN_RESEARCH}" == 1 ]]; then
     compose up -d --no-build --no-deps research-executor >/dev/null
     if ! wait_healthy bonfirework-mac-research; then
       restore_previous "${previous_release}"
@@ -465,7 +541,7 @@ install_release() {
       fail "candidate Research Executor failed its health check; previous release restored"
     fi
   fi
-  if [[ "${plan_browser}" == 1 ]]; then
+  if [[ "${PREPARED_PLAN_BROWSER}" == 1 ]]; then
     compose up -d --no-build --no-deps browser-runtime >/dev/null
     if ! wait_healthy bonfirework-mac-browser; then
       restore_previous "${previous_release}"
@@ -476,10 +552,16 @@ install_release() {
 
   cp "${release_dir}/.warehouse-release/files.sha256" "${ACTIVE_MANIFEST}"
   printf '%s\n' "${release}" > "${STATE}/current-release"
-  rm -f "${archive}" "${checksum}"
+  rm -f "${archive}" "${checksum}" "${prepared_state}"
   install_control_actions
-  log_event deploy succeeded "${release}" "mode=${requested_mode};risk=${PLAN_RISK:-unknown}"
+  log_event activate succeeded "${release}" \
+    "mode=${PREPARED_MODE};risk=${PREPARED_PLAN_RISK};duration_seconds=$((SECONDS - activate_started))"
   show_status
+}
+
+install_release() {
+  prepare_release "$1" "$2"
+  activate_release "$1"
 }
 
 rollback_release() {
@@ -524,6 +606,18 @@ case "${1:-}" in
     shift
     show_cluster_status "$@"
     ;;
+  prepare)
+    [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy-macos prepare RELEASE MODE"
+    prepare_release "$2" "$3"
+    ;;
+  prepared-status)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos prepared-status RELEASE"
+    prepared_status "$2"
+    ;;
+  activate)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos activate RELEASE"
+    activate_release "$2"
+    ;;
   install)
     [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy-macos install RELEASE MODE"
     install_release "$2" "$3"
@@ -533,6 +627,6 @@ case "${1:-}" in
     rollback_release
     ;;
   *)
-    fail "usage: warehouse-deploy-macos bootstrap|status|cluster-status [VERIFY_OPTIONS]|manifest|plan CANDIDATE_MANIFEST|history|install RELEASE MODE|rollback"
+    fail "usage: warehouse-deploy-macos bootstrap|status|cluster-status [VERIFY_OPTIONS]|manifest|plan CANDIDATE_MANIFEST|history|prepare RELEASE MODE|prepared-status RELEASE|activate RELEASE|install RELEASE MODE|rollback"
     ;;
 esac
