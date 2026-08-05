@@ -730,6 +730,11 @@ const LangSeg = ({ compact }) => (
    後端事實:/api/auth/register 與 /api/auth/roles?tenant= 公開;
    公司開通無公開端點(/api/platform/signup 已 410),須 L4+ 登入後走 /api/companies/apply。 */
 const LOGIN_MODES = [["login", "登入"], ["apply", "開通公司"], ["join", "加入公司"]];
+const LOGIN_MODULE_CELLS = Array.from({ length: 48 }, (_, index) => ({
+  hot: [1, 10, 20, 36, 46].includes(index),
+  level: `${24 + ((index * 37) % 68)}%`,
+  delay: `${-((index * 7) % 23) / 10}s`,
+}));
 const BIU_ENTRY_LABELS = {
   direct: "直接選擇",
   application: "申請加入",
@@ -966,29 +971,35 @@ const Login2 = ({ onDone, notice }) => {
 
   const posterFoot = isBiuCatalogue && mode === "join"
     ? "LEARN · ANALYZE · ARCHIVE"
-    : { login: "SPEAK · EXECUTE · AUDIT", apply: "FOUND · APPROVE · OPERATE", join: "APPLY · APPROVE · ENTER" }[mode];
+    : { login: "CONNECT · CREATE · EVOLVE", apply: "FOUND · APPROVE · OPERATE", join: "APPLY · APPROVE · ENTER" }[mode];
   const headLabel = isBiuCatalogue && mode === "join"
     ? "BIU ROLE CATALOG"
     : { login: "SIGN IN", apply: "OPEN COMPANY", join: "JOIN COMPANY" }[mode];
   const title = mode === "apply" ? t("申請開通公司")
     : mode === "join" ? (isBiuCatalogue ? t("選擇 BIU 學術職位") : t("申請加入公司"))
-    : "WAREHOUSE OS 2.1";
+    : "BONFIRE PLATFORM";
 
   return (
     <div className="login-wrap">
-      <div className="login-art">
+      <div className={`login-art login-art-${mode}`}>
         <div className="login-grid"/>
+        <div className="login-module-field" aria-hidden="true">
+          {LOGIN_MODULE_CELLS.map((cell, index) => (
+            <i key={index} className={cell.hot ? "hot" : ""}
+              style={{ "--login-module-level": cell.level, "--login-module-delay": cell.delay }}/>
+          ))}
+        </div>
         <div className="row spread" style={{ position: "relative", zIndex: 2 }}>
           <div className="row g10">
             <PlatformMark size={28}/>
             <div className="col g4">
-              <Label>WAREHOUSE OS 2.1</Label>
-              <span className="platform-byline">BY BONFIRE WORKSHOP</span>
+              <Label>BONFIRE PLATFORM</Label>
+              <span className="platform-byline">CONNECTED INTELLIGENCE</span>
             </div>
           </div>
           <Label dim>{dateMono}</Label>
         </div>
-        <div style={{ position: "relative", zIndex: 2 }} className="rise" key={mode}>
+        <div className="login-poster-copy rise" key={mode}>
           <PlatformMark seal size={92} className="login-platform-seal"/>
           <div className="red-block" style={{ marginBottom: 34 }}/>
           {mode === "apply" ? (L === "en"
@@ -1002,14 +1013,14 @@ const Login2 = ({ onDone, notice }) => {
               ? <h1>Join a company<br/>already in<br/><span className="hollow">order</span>.</h1>
               : <h1>{t("加入一家")}<br/>{t("已在")}<span className="hollow">{t("秩序")}</span><br/>{t("中的公司。")}</h1>))
           : (L === "en"
-            ? <h1>Warehousing<br/>is a business<br/>of <span className="hollow">order</span>.</h1>
-            : <h1>{t("倉儲,")}<br/>{t("是一門")}<span className="hollow">{t("秩序")}</span><br/>{t("的生意。")}</h1>)}
+            ? <h1>One entry.<br/>Every possibility<br/>within <span className="hollow">reach</span>.</h1>
+            : <h1>{t("一個入口，")}<br/>{t("承載組織的")}<br/>{t("全部")}<span className="hollow">{t("可能")}</span>{t("。")}</h1>)}
           <div style={{ marginTop: 30, maxWidth: "46ch", fontSize: 15, lineHeight: 1.7, color: "var(--ink-2)" }}>
             {mode === "apply" ? t("開通即建立獨立數據庫與初始表;審批通過後,你就是新公司的系統管理員。")
             : mode === "join" ? (isBiuCatalogue
               ? t("從案例收錄、律師、證據、調解到多級審理,選擇一個 BIU 內部學術職位參與。")
               : t("填一張申請單:帳號、企業代碼、期望角色。企業管理員審批通過後,即可登入開工。"))
-            : <>{t("人類因篝火聚集，文明因連接誕生。")}<br/><br/>{t("在數字時代，我們重新點燃一座篝火。")}</>}
+            : t("連接人與 AI、知識、代碼、數據與行動。讓每一個工作區成為共同創造的起點，讓智能成為可以被調用的基礎設施。")}
           </div>
           {mode === "apply" && (
             <div style={{ marginTop: 26, maxWidth: 480 }} className="col">

@@ -98,14 +98,29 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
     assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
-    assert 'core.css?v=20260804-task-runtime1' in index
+    assert 'core.css?v=20260806-login-swiss1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260804-task-runtime1' in index
-    assert 'dist/app.bundle.js?v=20260806-pages-actions1' in index
-    assert 'dist/personal.bundle.js?v=20260806-pages-actions1' in PERSONAL.read_text(
+    assert 'dist/app.bundle.js?v=20260806-login-swiss1' in index
+    assert 'dist/personal.bundle.js?v=20260806-login-swiss1' in PERSONAL.read_text(
         encoding="utf-8"
     )
     assert 'core.jsx?v=20260806-pages-actions1' in PERSONAL.read_text(encoding="utf-8")
+
+
+def test_login_poster_uses_bonfire_platform_story_and_modular_motion():
+    source = APP.read_text(encoding="utf-8")
+    css = CORE_CSS.read_text(encoding="utf-8")
+
+    assert "BONFIRE PLATFORM" in source
+    assert "CONNECTED INTELLIGENCE" in source
+    assert "LOGIN_MODULE_CELLS" in source
+    assert 'className="login-module-field"' in source
+    assert "One entry.<br/>Every possibility" in source
+    assert "Warehousing<br/>is a business" not in source
+    assert ".login-module-field" in css
+    assert "@keyframes login-module-rise" in css
+    assert "prefers-reduced-motion" in css
 
 
 def test_audit_conversation_drawer_uses_native_detail_contract_and_truthful_errors():
@@ -168,13 +183,17 @@ def test_secretary_dock_exposes_lighthouse_pairing_and_read_only_runs():
     assert "height:min(78vh,960px);flex-basis:min(78vh,960px)" in source
 
 
-def test_login_poster_uses_bonfire_connection_manifesto():
+def test_login_poster_uses_platform_manifesto_beyond_warehousing():
     app = APP.read_text(encoding="utf-8")
     catalog = LANG.read_text(encoding="utf-8")
-    assert "人類因篝火聚集，文明因連接誕生。" in app
-    assert "在數字時代，我們重新點燃一座篝火。" in app
-    assert "Humanity gathered around fire; civilization was born through connection." in catalog
-    assert "In the digital age, we light a bonfire anew." in catalog
+    manifesto = (
+        "連接人與 AI、知識、代碼、數據與行動。讓每一個工作區成為共同創造的起點，"
+        "讓智能成為可以被調用的基礎設施。"
+    )
+    assert manifesto in app
+    assert manifesto in catalog
+    assert "倉儲," not in app
+    assert "Warehousing<br/>is a business" not in app
 
 
 def test_digital_custody_register_uses_restrained_ledger_treatment():

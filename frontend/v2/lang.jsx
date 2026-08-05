@@ -199,6 +199,8 @@ const EN = {
   "待確認（未寫庫）": "awaiting confirmation (no write yet)", "部分完成": "partially completed",
   "(完成,但沒有返回文字)": "(done, no text returned)",
   // 登入海報
+  "連接人與 AI、知識、代碼、數據與行動。讓每一個工作區成為共同創造的起點，讓智能成為可以被調用的基礎設施。":
+    "Connect people and AI, knowledge, code, data, and action. Make every workspace a starting point for shared creation—and intelligence an infrastructure you can call.",
   "人類因篝火聚集，文明因連接誕生。":
     "Humanity gathered around fire; civilization was born through connection.",
   "在數字時代，我們重新點燃一座篝火。":
