@@ -220,9 +220,13 @@ install_shield_agent() {
 
 install_control_actions() {
   local source="${CURRENT}/ops/macos/warehouse-deploy-macos"
+  local gate_source="${CURRENT}/ops/macos/warehouse-deploy-ssh-gate"
   [[ -f "${source}" ]] || return 0
+  [[ -f "${gate_source}" ]] || fail "candidate Mac deployment SSH gate is missing"
   bash -n "${source}" || fail "candidate Mac deployment action failed syntax validation"
+  bash -n "${gate_source}" || fail "candidate Mac deployment SSH gate failed syntax validation"
   install -m 0750 "${source}" "${DEPLOY_ROOT}/actions/warehouse-deploy-macos"
+  install -m 0750 "${gate_source}" "${DEPLOY_ROOT}/actions/warehouse-deploy-ssh-gate"
   install -m 0750 "${source}" "${DEPLOY_ROOT}/bin/warehouse-deploy"
 }
 

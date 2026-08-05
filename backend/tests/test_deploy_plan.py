@@ -266,6 +266,15 @@ def test_full_verification_can_use_an_ephemeral_environment() -> None:
     assert '"${VENV}/bin/pytest" -q' in source
 
 
+def test_macos_manager_versions_the_forced_command_gate() -> None:
+    source = (REPO_ROOT / "ops" / "macos" / "warehouse-deploy-macos").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'gate_source="${CURRENT}/ops/macos/warehouse-deploy-ssh-gate"' in source
+    assert '"${DEPLOY_ROOT}/actions/warehouse-deploy-ssh-gate"' in source
+
+
 def test_standby_deploy_skips_database_writing_workers() -> None:
     source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
         encoding="utf-8"
