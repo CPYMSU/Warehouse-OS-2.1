@@ -213,7 +213,8 @@ def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
     assert 'MANAGER_SUDO="${WAREHOUSE_DEPLOY_MANAGER_SUDO:' in source
     assert 'PREPARE_INCOMING="${WAREHOUSE_DEPLOY_PREPARE_INCOMING:' in source
     assert 'SCP_LEGACY="${WAREHOUSE_DEPLOY_SCP_LEGACY:' in source
-    assert 'manager_remote "${DEPLOY_ACTION}" "${release_id}" "${INSTALL_MODE}"' in source
+    assert 'manager_action=prepare-deferred' in source
+    assert 'manager_remote "${manager_action}" "${release_id}" "${INSTALL_MODE}"' in source
     assert 'if [[ "${TRANSPORT}" == local ]]' in source
     assert 'install -m 0600 "${package}" "${REMOTE_INCOMING}/$(basename "${package}")"' in source
     assert (
@@ -311,6 +312,8 @@ def test_standby_reseed_uses_the_prepared_candidate_action() -> None:
 
     assert 'reseed_action="${RELEASES}/${release}/ops/server/warehouse-standby-reseed"' in source
     assert 'reseed_action="${CURRENT}/ops/server/warehouse-standby-reseed"' not in source
+    assert "WAREHOUSE_NODE_ROLE=standby" in source
+    assert "prepare-deferred)" in source
 
 
 def test_database_migrations_are_detached_from_web_startup_and_deploy_process() -> None:

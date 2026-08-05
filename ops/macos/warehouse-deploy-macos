@@ -822,6 +822,12 @@ case "${1:-}" in
     [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy-macos prepare RELEASE MODE"
     prepare_release "$2" "$3"
     ;;
+  prepare-deferred)
+    [[ "$#" -eq 3 ]] \
+      || fail "usage: warehouse-deploy-macos prepare-deferred RELEASE MODE"
+    MIGRATION_DEFER=1
+    prepare_release "$2" "$3"
+    ;;
   prepared-status)
     [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos prepared-status RELEASE"
     prepared_status "$2"
@@ -851,6 +857,6 @@ case "${1:-}" in
     rollback_release
     ;;
   *)
-    fail "usage: warehouse-deploy-macos bootstrap|status|cluster-status [VERIFY_OPTIONS]|manifest|plan CANDIDATE_MANIFEST|history|prepare RELEASE MODE|prepared-status RELEASE|migration-start RELEASE|migration-status RELEASE|migration-wait RELEASE|activate RELEASE|install RELEASE MODE|rollback"
+    fail "usage: warehouse-deploy-macos bootstrap|status|cluster-status [VERIFY_OPTIONS]|manifest|plan CANDIDATE_MANIFEST|history|prepare RELEASE MODE|prepare-deferred RELEASE MODE|prepared-status RELEASE|migration-start RELEASE|migration-status RELEASE|migration-wait RELEASE|activate RELEASE|install RELEASE MODE|rollback"
     ;;
 esac
