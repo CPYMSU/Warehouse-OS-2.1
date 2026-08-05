@@ -262,6 +262,7 @@ def test_full_verification_can_use_an_ephemeral_environment() -> None:
     )
 
     assert 'VENV="${WAREHOUSE_TEST_VENV:-${ROOT}/backend/.venv}"' in source
+    assert "export PYTHONDONTWRITEBYTECODE=1" in source
     assert '"${VENV}/bin/alembic" upgrade head' in source
     assert '"${VENV}/bin/pytest" -q' in source
 
