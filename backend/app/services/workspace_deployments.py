@@ -40,6 +40,7 @@ from app.services.hosting_compatibility import (
     declared_lifecycle_job,
     manifest_runtime_defaults,
 )
+from app.services.hosting_modes import insert_hosting_notifications
 from app.services.object_storage import (
     HDD_PROVIDER_KEY,
     SSD_PROVIDER_KEY,
@@ -77,13 +78,10 @@ def _manifest_runtime_intent(
         {
             key: value
             for key, value in payload.items()
-            if value not in (None, "")
-            and not (key in {"runtime_type", "type"} and value == "auto")
+            if value not in (None, "") and not (key in {"runtime_type", "type"} and value == "auto")
         }
     )
-    deployment = (
-        manifest.get("deployment") if isinstance(manifest.get("deployment"), dict) else {}
-    )
+    deployment = manifest.get("deployment") if isinstance(manifest.get("deployment"), dict) else {}
     if bool(deployment.get("require_acceptance_before_activation")):
         effective["activate"] = False
     effective["compatibility_contract"] = manifest
@@ -128,13 +126,11 @@ def _acceptance_ready_for_activation(deployment: dict[str, object]) -> bool:
     if not bool(deployment_contract.get("require_acceptance_before_activation")):
         return True
     result = deployment.get("result") if isinstance(deployment.get("result"), dict) else {}
-    acceptance = (
-        result.get("acceptance") if isinstance(result.get("acceptance"), dict) else {}
-    )
-    return bool(acceptance.get("accepted")) and (
-        str(acceptance.get("source_version_id")) == str(deployment.get("source_version_id"))
-    ) and (
-        str(acceptance.get("contract_digest")) == str(contract.get("contract_digest"))
+    acceptance = result.get("acceptance") if isinstance(result.get("acceptance"), dict) else {}
+    return (
+        bool(acceptance.get("accepted"))
+        and (str(acceptance.get("source_version_id")) == str(deployment.get("source_version_id")))
+        and (str(acceptance.get("contract_digest")) == str(contract.get("contract_digest")))
     )
 
 
@@ -787,9 +783,7 @@ def list_workspace_sources(credential: WorkspaceCredential) -> dict[str, object]
         )
         verification = row.get("verification") if isinstance(row.get("verification"), dict) else {}
         archive = (
-            verification.get("archive")
-            if isinstance(verification.get("archive"), dict)
-            else {}
+            verification.get("archive") if isinstance(verification.get("archive"), dict) else {}
         )
         signals = archive.get("signals") if isinstance(archive.get("signals"), dict) else {}
         item["hosting_contract"] = _json_safe(signals.get("hosting_contract"))
@@ -1528,6 +1522,206 @@ def request_workspace_deployment(
             raise HTTPException(
                 status_code=409, detail="A verified hosted source version is required"
             )
+        # Terminal hosting is a real deployment target, but it must never enter
+        # the server Runtime queue.  Keep a normal deployment record for
+        # audit/idempotency and emit a durable action for the paired terminal
+        # or AI to pick up.
+        if str(workspace.get("hosting_mode") or "cloud").lower() == "terminal":
+            if payload.get("database_url_env") not in (None, ""):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Terminal hosting cannot expose a server database secret",
+                )
+            config = workspace.get("config") if isinstance(workspace.get("config"), dict) else {}
+            notify_targets = config.get("notify_targets")
+            if not isinstance(notify_targets, list) or not notify_targets:
+                notify_targets = ["terminal", "ai"]
+            component_config = (
+                component.get("config") if isinstance(component.get("config"), dict) else {}
+            )
+            runtime_spec = {
+                "type": (
+                    payload.get("runtime_type")
+                    or config.get("runtime_type")
+                    or component_config.get("runtime_type")
+                    or component.get("runtime")
+                    or "static"
+                ),
+                "runtime": payload.get("runtime") or component_config.get("runtime"),
+                "entrypoint": payload.get("entrypoint") or component.get("entrypoint"),
+                "build_command": payload.get("build_command") or component.get("build_command"),
+                "start_command": payload.get("start_command") or component.get("start_command"),
+                "health_path": payload.get("health_path") or component_config.get("health_path"),
+                "port": payload.get("port") or component_config.get("port"),
+                "command": payload.get("command") or component_config.get("command"),
+            }
+            runtime_spec = {
+                key: value for key, value in runtime_spec.items() if value not in (None, "")
+            }
+            intent = {
+                "workspace_id": str(workspace["id"]),
+                "component_id": str(component["id"]),
+                "source_version_id": str(source["id"]),
+                "source_sha256": source["artifact_sha256"],
+                "entrypoint": payload.get("entrypoint") or component.get("entrypoint"),
+                "component": component["component_name"],
+                "execution_mode": execution_mode,
+                "hosting_mode": "terminal",
+                "compute_node": "user_terminal",
+                "runtime": runtime_spec,
+                "notify_targets": notify_targets,
+                "cloud_fallback": config.get("cloud_fallback") or "ask",
+            }
+            digest = hashlib.sha256(
+                json.dumps(intent, sort_keys=True, separators=(",", ":"), default=str).encode()
+            ).hexdigest()
+            revision = int(
+                session.execute(
+                    text(
+                        """
+                        SELECT COALESCE(max(revision),0)+1
+                        FROM digital_asset.deployments
+                        WHERE workspace_id=:workspace_id AND component_id=:component_id
+                        """
+                    ),
+                    {"workspace_id": workspace["id"], "component_id": component["id"]},
+                ).scalar_one()
+            )
+            with system_session() as identity_session:
+                tenant_slug = identity_session.execute(
+                    text("SELECT slug FROM iam.tenants WHERE id=:id"),
+                    {"id": credential.tenant_id},
+                ).scalar_one()
+            deployment_id = uuid4()
+            requested_by = session.execute(
+                text("SELECT issued_by FROM digital_asset.api_credentials WHERE id=:id"),
+                {"id": credential.credential_id},
+            ).scalar_one_or_none()
+            row = (
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO digital_asset.deployments(
+                          id, tenant_id, workspace_id, component_id, source_version_id,
+                          revision, provider_key, release_digest, status, health,
+                          public_url, requested_config, requested_by,
+                          idempotency_key, request_digest, requested_credential_id
+                        ) VALUES (
+                          :id, :tenant_id, :workspace_id, :component_id, :source_version_id,
+                          :revision, 'terminal_queue', :release_digest, 'queued', 'unknown',
+                          :public_url, CAST(:requested_config AS jsonb), :requested_by,
+                          :idempotency_key, :request_digest, :credential_id
+                        ) RETURNING *
+                        """
+                    ),
+                    {
+                        "id": deployment_id,
+                        "tenant_id": credential.tenant_id,
+                        "workspace_id": workspace["id"],
+                        "component_id": component["id"],
+                        "source_version_id": source["id"],
+                        "revision": revision,
+                        "release_digest": source["artifact_sha256"],
+                        "public_url": workspace_entry_url(
+                            str(tenant_slug), str(workspace["workspace_key"])
+                        ),
+                        "requested_config": json.dumps(intent, ensure_ascii=False, default=str),
+                        "requested_by": requested_by,
+                        "idempotency_key": key,
+                        "request_digest": digest,
+                        "credential_id": credential.credential_id,
+                    },
+                )
+                .mappings()
+                .one()
+            )
+            session.execute(
+                text(
+                    """
+                    INSERT INTO digital_asset.deployment_events(
+                      deployment_id, tenant_id, sequence, event_type, payload
+                    ) VALUES (
+                      :deployment_id, :tenant_id, 1, 'terminal_requested',
+                      CAST(:payload AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "deployment_id": deployment_id,
+                    "tenant_id": credential.tenant_id,
+                    "payload": json.dumps(intent, ensure_ascii=False, default=str),
+                },
+            )
+            session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.workspace_components
+                    SET source_version_id=:source_id, status='configured'
+                    WHERE id=:component_id
+                    """
+                ),
+                {"source_id": source["id"], "component_id": component["id"]},
+            )
+            session.execute(
+                text(
+                    "UPDATE digital_asset.workspaces SET runtime_status='provisioned' "
+                    "WHERE id=:workspace_id"
+                ),
+                {"workspace_id": workspace["id"]},
+            )
+            notifications = insert_hosting_notifications(
+                session,
+                workspace,
+                event_type="terminal_action_required",
+                message=(
+                    "A terminal-hosted asset is ready. Connect the user's terminal or AI "
+                    "to execute the requested release."
+                ),
+                payload={
+                    "deployment_id": str(deployment_id),
+                    "source_version_id": str(source["id"]),
+                    "source_sha256": source["artifact_sha256"],
+                    "entrypoint": intent["entrypoint"],
+                    "compute_node": "user_terminal",
+                    "cloud_fallback": intent["cloud_fallback"],
+                },
+                targets=notify_targets,
+                deployment_id=deployment_id,
+            )
+            _audit(
+                session,
+                None,
+                "digital_asset.terminal_deployment_requested",
+                {
+                    "workspace_id": str(workspace["id"]),
+                    "deployment_id": str(deployment_id),
+                    "credential_id": str(credential.credential_id),
+                    "source_sha256": source["artifact_sha256"],
+                },
+                tenant_id=credential.tenant_id,
+            )
+            deployment = _public_deployment(dict(row))
+            deployment.update(
+                {
+                    "idempotent_replay": False,
+                    "execution_target": "user_terminal",
+                    "terminal_manifest": {
+                        "workspace_id": str(workspace["id"]),
+                        "deployment_id": str(deployment_id),
+                        "source_version_id": str(source["id"]),
+                        "source_sha256": source["artifact_sha256"],
+                        "entrypoint": intent["entrypoint"],
+                        "runtime": intent["runtime"],
+                        "source_download": (
+                            f"/api/workspaces/v1/sources/{source['id']}/download"
+                        ),
+                        "data_api": "/api/workspaces/v1/data/{collection}",
+                    },
+                    "notifications": notifications,
+                    "next_action": "terminal_execute",
+                }
+            )
+            return {"ok": True, "deployment": deployment}
         signals = _source_signals(dict(source), settings)
         manifest = _hosting_manifest(signals)
         _require_manifest_database_policy(workspace, manifest)
@@ -1569,16 +1763,20 @@ def request_workspace_deployment(
                     status_code=422,
                     detail="database_url_env must be a safe env name",
                 )
-        database_access = str(
-            runtime_intent.get("database_access")
-            or (
-                "migration"
-                if execution_mode == "job" and database_url_env
-                else "runtime"
-                if database_url_env
-                else "none"
+        database_access = (
+            str(
+                runtime_intent.get("database_access")
+                or (
+                    "migration"
+                    if execution_mode == "job" and database_url_env
+                    else "runtime"
+                    if database_url_env
+                    else "none"
+                )
             )
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         if database_access not in {"none", "runtime", "migration"}:
             raise HTTPException(
                 status_code=422,
@@ -2206,9 +2404,7 @@ def activate_workspace_deployment(
                         ),
                     },
                 )
-        database_release = observe_database_release_gate(
-            session, credential.workspace_id
-        )
+        database_release = observe_database_release_gate(session, credential.workspace_id)
         if not bool(database_release["ready"]):
             raise HTTPException(
                 status_code=409,

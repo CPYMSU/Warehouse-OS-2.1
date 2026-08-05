@@ -59,6 +59,9 @@ ASSET_LIFECYCLE_STAGES = frozenset(
 RISK_LEVELS = frozenset({"low", "medium", "high", "critical"})
 SERVICE_PLANS = frozenset({"custody", "hosted", "managed", "dedicated"})
 RUNTIME_TYPES = frozenset({"static", "web", "api", "worker", "agent", "container", "compose"})
+HOSTING_MODES = frozenset({"cloud", "terminal"})
+COMPUTE_NODES = frozenset({"warehouse", "vultr", "mac_mini", "user_terminal"})
+CLOUD_COMPUTE_NODES = frozenset({"warehouse", "vultr", "mac_mini"})
 COMPONENT_KINDS = frozenset({"frontend", "backend", "worker", "agent"})
 ARTIFACT_KINDS = frozenset(
     {
@@ -334,21 +337,17 @@ def _workspace_billable_usage(
             except hosted_database.HostedDatabaseUnavailable:
                 database_measurements.append(
                     {
-                        "database_bytes": max(
-                            0, int(binding.get("actual_size_bytes") or 0)
-                        ),
+                        "database_bytes": max(0, int(binding.get("actual_size_bytes") or 0)),
                         "measurement_status": "cached_after_error",
                     }
                 )
         database_bytes = sum(
-            int(measurement["database_bytes"])
-            for measurement in database_measurements
+            int(measurement["database_bytes"]) for measurement in database_measurements
         )
         database_status = (
             "complete"
             if all(
-                measurement.get("measurement_status")
-                in {"complete", "provider_reported"}
+                measurement.get("measurement_status") in {"complete", "provider_reported"}
                 for measurement in database_measurements
             )
             else "partial"
@@ -413,9 +412,7 @@ def _workspace_billable_usage(
         else "partial"
     )
     usage["database_measurement_status"] = database_status
-    usage["runtime_scan_error_count"] = int(
-        runtime_measurement.get("scan_error_count") or 0
-    )
+    usage["runtime_scan_error_count"] = int(runtime_measurement.get("scan_error_count") or 0)
     if persist:
         session.execute(
             text(
@@ -797,6 +794,7 @@ def _public_workspace(row: dict[str, object], tenant_slug: str | None = None) ->
 
 def _public_deployment(row: dict[str, object]) -> dict[str, object]:
     provider = runtime_provider_observation()
+    provider_key = str(row.get("provider_key") or "")
     return _json_safe(
         {
             **row,
@@ -805,7 +803,8 @@ def _public_deployment(row: dict[str, object]) -> dict[str, object]:
             "runtime_available": provider["runtime_available"],
             "runtime_provider_state": provider["runtime_provider_state"],
             "runtime_observed_at": provider["runtime_observed_at"],
-            "runtime_claimed": row.get("provider_key") != "runtime_queue",
+            "runtime_claimed": provider_key not in {"runtime_queue", "terminal_queue"},
+            "execution_target": "terminal" if provider_key == "terminal_queue" else "cloud",
         }
     )
 
@@ -2340,9 +2339,7 @@ def _database_provider_request(
 ) -> tuple[str | None, str | None, bool | None]:
     requested = str(payload.get("provider_key") or payload.get("provider") or "").strip().lower()
     database_url_value = payload.get("database_url")
-    database_url = (
-        str(database_url_value).strip() if isinstance(database_url_value, str) else None
-    )
+    database_url = str(database_url_value).strip() if isinstance(database_url_value, str) else None
     if database_url_value is not None and not database_url:
         raise HTTPException(status_code=422, detail="database_url cannot be empty")
     aliases = {
@@ -2422,8 +2419,7 @@ def _provision_database(
     if existing is not None:
         existing_row = dict(existing)
         existing_external = (
-            str(existing_row["provider_key"])
-            == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
+            str(existing_row["provider_key"]) == hosted_database.EXTERNAL_POSTGRESQL_PROVIDER_KEY
         )
         if existing_external != external_provider and requested_provider is not None:
             raise HTTPException(
@@ -2621,6 +2617,38 @@ def create_workspace(
     _require_manage(actor)
     service_plan = str(payload.get("service_plan") or payload.get("plan") or "hosted")
     runtime_type = str(payload.get("runtime_type") or payload.get("runtime") or "static")
+    hosting_mode = str(payload.get("hosting_mode") or "cloud").strip().lower()
+    if hosting_mode not in HOSTING_MODES:
+        raise HTTPException(status_code=422, detail="hosting_mode must be cloud or terminal")
+    default_compute_node = "user_terminal" if hosting_mode == "terminal" else "warehouse"
+    compute_node = str(payload.get("compute_node") or default_compute_node).strip().lower()
+    if compute_node not in COMPUTE_NODES:
+        raise HTTPException(status_code=422, detail="Invalid compute_node")
+    if hosting_mode == "terminal" and compute_node != "user_terminal":
+        raise HTTPException(
+            status_code=422,
+            detail="terminal hosting must use compute_node=user_terminal",
+        )
+    if hosting_mode == "cloud" and compute_node == "user_terminal":
+        raise HTTPException(
+            status_code=422,
+            detail="cloud hosting must use a Warehouse, Vultr or Mac mini compute node",
+        )
+    fallback = str(payload.get("cloud_fallback") or "ask").strip().lower()
+    if fallback not in {"ask", "never"}:
+        raise HTTPException(status_code=422, detail="cloud_fallback must be ask or never")
+    notify_targets = payload.get("notify_targets") or ["terminal", "ai"]
+    if isinstance(notify_targets, str):
+        notify_targets = [
+            item.strip().lower() for item in notify_targets.split(",") if item.strip()
+        ]
+    if not isinstance(notify_targets, list) or not notify_targets:
+        raise HTTPException(status_code=422, detail="notify_targets must not be empty")
+    if set(str(item).strip().lower() for item in notify_targets) - {"terminal", "ai"}:
+        raise HTTPException(status_code=422, detail="notify_targets must contain terminal or ai")
+    compute_budget = payload.get("compute_budget") or {}
+    if not isinstance(compute_budget, dict):
+        raise HTTPException(status_code=422, detail="compute_budget must be an object")
     if service_plan not in SERVICE_PLANS:
         raise HTTPException(status_code=422, detail="Invalid service_plan")
     if runtime_type not in RUNTIME_TYPES:
@@ -2775,11 +2803,13 @@ def create_workspace(
                     """
                     INSERT INTO digital_asset.workspaces(
                       id, tenant_id, asset_id, workspace_key, service_plan,
-                      runtime_status, region, public_url, storage_quota_bytes,
+                      hosting_mode, compute_node, runtime_status, region,
+                      public_url, storage_quota_bytes,
                       config, created_by
                     ) VALUES (
                       :id, :tenant_id, :asset_id, :workspace_key, :service_plan,
-                      'provisioned', :region, :public_url, :storage_quota_bytes,
+                      :hosting_mode, :compute_node, 'provisioned', :region,
+                      :public_url, :storage_quota_bytes,
                       CAST(:config AS jsonb), :created_by
                     )
                     RETURNING *
@@ -2791,6 +2821,8 @@ def create_workspace(
                     "asset_id": asset["id"],
                     "workspace_key": desired_key,
                     "service_plan": service_plan,
+                    "hosting_mode": hosting_mode,
+                    "compute_node": compute_node,
                     "region": payload.get("region") or "local",
                     "public_url": payload.get("public_url"),
                     "storage_quota_bytes": storage_quota_bytes,
@@ -2798,6 +2830,11 @@ def create_workspace(
                         {
                             "runtime_type": runtime_type,
                             "provider_selection": "auto_runtime",
+                            "notify_targets": list(
+                                dict.fromkeys(str(item).strip().lower() for item in notify_targets)
+                            ),
+                            "cloud_fallback": fallback,
+                            "compute_budget": compute_budget,
                             "code_storage": code_storage,
                             "data_storage": "hdd",
                         }
@@ -5139,6 +5176,20 @@ def create_deployment(
                     detail="Create a workspace before requesting a deployment",
                 )
             workspace = dict(row)
+        if str(workspace.get("hosting_mode") or "cloud").lower() == "terminal":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "terminal_hosting_selected",
+                    "message": (
+                        "This workspace is terminal-hosted. Use the intelligent hosting API "
+                        "or a paired terminal to request execution; no server Runtime was created."
+                    ),
+                    "next_action": (
+                        "POST /api/hosting/v2/sessions with desired_state.hosting.mode=terminal"
+                    ),
+                },
+            )
         source_version_id = None
         source_digest = None
         if payload.get("source_version_id") not in (None, ""):

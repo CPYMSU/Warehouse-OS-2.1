@@ -30,6 +30,7 @@ from app.services.database_release import (
 )
 from app.services.hosted_database import migration_database_url, runtime_database_url
 from app.services.hosting_fabric import reconcile_repository_resources, runtime_environment
+from app.services.hosting_modes import record_compute_usage
 from app.services.object_storage import object_store_read_candidates
 from app.services.source_packages import application_root, materialize_source_archive
 from app.services.workspace_usage import measure_workspace_runtime_storage
@@ -299,6 +300,63 @@ class DockerEngine:
             ),
         }
 
+    def resource_usage(self, name: str) -> dict[str, float]:
+        """Return cumulative container counters for cloud-compute metering.
+
+        ``stats`` intentionally keeps its historical autoscaling contract. This
+        separate method exposes cumulative CPU, memory and network counters so
+        the Runtime Controller can persist interval deltas without changing
+        existing scaling callers. Docker does not expose a portable cumulative
+        GPU counter here; GPU seconds remain zero until the provider supplies a
+        device-specific sampler.
+        """
+
+        response = self.client.get(
+            f"{self.api_prefix}/containers/{name}/stats",
+            params={"stream": "false", "one-shot": "true"},
+            # Metering is advisory; a slow/unreachable daemon must not block
+            # the deployment queue for the full autoscaling timeout.
+            timeout=3,
+        )
+        if response.status_code != 200:
+            self._raise_engine_error(response, "container resource usage")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Docker Engine returned an invalid resource usage payload")
+        cpu = payload.get("cpu_stats") or {}
+        usage = cpu.get("cpu_usage") or {}
+        memory = payload.get("memory_stats") or {}
+        memory_stats = memory.get("stats") or {}
+        raw_memory_bytes = max(0.0, float(memory.get("usage") or 0))
+        # Docker's usage counter commonly includes page cache. Prefer the
+        # working-set approximation when the daemon exposes cache counters,
+        # while retaining raw/cache values for audit metadata.
+        cache_bytes = max(
+            0.0,
+            float(
+                memory_stats.get("inactive_file")
+                or memory_stats.get("total_inactive_file")
+                or memory_stats.get("cache")
+                or 0
+            ),
+        )
+        working_set_bytes = max(0.0, raw_memory_bytes - cache_bytes)
+        networks = payload.get("networks") or {}
+        network_bytes = sum(
+            float(item.get("rx_bytes") or 0) + float(item.get("tx_bytes") or 0)
+            for item in networks.values()
+            if isinstance(item, dict)
+        )
+        return {
+            "cpu_seconds_total": max(0.0, float(usage.get("total_usage") or 0) / 1_000_000_000),
+            "memory_bytes": working_set_bytes,
+            "memory_raw_bytes": raw_memory_bytes,
+            "memory_cache_bytes": cache_bytes,
+            "memory_limit_bytes": max(0.0, float(memory.get("limit") or 0)),
+            "network_bytes_total": max(0.0, network_bytes),
+            "gpu_seconds_total": 0.0,
+        }
+
     def accelerator_capacity(self) -> dict[str, object]:
         response = self.client.get(f"{self.api_prefix}/info")
         if response.status_code != 200:
@@ -425,6 +483,8 @@ class RuntimeController:
         self._last_scaling_reconcile = 0.0
         self._last_repository_reconcile = 0.0
         self._last_runtime_drift_reconcile = 0.0
+        self._last_compute_usage_reconcile = 0.0
+        self._compute_usage_samples: dict[str, tuple[datetime, dict[str, float]]] = {}
 
     def reconcile_repositories(self) -> int:
         if time.monotonic() - self._last_repository_reconcile < 60:
@@ -2081,6 +2141,238 @@ class RuntimeController:
         finally:
             engine.close()
 
+    def _compute_usage_candidates(self) -> list[dict[str, object]]:
+        candidates: list[dict[str, object]] = []
+        for tenant_id in self._tenants():
+            with tenant_session(tenant_id) as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT d.id AS deployment_id, d.workspace_id, d.result,
+                               w.compute_node
+                        FROM digital_asset.deployments AS d
+                        JOIN digital_asset.workspaces AS w ON w.id=d.workspace_id
+                        WHERE d.status='ready'
+                          AND d.health='healthy'
+                          AND d.runtime_profile_key IS NOT NULL
+                          AND w.hosting_mode='cloud'
+                          AND w.compute_node='warehouse'
+                          AND w.active_deployment_id=d.id
+                        ORDER BY d.completed_at NULLS LAST, d.created_at
+                        """
+                    )
+                ).mappings()
+                for row in rows:
+                    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+                    names = [str(value) for value in result.get("container_names") or [] if value]
+                    if names:
+                        candidates.append(
+                            {
+                                "tenant_id": tenant_id,
+                                "deployment_id": UUID(str(row["deployment_id"])),
+                                "workspace_id": UUID(str(row["workspace_id"])),
+                                "compute_node": str(row["compute_node"]),
+                                "container_names": names,
+                            }
+                        )
+        return candidates
+
+    def reconcile_compute_usage(self) -> int:
+        """Persist interval deltas for active cloud Runtime containers.
+
+        The sampler is deliberately best-effort: a metering outage must not
+        stop serving an otherwise healthy application. Samples are kept in
+        process memory between controller ticks; a restart starts a new base
+        sample and therefore never fabricates usage for the missing interval.
+        """
+
+        if time.monotonic() - self._last_compute_usage_reconcile < 60:
+            return 0
+        self._last_compute_usage_reconcile = time.monotonic()
+        try:
+            candidates = self._compute_usage_candidates()
+        except Exception:
+            # Older control planes may not have the dual-hosting columns yet.
+            # Do not make Runtime availability depend on the optional meter.
+            return 0
+        if not candidates:
+            return 0
+        sampler_factory = DockerEngine
+        try:
+            engine = sampler_factory(self.settings.runtime_docker_socket)
+        except Exception:
+            return 0
+        sampled_at = datetime.now(UTC)
+        seen: set[str] = set()
+        recorded = 0
+        deployment_deltas: dict[UUID, dict[str, object]] = {}
+        max_interval_seconds = 5 * 60
+        max_samples = 256
+        sampling_deadline = time.monotonic() + 10
+        sample_count = 0
+        sampling_exhausted = False
+        try:
+            resource_sampler = getattr(engine, "resource_usage", None)
+            if not callable(resource_sampler):
+                return 0
+            for candidate in candidates:
+                if sampling_exhausted:
+                    break
+                deployment_id = candidate["deployment_id"]
+                aggregate = deployment_deltas.setdefault(
+                    deployment_id,
+                    {
+                        "tenant_id": candidate["tenant_id"],
+                        "workspace_id": candidate["workspace_id"],
+                        "compute_node": candidate["compute_node"],
+                        "cpu_seconds": 0.0,
+                        "memory_mb_seconds": 0.0,
+                        "gpu_seconds": 0.0,
+                        "network_bytes": 0,
+                        "started_at": None,
+                        "containers": [],
+                        "sampling_gaps": [],
+                    },
+                )
+                for container_name in candidate["container_names"]:
+                    if sample_count >= max_samples or time.monotonic() >= sampling_deadline:
+                        sampling_exhausted = True
+                        break
+                    sample_count += 1
+                    key = f"{deployment_id}:{container_name}"
+                    try:
+                        sample = resource_sampler(container_name)
+                    except Exception:
+                        # A removed/restarted container must not retain the old
+                        # baseline: otherwise its next incarnation could be
+                        # charged with a stale memory interval.
+                        self._compute_usage_samples.pop(key, None)
+                        continue
+                    if not isinstance(sample, dict):
+                        self._compute_usage_samples.pop(key, None)
+                        continue
+                    seen.add(key)
+                    previous = self._compute_usage_samples.get(key)
+                    self._compute_usage_samples[key] = (sampled_at, sample)
+                    if previous is None:
+                        continue
+                    previous_at, previous_sample = previous
+                    elapsed = max(0.0, (sampled_at - previous_at).total_seconds())
+                    if elapsed <= 0:
+                        continue
+                    if elapsed > max_interval_seconds:
+                        gaps = aggregate["sampling_gaps"]
+                        if isinstance(gaps, list):
+                            gaps.append(
+                                {
+                                    "container_name": container_name,
+                                    "elapsed_seconds": elapsed,
+                                    "max_interval_seconds": max_interval_seconds,
+                                }
+                            )
+                        # Reset the baseline after a long controller outage;
+                        # do not turn an unknown interval into a surprise bill.
+                        continue
+                    cpu_seconds = max(
+                        0.0,
+                        float(sample.get("cpu_seconds_total") or 0)
+                        - float(previous_sample.get("cpu_seconds_total") or 0),
+                    )
+                    memory_mb_seconds = max(
+                        0.0,
+                        float(sample.get("memory_bytes") or 0) / (1024 * 1024) * elapsed,
+                    )
+                    network_bytes = max(
+                        0,
+                        int(
+                            float(sample.get("network_bytes_total") or 0)
+                            - float(previous_sample.get("network_bytes_total") or 0)
+                        ),
+                    )
+                    gpu_seconds = max(
+                        0.0,
+                        float(sample.get("gpu_seconds_total") or 0)
+                        - float(previous_sample.get("gpu_seconds_total") or 0),
+                    )
+                    if not any((cpu_seconds, memory_mb_seconds, network_bytes, gpu_seconds)):
+                        continue
+                    aggregate["cpu_seconds"] = float(aggregate["cpu_seconds"]) + cpu_seconds
+                    aggregate["memory_mb_seconds"] = (
+                        float(aggregate["memory_mb_seconds"]) + memory_mb_seconds
+                    )
+                    aggregate["gpu_seconds"] = float(aggregate["gpu_seconds"]) + gpu_seconds
+                    aggregate["network_bytes"] = int(aggregate["network_bytes"]) + network_bytes
+                    current_started = aggregate.get("started_at")
+                    if current_started is None or previous_at < current_started:
+                        aggregate["started_at"] = previous_at
+                    containers = aggregate["containers"]
+                    if isinstance(containers, list):
+                        containers.append(
+                            {
+                                "container_name": container_name,
+                                "cpu_seconds": cpu_seconds,
+                                "memory_mb_seconds": memory_mb_seconds,
+                                "gpu_seconds": gpu_seconds,
+                                "network_bytes": network_bytes,
+                                "elapsed_seconds": elapsed,
+                                "memory_raw_bytes": sample.get("memory_raw_bytes"),
+                                "memory_cache_bytes": sample.get("memory_cache_bytes"),
+                            }
+                        )
+            for deployment_id, aggregate in deployment_deltas.items():
+                cpu_seconds = float(aggregate["cpu_seconds"])
+                memory_mb_seconds = float(aggregate["memory_mb_seconds"])
+                gpu_seconds = float(aggregate["gpu_seconds"])
+                network_bytes = int(aggregate["network_bytes"])
+                if not any((cpu_seconds, memory_mb_seconds, network_bytes, gpu_seconds)):
+                    continue
+                started_at = aggregate.get("started_at")
+                if not isinstance(started_at, datetime):
+                    continue
+                containers = aggregate.get("containers")
+                gaps = aggregate.get("sampling_gaps")
+                try:
+                    record_compute_usage(
+                        aggregate["tenant_id"],
+                        aggregate["workspace_id"],
+                        {
+                            "hosting_mode": "cloud",
+                            "compute_node": aggregate["compute_node"],
+                            "deployment_id": str(deployment_id),
+                            "cpu_seconds": cpu_seconds,
+                            "memory_mb_seconds": memory_mb_seconds,
+                            "gpu_seconds": gpu_seconds,
+                            "network_bytes": network_bytes,
+                            "estimated_cost_cny": 0,
+                            "metering_source": "runtime",
+                            "notify_ai": False,
+                            "idempotency_key": (
+                                f"runtime:{deployment_id}:{started_at.isoformat()}:{sampled_at.isoformat()}"
+                            ),
+                            "started_at": started_at.isoformat(),
+                            "completed_at": sampled_at.isoformat(),
+                            "metadata": {
+                                "containers": containers if isinstance(containers, list) else [],
+                                "sampling_gaps": gaps if isinstance(gaps, list) else [],
+                                "sample_started_at": started_at.isoformat(),
+                                "sample_completed_at": sampled_at.isoformat(),
+                                "pricing_pending": True,
+                            },
+                        },
+                    )
+                    recorded += 1
+                except Exception:
+                    # Metering is advisory until pricing is configured; a
+                    # failed insert must never tear down a healthy Runtime.
+                    continue
+        finally:
+            engine.close()
+        stale_before = sampled_at - timedelta(minutes=10)
+        for key, (last_seen, _sample) in list(self._compute_usage_samples.items()):
+            if key not in seen and last_seen < stale_before:
+                self._compute_usage_samples.pop(key, None)
+        return recorded
+
     def run_once(self) -> bool:
         claimed = self.claim()
         if claimed is None:
@@ -2100,6 +2392,7 @@ class RuntimeController:
                 self.observe_capacity()
                 self.reconcile_runtime_drift()
                 self.reconcile_scaling()
+                self.reconcile_compute_usage()
                 self.reconcile_repositories()
                 worked = self.run_once()
                 self.heartbeat(claimed=worked, successful=True)

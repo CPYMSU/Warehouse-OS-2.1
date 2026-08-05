@@ -25,10 +25,21 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api.deps import current_actor
 from app.core.config import Settings, get_settings
-from app.services.digital_asset_hosting import authenticate_workspace_key
+from app.services.digital_asset_hosting import WorkspaceCredential, authenticate_workspace_key
+from app.services.hosting_modes import (
+    acknowledge_hosting_notification,
+    complete_terminal_deployment,
+    get_hosting_mode_for_credential,
+    list_compute_usage_for_credential,
+    list_hosting_notifications_for_credential,
+    terminal_deployment_manifest,
+)
 from app.services.hosting_requirements import (
+    AUTO_RUNTIME_GUIDE_FILENAME,
     CONTRACT_FILENAME,
     STANDARD_FILENAME,
+    auto_runtime_guide_bundle,
+    auto_runtime_guide_path,
     contract_path,
     requirements_bundle,
     standard_path,
@@ -111,6 +122,19 @@ def hosting_principal(
     )
 
 
+def _hosting_credential_for_request(
+    principal: HostingPrincipal,
+    workspace_ref: str | None,
+) -> WorkspaceCredential:
+    if principal.credential is not None:
+        return principal.credential
+    if principal.actor is None:
+        raise HTTPException(status_code=401, detail="Account session is required")
+    if workspace_ref in (None, ""):
+        raise HTTPException(status_code=422, detail="workspace_ref is required")
+    return credential_for_actor(principal.actor, workspace_ref)
+
+
 @router.get("/api/hosting/v2/manifest")
 def intelligent_hosting_manifest() -> dict[str, object]:
     return {"ok": True, "manifest": assistant_manifest()}
@@ -125,12 +149,85 @@ def intelligent_hosting_kit(request: Request) -> dict[str, object]:
         "manifest": manifest,
         "downloads": manifest["downloads"],
         "quick_start": [
-            "Download dm.py and dm-guide.md.",
+            "Download dm.py, dm-guide.md and auto-runtime-guide.md.",
             "Set WAREHOUSE_WORKSPACE_KEY to the asset's wak_ key.",
             "Run: python3 dm.py agent manifest",
             "Start one hosting session and keep its session_id for every retry.",
         ],
     }
+
+
+@router.get("/api/hosting/v2/hosting")
+def intelligent_hosting_mode_get(
+    workspace_ref: str | None = Query(default=None),
+    principal: HostingPrincipal = Depends(hosting_principal),
+) -> dict[str, object]:
+    credential = _hosting_credential_for_request(principal, workspace_ref)
+    return get_hosting_mode_for_credential(credential)
+
+
+@router.get("/api/hosting/v2/notifications")
+def intelligent_hosting_notifications(
+    workspace_ref: str | None = Query(default=None),
+    target: str | None = Query(default=None),
+    notification_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: HostingPrincipal = Depends(hosting_principal),
+) -> dict[str, object]:
+    credential = _hosting_credential_for_request(principal, workspace_ref)
+    return list_hosting_notifications_for_credential(
+        credential,
+        target=target,
+        notification_status=notification_status,
+        limit=limit,
+    )
+
+
+@router.get("/api/hosting/v2/compute-usage")
+def intelligent_hosting_compute_usage(
+    workspace_ref: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: HostingPrincipal = Depends(hosting_principal),
+) -> dict[str, object]:
+    credential = _hosting_credential_for_request(principal, workspace_ref)
+    return list_compute_usage_for_credential(credential, limit=limit)
+
+
+@router.post("/api/hosting/v2/notifications/{notification_ref}/ack")
+def intelligent_hosting_notification_ack(
+    notification_ref: str,
+    workspace_ref: str | None = Query(default=None),
+    principal: HostingPrincipal = Depends(hosting_principal),
+) -> dict[str, object]:
+    credential = _hosting_credential_for_request(principal, workspace_ref)
+    credential.require("deploy:write")
+    return acknowledge_hosting_notification(
+        credential.tenant_id,
+        credential.workspace_id,
+        notification_ref,
+        actor_user_id=principal.actor_user_id,
+    )
+
+
+@router.post("/api/hosting/v2/terminal-actions/{deployment_ref}/complete")
+def intelligent_hosting_terminal_complete(
+    deployment_ref: str,
+    payload: dict[str, object] = Body(default={}),
+    principal: HostingPrincipal = Depends(hosting_principal),
+    workspace_ref: str | None = Query(default=None),
+) -> dict[str, object]:
+    credential = _hosting_credential_for_request(principal, workspace_ref)
+    return complete_terminal_deployment(credential, deployment_ref, payload)
+
+
+@router.get("/api/hosting/v2/terminal-actions/{deployment_ref}")
+def intelligent_hosting_terminal_manifest(
+    deployment_ref: str,
+    principal: HostingPrincipal = Depends(hosting_principal),
+    workspace_ref: str | None = Query(default=None),
+) -> dict[str, object]:
+    credential = _hosting_credential_for_request(principal, workspace_ref)
+    return terminal_deployment_manifest(credential, deployment_ref)
 
 
 @router.get("/api/hosting/v2/dm.py")
@@ -153,6 +250,43 @@ def intelligent_hosting_guide() -> FileResponse:
         filename="dm-guide.md",
         headers={"Cache-Control": "public, max-age=300"},
     )
+
+
+@router.get("/api/hosting/v2/auto-runtime-guide.md")
+def intelligent_hosting_auto_runtime_guide() -> FileResponse:
+    """Download the shared hosting/Auto Runtime connection guide.
+
+    This is intentionally a static, versioned contract: it gives the
+    secretary and terminal AI the same design vocabulary without exposing
+    tenant data, credentials, provider paths or model reasoning.
+    """
+
+    try:
+        path = auto_runtime_guide_path()
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Auto Runtime hosting guide is unavailable",
+        ) from exc
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=AUTO_RUNTIME_GUIDE_FILENAME,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@router.get("/api/hosting/v2/auto-runtime-guide")
+def intelligent_hosting_auto_runtime_guide_bundle() -> dict[str, object]:
+    """Return the same guide in a complete envelope for AI command calls."""
+
+    try:
+        return auto_runtime_guide_bundle(public_surface="hosting")
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Auto Runtime hosting guide is unavailable",
+        ) from exc
 
 
 @router.get("/api/hosting/v2/requirements")
@@ -269,24 +403,28 @@ def intelligent_hosting_message_stream(
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
     before = list_events(principal, session_id, after=0)
-    after_sequence = max(
-        [int(event["sequence"]) for event in before["events"]] or [0]
-    )
+    after_sequence = max([int(event["sequence"]) for event in before["events"]] or [0])
     result = execute_message(principal, session_id, payload, settings)
     emitted = list_events(principal, session_id, after=after_sequence)
 
     def stream():
         for event in emitted["events"]:
-            yield json.dumps(
-                {"event": event["event_type"], "payload": event},
+            yield (
+                json.dumps(
+                    {"event": event["event_type"], "payload": event},
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+        yield (
+            json.dumps(
+                {"event": "final", "payload": result},
                 ensure_ascii=False,
                 default=str,
-            ) + "\n"
-        yield json.dumps(
-            {"event": "final", "payload": result},
-            ensure_ascii=False,
-            default=str,
-        ) + "\n"
+            )
+            + "\n"
+        )
 
     return StreamingResponse(
         stream(),
@@ -317,9 +455,7 @@ def intelligent_hosting_source_upload(
     version_no: str | None = Form(default=None),
     component: str | None = Form(default=None),
     expected_sha256: str | None = Form(default=None),
-    content_sha256: Annotated[
-        str | None, Header(alias="Content-SHA256")
-    ] = None,
+    content_sha256: Annotated[str | None, Header(alias="Content-SHA256")] = None,
     principal: HostingPrincipal = Depends(hosting_principal),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
@@ -352,9 +488,7 @@ def intelligent_hosting_source_upload(
             archive=archive,
         )
     except Exception as exc:
-        diagnosis = record_session_diagnostic(
-            principal, session_id, "source.upload", exc
-        )
+        diagnosis = record_session_diagnostic(principal, session_id, "source.upload", exc)
         raise HTTPException(
             status_code=(exc.status_code if isinstance(exc, HTTPException) else 500),
             detail={"message": "Source upload failed", "diagnosis": diagnosis},

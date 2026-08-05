@@ -6214,6 +6214,33 @@ COMMANDS = [
         "examples": ["dm guide"],
     },
     {
+        "command": "dm hosting guide",
+        "tool_name": "digital_market_hosting_guide",
+        "description": (
+            "取得所有 static/browser、terminal、cloud、hybrid 托管机制与 Auto Runtime AI 秘书连接说明。"
+            "文件同时说明源码/Runtime/数据/通知/用量的代码边界、接口连接和用户确认规则；"
+            "AI 应先读本文件、manifest 与实时能力目录，再使用同一托管会话执行，不能自行拼接路由或命令"
+        ),
+        "search_aliases": [
+            "托管机制",
+            "託管機制",
+            "托管设计",
+            "託管設計",
+            "部署说明",
+            "Auto Runtime 托管",
+            "AI 秘书托管接口",
+            "hosting mechanism guide",
+            "auto runtime hosting guide",
+        ],
+        "api_method": "GET",
+        "api_path": "/api/hosting/v2/auto-runtime-guide",
+        "permission": "ai.use",
+        "writes": False,
+        "risk": "normal",
+        "params": [],
+        "examples": ["dm hosting guide"],
+    },
+    {
         "command": "dm hosting requirements",
         "tool_name": "digital_market_hosting_requirements",
         "description": "取得《託管應用技術要求 2.3》、機器可讀 Hosting Contract 及正式下載連結。用於設計或檢查可被 Warehouse OS 託管的 Python、Node.js、靜態網站、Container 與 Compose 專案；回答必須區分應用責任、平台保證與 ready 的實證門檻",

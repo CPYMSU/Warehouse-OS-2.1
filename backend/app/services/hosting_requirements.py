@@ -9,6 +9,7 @@ STANDARD_VERSION = "2.3"
 STANDARD_SCHEMA = "warehouse.hosting-application.v2.3"
 STANDARD_FILENAME = "workspace-hosting-developer-standard-2.3.zh-TW.md"
 CONTRACT_FILENAME = "workspace-hosting-contract-2.3.json"
+AUTO_RUNTIME_GUIDE_FILENAME = "warehouse-hosting-mechanisms-2.3.zh-TW.md"
 
 
 def _document_path(filename: str) -> Path:
@@ -29,6 +30,47 @@ def standard_path() -> Path:
 
 def contract_path() -> Path:
     return _document_path(CONTRACT_FILENAME)
+
+
+def auto_runtime_guide_path() -> Path:
+    """Return the single guide shared by the secretary and terminal AIs."""
+
+    return _document_path(AUTO_RUNTIME_GUIDE_FILENAME)
+
+
+def auto_runtime_guide_bundle(*, public_surface: str = "hosting") -> dict[str, object]:
+    """Return the guide as a complete secretary-safe JSON envelope.
+
+    The Markdown route remains the canonical file download.  This envelope is
+    also needed by the shared command executor: a ``FileResponse`` is treated
+    as a bounded text response by the internal HTTP adapter and therefore
+    cannot reliably deliver the complete guide to an AI secretary.
+    """
+
+    if public_surface == "hosting":
+        document_url = "/api/hosting/v2/auto-runtime-guide.md"
+    else:
+        document_url = "/api/digital-assets/hosting-mechanisms/download"
+    return {
+        "ok": True,
+        "version": STANDARD_VERSION,
+        "schema": "warehouse.hosting-mechanisms.v2.3",
+        "filename": AUTO_RUNTIME_GUIDE_FILENAME,
+        "content": auto_runtime_guide_path().read_text(encoding="utf-8"),
+        "downloads": [
+            {
+                "label": "下載《託管機制與 Auto Runtime 連接指南》",
+                "name": AUTO_RUNTIME_GUIDE_FILENAME,
+                "url": document_url,
+                "filename": AUTO_RUNTIME_GUIDE_FILENAME,
+                "media_type": "text/markdown",
+            }
+        ],
+        "note": (
+            "這份文件是 Auto Runtime 的設計與連接指南，不是額外授權；AI 必須依"
+            "實時能力目錄、租戶 scope、確認策略和部署證據執行。"
+        ),
+    }
 
 
 def requirement_downloads(*, public_surface: str) -> list[dict[str, str]]:
