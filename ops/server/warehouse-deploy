@@ -156,7 +156,7 @@ wait_database_migration() {
   local reseed_marker reseed_action
   status="$(migration_job_dir "${release}")/status.json"
   reseed_marker="$(migration_job_dir "${release}")/standby-reseed-attempted"
-  reseed_action="${CURRENT}/ops/server/warehouse-standby-reseed"
+  reseed_action="${RELEASES}/${release}/ops/server/warehouse-standby-reseed"
   for attempt in $(seq 1 "${MIGRATION_WAIT_SECONDS}"); do
     state="$(migration_json_value "${status}" status 2>/dev/null || true)"
     case "${state}" in

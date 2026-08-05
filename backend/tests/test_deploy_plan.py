@@ -302,6 +302,15 @@ def test_standby_deploy_skips_database_writing_workers() -> None:
     assert 'startup_command=\'exec uvicorn' in source
 
 
+def test_standby_reseed_uses_the_prepared_candidate_action() -> None:
+    source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'reseed_action="${RELEASES}/${release}/ops/server/warehouse-standby-reseed"' in source
+    assert 'reseed_action="${CURRENT}/ops/server/warehouse-standby-reseed"' not in source
+
+
 def test_database_migrations_are_detached_from_web_startup_and_deploy_process() -> None:
     compose = (REPO_ROOT / "compose.production.yaml").read_text(encoding="utf-8")
     macos = (REPO_ROOT / "ops" / "macos" / "warehouse-deploy-macos").read_text(
