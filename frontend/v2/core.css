@@ -1251,6 +1251,27 @@ html.business-action-open { overflow: hidden; }
   background-image: linear-gradient(var(--hair-soft) 1px, transparent 1px), linear-gradient(90deg, var(--hair-soft) 1px, transparent 1px);
   background-size: 72px 72px;
 }
+.login-poster-copy { position: relative; z-index: 2; }
+.login-module-field {
+  position: absolute; inset: 0; z-index: 1; display: none;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-rows: repeat(6, minmax(0, 1fr));
+  gap: 1px; background: var(--hair); opacity: .42; pointer-events: none;
+}
+.login-art-login .login-grid { opacity: .2; }
+.login-art-login .login-module-field { display: grid; animation: login-module-reveal .7s ease-out both; }
+.login-module-field i { position: relative; overflow: hidden; background: var(--paper); }
+.login-module-field i::after {
+  content: ""; position: absolute; inset: auto 0 0; height: 0;
+  background: var(--ink); opacity: .72;
+  animation: login-module-rise 6.8s var(--login-module-delay, 0s) cubic-bezier(.45,0,.25,1) infinite alternate;
+}
+.login-module-field i.hot::after { background: var(--red); opacity: .94; }
+@keyframes login-module-reveal { from { opacity: 0; } to { opacity: .42; } }
+@keyframes login-module-rise {
+  0%, 16% { height: 0; }
+  72%, 100% { height: var(--login-module-level, 54%); }
+}
 .login-art h1 { font-size: clamp(48px, 5.8vw, 94px); line-height: 1.08; letter-spacing: -.05em; position: relative; z-index: 2; }
 .login-art h1 .hollow { color: transparent; -webkit-text-stroke: 2px var(--ink); }
 .login-art .red-block { width: 88px; height: 26px; background: var(--red); position: relative; z-index: 2; }
