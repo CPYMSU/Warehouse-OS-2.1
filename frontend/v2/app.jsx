@@ -8,6 +8,15 @@ const L = lang();
 /* ── 入駐流程(登入 / 開通 / 加入)英文詞條 ── */
 window.W2_LANG.addEN({
   "登入": "Sign in", "開通公司": "Open company", "加入公司": "Join company",
+  "人類因篝火聚集，": "Humanity gathers around the fire,",
+  "文明因連接而誕生。": "and civilization begins with connection.",
+  /* Legacy copy aliases stay in the catalogue for cached clients and phrase audits. */
+  "人類因篝火聚集，文明因連接誕生。": "Humanity gathered around fire; civilization was born through connection.",
+  "在數字時代，我們重新點燃一座篝火。": "In the digital age, we light a bonfire anew.",
+  "今天，": "Today,",
+  "我們在數字世界重新點燃篝火。": "we relight the fire in the digital world.",
+  "連接現實，建立秩序，驅動進化。": "Connect reality. Build order. Drive evolution.",
+  "數字世界的篝火。": "The fire of the digital world.",
   "申請開通公司": "Open a company", "申請加入公司": "Join a company",
   "申請加入已有公司": "Join an existing company",
   "輸入目標公司的企業代碼;申請會交給該公司管理員審批,通過後公司會出現在切換器中。": "Enter the target company code. Its administrators will review your request; once approved, the company appears in the switcher.",
@@ -53,7 +62,7 @@ window.W2_LANG.addEN({
     "Sign in as an L4+ member, then file from \"+ Open a company\" in the top-bar company switcher; once the platform approves, the applicant becomes the new company's system admin.",
   "先申請加入一家公司": "Apply to join a company first",
   "已有帳號 → 登入": "Have an account? Sign in",
-  "公司名稱": "Company name", "例如:ACME 倉儲": "e.g. ACME Warehousing",
+  "公司名稱": "Company name", "例如:ACME 工作室": "e.g. ACME Studio",
   "行業模板": "Industry template",
   "3-40 位小寫字母 / 數字 / 連字符": "3-40 chars: lowercase letters / digits / hyphens",
   "企業代碼需為 3-40 位小寫字母 / 數字 / 連字符,且不以連字符開頭結尾":
@@ -966,7 +975,7 @@ const Login2 = ({ onDone, notice }) => {
 
   const posterFoot = isBiuCatalogue && mode === "join"
     ? "LEARN · ANALYZE · ARCHIVE"
-    : { login: "SPEAK · EXECUTE · AUDIT", apply: "FOUND · APPROVE · OPERATE", join: "APPLY · APPROVE · ENTER" }[mode];
+    : { login: "CONNECT · ORDER · EVOLVE", apply: "FOUND · APPROVE · OPERATE", join: "APPLY · APPROVE · ENTER" }[mode];
   const headLabel = isBiuCatalogue && mode === "join"
     ? "BIU ROLE CATALOG"
     : { login: "SIGN IN", apply: "OPEN COMPANY", join: "JOIN COMPANY" }[mode];
@@ -976,9 +985,17 @@ const Login2 = ({ onDone, notice }) => {
 
   return (
     <div className="login-wrap">
-      <div className="login-art">
-        <div className="login-grid"/>
-        <div className="row spread" style={{ position: "relative", zIndex: 2 }}>
+      <div className="login-art login-art-bonfire">
+        <div className="login-grid" aria-hidden="true"/>
+        <div className="login-geometry" aria-hidden="true">
+          <span className="login-ring login-ring-a"/>
+          <span className="login-ring login-ring-b"/>
+          <span className="login-ember login-ember-a"/>
+          <span className="login-ember login-ember-b"/>
+          <span className="login-ember login-ember-c"/>
+          <span className="login-scan-line"/>
+        </div>
+        <div className="row spread login-art-head" style={{ position: "relative", zIndex: 2 }}>
           <div className="row g10">
             <PlatformMark size={28}/>
             <div className="col g4">
@@ -988,7 +1005,7 @@ const Login2 = ({ onDone, notice }) => {
           </div>
           <Label dim>{dateMono}</Label>
         </div>
-        <div style={{ position: "relative", zIndex: 2 }} className="rise" key={mode}>
+        <div style={{ position: "relative", zIndex: 2 }} className="login-art-content rise" key={mode}>
           <PlatformMark seal size={92} className="login-platform-seal"/>
           <div className="red-block" style={{ marginBottom: 34 }}/>
           {mode === "apply" ? (L === "en"
@@ -1002,15 +1019,25 @@ const Login2 = ({ onDone, notice }) => {
               ? <h1>Join a company<br/>already in<br/><span className="hollow">order</span>.</h1>
               : <h1>{t("加入一家")}<br/>{t("已在")}<span className="hollow">{t("秩序")}</span><br/>{t("中的公司。")}</h1>))
           : (L === "en"
-            ? <h1>Warehousing<br/>is a business<br/>of <span className="hollow">order</span>.</h1>
-            : <h1>{t("倉儲,")}<br/>{t("是一門")}<span className="hollow">{t("秩序")}</span><br/>{t("的生意。")}</h1>)}
-          <div style={{ marginTop: 30, maxWidth: "46ch", fontSize: 15, lineHeight: 1.7, color: "var(--ink-2)" }}>
+            ? <h1 className="login-hero-title">Humanity gathers<br/>around the <span className="hollow">fire</span>.</h1>
+            : <h1 className="login-hero-title"><span>{t("人類因篝火聚集，")}</span><br/><span>{t("文明因連接而誕生。")}</span></h1>)}
+          <div className="login-hero-copy" style={{ marginTop: 30, maxWidth: "46ch", fontSize: 15, lineHeight: 1.7, color: "var(--ink-2)" }}>
             {mode === "apply" ? t("開通即建立獨立數據庫與初始表;審批通過後,你就是新公司的系統管理員。")
             : mode === "join" ? (isBiuCatalogue
               ? t("從案例收錄、律師、證據、調解到多級審理,選擇一個 BIU 內部學術職位參與。")
               : t("填一張申請單:帳號、企業代碼、期望角色。企業管理員審批通過後,即可登入開工。"))
-            : <>{t("人類因篝火聚集，文明因連接誕生。")}<br/><br/>{t("在數字時代，我們重新點燃一座篝火。")}</>}
+            : <>
+              <span>{t("今天，")}</span><br/>
+              <span>{t("我們在數字世界重新點燃篝火。")}</span>
+              <span className="login-hero-manifesto">{t("連接現實，建立秩序，驅動進化。")}</span>
+            </>}
           </div>
+          {mode === "login" && (
+            <div className="login-art-motto" aria-label={t("連接現實，建立秩序，驅動進化。")}>
+              <span className="mono">MOTTO / 01</span>
+              <strong>{t("連接現實，建立秩序，驅動進化。")}</strong>
+            </div>
+          )}
           {mode === "apply" && (
             <div style={{ marginTop: 26, maxWidth: 480 }} className="col">
               {[t("先有平臺帳號 — 申請加入任一公司"), t("登入後在頂欄公司切換器提交開通申請"), t("平台審批通過 — 你即成為新公司系統管理員")].map((s, i) => (
@@ -1022,8 +1049,11 @@ const Login2 = ({ onDone, notice }) => {
             </div>
           )}
         </div>
-        <div className="row spread" style={{ position: "relative", zIndex: 2 }}>
-          <Label dim>{posterFoot}</Label>
+        <div className="row spread login-art-foot" style={{ position: "relative", zIndex: 2 }}>
+          <div className="login-art-signature">
+            <Label dim>{posterFoot}</Label>
+            <span><b>WAREHOUSE 2.1</b><i aria-hidden="true">·</i>{t("數字世界的篝火。")}</span>
+          </div>
           <Label dim>BONFIRE WORKSHOP</Label>
         </div>
       </div>
@@ -1324,7 +1354,7 @@ const ApplyCompanyPanel = ({ onClose, canApply }) => {
           <>
             <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.7 }}>{t("提交後由平台審批;通過時系統會自動建立該公司的獨立數據庫與初始表。")}</div>
             {FF("公司名稱", "COMPANY NAME",
-              <input className="field" value={form.company_name} onChange={up("company_name")} placeholder={t("例如:ACME 倉儲")} autoFocus/>)}
+              <input className="field" value={form.company_name} onChange={up("company_name")} placeholder={t("例如:ACME 工作室")} autoFocus/>)}
             {FF("企業代碼", "COMPANY CODE",
               <input className="field" value={form.slug} onChange={up("slug")} placeholder={t("3-40 位小寫字母 / 數字 / 連字符")}/>)}
             {templates && templates.length > 0 ? FF("行業模板", "TEMPLATE",

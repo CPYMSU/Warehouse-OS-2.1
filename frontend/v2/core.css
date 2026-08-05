@@ -1242,14 +1242,51 @@ html.business-action-open { overflow: hidden; }
 .login-grid { position: absolute; inset: 0; pointer-events: none;
   background-image: linear-gradient(var(--hair-soft) 1px, transparent 1px), linear-gradient(90deg, var(--hair-soft) 1px, transparent 1px);
   background-size: 72px 72px;
+  animation: login-grid-drift 26s linear infinite;
 }
+.login-art-bonfire::before {
+  content: ""; position: absolute; z-index: 1; top: 0; right: 14%; bottom: 0;
+  width: 1px; background: var(--hair); opacity: .66;
+  transform-origin: top; animation: login-rule-scan 11s cubic-bezier(.4,0,.2,1) infinite;
+}
+.login-geometry { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+.login-ring {
+  position: absolute; display: block; border: 1px solid var(--hair); border-radius: 50%;
+  transform-origin: center; opacity: .72;
+}
+.login-ring-a {
+  width: clamp(260px, 33vw, 560px); aspect-ratio: 1; right: -11%; top: 17%;
+  animation: login-orbit 34s linear infinite;
+}
+.login-ring-b {
+  width: clamp(130px, 16vw, 260px); aspect-ratio: 1; right: 11%; top: 31%;
+  border-color: var(--red); opacity: .48; animation: login-orbit-reverse 21s linear infinite;
+}
+.login-ember {
+  position: absolute; display: block; width: 7px; height: 7px; background: var(--red);
+  transform: rotate(45deg); transform-origin: center; animation: login-ember-float 5.5s ease-in-out infinite;
+}
+.login-ember-a { right: 29%; top: 28%; }
+.login-ember-b { right: 22%; top: 53%; width: 4px; height: 4px; animation-delay: -2.1s; }
+.login-ember-c { right: 41%; top: 67%; width: 5px; height: 5px; animation-delay: -3.6s; }
+.login-scan-line {
+  position: absolute; top: 0; bottom: 0; left: 19%; width: 1px; background: var(--red);
+  opacity: .22; transform: scaleY(0); transform-origin: top; animation: login-scan 8s cubic-bezier(.55,.06,.68,.19) infinite;
+}
+.login-art-head, .login-art-foot { animation: login-ui-in .7s cubic-bezier(.22,.9,.25,1) both; }
+.login-art-foot { animation-delay: .18s; }
+.login-art-content { isolation: isolate; }
 .login-art h1 { font-size: clamp(48px, 5.8vw, 94px); line-height: 1.08; letter-spacing: -.05em; position: relative; z-index: 2; }
+.login-art h1.login-hero-title { max-width: 10.6ch; font-size: clamp(44px, 5.45vw, 84px); line-height: 1.04; }
+.login-hero-title > span { display: inline-block; animation: login-title-in .8s cubic-bezier(.2,.8,.2,1) both; }
+.login-hero-title > span:nth-child(3) { animation-delay: .08s; }
 .login-art h1 .hollow { color: transparent; -webkit-text-stroke: 2px var(--ink); }
-.login-art .red-block { width: 88px; height: 26px; background: var(--red); position: relative; z-index: 2; }
+.login-art .red-block { width: 88px; height: 26px; background: var(--red); position: relative; z-index: 2; transform-origin: left center; animation: login-block-in .7s cubic-bezier(.2,.8,.2,1) .16s both; }
 .login-platform-seal {
   width: 92px; height: 92px; margin-bottom: 22px;
   border-radius: 50%;
   filter: saturate(.92) contrast(1.02);
+  animation: login-seal-in .9s cubic-bezier(.16,1,.3,1) both;
 }
 .platform-byline {
   font-family: var(--f-mono); font-size: 8.5px; font-weight: 650;
@@ -1263,6 +1300,24 @@ html.business-action-open { overflow: hidden; }
 .platform-service-line {
   justify-content: center; padding-top: 12px; border-top: 1px solid var(--hair-soft);
 }
+.login-hero-copy > span { display: inline-block; animation: login-copy-in .65s ease-out .16s both; }
+.login-hero-copy > span:nth-child(3) { animation-delay: .28s; }
+.login-hero-manifesto {
+  display: block !important; margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--hair);
+  color: var(--ink); font-family: var(--f-mono); font-size: 10px; letter-spacing: .11em;
+  text-transform: uppercase;
+}
+.login-art-motto {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 15px; max-width: 560px;
+  margin-top: 26px; padding-top: 10px; border-top: 1px solid var(--hair); color: var(--ink-2);
+  animation: login-copy-in .7s ease-out .4s both;
+}
+.login-art-motto .mono { color: var(--red); font-size: 9px; letter-spacing: .16em; }
+.login-art-motto strong { font-size: 12px; font-weight: 700; letter-spacing: .025em; }
+.login-art-signature { display: flex; flex-direction: column; gap: 6px; }
+.login-art-signature > span { color: var(--ink-3); font-family: var(--f-mono); font-size: 9px; letter-spacing: .08em; }
+.login-art-signature b { color: var(--ink-2); font-weight: 700; }
+.login-art-signature i { padding: 0 7px; color: var(--red); font-style: normal; }
 .platform-menu-head {
   padding: 10px 14px; border-bottom: 2px solid var(--rule); background: var(--paper-2);
 }
@@ -1270,6 +1325,40 @@ html.business-action-open { overflow: hidden; }
 .login-panel { flex: 1; min-width: 0; display: flex; padding: 40px; background: var(--paper); overflow-y: auto; overflow-x: hidden; }
 .login-card { width: min(380px, 100%); min-width: 0; margin: auto; }
 .login-card.biu-catalogue-card { width: min(520px, 100%); }
+.login-card .btn:not(:disabled) { transition: background .18s, color .18s, border-color .18s, transform .18s; }
+.login-card .btn:not(:disabled):hover { transform: translateX(3px); }
+.login-card .btn:not(:disabled):active { transform: translateX(1px); }
+@keyframes login-grid-drift {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 72px 72px, 72px 72px; }
+}
+@keyframes login-rule-scan {
+  0%, 100% { transform: scaleY(.62); opacity: .25; }
+  50% { transform: scaleY(1); opacity: .72; }
+}
+@keyframes login-orbit { to { transform: rotate(360deg); } }
+@keyframes login-orbit-reverse { to { transform: rotate(-360deg); } }
+@keyframes login-ember-float {
+  0%, 100% { opacity: .36; transform: translate3d(0, 6px, 0) rotate(45deg) scale(.82); }
+  50% { opacity: .92; transform: translate3d(-8px, -8px, 0) rotate(135deg) scale(1); }
+}
+@keyframes login-scan {
+  0%, 18% { opacity: 0; transform: scaleY(0); }
+  35%, 65% { opacity: .24; transform: scaleY(1); }
+  82%, 100% { opacity: 0; transform: scaleY(0); }
+}
+@keyframes login-ui-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes login-title-in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes login-copy-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+@keyframes login-block-in { from { opacity: 0; transform: scaleX(0); } to { opacity: 1; transform: scaleX(1); } }
+@keyframes login-seal-in { from { opacity: 0; transform: scale(.84) rotate(-12deg); } to { opacity: 1; transform: scale(1) rotate(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .login-grid, .login-art-bonfire::before, .login-ring, .login-ember, .login-scan-line,
+  .login-art-head, .login-art-foot, .login-hero-title > span, .login-art .red-block,
+  .login-platform-seal, .login-hero-copy > span, .login-art-motto { animation: none !important; }
+  .login-card .btn:not(:disabled):hover, .login-card .btn:not(:disabled):active { transform: none; }
+}
 .biu-role-picker { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .biu-role-notice {
   padding: 11px 12px; border: 1px solid var(--red); border-left-width: 4px;
