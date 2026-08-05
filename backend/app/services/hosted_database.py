@@ -177,6 +177,10 @@ def _runtime_identifier(workspace_id: object) -> str:
     return f"wha_{UUID(str(workspace_id)).hex}"
 
 
+def _backup_identifier(workspace_id: object) -> str:
+    return f"whb_{UUID(str(workspace_id)).hex}"
+
+
 def _dsn(
     settings: Settings,
     *,
@@ -758,6 +762,218 @@ def _ensure_managed_runtime_role(
         ) from exc
 
 
+def _ensure_managed_backup_role(
+    *,
+    settings: Settings,
+    database_ref: str,
+    owner_role_ref: str,
+    runtime_role_ref: str,
+    backup_role_ref: str,
+) -> dict[str, object]:
+    """Reconcile a NOLOGIN backup identity that can bypass FORCE RLS.
+
+    The provider administrator only assumes this role inside pg_dump.  It has
+    no login secret, owns no database and has no role members, so neither the
+    workspace owner nor its Runtime identity can acquire BYPASSRLS.
+    """
+
+    try:
+        with psycopg.connect(
+            _dsn(settings),
+            autocommit=True,
+            row_factory=dict_row,
+            connect_timeout=settings.hosted_database_connect_timeout_seconds,
+        ) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM pg_roles WHERE rolname=%s", (backup_role_ref,)
+            ).fetchone()
+            role_clause = (
+                "CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "INHERIT NOREPLICATION BYPASSRLS"
+                if exists is None
+                else "ALTER ROLE {} WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "INHERIT NOREPLICATION BYPASSRLS"
+            )
+            connection.execute(sql.SQL(role_clause).format(sql.Identifier(backup_role_ref)))
+            parent_memberships = connection.execute(
+                """
+                SELECT parent.rolname
+                FROM pg_auth_members AS membership
+                JOIN pg_roles AS parent ON parent.oid=membership.roleid
+                JOIN pg_roles AS member ON member.oid=membership.member
+                WHERE member.rolname=%s
+                """,
+                (backup_role_ref,),
+            ).fetchall()
+            for membership in parent_memberships:
+                if str(membership["rolname"]) == owner_role_ref:
+                    continue
+                connection.execute(
+                    sql.SQL("REVOKE {} FROM {}").format(
+                        sql.Identifier(str(membership["rolname"])),
+                        sql.Identifier(backup_role_ref),
+                    )
+                )
+            connection.execute(
+                sql.SQL("GRANT {} TO {}").format(
+                    sql.Identifier(owner_role_ref), sql.Identifier(backup_role_ref)
+                )
+            )
+            role_members = connection.execute(
+                """
+                SELECT member.rolname
+                FROM pg_auth_members AS membership
+                JOIN pg_roles AS parent ON parent.oid=membership.roleid
+                JOIN pg_roles AS member ON member.oid=membership.member
+                WHERE parent.rolname=%s
+                """,
+                (backup_role_ref,),
+            ).fetchall()
+            for member in role_members:
+                connection.execute(
+                    sql.SQL("REVOKE {} FROM {}").format(
+                        sql.Identifier(backup_role_ref),
+                        sql.Identifier(str(member["rolname"])),
+                    )
+                )
+            connection.execute(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                    sql.Identifier(database_ref), sql.Identifier(backup_role_ref)
+                )
+            )
+
+        with psycopg.connect(
+            _dsn(settings, database=database_ref),
+            row_factory=dict_row,
+            connect_timeout=settings.hosted_database_connect_timeout_seconds,
+        ) as connection:
+            schemas = connection.execute(
+                """
+                SELECT nspname
+                FROM pg_namespace
+                WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+                ORDER BY nspname
+                """
+            ).fetchall()
+            for schema in schemas:
+                schema_name = str(schema["nspname"])
+                connection.execute(
+                    sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
+                        sql.Identifier(schema_name), sql.Identifier(backup_role_ref)
+                    )
+                )
+                connection.execute(
+                    sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO {}").format(
+                        sql.Identifier(schema_name), sql.Identifier(backup_role_ref)
+                    )
+                )
+                connection.execute(
+                    sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(
+                        sql.Identifier(schema_name), sql.Identifier(backup_role_ref)
+                    )
+                )
+                connection.execute(
+                    sql.SQL(
+                        "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA {} "
+                        "GRANT SELECT ON TABLES TO {}"
+                    ).format(
+                        sql.Identifier(owner_role_ref),
+                        sql.Identifier(schema_name),
+                        sql.Identifier(backup_role_ref),
+                    )
+                )
+                connection.execute(
+                    sql.SQL(
+                        "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA {} "
+                        "GRANT SELECT ON SEQUENCES TO {}"
+                    ).format(
+                        sql.Identifier(owner_role_ref),
+                        sql.Identifier(schema_name),
+                        sql.Identifier(backup_role_ref),
+                    )
+                )
+            large_objects = connection.execute(
+                "SELECT oid FROM pg_largeobject_metadata ORDER BY oid"
+            ).fetchall()
+            for large_object in large_objects:
+                connection.execute(
+                    sql.SQL("GRANT SELECT ON LARGE OBJECT {} TO {}").format(
+                        sql.SQL(str(int(large_object["oid"]))),
+                        sql.Identifier(backup_role_ref),
+                    )
+                )
+
+        with psycopg.connect(
+            _dsn(settings),
+            row_factory=dict_row,
+            connect_timeout=settings.hosted_database_connect_timeout_seconds,
+        ) as connection:
+            observed = connection.execute(
+                """
+                SELECT role.rolcanlogin,role.rolsuper,role.rolcreatedb,
+                       role.rolcreaterole,role.rolreplication,role.rolbypassrls,
+                       pg_get_userbyid(database.datdba)=role.rolname AS database_owner,
+                       EXISTS (
+                         SELECT 1
+                         FROM pg_auth_members AS membership
+                         JOIN pg_roles AS parent ON parent.oid=membership.roleid
+                         JOIN pg_roles AS member ON member.oid=membership.member
+                         WHERE parent.rolname=%s AND member.rolname=%s
+                       ) AS runtime_can_assume_backup
+                       ,EXISTS (
+                         SELECT 1
+                         FROM pg_auth_members AS membership
+                         JOIN pg_roles AS parent ON parent.oid=membership.roleid
+                         JOIN pg_roles AS member ON member.oid=membership.member
+                         WHERE parent.rolname=%s AND member.rolname=%s
+                       ) AS backup_inherits_owner
+                FROM pg_roles AS role
+                JOIN pg_database AS database ON database.datname=%s
+                WHERE role.rolname=%s
+                """,
+                (
+                    backup_role_ref,
+                    runtime_role_ref,
+                    owner_role_ref,
+                    backup_role_ref,
+                    database_ref,
+                    backup_role_ref,
+                ),
+            ).fetchone()
+        if observed is None:
+            raise HostedDatabaseUnavailable("Managed backup database role is missing")
+        if (
+            bool(observed["rolcanlogin"])
+            or bool(observed["rolsuper"])
+            or bool(observed["rolcreatedb"])
+            or bool(observed["rolcreaterole"])
+            or bool(observed["rolreplication"])
+            or not bool(observed["rolbypassrls"])
+            or bool(observed["database_owner"])
+            or bool(observed["runtime_can_assume_backup"])
+            or not bool(observed["backup_inherits_owner"])
+        ):
+            raise HostedDatabaseUnavailable("Managed backup database role boundary is invalid")
+        return {
+            "role": backup_role_ref,
+            "can_login": False,
+            "database_owner": False,
+            "superuser": False,
+            "bypass_rls": True,
+            "inherits_workspace_owner": True,
+            "runtime_can_assume_backup": False,
+            "schema_count": len(schemas),
+            "large_object_count": len(large_objects),
+            "reconciled_at": datetime.now(UTC).isoformat(),
+        }
+    except HostedDatabaseUnavailable:
+        raise
+    except Exception as exc:
+        raise HostedDatabaseUnavailable(
+            f"Managed backup database role reconciliation failed: {type(exc).__name__}"
+        ) from exc
+
+
 def _ensure_physical_database(
     *,
     settings: Settings,
@@ -768,6 +984,7 @@ def _ensure_physical_database(
     password: str,
     runtime_role_ref: str,
     runtime_password: str,
+    backup_role_ref: str,
 ) -> dict[str, object]:
     try:
         with psycopg.connect(
@@ -891,7 +1108,18 @@ def _ensure_physical_database(
             runtime_role_ref=runtime_role_ref,
             runtime_password=runtime_password,
         )
-        return {**capability_evidence, "runtime_role": runtime_evidence}
+        backup_evidence = _ensure_managed_backup_role(
+            settings=settings,
+            database_ref=database_ref,
+            owner_role_ref=role_ref,
+            runtime_role_ref=runtime_role_ref,
+            backup_role_ref=backup_role_ref,
+        )
+        return {
+            **capability_evidence,
+            "runtime_role": runtime_evidence,
+            "backup_role": backup_evidence,
+        }
     except HostedDatabaseUnavailable:
         raise
     except Exception as exc:
@@ -976,12 +1204,14 @@ def reconcile_capabilities(
     effective = settings or get_settings()
     provider = str(binding.get("provider_key") or "")
     runtime_role_ref: str | None = None
+    backup_role_ref: str | None = None
     if provider == HDD_DATABASE_PROVIDER_KEY:
         database_ref = str(binding.get("database_ref") or "")
         owner_role_ref = str(binding.get("role_ref") or "")
         if not database_ref or not owner_role_ref:
             raise HostedDatabaseUnavailable("Workspace database binding is incomplete")
         runtime_role_ref = _runtime_identifier(binding["workspace_id"])
+        backup_role_ref = _backup_identifier(binding["workspace_id"])
         configured_runtime_role = str(binding.get("runtime_role_ref") or "")
         if configured_runtime_role and configured_runtime_role != runtime_role_ref:
             raise HostedDatabaseUnavailable("Workspace Runtime database role is inconsistent")
@@ -1005,7 +1235,18 @@ def reconcile_capabilities(
             runtime_role_ref=runtime_role_ref,
             runtime_password=runtime_password,
         )
-        evidence = {**capability_evidence, "runtime_role": runtime_evidence}
+        backup_evidence = _ensure_managed_backup_role(
+            settings=effective,
+            database_ref=database_ref,
+            owner_role_ref=owner_role_ref,
+            runtime_role_ref=runtime_role_ref,
+            backup_role_ref=backup_role_ref,
+        )
+        evidence = {
+            **capability_evidence,
+            "runtime_role": runtime_evidence,
+            "backup_role": backup_evidence,
+        }
         capabilities = {**MANAGED_CAPABILITIES, "vector_extension": True}
     elif provider == EXTERNAL_POSTGRESQL_PROVIDER_KEY:
         with binding_connection(session, binding, effective) as connection:
@@ -1031,6 +1272,7 @@ def reconcile_capabilities(
             UPDATE digital_asset.database_bindings
             SET capabilities=CAST(:capabilities AS jsonb),
                 runtime_role_ref=COALESCE(:runtime_role_ref,runtime_role_ref),
+                backup_role_ref=COALESCE(:backup_role_ref,backup_role_ref),
                 config=config || jsonb_build_object(
                   'capabilities_observed',CAST(:evidence AS jsonb)
                 ),
@@ -1044,6 +1286,9 @@ def reconcile_capabilities(
             "evidence": json.dumps(evidence),
             "runtime_role_ref": (
                 runtime_role_ref if provider == HDD_DATABASE_PROVIDER_KEY else None
+            ),
+            "backup_role_ref": (
+                backup_role_ref if provider == HDD_DATABASE_PROVIDER_KEY else None
             ),
         },
     )
@@ -1059,6 +1304,7 @@ def reconcile_capabilities(
             {"binding_id": binding["id"]},
         )
         binding["runtime_role_ref"] = str(runtime_role_ref)
+        binding["backup_role_ref"] = str(backup_role_ref)
     binding["capabilities"] = capabilities
     return evidence
 
@@ -1352,6 +1598,43 @@ def _postgresql_tool(
     return executable, output
 
 
+def _force_rls_inventory(
+    settings: Settings,
+    *,
+    database_ref: str,
+) -> dict[tuple[str, str], int]:
+    """Count every FORCE RLS relation through the provider identity."""
+
+    inventory: dict[tuple[str, str], int] = {}
+    with psycopg.connect(
+        _dsn(settings, database=database_ref),
+        row_factory=dict_row,
+        connect_timeout=settings.hosted_database_connect_timeout_seconds,
+    ) as connection:
+        relations = connection.execute(
+            """
+            SELECT namespace.nspname AS schema_name,class.relname AS relation_name
+            FROM pg_class AS class
+            JOIN pg_namespace AS namespace ON namespace.oid=class.relnamespace
+            WHERE class.relforcerowsecurity
+              AND class.relkind IN ('r','p')
+              AND namespace.nspname <> 'information_schema'
+              AND namespace.nspname !~ '^pg_'
+            ORDER BY namespace.nspname,class.relname
+            """
+        ).fetchall()
+        for relation in relations:
+            schema_name = str(relation["schema_name"])
+            relation_name = str(relation["relation_name"])
+            row = connection.execute(
+                sql.SQL("SELECT count(*)::bigint AS rows FROM {}.{}").format(
+                    sql.Identifier(schema_name), sql.Identifier(relation_name)
+                )
+            ).fetchone()
+            inventory[(schema_name, relation_name)] = int(row["rows"])
+    return inventory
+
+
 def _drop_verification_database(settings: Settings, database_ref: str) -> None:
     with psycopg.connect(
         _dsn(settings),
@@ -1374,6 +1657,7 @@ def _verify_backup_restore(
     *,
     pg_restore: str,
     settings: Settings,
+    expected_force_rls: dict[tuple[str, str], int],
 ) -> dict[str, object]:
     verification_database = (
         "whverify_"
@@ -1441,12 +1725,26 @@ def _verify_backup_restore(
             raise HostedDatabaseUnavailable(
                 "PostgreSQL backup restore verification produced no application relations"
             )
+        restored_force_rls = _force_rls_inventory(
+            settings,
+            database_ref=verification_database,
+        )
+        if restored_force_rls != expected_force_rls:
+            raise HostedDatabaseUnavailable(
+                "PostgreSQL backup FORCE RLS content verification failed"
+            )
         evidence = {
             "verified": True,
             "method": "ephemeral_database_restore",
             "relation_count": int(observed["relation_count"]),
             "workspace_meta_present": bool(observed["workspace_meta_present"]),
             "vector_version": observed["vector_version"],
+            "force_rls": {
+                "verified": True,
+                "table_count": len(expected_force_rls),
+                "source_row_count": sum(expected_force_rls.values()),
+                "restored_row_count": sum(restored_force_rls.values()),
+            },
             "verified_at": datetime.now(UTC).isoformat(),
         }
         _drop_verification_database(settings, verification_database)
@@ -1476,19 +1774,37 @@ def backup_database(
     pg_restore, pg_restore_version = _postgresql_tool(
         "pg_restore", server_major=server_major
     )
+    database_ref = str(binding["database_ref"])
+    owner_role_ref = str(binding["role_ref"])
+    runtime_role_ref = str(
+        binding.get("runtime_role_ref") or _runtime_identifier(binding["workspace_id"])
+    )
+    backup_role_ref = _backup_identifier(binding["workspace_id"])
+    backup_identity = _ensure_managed_backup_role(
+        settings=effective,
+        database_ref=database_ref,
+        owner_role_ref=owner_role_ref,
+        runtime_role_ref=runtime_role_ref,
+        backup_role_ref=backup_role_ref,
+    )
+    force_rls_inventory = _force_rls_inventory(
+        effective,
+        database_ref=database_ref,
+    )
     completed = subprocess.run(
         [
             pg_dump,
+            "--role",
+            backup_role_ref,
             "--format=custom",
             "--compress=6",
-            "--no-owner",
             "--no-acl",
             "--file",
             str(target),
         ],
         check=False,
         capture_output=True,
-        env=_pg_environment(binding, effective),
+        env=_admin_pg_environment(effective, database=database_ref),
         timeout=600,
     )
     if completed.returncode != 0 or not target.is_file():
@@ -1512,15 +1828,18 @@ def backup_database(
         target,
         pg_restore=pg_restore,
         settings=effective,
+        expected_force_rls=force_rls_inventory,
     )
     return {
         "sha256": digest,
         "size_bytes": target.stat().st_size,
         "format": "pg_custom",
+        "preserves_ownership": True,
         "server_major": server_major,
         "server_version": server_version,
         "pg_dump_version": pg_dump_version,
         "pg_restore_version": pg_restore_version,
+        "backup_identity": backup_identity,
         "restore_verification": restore_verification,
     }
 
@@ -1532,7 +1851,7 @@ def restore_database(
     expected_sha256: str,
     settings: Settings | None = None,
 ) -> dict[str, object]:
-    """Restore a same-workspace verified backup through the workspace role."""
+    """Restore a same-workspace backup inside the trusted provider boundary."""
 
     effective = settings or get_settings()
     actual = _sha256_file(source)
@@ -1547,12 +1866,12 @@ def restore_database(
             settings=effective,
             database_ref=str(binding["database_ref"]),
         )
+    database_ref = str(binding["database_ref"])
     completed = subprocess.run(
         [
             pg_restore,
             "--clean",
             "--if-exists",
-            "--no-owner",
             "--no-acl",
             "--single-transaction",
             "--exit-on-error",
@@ -1560,7 +1879,7 @@ def restore_database(
         ],
         check=False,
         capture_output=True,
-        env=_pg_environment(binding, effective),
+        env=_admin_pg_environment(effective, database=database_ref),
         timeout=900,
     )
     if completed.returncode != 0:
@@ -1572,6 +1891,7 @@ def restore_database(
         "restored": True,
         "sha256": actual,
         "format": "pg_custom",
+        "provider_identity": "isolated_admin_restore",
         "server_major": server_major,
         "pg_restore_version": pg_restore_version,
     }
@@ -1608,6 +1928,7 @@ def migrate_binding(
         raise HostedDatabaseUnavailable("HDD workspace database provider is not configured")
     database_ref, role_ref = _identifiers(binding["workspace_id"])
     runtime_role_ref = _runtime_identifier(binding["workspace_id"])
+    backup_role_ref = _backup_identifier(binding["workspace_id"])
     secret = _credential_secret(session, binding, effective, create=True)
     runtime_secret = _runtime_credential_secret(
         session,
@@ -1625,6 +1946,7 @@ def migrate_binding(
         password=secret,
         runtime_role_ref=runtime_role_ref,
         runtime_password=runtime_secret,
+        backup_role_ref=backup_role_ref,
     )
     source_rows = [
         dict(row)
@@ -1649,6 +1971,7 @@ def migrate_binding(
         "database_ref": database_ref,
         "role_ref": role_ref,
         "runtime_role_ref": runtime_role_ref,
+        "backup_role_ref": backup_role_ref,
     }
     with _binding_connection(session, target_binding, effective) as connection:
         for row in source_rows:
@@ -1718,6 +2041,7 @@ def migrate_binding(
                     database_ref = :database_ref,
                     role_ref = :role_ref,
                     runtime_role_ref = :runtime_role_ref,
+                    backup_role_ref = :backup_role_ref,
                     actual_size_bytes = :actual_size_bytes,
                     size_measured_at = now(),
                     capabilities = CAST(:capabilities AS jsonb),
@@ -1733,6 +2057,7 @@ def migrate_binding(
                 "database_ref": database_ref,
                 "role_ref": role_ref,
                 "runtime_role_ref": runtime_role_ref,
+                "backup_role_ref": backup_role_ref,
                 "actual_size_bytes": database_bytes,
                 "capabilities": json.dumps(MANAGED_CAPABILITIES),
                 "config": json.dumps(
@@ -1780,6 +2105,45 @@ def update_usage(
             "database_bytes": max(0, int(database_bytes)),
         },
     )
+
+
+def measure_database_size(
+    session: Session,
+    binding: dict[str, object],
+    *,
+    settings: Settings | None = None,
+) -> dict[str, object]:
+    """Refresh one managed database's actual relation/index/TOAST occupancy."""
+
+    effective = settings or get_settings()
+    if str(binding.get("provider_key") or "") != HDD_DATABASE_PROVIDER_KEY:
+        return {
+            "database_bytes": max(0, int(binding.get("actual_size_bytes") or 0)),
+            "measured_at": binding.get("size_measured_at"),
+            "measurement_status": "provider_reported",
+        }
+    with _binding_connection(session, binding, effective) as connection:
+        database_bytes = _measure(connection)
+    measured_at = datetime.now(UTC)
+    session.execute(
+        text(
+            """
+            UPDATE digital_asset.database_bindings
+            SET actual_size_bytes=:size,size_measured_at=:measured_at
+            WHERE id=:binding_id
+            """
+        ),
+        {
+            "size": database_bytes,
+            "measured_at": measured_at,
+            "binding_id": binding["id"],
+        },
+    )
+    return {
+        "database_bytes": database_bytes,
+        "measured_at": measured_at,
+        "measurement_status": "complete",
+    }
 
 
 def schema(session: Session, binding: dict[str, object]) -> tuple[list[dict[str, object]], int]:

@@ -326,7 +326,7 @@ const KVLine = ({ k, v }) => (
    POST /api/integrations/<svc>/save     {api_key[, base_url 僅 voice 可選]}
    POST /api/integrations/<svc>/validate {}(驗證已存密鑰並持久化狀態)
    兩者響應都可能帶 {<svc>: 最新狀態, validation: {ok,latency_ms,error…}}。 */
-const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStatus, keyPlaceholder = "sk-…" }) => {
+const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStatus, onCapability, keyPlaceholder = "sk-…" }) => {
   const s = connState(st);
   const name = t(title);
   const [open, setOpen] = _s(false);
@@ -339,9 +339,25 @@ const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStat
   /* 未配置時默認展開表單(首配即雞生蛋場景);用戶手動開合後不再自動干預 */
   _e(() => { if (!touched.current) setOpen(!s.configured); }, [s.configured]);
 
+  const refreshCapability = () => {
+    if (service === "voice" && onCapability) {
+      W2.json("/api/voice/status").then(d => onCapability(d || {})).catch(() => {});
+    }
+  };
   const refreshStatus = () =>
     W2.json("/api/integrations/" + service).then(d => onStatus((d && d[service]) || {})).catch(() => {});
-  const applyStatus = (d) => { if (d && d[service]) onStatus(d[service]); else refreshStatus(); };
+  const applyStatus = (d) => {
+    if (d && d[service]) onStatus(d[service]); else refreshStatus();
+    refreshCapability();
+  };
+  const openForm = () => {
+    touched.current = true;
+    setRes(null);
+    if (service === "voice" || service === "vision") {
+      setBase(st.base_url || (service === "voice" ? "https://api.siliconflow.cn/v1" : ""));
+    }
+    setOpen(true);
+  };
   const closeForm = () => {
     touched.current = true;
     setOpen(false); setShow(false);
@@ -392,6 +408,7 @@ const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStat
       <div className="col">
         <KVLine k={t("共用 Key")} v={s.key}/>
         <KVLine k={t("模型")} v={modelOverride ? (s.configured ? modelOverride : "—") : s.model}/>
+        {(service === "voice" || service === "vision") && <KVLine k={t("接入地址")} v={st.base_url || "—"}/>}
         <KVLine k={t("最近驗證")} v={s.checked}/>
       </div>
       {!res && s.failed && !!s.error && (
@@ -416,7 +433,7 @@ const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStat
           </div>
           {(service === "voice" || service === "vision") && (
             <input className="field mono" type="text" autoComplete="off" spellCheck={false}
-              style={{ height: 34, fontSize: 12.5 }} placeholder={t("OpenAI 相容 HTTPS 接入地址")} value={base} disabled={busy === "save"}
+              style={{ height: 34, fontSize: 12.5 }} placeholder={service === "voice" ? "https://api.siliconflow.cn/v1" : t("OpenAI 相容 HTTPS 接入地址")} value={base} disabled={busy === "save"}
               onChange={(e) => setBase(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Escape") closeForm(); else if (e.key === "Enter" && !busy && key.trim()) doSave(); }}/>
           )}
@@ -431,7 +448,7 @@ const ConnPanel = ({ icon, title, sub, st, modelOverride, extra, service, onStat
       )}
       <div className="row g6" style={{ marginTop: "auto", paddingTop: 4 }}>
         <B size="sm" icon={s.configured ? "swap" : "plus"} disabled={busy === "save"}
-          onClick={() => { touched.current = true; if (open) closeForm(); else { setRes(null); setOpen(true); } }}>
+          onClick={() => { if (open) closeForm(); else openForm(); }}>
           {s.configured ? t("更換密鑰") : t("填寫密鑰")}
         </B>
         <B size="sm" icon="refresh" disabled={!!busy || !s.configured} onClick={doVerify}>
@@ -893,7 +910,7 @@ const Page = ({ boot, isOwner, templateKey = "" }) => {
             service="vision" onStatus={(v) => setVis(v || {})}
             sub={t("圖片識別共用密鑰,後端按接入地址自動識別供應商。")}/>
           <ConnPanel icon="bell" title="語音功能" st={voi} modelOverride={t("自動適配")}
-            service="voice" onStatus={(v) => setVoi(v || {})}
+            service="voice" onStatus={(v) => setVoi(v || {})} onCapability={(v) => setVoiceStat(v || {})}
             sub={t("語音識別與朗讀共用密鑰,未配置時自動降級瀏覽器原生語音。")}
             extra={<div className="row g6">
               <T tone={voiceStat.asr ? "ok" : "plain"} dot>{t("識別")}</T>

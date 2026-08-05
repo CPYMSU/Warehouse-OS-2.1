@@ -5,6 +5,14 @@ ASSETS_PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-assets.jsx"
 ASSETS_CSS = ROOT / "frontend" / "v2" / "pages" / "pages-assets.css"
 ACTION_CENTER = ROOT / "frontend" / "v2" / "action-center.jsx"
 INDEX = ROOT / "frontend" / "v2" / "index.html"
+PERSONAL = ROOT / "frontend" / "v2" / "personal.html"
+CORE = ROOT / "frontend" / "v2" / "core.jsx"
+CORE_CSS = ROOT / "frontend" / "v2" / "core.css"
+APP = ROOT / "frontend" / "v2" / "app.jsx"
+LANG = ROOT / "frontend" / "v2" / "lang.jsx"
+LOGS = ROOT / "frontend" / "v2" / "pages" / "pages-logs.jsx"
+TASKS = ROOT / "frontend" / "v2" / "pages" / "pages-tasks.jsx"
+TASKS_CSS = ROOT / "frontend" / "v2" / "pages" / "pages-tasks.css"
 
 
 def test_assets_page_loads_all_existing_data_contracts():
@@ -69,7 +77,85 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     index = INDEX.read_text(encoding="utf-8")
     assert 'pages/pages-assets.css?v=20260803-assets-operation-topology2' in index
     assert 'pages/pages-assets.jsx?v=20260803-assets-operation-topology2' in index
-    assert 'dist/app.bundle.js?v=20260803-assets-operation-topology2' in index
+    assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
+    assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
+    assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
+    assert 'core.css?v=20260804-task-runtime1' in index
+    assert 'core.jsx?v=20260804-task-runtime2' in index
+    assert 'action-center.jsx?v=20260804-task-runtime1' in index
+    assert 'dist/app.bundle.js?v=20260804-task-runtime2' in index
+    assert 'dist/personal.bundle.js?v=20260801-workspace-runtime2' in PERSONAL.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_audit_conversation_drawer_uses_native_detail_contract_and_truthful_errors():
+    source = LOGS.read_text(encoding="utf-8")
+
+    assert 'W2.json("/api/ai/conversations/" + encodeURIComponent(c.id))' in source
+    assert "/api/ai/conversation?id=" not in source
+    assert "對話內容讀取失敗" in source
+    assert "重新讀取" in source
+    assert "可能是後端未就緒或對話已歸檔" not in source
+
+
+def test_task_cards_expose_complete_edit_and_confirmed_delete_actions():
+    source = TASKS.read_text(encoding="utf-8")
+    css = TASKS_CSS.read_text(encoding="utf-8")
+
+    assert 'raw.can_status === true' in source
+    assert 'raw.can_update === true' in source
+    assert 'raw.can_delete === true' in source
+    assert 'options.find(([status]) => status === "completed")' in source
+    assert 'method: "PATCH"' in source
+    assert 'method: "DELETE"' in source
+    assert 'confirm: true' in source
+    assert "TaskDeleteDialog" in source
+    assert ".task-action-edit" in css
+    assert ".task-delete-dialog" in css
+
+
+def test_business_action_command_topology_exposes_runtime_execution_contract():
+    source = ACTION_CENTER.read_text(encoding="utf-8")
+    css = CORE_CSS.read_text(encoding="utf-8")
+
+    assert "指令集拓撲" in source
+    assert "action.execution_identity" in source
+    assert "action.semantic_resource" in source
+    assert "action.verification" in source
+    assert "selected.confirmation_policy" in source
+    assert "selected.adapter" in source
+    assert 'className="business-action-contract"' in source
+    assert ".business-action-contract" in css
+
+
+def test_secretary_dock_exposes_lighthouse_pairing_and_read_only_runs():
+    source = CORE.read_text(encoding="utf-8")
+    css = CORE_CSS.read_text(encoding="utf-8")
+
+    assert 'W2.json("/api/lighthouse/devices")' in source
+    assert 'W2.post("/api/lighthouse/pairing-challenges"' in source
+    assert 'W2.json("/api/lighthouse/runs"' in source
+    assert 'read_only: true' in source
+    assert 'data-auto-runtime-card="execution-target"' in source
+    assert 'aria-label={t("Auto Runtime 執行位置卡片")}' in source
+    assert 'className="secretary-device-select"' not in source
+    assert 'lh cloud-pair --warehouse-url' in source
+    assert ".secretary-dock{width:" not in source
+    assert ".secretary-dock.big{width:auto}" in source
+    assert "width:min(900px,calc(100vw - 56px));box-sizing:border-box" in source
+    assert ".dock.big { width: min(720px, calc(100vw - 56px)); }" in css
+    assert ".secretary-dock .dock-scroll{height:585px;flex-basis:585px}" in source
+    assert "height:min(78vh,960px);flex-basis:min(78vh,960px)" in source
+
+
+def test_login_poster_uses_bonfire_connection_manifesto():
+    app = APP.read_text(encoding="utf-8")
+    catalog = LANG.read_text(encoding="utf-8")
+    assert "人類因篝火聚集，文明因連接誕生。" in app
+    assert "在數字時代，我們重新點燃一座篝火。" in app
+    assert "Humanity gathered around fire; civilization was born through connection." in catalog
+    assert "In the digital age, we light a bonfire anew." in catalog
 
 
 def test_digital_custody_register_uses_restrained_ledger_treatment():

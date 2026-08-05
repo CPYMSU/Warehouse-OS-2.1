@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export PATH="${HOME}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+DEPLOY_ROOT="${WAREHOUSE_MAC_DEPLOY_ROOT:-${HOME}/Server/bonfirework}"
+CURRENT="${DEPLOY_ROOT}/current"
+SOURCE_AGENT="${CURRENT}/ops/server/warehouse-shield-agent.py"
+SOURCE_PLIST="${CURRENT}/infra/launchd/org.bonfirework.warehouse-shield-agent.plist"
+SOURCE_COMPOSE="${CURRENT}/infra/orbstack/compose.shield.yaml"
+AGENT="${DEPLOY_ROOT}/actions/warehouse-shield-agent.py"
+PLIST="${HOME}/Library/LaunchAgents/org.bonfirework.warehouse-shield-agent.plist"
+COMPOSE_OVERRIDE="${DEPLOY_ROOT}/state/compose.shield.yaml"
+SOCKET="${DEPLOY_ROOT}/shared/shield/agent.sock"
+DOCKER_BIN="${WAREHOUSE_DOCKER_BIN:-${HOME}/.orbstack/bin/docker}"
+PYTHON_BIN="${WAREHOUSE_PYTHON_BIN:-$(command -v python3)}"
+LABEL="org.bonfirework.warehouse-shield-agent"
+DOMAIN="gui/$(id -u)"
+
+fail() {
+  printf 'install-shield-agent: %s\n' "$*" >&2
+  exit 1
+}
+
+for required in "${SOURCE_AGENT}" "${SOURCE_PLIST}" "${SOURCE_COMPOSE}" \
+  "${DEPLOY_ROOT}/shared/orbstack.env" "${DOCKER_BIN}" "${PYTHON_BIN}"; do
+  [[ -f "${required}" || -x "${required}" ]] || fail "required path is unavailable: ${required}"
+done
+
+mkdir -p \
+  "${DEPLOY_ROOT}/actions" \
+  "${DEPLOY_ROOT}/state" \
+  "${DEPLOY_ROOT}/shared/logs" \
+  "${DEPLOY_ROOT}/shared/shield" \
+  "${HOME}/Library/LaunchAgents"
+chmod 0750 "${DEPLOY_ROOT}/shared/shield"
+install -m 0750 "${SOURCE_AGENT}" "${AGENT}"
+install -m 0644 "${SOURCE_COMPOSE}" "${COMPOSE_OVERRIDE}"
+
+temporary="${PLIST}.tmp.$$"
+sed \
+  -e "s|__DEPLOY_ROOT__|${DEPLOY_ROOT}|g" \
+  -e "s|__PYTHON_BIN__|${PYTHON_BIN}|g" \
+  -e "s|__DOCKER_BIN__|${DOCKER_BIN}|g" \
+  "${SOURCE_PLIST}" > "${temporary}"
+plutil -lint "${temporary}" >/dev/null
+chmod 0600 "${temporary}"
+mv -f "${temporary}" "${PLIST}"
+
+launchctl bootout "${DOMAIN}" "${PLIST}" >/dev/null 2>&1 || true
+launchctl bootstrap "${DOMAIN}" "${PLIST}"
+launchctl enable "${DOMAIN}/${LABEL}"
+launchctl kickstart -k "${DOMAIN}/${LABEL}"
+
+for _attempt in $(seq 1 40); do
+  if [[ -S "${SOCKET}" ]] && nc -z 127.0.0.1 18091 >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.25
+done
+[[ -S "${SOCKET}" ]] || fail "agent socket did not become ready"
+nc -z 127.0.0.1 18091 >/dev/null 2>&1 \
+  || fail "agent TCP bridge did not become ready"
+
+printf 'shield_agent=ready\nsocket=%s\ntcp=127.0.0.1:18091\ncompose_override=%s\n' \
+  "${SOCKET}" "${COMPOSE_OVERRIDE}"

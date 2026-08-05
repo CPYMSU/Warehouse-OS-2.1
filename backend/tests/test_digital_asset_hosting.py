@@ -1517,6 +1517,7 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
     database_ref = None
     role_ref = None
     runtime_role_ref = None
+    backup_role_ref = None
     try:
         asset = client.post(
             "/api/digital-assets",
@@ -1532,7 +1533,9 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
         database_ref = database["database_ref"]
         role_ref = database["role_ref"]
         runtime_role_ref = database["runtime_role_ref"]
+        backup_role_ref = database["backup_role_ref"]
         assert runtime_role_ref == f"wha_{workspace['uuid'].replace('-', '')}"
+        assert backup_role_ref == f"whb_{workspace['uuid'].replace('-', '')}"
         assert database["provider_key"] == hosted_database.HDD_DATABASE_PROVIDER_KEY
         assert database["pool_key"] == hosted_database.HDD_DATABASE_POOL_KEY
         assert database["physical_medium"] == "hdd"
@@ -1549,9 +1552,14 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
         )
         assert {
             "code_bytes",
+            "source_archive_bytes",
             "runtime_bytes",
+            "runtime_release_bytes",
             "data_bytes",
+            "managed_data_object_bytes",
+            "data_volume_bytes",
             "database_bytes",
+            "postgresql_bytes",
             "total_bytes",
             "measured_at",
         }.issubset(listed_workspace)
@@ -1681,6 +1689,11 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
                 connection.execute(
                     psycopg.sql.SQL("DROP ROLE IF EXISTS {}").format(
                         psycopg.sql.Identifier(runtime_role_ref)
+                    )
+                )
+                connection.execute(
+                    psycopg.sql.SQL("DROP ROLE IF EXISTS {}").format(
+                        psycopg.sql.Identifier(backup_role_ref)
                     )
                 )
                 connection.execute(

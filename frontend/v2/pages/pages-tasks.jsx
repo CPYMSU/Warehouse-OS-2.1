@@ -28,6 +28,11 @@ window.W2_LANG.addEN({
   "待開始": "Planned", "進行中": "In progress", "已暫停": "Paused", "已完成": "Completed", "已取消": "Cancelled",
   "立即開始": "Start now", "繼續": "Resume", "暫停": "Pause", "等待": "Wait", "完成": "Complete", "取消任務": "Cancel task",
   "重新進行": "Reopen", "任務已完成": "Task completed", "撤銷": "Undo",
+  "編輯": "Edit", "編輯任務": "Edit task", "儲存更改": "Save changes", "儲存中…": "Saving…",
+  "任務已更新": "Task updated", "更新失敗": "Update failed",
+  "刪除任務": "Delete task", "確定刪除？": "Delete this task?", "保留任務": "Keep task",
+  "刪除中…": "Deleting…", "任務已刪除": "Task deleted", "刪除失敗": "Delete failed",
+  "此操作無法撤銷。若任務已開啟協作，聊天、文件與成員記錄也會一併刪除。": "This cannot be undone. If collaboration is enabled, its chat, documents and membership records will also be deleted.",
   "狀態更新失敗": "Could not update status", "逾期": "Overdue", "今天截止": "Due today", "即將開始": "Starting soon",
   "高": "High", "普通": "Normal", "低": "Low", "緊急": "Urgent",
   "我的今日": "My day", "今日重點": "Today focus", "已排程": "Scheduled", "未完成": "Open", "完成率": "Completion",
@@ -407,6 +412,9 @@ const normalizeTask = rawValue => {
     kind: kindValue(raw), category: key(first(raw.category, "other")), status: canonicalStatus(raw.status), priority: priorityValue(raw.priority),
     visibility: key(first(raw.visibility, raw.scope, "private")),
     start, due, allDay: raw.all_day === true || raw.is_all_day === true,
+    timezone: optionalText(raw.timezone) || "UTC",
+    location: optionalText(raw.location),
+    ownerOrgUnitId: first(raw.owner_org_unit_id, raw.org_unit_id),
     assigneeId: first(raw.assignee_user_id, raw.assignee_id, assignee.id, assignee.user_id),
     assigneeName: optionalText(raw.assignee_name, raw.assignee_user_name, assignee.display_name, assignee.name, assignee.username),
     creatorName: optionalText(raw.creator_name, raw.created_by_name, raw.reporter_name),
@@ -419,9 +427,10 @@ const normalizeTask = rawValue => {
     progress: clamp(number(first(raw.progress, raw.progress_percent, 0)), 0, 100),
     actions,
     lockVersion,
-    canUpdate: raw.read_only !== true && capabilities.can_update === true && lockVersion != null,
-    canStatus: raw.read_only !== true && (capabilities.can_change_status === true || capabilities.can_update === true) && lockVersion != null,
-    canReopen: raw.read_only !== true && capabilities.can_reopen === true && lockVersion != null,
+    canUpdate: raw.read_only !== true && (raw.can_update === true || capabilities.can_update === true) && lockVersion != null,
+    canDelete: raw.read_only !== true && (raw.can_delete === true || capabilities.can_delete === true) && lockVersion != null,
+    canStatus: raw.read_only !== true && (raw.can_status === true || capabilities.can_change_status === true || capabilities.can_update === true) && lockVersion != null,
+    canReopen: raw.read_only !== true && (raw.can_reopen === true || capabilities.can_reopen === true) && lockVersion != null,
   };
 };
 const uniqueTasks = values => {
@@ -1170,7 +1179,7 @@ const SourceMark = ({ task, biu = false }) => {
   </button>;
 };
 
-const TaskCard = ({ task, onStatus, onCollaboration, busy, compact = false, biu = false }) => {
+const TaskCard = ({ task, onStatus, onEdit, onDelete, onCollaboration, busy, compact = false, biu = false }) => {
   const dueDiff = dayDiff(task.due);
   const overdue = !isTerminal(task.status) && dueDiff != null && dueDiff < 0;
   const dueToday = !isTerminal(task.status) && dueDiff === 0;
@@ -1179,10 +1188,10 @@ const TaskCard = ({ task, onStatus, onCollaboration, busy, compact = false, biu 
     : task.status === "active" ? [["completed", "完成"], ["paused", "暫停"], ["cancelled", "取消任務"]]
     : task.status === "paused" ? [["active", "繼續"], ["completed", "完成"], ["cancelled", "取消任務"]]
     : task.status === "completed" && task.canReopen ? [["active", "重新進行"]] : []).filter(([status]) => allowed(status));
-  const primary = options[0] || [];
+  const primary = options.find(([status]) => status === "completed") || options[0] || [];
   const next = primary[0] || "";
   const nextLabel = t(primary[1] || "");
-  const alternatives = options.slice(1);
+  const alternatives = options.filter(option => option !== primary);
   return <article className={`task-card is-${statusTone(task.status)} priority-${task.priority}${compact ? " compact" : ""}`}>
     <div className="task-card-rule"/>
     <div className="task-card-main">
@@ -1205,11 +1214,12 @@ const TaskCard = ({ task, onStatus, onCollaboration, busy, compact = false, biu 
         <I name="user" size={12}/><span>{t("查看任務協作")}</span><I name="arrow" size={11}/>
       </button>}
     </div>
-    {(task.canStatus || task.canReopen) && !!options.length && <div className="task-card-actions">
+    {(!!options.length || task.canUpdate || task.canDelete) && <div className="task-card-actions">
       {next && <button type="button" className="task-action-primary" disabled={busy} onClick={() => onStatus(task, next)}>
         <I name={next === "completed" ? "check" : "arrow"} size={13}/>{busy ? "…" : nextLabel}
       </button>}
-      {!!alternatives.length && <details className="task-action-more"><summary aria-label={t("更多狀態")}>•••</summary><div>{alternatives.map(([status, label]) => <button type="button" key={status} disabled={busy} onClick={() => onStatus(task, status)}>{t(label)}</button>)}</div></details>}
+      {task.canUpdate && <button type="button" className="task-action-edit" disabled={busy} onClick={() => onEdit(task)}><I name="gear" size={13}/>{t("編輯")}</button>}
+      {(!!alternatives.length || task.canDelete) && <details className="task-action-more"><summary aria-label={t("更多狀態")}>•••</summary><div>{alternatives.map(([status, label]) => <button type="button" key={status} disabled={busy} onClick={() => onStatus(task, status)}>{t(label)}</button>)}{task.canDelete && <button type="button" className="danger" disabled={busy} onClick={() => onDelete(task)}>{t("刪除任務")}</button>}</div></details>}
     </div>}
   </article>;
 };
@@ -1222,7 +1232,7 @@ const ViewEmpty = ({ view, onCreate }) => {
   return <Empty icon={copy[0]} title={t(copy[1])} sub={t(copy[2])} action={onCreate ? <B kind="primary" icon="plus" onClick={onCreate}>{t("新增")}</B> : null}/>;
 };
 
-const TodayView = ({ tasks, onStatus, onCollaboration, busyId, onCreate, onViewAll, biu = false }) => {
+const TodayView = ({ tasks, onStatus, onEdit, onDelete, onCollaboration, busyId, onCreate, onViewAll, biu = false }) => {
   const today = todayKey();
   const scheduled = tasks.filter(task => coversDay(task, today));
   const overdue = tasks.filter(task => !isTerminal(task.status) && dateKey(task.due) && dateKey(task.due) < today);
@@ -1238,11 +1248,11 @@ const TodayView = ({ tasks, onStatus, onCollaboration, busyId, onCreate, onViewA
       <div className="task-day-score red"><strong>{rate}<small>%</small></strong><span>{t("完成率")}</span></div>
     </section>
     <div className="task-section-head"><div><span>01</span><h2>{t("今日重點")}</h2></div><button type="button" onClick={onViewAll}>{t("查看全部任務")} →</button></div>
-    {visible.length ? <div className="task-list">{visible.map(task => <TaskCard key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <ViewEmpty view="today" onCreate={onCreate}/>}
+    {visible.length ? <div className="task-list">{visible.map(task => <TaskCard key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onEdit={onEdit} onDelete={onDelete} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <ViewEmpty view="today" onCreate={onCreate}/>}
   </div>;
 };
 
-const InboxView = ({ tasks, onStatus, onCollaboration, busyId, onCreate, biu = false }) => {
+const InboxView = ({ tasks, onStatus, onEdit, onDelete, onCollaboration, busyId, onCreate, biu = false }) => {
   const [filter, setFilter] = S("open");
   const [search, setSearch] = S("");
   const shown = tasks.filter(task => {
@@ -1261,11 +1271,11 @@ const InboxView = ({ tasks, onStatus, onCollaboration, busyId, onCreate, biu = f
       <div className="task-segments" role="tablist" aria-label={t("收件匣")}>{[["all", "全部"], ["open", "未結束"], ["closed", "已結束"]].map(([id, label]) => <button type="button" role="tab" aria-selected={filter === id} className={filter === id ? "on" : ""} key={id} onClick={() => setFilter(id)}>{t(label)}<b>{id === "all" ? tasks.length : tasks.filter(task => id === "closed" ? isTerminal(task.status) : !isTerminal(task.status)).length}</b></button>)}</div>
       <label className="task-search"><I name="search" size={14}/><input value={search} onChange={event => setSearch(event.target.value)} placeholder={t("搜尋任務、計劃或來源")}/>{search && <button type="button" onClick={() => setSearch("")} aria-label={t("清除篩選")}><I name="x" size={12}/></button>}</label>
     </div>
-    {shown.length ? <div className="task-list">{shown.map(task => <TaskCard key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <ViewEmpty view="inbox" onCreate={onCreate}/>}
+    {shown.length ? <div className="task-list">{shown.map(task => <TaskCard key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onEdit={onEdit} onDelete={onDelete} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <ViewEmpty view="inbox" onCreate={onCreate}/>}
   </div>;
 };
 
-const CalendarView = ({ tasks, onStatus, onCollaboration, busyId, onCreate, biu = false }) => {
+const CalendarView = ({ tasks, onStatus, onEdit, onDelete, onCollaboration, busyId, onCreate, biu = false }) => {
   const now = new Date();
   const [month, setMonth] = S(new Date(now.getFullYear(), now.getMonth(), 1));
   const [selected, setSelected] = S(todayKey());
@@ -1303,11 +1313,11 @@ const CalendarView = ({ tasks, onStatus, onCollaboration, busyId, onCreate, biu 
         </button>;
       })}</div>
     </section>
-    <aside className="task-agenda"><div className="task-section-head"><div><span>02</span><h2>{t("當日安排")}</h2></div>{onCreate && <button type="button" onClick={() => onCreate("event", { date: selected })}>+ {t("加入這一天")}</button>}</div><div className="task-agenda-date">{dayLabel(selected + "T12:00:00")}</div>{agenda.length ? <div className="task-list compact-list">{agenda.map(task => <TaskCard compact key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <Empty icon="clock" title={t("這一天尚無安排")}/>}</aside>
+    <aside className="task-agenda"><div className="task-section-head"><div><span>02</span><h2>{t("當日安排")}</h2></div>{onCreate && <button type="button" onClick={() => onCreate("event", { date: selected })}>+ {t("加入這一天")}</button>}</div><div className="task-agenda-date">{dayLabel(selected + "T12:00:00")}</div>{agenda.length ? <div className="task-list compact-list">{agenda.map(task => <TaskCard compact key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onEdit={onEdit} onDelete={onDelete} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <Empty icon="clock" title={t("這一天尚無安排")}/>}</aside>
   </div>;
 };
 
-const PlansView = ({ tasks, meta, onStatus, onCollaboration, busyId, onCreate, biu = false }) => {
+const PlansView = ({ tasks, meta, onStatus, onEdit, onDelete, onCollaboration, busyId, onCreate, biu = false }) => {
   const metaPlans = plansFromMeta(meta).map(item => ({ id: first(item.id, item.plan_id), title: String(first(item.title, item.name, item.plan_name, t("未命名"))), raw: item }));
   const planItems = tasks.filter(task => task.kind === "plan").map(task => ({ id: task.id, title: task.title, raw: task.raw, progress: task.progress }));
   const derived = tasks.filter(task => task.planId || task.planTitle).map(task => ({ id: task.planId || task.planTitle, title: task.planTitle || String(task.planId), raw: {} }));
@@ -1319,7 +1329,7 @@ const PlansView = ({ tasks, meta, onStatus, onCollaboration, busyId, onCreate, b
   return <div className="task-view task-plans-view"><div className="task-section-head"><div><span>01</span><h2>{t("計劃")}</h2></div>{onCreate && <button type="button" onClick={() => onCreate("plan")}>+ {t("新增計劃")}</button>}</div><div className="task-plan-grid">{groups.map((plan, index) => {
     const complete = plan.tasks.filter(task => task.status === "completed").length;
     const progress = plan.tasks.length ? Math.round(complete / plan.tasks.length * 100) : number(first(plan.progress, plan.raw.progress, plan.raw.progress_percent));
-    return <section className="task-plan" key={String(plan.id)}><header><span className="task-plan-index">P{pad(index + 1)}</span><span className="task-plan-progress">{progress}%</span></header><h2>{plan.title}</h2><div className="task-progress"><i style={{ width: `${clamp(progress, 0, 100)}%` }}/></div><div className="task-plan-meta"><span>{plan.tasks.length} {t("項任務")}</span><span>{complete} {t("已完成")}</span></div>{plan.tasks.length ? <div className="task-list compact-list">{plan.tasks.slice(0, 5).map(task => <TaskCard compact key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <div className="task-plan-empty">—</div>}</section>;
+    return <section className="task-plan" key={String(plan.id)}><header><span className="task-plan-index">P{pad(index + 1)}</span><span className="task-plan-progress">{progress}%</span></header><h2>{plan.title}</h2><div className="task-progress"><i style={{ width: `${clamp(progress, 0, 100)}%` }}/></div><div className="task-plan-meta"><span>{plan.tasks.length} {t("項任務")}</span><span>{complete} {t("已完成")}</span></div>{plan.tasks.length ? <div className="task-list compact-list">{plan.tasks.slice(0, 5).map(task => <TaskCard compact key={task.id || task.title} task={task} busy={busyId === task.id} onStatus={onStatus} onEdit={onEdit} onDelete={onDelete} onCollaboration={onCollaboration} biu={biu}/>)}</div> : <div className="task-plan-empty">—</div>}</section>;
   })}</div></div>;
 };
 
@@ -8131,18 +8141,28 @@ const categoriesFor = (mode, sourceRef, biu = false) => {
     : (String(sourceRef || "").startsWith("record:") ? ["record", "work", "other"] : ["work", "record", "other"]);
 };
 const initialForm = (mode, seed = {}, biu = false) => {
-  const day = seed.date || todayKey();
+  const day = seed.startDate || seed.date || todayKey();
+  const dueDay = seed.dueDate || day;
   const sourceRef = seed.source_ref || seed.sourceRef || "";
   const choices = categoriesFor(mode || "task", sourceRef, biu);
   const category = choices.includes(seed.category) ? seed.category : choices[0];
   return {
-    mode: mode || "task", title: seed.title || seed.source_title || "", description: "", priority: "normal", category,
-    startDate: day, startTime: "09:00", dueDate: day, dueTime: mode === "event" ? "10:00" : "17:00", allDay: mode === "plan",
-    visibility: "private", location: "", assigneeId: "", ownerOrgUnitId: "", planId: "", sourceRef, sourceTitle: seed.source_title || seed.sourceTitle || "",
+    mode: mode || "task", title: seed.title || seed.source_title || "", description: seed.description || "", priority: seed.priority || "normal", category,
+    startDate: day, startTime: seed.startTime || "09:00", dueDate: dueDay, dueTime: seed.dueTime || (mode === "event" ? "10:00" : "17:00"), allDay: seed.allDay != null ? !!seed.allDay : mode === "plan",
+    visibility: seed.visibility || "private", location: seed.location || "", assigneeId: seed.assigneeId || "", ownerOrgUnitId: seed.ownerOrgUnitId || "", planId: seed.planId || "", sourceRef, sourceTitle: seed.source_title || seed.sourceTitle || "",
   };
 };
-const TaskComposer = ({ mode: initialMode, seed, requestKey, meta, tasks, onClose, onCreated, biu = false }) => {
-  const [form, setForm] = S(() => initialForm(initialMode, seed, biu));
+const taskFormSeed = task => ({
+  title: task.title, description: task.description, priority: task.priority, category: task.category,
+  startDate: inputDate(task.start || task.due) || todayKey(), startTime: inputTime(task.start || task.due),
+  dueDate: inputDate(task.due || task.start) || todayKey(), dueTime: inputTime(task.due || task.start),
+  allDay: task.allDay, visibility: task.visibility, location: task.location,
+  assigneeId: task.assigneeId, ownerOrgUnitId: task.ownerOrgUnitId, planId: task.planId,
+  sourceRef: task.sourceRef, sourceTitle: task.sourceTitle,
+});
+const TaskComposer = ({ mode: initialMode, seed, task = null, requestKey, meta, tasks, onClose, onCreated, onSaved, biu = false }) => {
+  const editing = !!(task && task.id != null);
+  const [form, setForm] = S(() => initialForm(initialMode, editing ? taskFormSeed(task) : seed, biu));
   const [busy, setBusy] = S(false);
   const [error, setError] = S("");
   const requestId = R(requestKey || clientRequestId());
@@ -8157,7 +8177,10 @@ const TaskComposer = ({ mode: initialMode, seed, requestKey, meta, tasks, onClos
     if (id != null && !plans.some(existing => String(first(existing.id, existing.plan_id)) === String(id))) plans.push(plan);
   });
   const update = (name, value) => setForm(current => ({ ...current, [name]: value }));
-  const setMode = mode => setForm(current => ({ ...initialForm(mode, { ...seed, date: current.startDate, sourceRef: current.sourceRef }, biu), title: current.title, description: current.description, sourceRef: current.sourceRef, sourceTitle: current.sourceTitle, visibility: current.visibility }));
+  const setMode = mode => setForm(current => {
+    const choices = categoriesFor(mode, current.sourceRef, biu);
+    return { ...current, mode, category: choices.includes(current.category) ? current.category : choices[0], planId: mode === "plan" ? "" : current.planId };
+  });
   const submit = async event => {
     event.preventDefault(); setError("");
     if (!form.title.trim()) { setError(t("需要標題")); return; }
@@ -8167,24 +8190,31 @@ const TaskComposer = ({ mode: initialMode, seed, requestKey, meta, tasks, onClos
     const source = sourceParts(form.sourceRef);
     const payload = {
       title: form.title.trim(), description: form.description.trim() || null,
-      kind: form.mode, category: form.category, status: "planned", priority: form.priority, visibility: form.visibility,
+      kind: form.mode, category: form.category, priority: form.priority, visibility: form.visibility,
       start_at: startsAt, end_at: ["event", "plan"].includes(form.mode) ? dueAt : null, due_at: form.mode === "task" ? dueAt : null,
       all_day: !!form.allDay, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", location: form.location.trim() || null,
-      owner_org_unit_id: idValue(form.ownerOrgUnitId), plan_id: idValue(form.planId), assignees: form.assigneeId ? [idValue(form.assigneeId)] : [],
-      client_request_id: requestId.current, source_type: source.type, source_entity_id: source.id,
+      owner_org_unit_id: idValue(form.ownerOrgUnitId), plan_id: form.mode === "plan" ? null : idValue(form.planId),
     };
+    if (!editing || canAssign) payload.assignees = form.assigneeId ? [idValue(form.assigneeId)] : [];
+    if (!editing) Object.assign(payload, { client_request_id: requestId.current, source_type: source.type, source_entity_id: source.id });
+    else payload.expected_version = task.lockVersion;
     setBusy(true);
     const submitTenant = W2.tenant();
     try {
-      const data = await W2.post("/api/tasks", payload);
-      if (submitTenant === W2.tenant()) await onCreated(taskFrom(data));
+      const data = editing
+        ? await W2.json(`/api/tasks/${encodeURIComponent(task.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+        : await W2.post("/api/tasks", payload);
+      if (submitTenant === W2.tenant()) {
+        if (editing) await onSaved(taskFrom(data));
+        else await onCreated(taskFrom(data));
+      }
     }
-    catch (exception) { setError(exception.message || t("無法建立任務")); }
+    catch (exception) { setError(exception.message || t(editing ? "更新失敗" : "無法建立任務")); }
     finally { setBusy(false); }
   };
   return <div className="task-sheet-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="task-sheet" role="dialog" aria-modal="true" aria-labelledby="task-composer-title">
-      <header><div><L red>NEW ACTION</L><h2 id="task-composer-title">{taskText(biu, form.mode === "event" ? "新增日程" : form.mode === "plan" ? "新增計劃" : "新增任務")}</h2></div><button type="button" onClick={onClose} aria-label={t("關閉")}><I name="x" size={16}/></button></header>
+      <header><div><L red>{editing ? "EDIT ACTION" : "NEW ACTION"}</L><h2 id="task-composer-title">{editing ? t("編輯任務") : taskText(biu, form.mode === "event" ? "新增日程" : form.mode === "plan" ? "新增計劃" : "新增任務")}</h2></div><button type="button" onClick={onClose} aria-label={t("關閉")}><I name="x" size={16}/></button></header>
       <form onSubmit={submit}>
         <div className="task-kind-switch" role="tablist" aria-label={t("選擇類型")}>{[["task", "任務", "clipboard"], ["event", "日曆", "clock"], ["plan", "計劃", "layers"]].map(([id, label, icon]) => <button type="button" role="tab" aria-selected={form.mode === id} className={form.mode === id ? "on" : ""} key={id} onClick={() => setMode(id)}><I name={icon} size={14}/>{taskText(biu, label)}</button>)}</div>
         {form.sourceRef && <div className="task-linked-source"><I name="doc" size={13}/><div><L dim>{t("來源")}</L><strong>{form.sourceTitle || form.sourceRef}</strong></div></div>}
@@ -8203,11 +8233,22 @@ const TaskComposer = ({ mode: initialMode, seed, requestKey, meta, tasks, onClos
         {canManage && !!orgUnits.length && <label className="task-field"><L dim>{t("負責部門")}</L><select value={form.ownerOrgUnitId} onChange={event => update("ownerOrgUnitId", event.target.value)}><option value="">{t("未指定")}</option>{orgUnits.map((unit, index) => <option key={first(unit.id, unit.org_unit_id, unit.unit_id, index)} value={optionalText(unit.id, unit.org_unit_id, unit.unit_id)}>{first(unit.name, unit.org_unit_name, unit.unit_name, unit.code, unit.id)}</option>)}</select></label>}
         {!!plans.length && form.mode !== "plan" && <label className="task-field full"><L dim>{t("所屬計劃")}</L><select value={form.planId} onChange={event => update("planId", event.target.value)}><option value="">{t("不加入計劃")}</option>{plans.map((plan, index) => <option key={first(plan.id, plan.plan_id, index)} value={optionalText(plan.id, plan.plan_id)}>{first(plan.title, plan.name, plan.plan_name, plan.id)}</option>)}</select></label>}
         {error && <div className="task-form-error full" role="alert">{error}</div>}
-        <footer className="full"><B type="button" onClick={onClose}>{t("取消")}</B><B type="submit" kind="primary" icon="plus" disabled={busy}>{busy ? t("建立中…") : taskText(biu, form.mode === "event" ? "建立日程" : form.mode === "plan" ? "建立計劃" : "建立任務")}</B></footer>
+        <footer className="full"><B type="button" onClick={onClose}>{t("取消")}</B><B type="submit" kind="primary" icon={editing ? "check" : "plus"} disabled={busy}>{busy ? t(editing ? "儲存中…" : "建立中…") : editing ? t("儲存更改") : taskText(biu, form.mode === "event" ? "建立日程" : form.mode === "plan" ? "建立計劃" : "建立任務")}</B></footer>
       </form>
     </section>
   </div>;
 };
+
+const TaskDeleteDialog = ({ task, busy, error, onClose, onConfirm }) => <div className="task-delete-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+  <section className="task-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="task-delete-title" aria-describedby="task-delete-description">
+    <L red>DELETE ACTION</L>
+    <h2 id="task-delete-title">{t("確定刪除？")}</h2>
+    <strong>{task.title}</strong>
+    <p id="task-delete-description">{t("此操作無法撤銷。若任務已開啟協作，聊天、文件與成員記錄也會一併刪除。")}</p>
+    {error && <div className="task-form-error" role="alert">{error}</div>}
+    <footer><B type="button" disabled={busy} onClick={onClose}>{t("保留任務")}</B><B type="button" kind="danger" disabled={busy} onClick={onConfirm}>{busy ? t("刪除中…") : t("刪除任務")}</B></footer>
+  </section>
+</div>;
 
 const VIEWS = [["today", "今天", "check"], ["inbox", "收件匣", "clipboard"], ["calendar", "日曆", "clock"], ["plans", "計劃", "layers"], ["insights", "透視", "chart"], ["collaboration", "協作廣場", "user"]];
 const TaskManagementPanel = ({ embedded = false, initialView, boot, templateKey = "" }) => {
@@ -8223,6 +8264,8 @@ const TaskManagementPanel = ({ embedded = false, initialView, boot, templateKey 
   const [metaWarning, setMetaWarning] = S("");
   const [busyId, setBusyId] = S(null);
   const [composer, setComposer] = S(null);
+  const [deleteTarget, setDeleteTarget] = S(null);
+  const [deleteError, setDeleteError] = S("");
   const [collabTarget, setCollabTarget] = S(null);
   const [collabVersion, setCollabVersion] = S(0);
   const [undoCompletion, setUndoCompletion] = S(null);
@@ -8256,7 +8299,7 @@ const TaskManagementPanel = ({ embedded = false, initialView, boot, templateKey 
     } finally { if (mounted.current && request === loadSequence.current) setLoading(false); }
   }, [tenant, embedded]);
   E(() => {
-    setTasks([]); setMeta({}); setError(""); setMetaWarning(""); setBusyId(null); setComposer(null); setCollabTarget(null); setUndoCompletion(null);
+    setTasks([]); setMeta({}); setError(""); setMetaWarning(""); setBusyId(null); setComposer(null); setDeleteTarget(null); setDeleteError(""); setCollabTarget(null); setUndoCompletion(null);
     load();
   }, [load]);
   E(() => {
@@ -8289,6 +8332,8 @@ const TaskManagementPanel = ({ embedded = false, initialView, boot, templateKey 
     if (!embedded && (location.hash || "").startsWith("#/tasks")) history.replaceState(null, "", `#/tasks?view=${encodeURIComponent(next)}`);
   };
   const openCreate = (mode = "task", seed = {}) => { if (canCreate) setComposer({ mode, seed, requestKey: clientRequestId() }); };
+  const openEdit = task => { if (task && task.canUpdate) setComposer({ mode: task.kind, seed: {}, task, requestKey: clientRequestId() }); };
+  const openDelete = task => { if (task && task.canDelete) { setDeleteError(""); setDeleteTarget(task); } };
   const openCollaboration = target => {
     if (target && first(target.id, collabTaskId(target.raw), collabTaskId(target)) != null) setCollabTarget(target);
   };
@@ -8315,16 +8360,38 @@ const TaskManagementPanel = ({ embedded = false, initialView, boot, templateKey 
     if (raw && Object.keys(raw).length) setTasks(current => uniqueTasks([normalizeTask(raw), ...current]));
     await load({ quiet: true });
   };
+  const saved = async raw => {
+    const updated = normalizeTask(raw);
+    setComposer(null);
+    setTasks(current => current.map(item => String(item.id) === String(updated.id) ? updated : item));
+    setSyncedAt(new Date());
+    await load({ quiet: true });
+  };
+  const removeTask = async () => {
+    const target = deleteTarget;
+    if (!target || busyId != null) return;
+    const actionTenant = W2.tenant();
+    setBusyId(target.id); setDeleteError("");
+    try {
+      await W2.json(`/api/tasks/${encodeURIComponent(target.id)}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_version: target.lockVersion, confirm: true }) });
+      if (actionTenant !== W2.tenant()) return;
+      setTasks(current => current.filter(item => String(item.id) !== String(target.id)));
+      setDeleteTarget(null); setUndoCompletion(null); setSyncedAt(new Date());
+      if (collabTarget && String(first(collabTarget.id, collabTaskId(collabTarget.raw))) === String(target.id)) setCollabTarget(null);
+      await load({ quiet: true });
+    } catch (exception) { setDeleteError(exception.message || t("刪除失敗")); }
+    finally { setBusyId(null); }
+  };
   const availableViews = viewOptions;
   const content = view === "collaboration"
     ? <CollaborationPlaza key={tenant} refreshSignal={collabVersion} onOpen={openCollaboration}/>
     : loading && !tasks.length
     ? <div className="task-loading" aria-live="polite"><span/><span/><span/><small>{t("同步中")}</small></div>
     : error && !tasks.length ? <div className="task-api-error" role="alert"><I name="alert" size={24}/><h2>{t("任務資料暫時無法載入")}</h2><p>{error}</p><B icon="refresh" onClick={() => load()}>{t("重新載入")}</B></div>
-    : view === "today" ? <TodayView tasks={tasks} busyId={busyId} onStatus={updateStatus} onCollaboration={openCollaboration} onCreate={canCreate ? () => openCreate("task") : null} onViewAll={() => chooseView("inbox")} biu={biu}/>
-    : view === "inbox" ? <InboxView tasks={tasks} busyId={busyId} onStatus={updateStatus} onCollaboration={openCollaboration} onCreate={canCreate ? () => openCreate("task") : null} biu={biu}/>
-    : view === "calendar" ? <CalendarView tasks={tasks} busyId={busyId} onStatus={updateStatus} onCollaboration={openCollaboration} onCreate={canCreate ? openCreate : null} biu={biu}/>
-    : view === "plans" ? <PlansView tasks={tasks} meta={meta} busyId={busyId} onStatus={updateStatus} onCollaboration={openCollaboration} onCreate={canCreate ? openCreate : null} biu={biu}/>
+    : view === "today" ? <TodayView tasks={tasks} busyId={busyId} onStatus={updateStatus} onEdit={openEdit} onDelete={openDelete} onCollaboration={openCollaboration} onCreate={canCreate ? () => openCreate("task") : null} onViewAll={() => chooseView("inbox")} biu={biu}/>
+    : view === "inbox" ? <InboxView tasks={tasks} busyId={busyId} onStatus={updateStatus} onEdit={openEdit} onDelete={openDelete} onCollaboration={openCollaboration} onCreate={canCreate ? () => openCreate("task") : null} biu={biu}/>
+    : view === "calendar" ? <CalendarView tasks={tasks} busyId={busyId} onStatus={updateStatus} onEdit={openEdit} onDelete={openDelete} onCollaboration={openCollaboration} onCreate={canCreate ? openCreate : null} biu={biu}/>
+    : view === "plans" ? <PlansView tasks={tasks} meta={meta} busyId={busyId} onStatus={updateStatus} onEdit={openEdit} onDelete={openDelete} onCollaboration={openCollaboration} onCreate={canCreate ? openCreate : null} biu={biu}/>
     : <InsightsView tasks={tasks} biu={biu}/>;
   return <section className={`task-workspace${embedded ? " embedded" : ""}`}>
     <header className="task-hero">
@@ -8337,7 +8404,8 @@ const TaskManagementPanel = ({ embedded = false, initialView, boot, templateKey 
     {undoCompletion && <div className="task-undo-completion" role="status" aria-live="polite"><span><i/>{t("任務已完成")}</span><button type="button" disabled={busyId != null} onClick={() => updateStatus(undoCompletion.task, "active")}>{t("撤銷")}</button></div>}
     {content}
     {!embedded && <nav className="task-mobile-nav" aria-label={taskText(biu, "個人行動中心")}>{VIEWS.map(([id, label, icon]) => <button type="button" className={view === id ? "on" : ""} key={id} onClick={() => chooseView(id)}><I name={icon} size={18}/><span>{taskText(biu, label)}</span></button>)}</nav>}
-    {composer && <TaskComposer key={composer.requestKey} requestKey={composer.requestKey} mode={composer.mode} seed={composer.seed} meta={meta} tasks={tasks} onClose={() => setComposer(null)} onCreated={created} biu={biu}/>}
+    {composer && <TaskComposer key={composer.requestKey} requestKey={composer.requestKey} mode={composer.mode} seed={composer.seed} task={composer.task || null} meta={meta} tasks={tasks} onClose={() => setComposer(null)} onCreated={created} onSaved={saved} biu={biu}/>}
+    {deleteTarget && <TaskDeleteDialog task={deleteTarget} busy={busyId === deleteTarget.id} error={deleteError} onClose={() => { setDeleteTarget(null); setDeleteError(""); }} onConfirm={removeTask}/>}
     {collabTarget && <CollaborationWorkspace key={tenant + "-" + first(collabTarget.id, collabTaskId(collabTarget.raw))} target={collabTarget} meta={meta} onClose={() => setCollabTarget(null)} onChanged={() => setCollabVersion(current => current + 1)}/>}
   </section>;
 };

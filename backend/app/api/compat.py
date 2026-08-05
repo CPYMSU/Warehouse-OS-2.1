@@ -17,6 +17,7 @@ from an unavailable service.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
@@ -37,6 +38,7 @@ from app.services.digital_asset_hosting import (
 )
 from app.services.task_center import (
     create_task,
+    delete_task,
     get_task,
     list_tasks,
     task_history,
@@ -316,6 +318,15 @@ def tasks_history(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     return task_history(actor, task_id, limit=limit, before_id=before_id)
+
+
+@router.delete("/api/tasks/{task_id}")
+def tasks_delete(
+    task_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return delete_task(actor, task_id, payload)
 
 
 @router.patch("/api/tasks/{task_id}")
@@ -614,7 +625,14 @@ def ai_conversations(
         )
         for row in rows
     ]
-    return {"available": True, "conversations": conversations, "items": conversations}
+    return {
+        "available": True,
+        "rows": conversations,
+        "hasMore": len(conversations) >= limit,
+        "has_more": len(conversations) >= limit,
+        "conversations": conversations,
+        "items": conversations,
+    }
 
 
 @router.get("/api/assistant/bootstrap")
@@ -1324,33 +1342,210 @@ def _audit_rows(
     limit: int,
     cli_only: bool,
 ) -> list[dict[str, object]]:
-    clause = "AND (event_type LIKE 'terminal.%' OR event_type LIKE 'cli.%')" if cli_only else ""
+    _require_admin(actor, "audit.read")
     with tenant_session(actor.tenant_id) as session:
-        rows = (
-            session.execute(
-                text(
-                    f"""
-                    SELECT id, actor_user_id, event_type, payload, created_at
-                    FROM audit.events
-                    WHERE TRUE {clause}
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT :limit
-                    """
-                ),
-                {"limit": _limit(limit, 1000)},
+        if cli_only:
+            rows = (
+                session.execute(
+                    text(
+                        """
+                        SELECT ce.id, ce.actor_user_id, ce.command, ce.tool_name,
+                               ce.origin, ce.status, ce.request, ce.response,
+                               ce.created_at, u.username, u.display_name,
+                               m.role_level, m.topology_title
+                        FROM terminal.command_executions AS ce
+                        LEFT JOIN iam.users AS u ON u.id = ce.actor_user_id
+                        LEFT JOIN iam.memberships AS m
+                          ON m.tenant_id = ce.tenant_id
+                         AND m.user_id = ce.actor_user_id
+                        ORDER BY ce.created_at DESC, ce.id DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"limit": _limit(limit, 1000)},
+                )
+                .mappings()
+                .all()
             )
-            .mappings()
-            .all()
-        )
-    return [
-        _json_safe(
-            {
-                **dict(row),
-                "actor_user_id": str(row["actor_user_id"]) if row["actor_user_id"] else None,
-            }
-        )
-        for row in rows
-    ]
+        else:
+            rows = (
+                session.execute(
+                    text(
+                        """
+                        SELECT e.id, e.actor_user_id, e.event_type, e.payload,
+                               e.created_at, u.username, u.display_name,
+                               m.role_level, m.topology_title
+                        FROM audit.events AS e
+                        LEFT JOIN iam.users AS u ON u.id = e.actor_user_id
+                        LEFT JOIN iam.memberships AS m
+                          ON m.tenant_id = e.tenant_id
+                         AND m.user_id = e.actor_user_id
+                        ORDER BY e.created_at DESC, e.id DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"limit": _limit(limit, 1000)},
+                )
+                .mappings()
+                .all()
+            )
+    if cli_only:
+        return [_audit_cli_row(dict(row)) for row in rows]
+    return [_audit_event_row(dict(row)) for row in rows]
+
+
+def _audit_status(value: object) -> str:
+    raw = str(value or "completed").strip().lower()
+    if raw in {"succeeded", "success", "ok"}:
+        return "completed"
+    if raw in {"denied", "target_rejected", "rejected", "requires_l11_governance"}:
+        return "rejected"
+    if raw in {
+        "failed", "error", "invalid", "invalid_contract", "invalid_arguments",
+        "unknown_tool",
+    }:
+        return "failed"
+    if raw in {"confirmation_required", "awaiting_domain_adapter", "queued", "running"}:
+        return "pending"
+    return raw or "completed"
+
+
+def _audit_source(event_type: str, payload: dict[str, object]) -> str:
+    origin = str(payload.get("origin") or payload.get("source") or "").lower()
+    if origin in {"ai", "ai_tool", "auto_runtime"} or event_type.startswith("ai."):
+        return "ai"
+    if origin in {"user", "manual_ui", "terminal", "super_terminal"}:
+        return "user"
+    return "system"
+
+
+def _audit_redact(value: object) -> object:
+    sensitive = {
+        "api_key", "authorization", "password", "passphrase", "plaintext",
+        "private_key", "secret", "token", "access_token", "refresh_token",
+    }
+    if isinstance(value, dict):
+        result: dict[str, object] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            lowered = key.lower()
+            if lowered in sensitive or lowered.endswith(
+                ("_api_key", "_password", "_private_key", "_secret", "_token")
+            ):
+                result[key] = "[REDACTED]"
+            else:
+                result[key] = _audit_redact(item)
+        return result
+    if isinstance(value, list):
+        return [_audit_redact(item) for item in value]
+    return value
+
+
+def _audit_redact_command(value: object) -> str:
+    command = str(value or "")
+    return re.sub(
+        r"(?i)((?:--?)(?:api[-_]?key|password|private[-_]?key|secret|token)\s+(?:=\s*)?)(\S+)",
+        r"\1[REDACTED]",
+        command,
+    )
+
+
+def _audit_entity(event_type: str, payload: dict[str, object]) -> tuple[str, str | None]:
+    entity_type = str(payload.get("entity_type") or event_type.split(".", 1)[0] or "system")
+    preferred = (
+        "entity_id", f"{entity_type}_id", "asset_id", "workspace_id", "record_id",
+        "case_id", "task_id", "user_id", "execution_id", "action_id",
+    )
+    entity_id = next((payload.get(key) for key in preferred if payload.get(key) is not None), None)
+    return entity_type, str(entity_id) if entity_id is not None else None
+
+
+def _audit_event_row(row: dict[str, object]) -> dict[str, object]:
+    raw_payload = dict(row.get("payload") or {}) if isinstance(row.get("payload"), dict) else {}
+    payload = _audit_redact(raw_payload)
+    assert isinstance(payload, dict)
+    event_type = str(row.get("event_type") or "system.event")
+    entity_type, entity_id = _audit_entity(event_type, payload)
+    actor_user_id = row.get("actor_user_id")
+    operator_name = row.get("display_name") or row.get("username") or (
+        str(actor_user_id) if actor_user_id else "System"
+    )
+    normalized = {
+        **payload,
+        "id": row.get("id"),
+        "occurred_at": row.get("created_at"),
+        "created_at": row.get("created_at"),
+        "operator_name": operator_name,
+        "actor": row.get("username") or (str(actor_user_id) if actor_user_id else "system"),
+        "operator_role": row.get("topology_title") or ("System" if not actor_user_id else "Member"),
+        "permission_level": int(row.get("role_level") or 0),
+        "permission_snapshot": {
+            "role": row.get("topology_title"),
+            "level": int(row.get("role_level") or 0),
+        },
+        "action": event_type,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "source": _audit_source(event_type, payload),
+        "operation_status": _audit_status(payload.get("status")),
+    }
+    return _json_safe(normalized)
+
+
+def _audit_command_writes(tool_name: str) -> bool:
+    lowered = tool_name.lower()
+    read_markers = (
+        "_get", "_list", "_show", "_status", "_query", "_schema", "_catalog",
+        "_assess", "_guide", "_requirements", "_resources", "_observe",
+    )
+    return not any(marker in lowered for marker in read_markers)
+
+
+def _audit_cli_row(row: dict[str, object]) -> dict[str, object]:
+    raw_request = dict(row.get("request") or {}) if isinstance(row.get("request"), dict) else {}
+    raw_response = dict(row.get("response") or {}) if isinstance(row.get("response"), dict) else {}
+    request = _audit_redact(raw_request)
+    response = _audit_redact(raw_response)
+    assert isinstance(request, dict) and isinstance(response, dict)
+    actor_user_id = row.get("actor_user_id")
+    operator_name = row.get("display_name") or row.get("username") or (
+        str(actor_user_id) if actor_user_id else "System"
+    )
+    tool_name = str(row.get("tool_name") or "command")
+    detail = {**response}
+    detail.setdefault("request", request)
+    return _json_safe(
+        {
+            "id": row.get("id"),
+            "when": row.get("created_at"),
+            "created_at": row.get("created_at"),
+            "operator": operator_name,
+            "actor": row.get("username") or (str(actor_user_id) if actor_user_id else "system"),
+            "role": row.get("topology_title") or ("System" if not actor_user_id else "Member"),
+            "level": int(row.get("role_level") or 0),
+            "kind": tool_name,
+            "kind_key": tool_name,
+            "command": _audit_redact_command(row.get("command")),
+            "write": _audit_command_writes(tool_name),
+            "status": _audit_status(row.get("status")),
+            "source": _audit_source(
+                "terminal.command.executed", {"origin": row.get("origin")}
+            ),
+            "detail": detail,
+        }
+    )
+
+
+def _audit_summary(rows: list[dict[str, object]], *, cli_only: bool) -> dict[str, object]:
+    status_key = "status" if cli_only else "operation_status"
+    latest_key = "when" if cli_only else "occurred_at"
+    return {
+        "total": len(rows),
+        "writes": sum(1 for row in rows if row.get("write") is True) if cli_only else len(rows),
+        "failed": sum(1 for row in rows if row.get(status_key) == "failed"),
+        "denied": sum(1 for row in rows if row.get(status_key) == "rejected"),
+        "latest": rows[0].get(latest_key) if rows else None,
+    }
 
 
 @router.get("/api/audit/logs")
@@ -1359,7 +1554,14 @@ def audit_logs(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     rows = _audit_rows(actor, limit=limit, cli_only=False)
-    return {"available": True, "logs": rows, "events": rows, "items": rows}
+    return {
+        "available": True,
+        "rows": rows,
+        "summary": _audit_summary(rows, cli_only=False),
+        "logs": rows,
+        "events": rows,
+        "items": rows,
+    }
 
 
 @router.get("/api/audit/cli")
@@ -1368,7 +1570,14 @@ def audit_cli(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     rows = _audit_rows(actor, limit=limit, cli_only=True)
-    return {"available": True, "logs": rows, "events": rows, "items": rows}
+    return {
+        "available": True,
+        "rows": rows,
+        "summary": _audit_summary(rows, cli_only=True),
+        "logs": rows,
+        "events": rows,
+        "items": rows,
+    }
 
 
 @router.get("/api/compatibility/status")

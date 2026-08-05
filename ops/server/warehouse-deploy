@@ -505,9 +505,16 @@ quick_guard() {
 
 start_slot() {
   local slot="$1" release="$2" image="$3"
-  local port container
+  local port container manifest release_git_sha release_alembic_head
   port="$(slot_port "${slot}")"
   container="warehouse-os-api-${slot}"
+  manifest="${RELEASES}/${release}/.warehouse-release/manifest.env"
+  [[ -f "${manifest}" ]] || fail "release manifest is missing: ${release}"
+  release_git_sha="$(awk -F= '$1 == "git_sha" { print $2; exit }' "${manifest}")"
+  release_alembic_head="$(awk -F= '$1 == "alembic_head" { print $2; exit }' "${manifest}")"
+  [[ "${release_git_sha}" =~ ^[0-9a-f]{7,40}$ ]] || fail "invalid release git SHA"
+  [[ "${release_alembic_head}" =~ ^[A-Za-z0-9_.-]{4,128}$ ]] \
+    || fail "invalid release Alembic head"
 
   set -a
   # shellcheck disable=SC1090
@@ -533,6 +540,12 @@ start_slot() {
     -e WAREHOUSE_RESEARCH_EXECUTION_ROOT=/data/research-executions \
     -e WAREHOUSE_BROWSER_RUNTIME_ROOT=/data/browser-runtime \
     -e "WAREHOUSE_RELEASE_ID=${release}" \
+    -e "WAREHOUSE_GIT_SHA=${release_git_sha}" \
+    -e "WAREHOUSE_ALEMBIC_HEAD=${release_alembic_head}" \
+    -e "WAREHOUSE_NODE_ID=${WAREHOUSE_NODE_ID:-vultr-standby}" \
+    -e "WAREHOUSE_NODE_ROLE=${WAREHOUSE_NODE_ROLE:-standby}" \
+    -e "WAREHOUSE_NODE_PLATFORM=${WAREHOUSE_NODE_PLATFORM:-linux/amd64}" \
+    -e "WAREHOUSE_CLUSTER_PEERS=${WAREHOUSE_CLUSTER_PEERS:-mac-primary}" \
     -p "127.0.0.1:${port}:8080" \
     -v /run/warehouse-shield:/run/warehouse-shield \
     -v "${HOSTED_ASSET_ROOT}:/data/hdd/digital-assets" \

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.bonfirework.warehouse-shield-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>__DEPLOY_ROOT__/actions/warehouse-shield-agent.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WAREHOUSE_MAC_DEPLOY_ROOT</key>
+    <string>__DEPLOY_ROOT__</string>
+    <key>WAREHOUSE_SHIELD_ENV_FILE</key>
+    <string>__DEPLOY_ROOT__/shared/orbstack.env</string>
+    <key>WAREHOUSE_SHIELD_AGENT_SOCKET</key>
+    <string>__DEPLOY_ROOT__/shared/shield/agent.sock</string>
+    <key>WAREHOUSE_SHIELD_AGENT_TCP_HOST</key>
+    <string>127.0.0.1</string>
+    <key>WAREHOUSE_SHIELD_AGENT_TCP_PORT</key>
+    <string>18091</string>
+    <key>WAREHOUSE_SHIELD_AGENT_LOG</key>
+    <string>__DEPLOY_ROOT__/shared/logs/warehouse-shield.jsonl</string>
+    <key>WAREHOUSE_SHIELD_API_PORT</key>
+    <string>8081</string>
+    <key>WAREHOUSE_DOCKER_BIN</key>
+    <string>__DOCKER_BIN__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__DEPLOY_ROOT__/shared/logs/shield-agent.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__DEPLOY_ROOT__/shared/logs/shield-agent.stderr.log</string>
+</dict>
+</plist>

@@ -129,10 +129,36 @@ def test_standalone_database_browser_gateway_owner_isolation_and_revocation() ->
         assert listed["service_kind"] == "standalone_database"
         assert listed["browser_project"]["project_key"] == project_key
         assert listed["database"]["credentials_exposed"] is False
+        assert listed["registry"] == {
+            "status": "registered",
+            "is_default": True,
+            "binding_count": 1,
+            "default_count": 1,
+        }
+        assert inventory["registry_health"] == {
+            "missing_binding_count": 0,
+            "missing_default_count": 0,
+            "ambiguous_default_count": 0,
+            "complete": True,
+        }
 
-        onboarding_response = client.get(
-            f"/api/workspaces/{workspace_key}/database/onboarding"
+        reconciled_response = client.post("/api/database-projects/reconcile")
+        assert reconciled_response.status_code == 200, reconciled_response.text
+        reconciled = reconciled_response.json()
+        assert reconciled["ok"] is True
+        assert reconciled["repaired_count"] == 0
+        assert reconciled["unresolved_count"] == 0
+        assert reconciled["idempotent_replay"] is True
+
+        runtime_reconcile = client.post(
+            "/api/ai/tools/digital_market_database_registry_reconcile/execute",
+            json={"arguments": {}},
         )
+        assert runtime_reconcile.status_code == 200, runtime_reconcile.text
+        assert runtime_reconcile.json()["status"] == "succeeded"
+        assert runtime_reconcile.json()["data"]["world_observation"]["state"] == "verified"
+
+        onboarding_response = client.get(f"/api/workspaces/{workspace_key}/database/onboarding")
         assert onboarding_response.status_code == 200, onboarding_response.text
         onboarding = onboarding_response.json()
         assert onboarding["keys"]["public_project_key"] == project_key
@@ -150,17 +176,10 @@ def test_standalone_database_browser_gateway_owner_isolation_and_revocation() ->
         app.dependency_overrides[current_actor] = lambda: reader
         assert client.get("/api/database-projects").status_code == 200
         assert (
-            client.get(
-                f"/api/workspaces/{workspace_key}/database/browser-access"
-            ).status_code
+            client.get(f"/api/workspaces/{workspace_key}/database/browser-access").status_code
             == 200
         )
-        assert (
-            client.get(
-                f"/api/workspaces/{workspace_key}/database/onboarding"
-            ).status_code
-            == 200
-        )
+        assert client.get(f"/api/workspaces/{workspace_key}/database/onboarding").status_code == 200
         assert (
             client.put(
                 f"/api/workspaces/{workspace_key}/database/browser-access",

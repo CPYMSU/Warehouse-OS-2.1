@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "$(uname -s)" == "Darwin" ]] || {
+  printf 'this initializer is only for the macOS standby\n' >&2
+  exit 2
+}
+
+: "${WAREHOUSE_CONFIRM_RESEED:?set WAREHOUSE_CONFIRM_RESEED=YES after taking a verified backup}"
+[[ "${WAREHOUSE_CONFIRM_RESEED}" == "YES" ]] || {
+  printf 'WAREHOUSE_CONFIRM_RESEED must be exactly YES\n' >&2
+  exit 2
+}
+: "${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?local hosted admin password is required}"
+
+psql_bin="${PSQL_BIN:-/opt/homebrew/opt/postgresql@18/bin/psql}"
+local_host="${WAREHOUSE_HOSTED_LOCAL_HOST:-127.0.0.1}"
+local_port="${WAREHOUSE_HOSTED_LOCAL_PORT:-5433}"
+local_user="${WAREHOUSE_HOSTED_LOCAL_USER:-warehouse_hosted_admin}"
+publisher_host="${WAREHOUSE_HOSTED_PUBLISHER_HOST:-100.98.166.49}"
+publisher_port="${WAREHOUSE_HOSTED_PUBLISHER_PORT:-15433}"
+replica_user="${WAREHOUSE_HOSTED_REPLICA_USER:-warehouse_hosted_replica}"
+publication="${WAREHOUSE_HOSTED_PUBLICATION:-warehouse_hosted_pub}"
+subscription="${WAREHOUSE_HOSTED_SUBSCRIPTION:-warehouse_from_vultr}"
+wait_attempts="${WAREHOUSE_SUBSCRIPTION_WAIT_ATTEMPTS:-1800}"
+keychain_account="${WAREHOUSE_HOSTED_REPLICA_KEYCHAIN_ACCOUNT:-warehouse-hosted-replica}"
+keychain_service="${WAREHOUSE_HOSTED_REPLICA_KEYCHAIN_SERVICE:-bonfirework-hosted-replication}"
+[[ "${wait_attempts}" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'WAREHOUSE_SUBSCRIPTION_WAIT_ATTEMPTS must be a positive integer\n' >&2
+  exit 2
+}
+
+replica_password="$(security find-generic-password \
+  -a "${keychain_account}" -s "${keychain_service}" -w)"
+[[ "${replica_password}" =~ ^[0-9a-f]{64}$ ]] || {
+  printf 'hosted replication password is absent or malformed\n' >&2
+  exit 2
+}
+
+local_psql() {
+  local database="$1"
+  shift
+  PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+    "${psql_bin}" -X -v ON_ERROR_STOP=1 \
+      -h "${local_host}" -p "${local_port}" -U "${local_user}" \
+      -d "${database}" "$@"
+}
+
+remote_psql() {
+  local database="$1"
+  shift
+  PGPASSWORD="${replica_password}" \
+    "${psql_bin}" -X -v ON_ERROR_STOP=1 \
+      -h "${publisher_host}" -p "${publisher_port}" -U "${replica_user}" \
+      -d "${database}" "$@"
+}
+
+[[ "$(local_psql postgres -Atc \
+  "select rolsuper from pg_roles where rolname=current_user")" == "t" ]] || {
+  printf 'local hosted administrator must be a superuser\n' >&2
+  exit 2
+}
+[[ "$(remote_psql postgres -Atc "show wal_level")" == "logical" ]] || {
+  printf 'publisher wal_level is not logical\n' >&2
+  exit 2
+}
+
+database_query="select datname from pg_database where datname ~ '^whdb_[0-9a-f]{32}$' order by datname"
+local_databases="$(local_psql postgres -Atc "${database_query}")"
+remote_databases="$(remote_psql postgres -Atc "${database_query}")"
+[[ -n "${local_databases}" && "${local_databases}" == "${remote_databases}" ]] || {
+  printf 'local and publisher hosted database inventories do not match\n' >&2
+  exit 2
+}
+
+database_count="$(printf '%s\n' "${local_databases}" | wc -l | tr -d ' ')"
+schema_signature_query="
+select md5(string_agg(
+  namespace.nspname || '.' || relation.relname || ':' ||
+  attribute.attname || ':' ||
+  pg_catalog.format_type(attribute.atttypid, attribute.atttypmod),
+  '|' order by namespace.nspname, relation.relname, attribute.attnum
+))
+from pg_class as relation
+join pg_namespace as namespace on namespace.oid=relation.relnamespace
+join pg_attribute as attribute on attribute.attrelid=relation.oid
+where relation.relkind in ('r','p')
+  and namespace.nspname <> 'information_schema'
+  and namespace.nspname not like 'pg_%'
+  and attribute.attnum > 0
+  and not attribute.attisdropped"
+
+# Finish every non-destructive check before the first local table is cleared.
+# A resume may explicitly reuse a full preflight that already passed in the
+# same maintenance window; per-database publication and slot checks still run.
+if [[ "${WAREHOUSE_REUSE_SCHEMA_PREFLIGHT:-}" != "YES" ]]; then
+while IFS= read -r database; do
+  [[ "${database}" =~ ^whdb_[0-9a-f]{32}$ ]] || exit 2
+  publisher_table_count="$(remote_psql "${database}" -Atc \
+    "select count(*) from pg_publication_tables where pubname='${publication}'")"
+  local_table_count="$(local_psql "${database}" -Atc \
+    "select count(*) from pg_tables where schemaname <> 'information_schema' and schemaname not like 'pg_%'")"
+  [[ "${publisher_table_count}" =~ ^[1-9][0-9]*$ \
+    && "${publisher_table_count}" == "${local_table_count}" ]] || {
+    printf 'table inventory mismatch database=%s publisher=%s local=%s\n' \
+      "${database}" "${publisher_table_count}" "${local_table_count}" >&2
+    exit 2
+  }
+  remote_signature="$(remote_psql "${database}" -Atc "${schema_signature_query}")"
+  local_signature="$(local_psql "${database}" -Atc "${schema_signature_query}")"
+  [[ -n "${remote_signature}" && "${remote_signature}" == "${local_signature}" ]] || {
+    printf 'table schema mismatch database=%s\n' "${database}" >&2
+    exit 2
+  }
+  existing_subscription="$(local_psql "${database}" -Atc \
+    "select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}'")"
+  [[ "${existing_subscription}" == "0" || "${existing_subscription}" == "1" ]] || {
+    printf 'duplicate subscription metadata database=%s\n' "${database}" >&2
+    exit 2
+  }
+done <<<"${local_databases}"
+fi
+
+completed=0
+while IFS= read -r database; do
+  [[ "${database}" =~ ^whdb_[0-9a-f]{32}$ ]] || exit 2
+  slot_name="mac_${database#whdb_}"
+  publisher_table_count="$(remote_psql "${database}" -Atc \
+    "select count(*) from pg_publication_tables where pubname='${publication}'")"
+  [[ "${publisher_table_count}" =~ ^[1-9][0-9]*$ ]] || {
+    printf 'publication is empty or missing for database=%s\n' "${database}" >&2
+    exit 2
+  }
+
+  existing_subscription="$(local_psql "${database}" -Atc \
+    "select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}'")"
+  if [[ "${existing_subscription}" == "0" ]]; then
+    # The publisher is authoritative.  A verified local backup is mandatory,
+    # and all application services must remain stopped while this runs.
+    local_psql "${database}" <<'SQL'
+SELECT CASE
+  WHEN count(*) = 0 THEN 'SELECT 1'
+  ELSE format(
+    'TRUNCATE TABLE %s CASCADE',
+    string_agg(format('%I.%I', schemaname, tablename), ',')
+  )
+END
+FROM pg_tables
+WHERE schemaname <> 'information_schema'
+  AND schemaname NOT LIKE 'pg_%'
+\gexec
+SQL
+    publisher_conninfo="host=${publisher_host} port=${publisher_port} dbname=${database} user=${replica_user} password=${replica_password} connect_timeout=10 sslmode=disable application_name=mac-hosted-subscriber"
+    local_psql "${database}" \
+      --set=publisher_conninfo="${publisher_conninfo}" \
+      --set=slot_name="${slot_name}" <<SQL
+CREATE SUBSCRIPTION ${subscription}
+  CONNECTION :'publisher_conninfo'
+  PUBLICATION ${publication}
+  WITH (
+    copy_data = true,
+    create_slot = true,
+    enabled = true,
+    run_as_owner = true,
+    slot_name = :'slot_name',
+    streaming = parallel
+  );
+SQL
+  elif [[ "${existing_subscription}" == "1" ]]; then
+    configured_meta="$(local_psql "${database}" -Atc \
+      "select subslotname,subenabled,subrunasowner,substream::text from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}'")"
+    IFS='|' read -r configured_slot configured_enabled configured_owner configured_stream \
+      <<<"${configured_meta}"
+    [[ "${configured_slot}" == "${slot_name}" ]] || {
+      printf 'unexpected subscription slot database=%s\n' "${database}" >&2
+      exit 2
+    }
+    if [[ "${configured_owner}" != "t" || "${configured_stream}" != "p" ]]; then
+      local_psql "${database}" -c \
+        "ALTER SUBSCRIPTION ${subscription} SET (run_as_owner = true, streaming = parallel)"
+    fi
+    if [[ "${configured_enabled}" != "t" ]]; then
+      local_psql "${database}" -c "ALTER SUBSCRIPTION ${subscription} ENABLE"
+    fi
+    subscribed_table_count="$(local_psql "${database}" -Atc \
+      "select count(*) from pg_subscription_rel where srsubid=(select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}')")"
+    if (( subscribed_table_count < publisher_table_count )); then
+      local_psql "${database}" -c \
+        "ALTER SUBSCRIPTION ${subscription} REFRESH PUBLICATION WITH (copy_data = true)"
+    elif (( subscribed_table_count > publisher_table_count )); then
+      printf 'subscription has unexpected extra tables database=%s publisher=%s subscriber=%s\n' \
+        "${database}" "${publisher_table_count}" "${subscribed_table_count}" >&2
+      exit 2
+    fi
+  else
+    printf 'duplicate subscription metadata database=%s\n' "${database}" >&2
+    exit 2
+  fi
+
+  ready=0
+  for _ in $(seq 1 "${wait_attempts}"); do
+    state="$(local_psql "${database}" -Atc \
+      "select count(*) filter (where srsubstate::text='r'),count(*) from pg_subscription_rel where srsubid=(select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${subscription}')")"
+    ready_count="${state%%|*}"
+    total_count="${state##*|}"
+    if [[ "${ready_count}" == "${publisher_table_count}" \
+      && "${total_count}" == "${publisher_table_count}" ]]; then
+      ready=1
+      break
+    fi
+    sleep 5
+  done
+  [[ "${ready}" == "1" ]] || {
+    printf 'timed out waiting for database=%s tables=%s state=%s\n' \
+      "${database}" "${publisher_table_count}" "${state}" >&2
+    exit 1
+  }
+
+  (( completed += 1 ))
+  printf 'hosted_subscription_ready=%s/%s database=%s tables=%s\n' \
+    "${completed}" "${database_count}" "${database}" "${publisher_table_count}"
+done <<<"${local_databases}"
+
+printf 'hosted_subscriptions_ready=%s\n' "${completed}"

@@ -97,11 +97,31 @@
     "platform_connection_env": "DATABASE_URL",
     "runtime_identity": "non-owner without SUPERUSER, BYPASSRLS, CREATEDB or CREATEROLE",
     "migration_identity": "owner credential injected only into explicitly declared one-shot jobs",
+    "backup_identity": "per-workspace NOLOGIN BYPASSRLS role isolated from Runtime",
+    "backup_ready_requires": [
+      "ownership-preserving logical archive",
+      "checksum verification",
+      "ephemeral database restore",
+      "per-relation FORCE RLS row-count equality"
+    ],
     "workspace_managed_engine_restricted": false,
     "versioned_migrations": true,
     "activate_after_migration": true,
     "migration_failure_blocks_activation": true,
     "expand_contract_recommended": true
+  },
+  "occupancy": {
+    "endpoint": "/api/workspaces/v1/usage",
+    "components": [
+      "source_archive_bytes",
+      "runtime_release_bytes",
+      "data_volume_bytes",
+      "managed_data_object_bytes",
+      "postgresql_bytes"
+    ],
+    "includes_measured_at_and_total": true,
+    "runtime_cache_classified_as": "runtime_release",
+    "filesystem_symlinks_followed": false
   },
   "release_lifecycle": {
     "sequence": [

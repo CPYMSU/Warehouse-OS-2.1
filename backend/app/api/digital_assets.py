@@ -64,6 +64,7 @@ from app.services.digital_asset_hosting import (
     upgrade_workspace_runtime,
     workspace_asset_identity,
     workspace_info,
+    workspace_usage,
 )
 from app.services.hosting_fabric import (
     apply_fabric_resource,
@@ -93,6 +94,7 @@ from app.services.workspace_deployments import (
     observe_workspace_deployment,
     probe_workspace_storage,
     register_workspace_source,
+    repair_workspace_deployment,
     request_workspace_deployment,
     workspace_source_download_target,
     workspace_source_upload_target,
@@ -475,6 +477,13 @@ def customer_workspace_info(
     return workspace_info(credential)
 
 
+@router.get("/api/workspaces/v1/usage")
+def customer_workspace_usage(
+    credential: WorkspaceCredential = Depends(workspace_credential),
+) -> dict[str, object]:
+    return workspace_usage(credential)
+
+
 @router.get("/api/workspaces/v1/fabric/manifest")
 def customer_hosting_fabric_manifest(
     credential: WorkspaceCredential = Depends(workspace_credential),
@@ -700,6 +709,22 @@ def customer_deployment_cancel(
     credential: WorkspaceCredential = Depends(workspace_credential),
 ) -> dict[str, object]:
     return cancel_workspace_deployment(credential, _deployment_reference(deployment_id))
+
+
+@router.post(
+    "/api/workspaces/v1/deployments/{deployment_id}/repair",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def customer_deployment_repair(
+    deployment_id: str,
+    payload: dict[str, object] = Body(default={}),
+    credential: WorkspaceCredential = Depends(workspace_credential),
+) -> dict[str, object]:
+    return repair_workspace_deployment(
+        credential,
+        _deployment_reference(deployment_id),
+        payload,
+    )
 
 
 @router.post("/api/workspaces/v1/deployments/{deployment_id}/activate")

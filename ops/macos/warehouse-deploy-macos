@@ -1,0 +1,538 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export PATH="${HOME}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+DEPLOY_ROOT="${WAREHOUSE_MAC_DEPLOY_ROOT:-${HOME}/Server/bonfirework}"
+INCOMING="${DEPLOY_ROOT}/incoming"
+RELEASES="${DEPLOY_ROOT}/releases"
+CURRENT="${DEPLOY_ROOT}/current"
+STATE="${DEPLOY_ROOT}/state"
+SHARED="${DEPLOY_ROOT}/shared"
+ENV_FILE="${SHARED}/orbstack.env"
+LOG_DIR="${SHARED}/logs"
+LOG_FILE="${LOG_DIR}/deployments.jsonl"
+COMPOSE_FILE="${DEPLOY_ROOT}/compose.macos.yaml"
+OVERRIDE_FILE="${STATE}/compose.release.yaml"
+SHIELD_OVERRIDE="${STATE}/compose.shield.yaml"
+PREVIOUS_OVERRIDE="${STATE}/compose.previous.yaml"
+ACTIVE_MANIFEST="${STATE}/active-files.sha256"
+LOCK_DIR="${STATE}/deploy.lock"
+DOCKER="${WAREHOUSE_DOCKER_BIN:-${HOME}/.orbstack/bin/docker}"
+POSTGRES_BIN="${WAREHOUSE_POSTGRES_BIN:-/opt/homebrew/opt/postgresql@18/bin}"
+CLUSTER_VERIFY="${WAREHOUSE_CLUSTER_VERIFY:-${DEPLOY_ROOT}/actions/cluster/verify-cluster}"
+
+fail() {
+  printf 'warehouse-deploy-macos: %s\n' "$*" >&2
+  exit 1
+}
+
+require_file() {
+  [[ -f "$1" ]] || fail "required file not found: $1"
+}
+
+require_runtime() {
+  require_file "${COMPOSE_FILE}"
+  [[ -x "${DOCKER}" ]] || fail "OrbStack Docker CLI is unavailable: ${DOCKER}"
+  "${DOCKER}" info >/dev/null 2>&1 || fail "OrbStack Docker engine is unavailable"
+}
+
+valid_release_id() {
+  [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]]
+}
+
+current_release_path() {
+  [[ -L "${CURRENT}" ]] || fail "current release symlink is missing"
+  local resolved
+  resolved="$(readlink "${CURRENT}")"
+  [[ "${resolved}" == "${RELEASES}/"* ]] || fail "current release is outside the release root"
+  printf '%s\n' "${resolved}"
+}
+
+manifest_value() {
+  local file="$1" key="$2"
+  awk -F= -v wanted="${key}" '$1 == wanted {sub(/^[^=]*=/, ""); print; exit}' "${file}"
+}
+
+write_actual_manifest() {
+  local release_dir="$1" target="$2" temporary
+  [[ -d "${release_dir}" ]] || fail "release directory is missing: ${release_dir}"
+  temporary="${target}.tmp.$$"
+  (
+    cd "${release_dir}"
+    find \
+      ./backend ./browser-runtime ./frontend ./infra ./scripts ./ops ./docs \
+      ./.dockerignore ./compose.production.yaml ./README.md \
+      \( -type d \( \
+        -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache -o \
+        -name .mypy_cache -o -name .venv -o -name node_modules -o \
+        -name postgres-data -o -name warehouse_os_api.egg-info \
+      \) -prune \) -o \
+      \( -type f \
+        ! -name .DS_Store ! -name '*.pyc' ! -name '*.pyo' ! -name '*.log' \
+        ! -name '*.rtf' ! -name '*.dump' ! -name '*.dump.sha256' \
+        ! -name '* 2.*' ! -name .env ! -name '.env.*' \
+        ! -name frontend-api-contract-report.json \
+        ! -name 'Terminal Saved Output.txt' ! -name 'GITHUB KEY.txt' \
+        ! -name 'Vultr Key.rtf' ! -name 'Password.rtf' \
+        ! -path './backend/var/*' ! -path './frontend/v2/var/*' -print \
+      \) | LC_ALL=C sort |
+      while IFS= read -r file; do shasum -a 256 "${file}"; done
+  ) > "${temporary}"
+  mv -f "${temporary}" "${target}"
+}
+
+log_event() {
+  local action="$1" status="$2" release="${3:-}" detail="${4:-}"
+  mkdir -p "${LOG_DIR}"
+  printf '{"time":"%s","action":"%s","status":"%s","release":"%s","detail":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${action}" "${status}" \
+    "${release//\"/}" "${detail//\"/}" >> "${LOG_FILE}"
+}
+
+verify_release_manifest() {
+  local release_dir="$1" manifest="$1/.warehouse-release/files.sha256"
+  local line_count unique_count actual_manifest
+  require_file "${manifest}"
+  if LC_ALL=C grep -Evq '^[a-f0-9]{64}  \./[^[:cntrl:]]+$' "${manifest}"; then
+    fail "release file manifest contains a malformed checksum line"
+  fi
+  if awk '{print $2}' "${manifest}" | grep -Eq '(^|/)\.\.(/|$)'; then
+    fail "release file manifest contains an unsafe path"
+  fi
+  line_count="$(wc -l < "${manifest}" | tr -d ' ')"
+  unique_count="$(awk '{print $2}' "${manifest}" | LC_ALL=C sort -u | wc -l | tr -d ' ')"
+  [[ "${line_count}" =~ ^[0-9]+$ && "${line_count}" -gt 0 && \
+      "${line_count}" == "${unique_count}" ]] \
+    || fail "release file manifest contains duplicate or empty entries"
+  (
+    cd "${release_dir}"
+    shasum -a 256 -c .warehouse-release/files.sha256 >/dev/null
+  ) || fail "release file manifest verification failed"
+  actual_manifest="$(mktemp "${TMPDIR:-/tmp}/warehouse-release-manifest.XXXXXX")"
+  write_actual_manifest "${release_dir}" "${actual_manifest}"
+  if ! cmp -s "${manifest}" "${actual_manifest}"; then
+    rm -f "${actual_manifest}"
+    fail "release file manifest does not describe the exact packaged tree"
+  fi
+  rm -f "${actual_manifest}"
+}
+
+backup_control_database() {
+  local release="$1" backup_dir timestamp partial final checksum
+  [[ -x "${POSTGRES_BIN}/pg_dump" && -x "${POSTGRES_BIN}/pg_restore" ]] \
+    || fail "PostgreSQL backup tools are unavailable"
+
+  backup_dir="${SHARED}/backups/pre-deploy"
+  mkdir -p "${backup_dir}"
+  chmod 0700 "${backup_dir}"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  final="${backup_dir}/${timestamp}-${release}-control.dump"
+  partial="${final}.partial"
+  checksum="${final}.sha256"
+  rm -f "${partial}"
+  "${POSTGRES_BIN}/pg_dump" \
+    --dbname warehouse_os \
+    --format custom --file "${partial}"
+  "${POSTGRES_BIN}/pg_restore" --list "${partial}" >/dev/null
+  chmod 0600 "${partial}"
+  mv "${partial}" "${final}"
+  (
+    cd "${backup_dir}"
+    shasum -a 256 "$(basename "${final}")" > "$(basename "${checksum}")"
+    shasum -a 256 -c "$(basename "${checksum}")" >/dev/null
+  )
+  chmod 0600 "${checksum}"
+  log_event backup succeeded "${release}" "control=$(basename "${final}")"
+  printf 'backup=%s status=verified\n' "${final}"
+}
+
+run_control_migrations() {
+  local image="$1"
+  require_file "${ENV_FILE}"
+  "${DOCKER}" run --rm \
+    --network bonfirework-runtime \
+    --env-file "${ENV_FILE}" \
+    "${image}" alembic upgrade head
+}
+
+require_arm64_image() {
+  local image="$1" architecture
+  architecture="$("${DOCKER}" image inspect "${image}" --format '{{.Architecture}}')"
+  [[ "${architecture}" == arm64 ]] \
+    || fail "candidate image is ${architecture}, expected native arm64: ${image}"
+}
+
+validate_primary_api() {
+  local readiness openapi
+  readiness="$(/usr/bin/curl -fsS --max-time 10 \
+    http://127.0.0.1:8081/api/system/readiness)" || return 1
+  grep -Fq '"node_id":"mac-primary"' <<<"${readiness}" || return 1
+  grep -Fq '"node_role":"primary"' <<<"${readiness}" || return 1
+  openapi="$(mktemp "${STATE}/openapi.XXXXXX")"
+  if ! /usr/bin/curl -fsS --max-time 20 \
+      http://127.0.0.1:8081/openapi.json > "${openapi}" \
+    || ! grep -Fq '"/api/lighthouse/devices"' "${openapi}" \
+    || ! grep -Fq '"/api/lighthouse/pairing-challenges"' "${openapi}"; then
+    rm -f "${openapi}"
+    return 1
+  fi
+  rm -f "${openapi}"
+  "${DOCKER}" exec bonfirework-mac-api alembic current | grep -q '(head)'
+}
+
+acquire_lock() {
+  mkdir -p "${STATE}"
+  mkdir "${LOCK_DIR}" 2>/dev/null || fail "another deployment is already running"
+  trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
+}
+
+container_value() {
+  local container="$1" template="$2"
+  "${DOCKER}" inspect "${container}" --format "${template}" 2>/dev/null || printf 'missing'
+}
+
+wait_healthy() {
+  local container="$1" attempt status
+  for attempt in $(seq 1 60); do
+    status="$(container_value "${container}" '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')"
+    [[ "${status}" == healthy ]] && return 0
+    [[ "${status}" == exited || "${status}" == dead || "${status}" == missing ]] && return 1
+    sleep 3
+  done
+  return 1
+}
+
+compose() {
+  local args=(-f "${COMPOSE_FILE}")
+  [[ ! -f "${OVERRIDE_FILE}" ]] || args+=(-f "${OVERRIDE_FILE}")
+  [[ ! -f "${SHIELD_OVERRIDE}" ]] || args+=(-f "${SHIELD_OVERRIDE}")
+  "${DOCKER}" compose "${args[@]}" "$@"
+}
+
+install_shield_agent() {
+  local installer="${CURRENT}/ops/macos/install-shield-agent"
+  [[ -x "${installer}" ]] || return 0
+  "${installer}" >/dev/null
+  [[ -S "${SHARED}/shield/agent.sock" ]] \
+    || fail "Mac SHIELD agent socket is unavailable after installation"
+}
+
+install_control_actions() {
+  local source="${CURRENT}/ops/macos/warehouse-deploy-macos"
+  [[ -f "${source}" ]] || return 0
+  bash -n "${source}" || fail "candidate Mac deployment action failed syntax validation"
+  install -m 0750 "${source}" "${DEPLOY_ROOT}/actions/warehouse-deploy-macos"
+  install -m 0750 "${source}" "${DEPLOY_ROOT}/bin/warehouse-deploy"
+}
+
+show_status() {
+  require_runtime
+  local release_path release readiness api_image api_health controller_health
+  release_path="$(current_release_path)"
+  release="$(basename "${release_path}")"
+  api_image="$(container_value bonfirework-mac-api '{{.Config.Image}}')"
+  api_health="$(container_value bonfirework-mac-api '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')"
+  controller_health="$(container_value bonfirework-mac-runtime-controller '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')"
+  readiness="$(/usr/bin/curl -fsS --max-time 5 http://127.0.0.1:8081/api/system/readiness 2>/dev/null || printf '{}')"
+  printf 'node=mac-primary\nplatform=linux/arm64\ncurrent=%s\nrelease=%s\napi_image=%s\napi_health=%s\nruntime_controller_health=%s\nreadiness=%s\n' \
+    "${release_path}" "${release}" "${api_image}" "${api_health}" \
+    "${controller_health}" "${readiness}"
+  printf 'shield_agent=%s\n' "$([[ -S "${SHARED}/shield/agent.sock" ]] && printf ready || printf offline)"
+}
+
+bootstrap() {
+  require_runtime
+  acquire_lock
+  mkdir -p "${INCOMING}" "${RELEASES}" "${STATE}" "${LOG_DIR}"
+  chmod 0700 "${INCOMING}" "${STATE}"
+  local release_path
+  release_path="$(current_release_path)"
+  write_actual_manifest "${release_path}" "${ACTIVE_MANIFEST}"
+  install_shield_agent
+  printf '%s\n' "$(basename "${release_path}")" > "${STATE}/current-release"
+  log_event bootstrap succeeded "$(basename "${release_path}")" "active manifest captured without restart"
+  show_status
+}
+
+show_manifest() {
+  require_file "${ACTIVE_MANIFEST}"
+  cat "${ACTIVE_MANIFEST}"
+}
+
+show_history() {
+  [[ -f "${LOG_FILE}" ]] || return 0
+  tail -n 50 "${LOG_FILE}"
+}
+
+show_cluster_status() {
+  [[ -x "${CLUSTER_VERIFY}" ]] || fail "cluster verification action is unavailable"
+  "${CLUSTER_VERIFY}" "$@"
+}
+
+show_plan() {
+  local candidate_manifest="$1" release_path planner
+  require_file "${ACTIVE_MANIFEST}"
+  require_file "${candidate_manifest}"
+  release_path="$(current_release_path)"
+  planner="${release_path}/ops/deploy-plan"
+  [[ -x "${planner}" ]] || fail "active deploy planner is unavailable"
+  "${planner}" \
+    --base-manifest "${ACTIVE_MANIFEST}" \
+    --candidate-manifest "${candidate_manifest}" \
+    --format json
+}
+
+write_override() {
+  local release="$1" git_sha="$2" alembic_head="$3" api_image="$4"
+  local browser_image="${5:-}" research_image="${6:-}"
+  local temporary="${OVERRIDE_FILE}.tmp.$$"
+  {
+    printf 'services:\n'
+    printf '  api:\n    image: %s\n' "${api_image}"
+    printf '    environment:\n'
+    printf '      WAREHOUSE_NODE_ID: mac-primary\n'
+    printf '      WAREHOUSE_NODE_ROLE: primary\n'
+    printf '      WAREHOUSE_NODE_PLATFORM: linux/arm64\n'
+    printf '      WAREHOUSE_CLUSTER_PEERS: vultr-standby\n'
+    printf '      WAREHOUSE_RELEASE_ID: %s\n' "${release}"
+    printf '      WAREHOUSE_GIT_SHA: %s\n' "${git_sha}"
+    printf '      WAREHOUSE_ALEMBIC_HEAD: "%s"\n' "${alembic_head}"
+    printf '  runtime-controller:\n    image: %s\n' "${api_image}"
+    if [[ -n "${browser_image}" ]]; then
+      printf '  browser-runtime:\n    image: %s\n' "${browser_image}"
+    fi
+    if [[ -n "${research_image}" ]]; then
+      printf '  research-executor:\n    image: %s\n' "${research_image}"
+    fi
+  } > "${temporary}"
+  mv -f "${temporary}" "${OVERRIDE_FILE}"
+}
+
+restore_previous() {
+  local previous_release="$1"
+  ln -sfn "${previous_release}" "${CURRENT}"
+  if [[ -f "${PREVIOUS_OVERRIDE}" ]]; then
+    cp "${PREVIOUS_OVERRIDE}" "${OVERRIDE_FILE}"
+  else
+    rm -f "${OVERRIDE_FILE}"
+  fi
+  # Restore the host bridge and its Compose contract together with the images.
+  # A failed host-agent rollout must not leave the previous API attached to an
+  # incompatible transport.
+  install_shield_agent || true
+  compose up -d --no-build --no-deps api runtime-controller >/dev/null
+  wait_healthy bonfirework-mac-api || true
+  wait_healthy bonfirework-mac-runtime-controller || true
+}
+
+install_release() {
+  local release="$1" requested_mode="$2"
+  valid_release_id "${release}" || fail "invalid release id"
+  [[ "${requested_mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid deployment mode"
+  require_runtime
+  acquire_lock
+
+  local archive="${INCOMING}/${release}.tar.gz"
+  local checksum="${archive}.sha256"
+  local staging="${RELEASES}/.${release}.staging"
+  local release_dir="${RELEASES}/${release}"
+  local expected actual
+  require_file "${archive}"
+  require_file "${checksum}"
+  [[ ! -e "${release_dir}" && ! -e "${staging}" ]] || fail "release already exists"
+  expected="$(awk 'NR == 1 {print $1}' "${checksum}")"
+  actual="$(shasum -a 256 "${archive}" | awk '{print $1}')"
+  [[ "${expected}" =~ ^[a-f0-9]{64}$ && "${actual}" == "${expected}" ]] \
+    || fail "release checksum mismatch"
+  if tar -tzf "${archive}" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+    fail "release archive contains an unsafe path"
+  fi
+
+  mkdir -p "${staging}"
+  trap 'rm -rf "${staging}"; rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
+  tar --no-same-owner -xzf "${archive}" -C "${staging}"
+  [[ -z "$(find "${staging}" -type l -print -quit)" ]] || fail "release archive contains a symbolic link"
+  verify_release_manifest "${staging}"
+
+  local plan_output plan_mode plan_backup plan_api plan_browser plan_research plan_control plan_deploy
+  require_file "${ACTIVE_MANIFEST}"
+  [[ -x "${staging}/ops/deploy-plan" ]] || fail "candidate deploy planner is missing"
+  plan_output="$("${staging}/ops/deploy-plan" \
+    --base-manifest "${ACTIVE_MANIFEST}" \
+    --candidate-manifest "${staging}/.warehouse-release/files.sha256" \
+    --format shell)"
+  eval "${plan_output}"
+  plan_mode="${PLAN_MODE:-full}"
+  plan_backup="${PLAN_BACKUP:-1}"
+  plan_api="${PLAN_API:-1}"
+  plan_browser="${PLAN_BROWSER:-0}"
+  plan_research="${PLAN_RESEARCH_EXECUTOR:-0}"
+  plan_control="${PLAN_CONTROL_PLANE:-0}"
+  plan_deploy="${PLAN_DEPLOY_REQUIRED:-1}"
+  [[ "${plan_deploy}" == 1 ]] || fail "candidate contains no runtime-impacting changes"
+  if [[ "${requested_mode}" == smart ]]; then
+    requested_mode="${plan_mode}"
+  fi
+  if [[ "${plan_backup}" == 1 ]]; then
+    backup_control_database "${release}"
+  fi
+  [[ "${plan_api}" == 1 || "${plan_browser}" == 1 || "${plan_research}" == 1 \
+      || "${plan_control}" == 1 ]] \
+    || fail "candidate does not affect a Mac runtime component"
+
+  local metadata="${staging}/.warehouse-release/manifest.env"
+  require_file "${metadata}"
+  local git_sha alembic_head api_image browser_image research_image
+  git_sha="$(manifest_value "${metadata}" git_sha)"
+  alembic_head="$(manifest_value "${metadata}" alembic_head)"
+  [[ "${git_sha}" =~ ^[A-Za-z0-9._-]{3,80}$ ]] || fail "candidate git SHA is invalid"
+  [[ "${alembic_head}" =~ ^[A-Za-z0-9._-]{3,120}$ ]] || fail "candidate Alembic head is invalid"
+
+  api_image="bonfirework-api-mac:${release}"
+  browser_image=""
+  research_image="$(container_value bonfirework-mac-research '{{.Config.Image}}')"
+  if [[ "${plan_api}" == 1 ]]; then
+    "${DOCKER}" build --file "${staging}/backend/Dockerfile" --tag "${api_image}" "${staging}" >/dev/null
+    require_arm64_image "${api_image}"
+    run_control_migrations "${api_image}"
+  else
+    api_image="$(container_value bonfirework-mac-api '{{.Config.Image}}')"
+  fi
+  if [[ "${plan_research}" == 1 ]]; then
+    research_image="bonfirework-research-mac:${release}"
+    "${DOCKER}" build --file "${staging}/backend/Dockerfile.research-executor" \
+      --tag "${research_image}" "${staging}" >/dev/null
+    require_arm64_image "${research_image}"
+  fi
+  if [[ "${plan_browser}" == 1 ]]; then
+    browser_image="bonfirework-browser-mac:${release}"
+    "${DOCKER}" build --file "${staging}/browser-runtime/Dockerfile" \
+      --tag "${browser_image}" "${staging}" >/dev/null
+    require_arm64_image "${browser_image}"
+  fi
+
+  local previous_release
+  previous_release="$(current_release_path)"
+  printf '%s\n' "${previous_release}" > "${STATE}/previous-release"
+  if [[ -f "${OVERRIDE_FILE}" ]]; then
+    cp "${OVERRIDE_FILE}" "${PREVIOUS_OVERRIDE}"
+  else
+    rm -f "${PREVIOUS_OVERRIDE}"
+  fi
+
+  mv "${staging}" "${release_dir}"
+  trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
+  ln -sfn "${release_dir}" "${CURRENT}"
+  write_override "${release}" "${git_sha}" "${alembic_head}" \
+    "${api_image}" "${browser_image}" "${research_image}"
+  if ! install_shield_agent; then
+    restore_previous "${previous_release}"
+    log_event deploy rolled_back "${release}" "shield agent installation failed"
+    fail "candidate SHIELD agent failed readiness; previous release restored"
+  fi
+  compose config >/dev/null || {
+    restore_previous "${previous_release}"
+    fail "Mac Compose override validation failed"
+  }
+
+  if [[ "${plan_api}" == 1 ]]; then
+    compose up -d --no-build --no-deps api >/dev/null
+    if ! wait_healthy bonfirework-mac-api; then
+      restore_previous "${previous_release}"
+      log_event deploy rolled_back "${release}" "api health check failed"
+      fail "candidate API failed its health check; previous release restored"
+    fi
+    if ! validate_primary_api; then
+      restore_previous "${previous_release}"
+      log_event deploy rolled_back "${release}" "primary API contract validation failed"
+      fail "candidate API failed primary-node contract validation; previous release restored"
+    fi
+    compose up -d --no-build --no-deps runtime-controller >/dev/null
+    if ! wait_healthy bonfirework-mac-runtime-controller; then
+      restore_previous "${previous_release}"
+      log_event deploy rolled_back "${release}" "runtime controller health check failed"
+      fail "candidate Runtime Controller failed its health check; previous release restored"
+    fi
+  fi
+  if [[ "${plan_research}" == 1 ]]; then
+    compose up -d --no-build --no-deps research-executor >/dev/null
+    if ! wait_healthy bonfirework-mac-research; then
+      restore_previous "${previous_release}"
+      compose up -d --no-build --no-deps research-executor >/dev/null || true
+      wait_healthy bonfirework-mac-research || true
+      log_event deploy rolled_back "${release}" "research executor health check failed"
+      fail "candidate Research Executor failed its health check; previous release restored"
+    fi
+  fi
+  if [[ "${plan_browser}" == 1 ]]; then
+    compose up -d --no-build --no-deps browser-runtime >/dev/null
+    if ! wait_healthy bonfirework-mac-browser; then
+      restore_previous "${previous_release}"
+      log_event deploy rolled_back "${release}" "browser health check failed"
+      fail "candidate browser worker failed its health check; previous release restored"
+    fi
+  fi
+
+  cp "${release_dir}/.warehouse-release/files.sha256" "${ACTIVE_MANIFEST}"
+  printf '%s\n' "${release}" > "${STATE}/current-release"
+  rm -f "${archive}" "${checksum}"
+  install_control_actions
+  log_event deploy succeeded "${release}" "mode=${requested_mode};risk=${PLAN_RISK:-unknown}"
+  show_status
+}
+
+rollback_release() {
+  require_runtime
+  acquire_lock
+  local previous current
+  require_file "${STATE}/previous-release"
+  previous="$(tr -d '\r\n' < "${STATE}/previous-release")"
+  [[ "${previous}" == "${RELEASES}/"* && -d "${previous}" ]] \
+    || fail "previous release is invalid"
+  current="$(current_release_path)"
+  restore_previous "${previous}"
+  write_actual_manifest "${previous}" "${ACTIVE_MANIFEST}"
+  printf '%s\n' "$(basename "${previous}")" > "${STATE}/current-release"
+  printf '%s\n' "${current}" > "${STATE}/previous-release"
+  log_event rollback succeeded "$(basename "${previous}")" "from=$(basename "${current}")"
+  show_status
+}
+
+case "${1:-}" in
+  bootstrap)
+    [[ "$#" -eq 1 ]] || fail "bootstrap takes no arguments"
+    bootstrap
+    ;;
+  status)
+    [[ "$#" -eq 1 ]] || fail "status takes no arguments"
+    show_status
+    ;;
+  manifest)
+    [[ "$#" -eq 1 ]] || fail "manifest takes no arguments"
+    show_manifest
+    ;;
+  history)
+    [[ "$#" -eq 1 ]] || fail "history takes no arguments"
+    show_history
+    ;;
+  plan)
+    [[ "$#" -eq 2 ]] || fail "usage: warehouse-deploy-macos plan CANDIDATE_MANIFEST"
+    show_plan "$2"
+    ;;
+  cluster-status)
+    shift
+    show_cluster_status "$@"
+    ;;
+  install)
+    [[ "$#" -eq 3 ]] || fail "usage: warehouse-deploy-macos install RELEASE MODE"
+    install_release "$2" "$3"
+    ;;
+  rollback)
+    [[ "$#" -eq 1 ]] || fail "rollback takes no arguments"
+    rollback_release
+    ;;
+  *)
+    fail "usage: warehouse-deploy-macos bootstrap|status|cluster-status [VERIFY_OPTIONS]|manifest|plan CANDIDATE_MANIFEST|history|install RELEASE MODE|rollback"
+    ;;
+esac

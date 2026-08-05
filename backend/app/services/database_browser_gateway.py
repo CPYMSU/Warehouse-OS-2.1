@@ -544,7 +544,9 @@ def list_database_projects(
                       w.runtime_status,w.storage_quota_bytes,w.created_at,
                       d.id AS database_id,d.logical_name,d.provider_key,
                       d.isolation_mode,d.status AS database_status,
+                      d.is_default AS database_is_default,
                       d.actual_size_bytes,d.capabilities,
+                      registry.binding_count,registry.default_count,
                       ba.id AS browser_app_id,ba.project_id AS browser_project_id,
                       ba.enabled AS browser_enabled,
                       ba.allowed_origins AS browser_allowed_origins,
@@ -556,8 +558,22 @@ def list_database_projects(
                     FROM digital_asset.assets AS a
                     JOIN digital_asset.workspaces AS w
                       ON w.asset_id=a.id AND w.status='active'
-                    JOIN digital_asset.database_bindings AS d
-                      ON d.workspace_id=w.id AND d.is_default
+                    JOIN LATERAL (
+                      SELECT binding.*
+                      FROM digital_asset.database_bindings AS binding
+                      WHERE binding.workspace_id=w.id
+                      ORDER BY binding.is_default DESC,
+                               (binding.status='ready') DESC,
+                               binding.created_at,binding.id
+                      LIMIT 1
+                    ) AS d ON true
+                    JOIN LATERAL (
+                      SELECT count(*)::integer AS binding_count,
+                             count(*) FILTER (WHERE binding.is_default)::integer
+                               AS default_count
+                      FROM digital_asset.database_bindings AS binding
+                      WHERE binding.workspace_id=w.id
+                    ) AS registry ON true
                     LEFT JOIN digital_asset.database_browser_apps AS ba
                       ON ba.workspace_id=w.id
                     WHERE a.status<>'archived'
@@ -569,6 +585,37 @@ def list_database_projects(
             )
             .mappings()
             .all()
+        )
+        registry_health = dict(
+            session.execute(
+                text(
+                    """
+                    SELECT
+                      count(*) FILTER (WHERE binding_count=0)::integer
+                        AS missing_binding_count,
+                      count(*) FILTER (
+                        WHERE binding_count>0 AND default_count=0
+                      )::integer AS missing_default_count,
+                      count(*) FILTER (
+                        WHERE binding_count>1 AND default_count=0
+                      )::integer AS ambiguous_default_count
+                    FROM (
+                      SELECT w.id,count(d.id)::integer AS binding_count,
+                             count(d.id) FILTER (WHERE d.is_default)::integer
+                               AS default_count
+                      FROM digital_asset.assets AS a
+                      JOIN digital_asset.workspaces AS w
+                        ON w.asset_id=a.id AND w.status='active'
+                      LEFT JOIN digital_asset.database_bindings AS d
+                        ON d.workspace_id=w.id
+                      WHERE a.status<>'archived'
+                      GROUP BY w.id
+                    ) AS inventory
+                    """
+                )
+            )
+            .mappings()
+            .one()
         )
 
     projects: list[dict[str, object]] = []
@@ -635,6 +682,18 @@ def list_database_projects(
                     "capabilities": row.get("capabilities") or {},
                     "credentials_exposed": False,
                 },
+                "registry": {
+                    "status": (
+                        "registered"
+                        if int(row.get("default_count") or 0) == 1
+                        else "fallback_visible"
+                        if int(row.get("binding_count") or 0) == 1
+                        else "ambiguous_default"
+                    ),
+                    "is_default": bool(row.get("database_is_default")),
+                    "binding_count": int(row.get("binding_count") or 0),
+                    "default_count": int(row.get("default_count") or 0),
+                },
                 "browser_project": browser_project,
             }
         )
@@ -642,7 +701,145 @@ def list_database_projects(
         "ok": True,
         "projects": projects,
         "count": len(projects),
+        "registry_health": {
+            **registry_health,
+            "complete": not any(int(value or 0) for value in registry_health.values()),
+        },
         "credentials_exposed": False,
+    }
+
+
+def reconcile_database_project_registry(actor: ActorContext) -> dict[str, object]:
+    """Repair only unambiguous registry gaps and expose unresolved evidence.
+
+    Auto Runtime owns the decision to invoke this capability.  The adapter
+    never invents a database: it may mark a binding as canonical only when the
+    active workspace has exactly one existing binding and no current default.
+    """
+
+    _require_manage(actor)
+    with tenant_session(actor.tenant_id) as session:
+        repaired = [
+            dict(row)
+            for row in session.execute(
+                text(
+                    """
+                    WITH candidates AS MATERIALIZED (
+                      SELECT w.id AS workspace_id,(array_agg(d.id))[1] AS binding_id
+                      FROM digital_asset.assets AS a
+                      JOIN digital_asset.workspaces AS w
+                        ON w.asset_id=a.id AND w.status='active'
+                      JOIN digital_asset.database_bindings AS d
+                        ON d.workspace_id=w.id
+                      WHERE a.status<>'archived'
+                      GROUP BY w.id
+                      HAVING count(d.id)=1
+                         AND count(d.id) FILTER (WHERE d.is_default)=0
+                    )
+                    UPDATE digital_asset.database_bindings AS binding
+                    SET is_default=true,revision=revision+1,updated_at=now()
+                    FROM candidates AS candidate
+                    WHERE binding.id=candidate.binding_id
+                    RETURNING binding.id,binding.workspace_id,binding.logical_name,
+                              binding.provider_key,binding.status,binding.revision
+                    """
+                )
+            ).mappings()
+        ]
+        unresolved = [
+            dict(row)
+            for row in session.execute(
+                text(
+                    """
+                    SELECT a.asset_no,a.name,w.id AS workspace_id,w.workspace_key,
+                           count(d.id)::integer AS binding_count,
+                           count(d.id) FILTER (WHERE d.is_default)::integer
+                             AS default_count,
+                           array_remove(array_agg(d.logical_name ORDER BY d.created_at),NULL)
+                             AS logical_names
+                    FROM digital_asset.assets AS a
+                    JOIN digital_asset.workspaces AS w
+                      ON w.asset_id=a.id AND w.status='active'
+                    LEFT JOIN digital_asset.database_bindings AS d
+                      ON d.workspace_id=w.id
+                    WHERE a.status<>'archived'
+                    GROUP BY a.asset_no,a.name,w.id,w.workspace_key
+                    HAVING count(d.id)=0
+                       OR count(d.id) FILTER (WHERE d.is_default)<>1
+                    ORDER BY w.workspace_key
+                    """
+                )
+            ).mappings()
+        ]
+        session.execute(
+            text(
+                """
+                INSERT INTO audit.events(
+                  tenant_id,actor_user_id,event_type,payload
+                ) VALUES (
+                  :tenant_id,:actor_user_id,
+                  'digital_asset.database_registry_reconciled',
+                  CAST(:payload AS jsonb)
+                )
+                """
+            ),
+            {
+                "tenant_id": actor.tenant_id,
+                "actor_user_id": actor.user_id,
+                "payload": json.dumps(
+                    {
+                        "repaired": [str(row["id"]) for row in repaired],
+                        "repaired_count": len(repaired),
+                        "unresolved_workspace_ids": [
+                            str(row["workspace_id"]) for row in unresolved
+                        ],
+                        "unresolved_count": len(unresolved),
+                    },
+                    separators=(",", ":"),
+                ),
+            },
+        )
+
+    state = "verified" if not unresolved else "partial"
+    return {
+        "ok": not unresolved,
+        "repaired": [
+            {
+                **row,
+                "id": str(row["id"]),
+                "workspace_id": str(row["workspace_id"]),
+            }
+            for row in repaired
+        ],
+        "repaired_count": len(repaired),
+        "unresolved": [
+            {
+                **row,
+                "workspace_id": str(row["workspace_id"]),
+            }
+            for row in unresolved
+        ],
+        "unresolved_count": len(unresolved),
+        "idempotent_replay": not repaired and not unresolved,
+        "world_observation": {
+            "schema": "warehouse.world-observation.v1",
+            "decision_owner": "auto_runtime",
+            "workflow_prescribed": False,
+            "semantic_resource": "digital_asset.database_project_registry",
+            "operation": "reconcile",
+            "state": state,
+            "observed": {
+                "repaired_count": len(repaired),
+                "unresolved_count": len(unresolved),
+            },
+            "uncertainties": ([] if not unresolved else ["ambiguous_or_missing_database_binding"]),
+            "affordances": [
+                {
+                    "capability": "digital_market_database_projects",
+                    "effect": "observe_complete_registry",
+                }
+            ],
+        },
     }
 
 
@@ -680,9 +877,7 @@ def database_onboarding_bundle(
     )
     public_origin = settings.public_origin.rstrip("/")
     browser_base = (
-        f"{public_origin}/api/database-gateway/v1/projects/{browser_key}"
-        if browser_key
-        else None
+        f"{public_origin}/api/database-gateway/v1/projects/{browser_key}" if browser_key else None
     )
     sdk_url = f"{public_origin}/api/database-gateway/v1/sdk.js"
     quickstart = None
@@ -722,9 +917,7 @@ def database_onboarding_bundle(
                 "authentication": "Bearer wak_ (server-side only)",
                 "schema": f"{public_origin}/api/workspaces/v1/database/schema",
                 "collection": f"{public_origin}/api/workspaces/v1/data/{{collection}}",
-                "record": (
-                    f"{public_origin}/api/workspaces/v1/data/{{collection}}/{{record_key}}"
-                ),
+                "record": (f"{public_origin}/api/workspaces/v1/data/{{collection}}/{{record_key}}"),
             },
             "browser_integration": (
                 {

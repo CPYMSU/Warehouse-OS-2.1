@@ -171,6 +171,61 @@ def atomic_recovery_contract(
     """
 
     semantic_contract = dict((entry or {}).get("semantic_contract") or {})
+    confirmation_binding = semantic_contract.get("confirmation_binding")
+    confirmation_binding = confirmation_binding if isinstance(confirmation_binding, Mapping) else {}
+    declared_recovery = [
+        {
+            "tool_name": str(tool_name),
+            "effect": "observe_and_resolve_canonical_resource_for_authorization",
+        }
+        for tool_name in confirmation_binding.get("resolve_capabilities") or []
+        if str(tool_name or "").strip()
+    ]
+    generic_recovery = [
+        {
+            "tool_name": "database_catalog",
+            "effect": "discover_visible_schemas_tables_keys_and_privileges",
+        },
+        {
+            "tool_name": "database_schema",
+            "effect": "inspect_physical_columns_constraints_indexes_and_rls",
+        },
+        {
+            "tool_name": "database_query",
+            "effect": "execute_ai_authored_read_only_sql",
+        },
+        {
+            "tool_name": "database_execute",
+            "effect": "execute_ai_authored_database_write_with_optional_readback",
+        },
+        {
+            "tool_name": "generic_data_resources",
+            "effect": "discover_registered_resources",
+        },
+        {
+            "tool_name": "generic_data_resolve",
+            "effect": "resolve_canonical_resource_identity",
+        },
+        {
+            "tool_name": "generic_data_observe",
+            "effect": "observe_related_world",
+        },
+        {
+            "tool_name": "generic_data_schema",
+            "effect": "inspect_registered_fields_relations_and_invariants",
+        },
+        {
+            "tool_name": "generic_data_query",
+            "effect": "read_registered_tenant_data",
+        },
+        {
+            "tool_name": "generic_data_mutate",
+            "effect": "preview_or_commit_registered_direct_fields",
+        },
+    ]
+    available_capabilities = list(
+        {item["tool_name"]: item for item in [*declared_recovery, *generic_recovery]}.values()
+    )
     return {
         "schema": "warehouse.atomic-recovery.v1",
         "decision_owner": "auto_runtime",
@@ -189,48 +244,7 @@ def atomic_recovery_contract(
             "database_identity": "current_company_ai",
             "tenant_selector_exposed": False,
         },
-        "available_capabilities": [
-            {
-                "tool_name": "database_catalog",
-                "effect": "discover_visible_schemas_tables_keys_and_privileges",
-            },
-            {
-                "tool_name": "database_schema",
-                "effect": "inspect_physical_columns_constraints_indexes_and_rls",
-            },
-            {
-                "tool_name": "database_query",
-                "effect": "execute_ai_authored_read_only_sql",
-            },
-            {
-                "tool_name": "database_execute",
-                "effect": "execute_ai_authored_database_write_with_optional_readback",
-            },
-            {
-                "tool_name": "generic_data_resources",
-                "effect": "discover_registered_resources",
-            },
-            {
-                "tool_name": "generic_data_resolve",
-                "effect": "resolve_canonical_resource_identity",
-            },
-            {
-                "tool_name": "generic_data_observe",
-                "effect": "observe_related_world",
-            },
-            {
-                "tool_name": "generic_data_schema",
-                "effect": "inspect_registered_fields_relations_and_invariants",
-            },
-            {
-                "tool_name": "generic_data_query",
-                "effect": "read_registered_tenant_data",
-            },
-            {
-                "tool_name": "generic_data_mutate",
-                "effect": "preview_or_commit_registered_direct_fields",
-            },
-        ],
+        "available_capabilities": available_capabilities,
         "constraints": [
             "execute_as_current_company_ai_database_identity",
             "let_postgresql_privileges_rls_constraints_and_transactions_decide_authority",

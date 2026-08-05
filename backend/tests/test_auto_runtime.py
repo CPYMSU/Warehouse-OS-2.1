@@ -300,61 +300,40 @@ def test_resource_locator_provenance_does_not_allow_derived_child_paths() -> Non
     entry = "https://bonfirework.org/assets/bonfire/pd-detection/"
     invented = "https://bonfirework.org/assets/bonfire/pd-detection/deploy-guide.md"
 
-    assert auto_runtime._unsupported_resource_locators(
-        f"入口：{entry}",
-        [{"entry_url": entry}],
-    ) == ()
+    assert (
+        auto_runtime._unsupported_resource_locators(
+            f"入口：{entry}",
+            [{"entry_url": entry}],
+        )
+        == ()
+    )
     assert auto_runtime._unsupported_resource_locators(
         f"文件：{invented}",
         [{"entry_url": entry}],
     ) == (invented,)
 
 
-def test_grounding_repair_rewrites_an_unobserved_locator(monkeypatch) -> None:
-    phases: list[str] = []
-
-    def fake_completion(*_args, **kwargs):
-        phases.append(str(kwargs["phase"]))
-        return json.dumps(
-            {"message": "目前的證據只有工作區入口，沒有已驗證的文件下載位置。"},
-            ensure_ascii=False,
-        )
-
-    monkeypatch.setattr(auto_runtime, "_completion", fake_completion)
+def test_grounding_sanitizes_an_unobserved_locator_without_a_model_repair(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_runtime,
+        "_completion",
+        lambda *_args, **_kwargs: pytest.fail("locator sanitization must be deterministic"),
+    )
     message, grounding = auto_runtime._finalize_grounded_message(
-        SimpleNamespace(),
-        goal="給我部署指南",
-        message=(
-            "下載：https://bonfirework.org/assets/bonfire/pd-detection/"
-            "deploy-guide.md"
-        ),
+        message=("下載：https://bonfirework.org/assets/bonfire/pd-detection/deploy-guide.md"),
         locale="zh-Hant",
-        ledger=[
-            {
-                "evidence_id": "context:hosted_application_world",
-                "source_type": "current_tenant_context",
-                "authority": "observed",
-                "payload": {
-                    "entry_url": (
-                        "https://bonfirework.org/assets/bonfire/pd-detection/"
-                    )
-                },
-            }
-        ],
-        grounding_sources=[
-            {"entry_url": "https://bonfirework.org/assets/bonfire/pd-detection/"}
-        ],
+        grounding_sources=[{"entry_url": "https://bonfirework.org/assets/bonfire/pd-detection/"}],
         public_origin="https://bonfirework.org",
         unsupported_claims=[],
         force_reconciliation=False,
-        metrics=[],
-        context_mode="balanced",
-        activity_callback=None,
     )
 
-    assert phases == ["evidence_repair"]
     assert "deploy-guide.md" not in message
+    assert "未驗證地址已移除" in message
     assert grounding["reconciled"] is True
+    assert grounding["deterministic_sanitized"] is True
 
 
 def test_missing_input_question_keeps_the_question_without_an_invented_example_url(
@@ -367,21 +346,15 @@ def test_missing_input_question_keeps_the_question_without_an_invented_example_u
     )
 
     message, grounding = auto_runtime._finalize_grounded_message(
-        SimpleNamespace(),
-        goal="申请独立资料库并先追问参数",
         message=(
             "请提供专案名称、精确 HTTPS Origin（例如 "
             "https://owner.github.io）以及需要 owner 读写的集合。"
         ),
         locale="zh-Hans",
-        ledger=[],
         grounding_sources=[],
         public_origin="https://bonfirework.org",
         unsupported_claims=[],
         force_reconciliation=False,
-        metrics=[],
-        context_mode="balanced",
-        activity_callback=None,
         waiting_for_human_input=True,
     )
 
@@ -493,6 +466,120 @@ def test_material_claim_must_reference_an_existing_evidence_record() -> None:
     assert reflection["claims"][0]["supported"] is False
 
 
+def test_human_report_cannot_be_used_as_material_world_evidence() -> None:
+    reflection = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "message": "资产已建立。",
+            "goal_complete": True,
+            "continue_reason": "complete",
+            "claims": [
+                {
+                    "statement": "资产已建立",
+                    "requires_evidence": True,
+                    "evidence_refs": ["input:goal"],
+                }
+            ],
+        },
+        interaction_mode="operational",
+        ledger=[
+            {
+                "evidence_id": "input:goal",
+                "source_type": "human_report",
+                "authority": "reported_not_verified",
+            }
+        ],
+    )
+
+    assert reflection["goal_complete"] is False
+    assert reflection["continue_reason"] == "world_evidence_required"
+    assert reflection["claims"][0]["evidence_refs"] == []
+    assert reflection["claims"][0]["supported"] is False
+
+
+def test_single_successful_receipt_stages_autonomous_grounding_recovery() -> None:
+    layers = {
+        "L1_current_company_and_people": {},
+        "L3_execution_working_set": {},
+    }
+    ledger = auto_runtime._evidence_ledger(
+        "新开一个 MK53 Voyager 数字资产",
+        layers,
+        [
+            {
+                "evidence_id": "tool:1:1:digital_market_provision",
+                "runtime_round": 1,
+                "tool_name": "digital_market_provision",
+                "result": {
+                    "ok": True,
+                    "signal": "runtime_execution_completed",
+                    "action": {
+                        "status": "completed",
+                        "result": {
+                            "asset_no": "DMA-20260804-0AD4019D",
+                            "hosting_url": ("https://bonfirework.org/assets/bonfire/mk53-voyager/"),
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    reflection = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "message": "MK53 Voyager 已建立。",
+            "goal_complete": True,
+            "continue_reason": "complete",
+            "claims": [
+                {
+                    "statement": "MK53 Voyager 已建立",
+                    "requires_evidence": True,
+                    "evidence_refs": [],
+                }
+            ],
+        },
+        interaction_mode="operational",
+        ledger=ledger,
+    )
+
+    claim = reflection["claims"][0]
+    assert reflection["goal_complete"] is False
+    assert claim["supported"] is False
+    assert claim["evidence_refs"] == []
+
+    mode = auto_runtime._stage_autonomous_grounding_recovery(reflection, layers)
+
+    assert mode == "reflect_cumulative_evidence"
+    assert reflection["continue_autonomously"] is True
+    assert reflection["requires_user_input"] is False
+    assert reflection["continue_reason"] == "autonomous_grounding_recovery"
+    recovery = layers["L3_execution_working_set"]["grounding_recovery"]
+    assert recovery["schema"] == "warehouse.autonomous-grounding-recovery.v1"
+    assert recovery["verified_capability_effect_ids"] == ["tool:1:1:digital_market_provision"]
+
+    recovered = auto_runtime._apply_reflection_evidence_contract(
+        {
+            "message": "MK53 Voyager 已建立。",
+            "goal_complete": True,
+            "continue_reason": "complete",
+            "continue_autonomously": False,
+            "requires_user_input": False,
+            "claims": [
+                {
+                    "statement": "MK53 Voyager 已建立",
+                    "requires_evidence": True,
+                    "evidence_refs": ["tool:1:1:digital_market_provision"],
+                }
+            ],
+        },
+        interaction_mode="operational",
+        ledger=ledger,
+    )
+
+    assert recovered["goal_complete"] is True
+    assert recovered["claims"][0]["supported"] is True
+    assert auto_runtime._stage_autonomous_grounding_recovery(recovered, layers) is None
+    assert "grounding_recovery" not in layers["L3_execution_working_set"]
+
+
 def test_public_message_firewall_blocks_control_envelopes_and_redacts_keys() -> None:
     blocked = auto_runtime._public_message(
         '{"interaction_mode":"operational","reasoning":"private"}',
@@ -597,9 +684,7 @@ def test_runtime_preserves_atomic_recovery_as_optional_ai_affordance() -> None:
     assert projected == [recovery]
     assert projected[0]["decision_owner"] == "auto_runtime"
     assert projected[0]["workflow_prescribed"] is False
-    assert auto_runtime._recovery_capability_names(projected) == [
-        "generic_data_observe"
-    ]
+    assert auto_runtime._recovery_capability_names(projected) == ["generic_data_observe"]
 
 
 def test_database_structure_survives_bounded_model_projection() -> None:
@@ -698,9 +783,7 @@ def test_missing_adapter_attempt_cannot_prove_operational_completion() -> None:
     )
 
     assert reflected["goal_complete"] is False
-    assert reflected["grounding"][
-        "operational_attempt_without_verified_effect"
-    ] is True
+    assert reflected["grounding"]["operational_attempt_without_verified_effect"] is True
     assert reflected["grounding"]["verified_capability_effect_ids"] == []
 
 
@@ -878,13 +961,25 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
         "execute_authorized_confirmation_action",
         fake_consume,
     )
-    monkeypatch.setattr(
-        auto_runtime,
-        "_reflect",
-        lambda *_a, **_k: {
+    reflection_rounds: list[int] = []
+
+    def fake_reflect(*_args, **kwargs):
+        round_number = int(kwargs["round_number"])
+        reflection_rounds.append(round_number)
+        evidence_refs = (
+            [] if len(reflection_rounds) == 1 else ["tool:1:1:digital_market_runtime_upgrade"]
+        )
+        return {
             "message": "已由 AI Runtime 完成並核對。",
             "goal_complete": True,
             "evidence": ["authorization consumed after AI decision"],
+            "claims": [
+                {
+                    "statement": "runtime 升級已完成",
+                    "requires_evidence": True,
+                    "evidence_refs": evidence_refs,
+                }
+            ],
             "contradictions": [],
             "revised_plan": [],
             "continue_reason": "goal complete",
@@ -894,8 +989,9 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
             "next_families": [],
             "next_decisions": [],
             "memory_candidate": None,
-        },
-    )
+        }
+
+    monkeypatch.setattr(auto_runtime, "_reflect", fake_reflect)
 
     result = auto_runtime.run_auto_runtime(
         actor,
@@ -912,10 +1008,11 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
     assert consumed["authorization_keychain_id"] == signal["authorization_keychain_id"]
     assert result.tool_results[0]["result"]["action"]["status"] == "completed"
     assert result.confirmation_actions == ()
+    assert reflection_rounds == [1, 2]
+    assert result.reflection["goal_complete"] is True
+    assert result.reflection["reasoning_rounds"][1]["reasoning_only"] is True
     delivery_activities = [
-        item
-        for item in activities
-        if item.get("phase") == "secure_credential_delivery"
+        item for item in activities if item.get("phase") == "secure_credential_delivery"
     ]
     assert [item["status"] for item in delivery_activities] == [
         "running",
@@ -978,9 +1075,10 @@ def test_top_router_receives_compact_recent_turn_referents(monkeypatch) -> None:
     )
 
     router_payload = json.loads(str(captured["user_prompt"]))
-    assert router_payload["router_world"]["recent_turn_referents"]["messages"][0][
-        "content"
-    ] == "工作區是 mk4-workspace"
+    assert (
+        router_payload["router_world"]["recent_turn_referents"]["messages"][0]["content"]
+        == "工作區是 mk4-workspace"
+    )
     assert "do not ask the human to repeat" in str(captured["system_prompt"])
     assert route["requires_user_input"] is False
 
@@ -989,13 +1087,11 @@ def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> N
     atlas = ai_capability_atlas()
     genes = ai_capability_gene_index()
 
-    assert len(genes) == 511
-    assert sum(int(domain["gene_count"]) for domain in atlas) == 511
+    assert len(genes) == 515
+    assert sum(int(domain["gene_count"]) for domain in atlas) == 515
     assert {gene["scope"] for gene in genes} == {"tenant", "platform"}
     assert all("permission_any" in gene and "availability" in gene for gene in genes)
-    observe_gene = next(
-        gene for gene in genes if gene["tool_name"] == "generic_data_observe"
-    )
+    observe_gene = next(gene for gene in genes if gene["tool_name"] == "generic_data_observe")
     assert observe_gene["semantic_contract"] == {
         "effect": "observe_related_world",
         "resource": "any_registered_resource",
@@ -1046,13 +1142,9 @@ def test_router_discovery_uses_query_salience_for_a_requested_deliverable() -> N
         "digital_market_guide",
         "digital_market_hosting_requirements",
     }.issubset({str(item["tool_name"]) for item in candidates})
-    assert "digital_market_hosting_start" in {
-        str(item["tool_name"]) for item in expanded
-    }
+    assert "digital_market_hosting_start" in {str(item["tool_name"]) for item in expanded}
     assert {str(item["domain"]) for item in candidates}.issubset({"dam", "system"})
-    assert "generic_data_observe" in {
-        str(item["tool_name"]) for item in expanded
-    }
+    assert "generic_data_observe" in {str(item["tool_name"]) for item in expanded}
 
 
 def test_runtime_can_expand_one_dynamic_command_family_without_domain_rules() -> None:
@@ -1072,9 +1164,7 @@ def test_runtime_can_expand_one_dynamic_command_family_without_domain_rules() ->
 
     assert index
     assert {item["family"] for item in index} == {"wf"}
-    assert {"wf_inbox", "wf_workflows"}.issubset(
-        {str(item["tool_name"]) for item in index}
-    )
+    assert {"wf_inbox", "wf_workflows"}.issubset({str(item["tool_name"]) for item in index})
 
 
 def test_authority_projection_joins_observed_references_without_business_rules() -> None:
@@ -1113,19 +1203,17 @@ def test_authority_projection_joins_observed_references_without_business_rules()
                         },
                     },
                     {"assignment": {"position_code": "missing_position"}},
-                ]
+                ],
             }
         }
     ]
 
     projection = auto_runtime._authority_evidence_projection(layers, tool_results)
 
-    assert projection["observed_required_permissions"][
-        "procurement.workflow.approve"
-    ]["people"] == ["Owner"]
-    positions = {
-        item["code"]: item for item in projection["observed_position_references"]
-    }
+    assert projection["observed_required_permissions"]["procurement.workflow.approve"][
+        "people"
+    ] == ["Owner"]
+    positions = {item["code"]: item for item in projection["observed_position_references"]}
     assert positions["manager"]["active_holders"] == ["Owner"]
     assert positions["manager"]["workflow_nodes"] == [
         {
@@ -1150,9 +1238,7 @@ def test_reference_projection_preserves_keys_from_deep_untruncated_results() -> 
                                     "nodes": [
                                         {
                                             "node_key": "approve",
-                                            "assignment": {
-                                                "position_code": "manager"
-                                            },
+                                            "assignment": {"position_code": "manager"},
                                         }
                                     ]
                                 },
@@ -1408,9 +1494,7 @@ def test_all_surfaces_enter_the_same_goal_runtime(monkeypatch) -> None:
     assert [event.get("phase") for event in events[2:5]] == ["observe", "plan", "reflect"]
     assert "distillation" not in events[3]
     assert "decisions" not in events[3]
-    assert events[3]["capabilities"] == [
-        {"tool_name": "warehouse_list", "judgment": "execute"}
-    ]
+    assert events[3]["capabilities"] == [{"tool_name": "warehouse_list", "judgment": "execute"}]
     assert "tool_results" not in events[4]
     assert "reflection" not in events[4]
     assert events[4]["capability_results"] == [
@@ -1442,9 +1526,7 @@ def test_all_surfaces_enter_the_same_goal_runtime(monkeypatch) -> None:
             "filename": "guide.md",
         }
     ]
-    assert events[-1]["cards"] == [
-        {"card_type": "download", "downloads": events[-1]["downloads"]}
-    ]
+    assert events[-1]["cards"] == [{"card_type": "download", "downloads": events[-1]["downloads"]}]
     assert events[0]["context_mode"] == "thinking"
     assert events[0]["response_locale"] == "en"
     assert events[-1]["response_locale"] == "en"

@@ -866,6 +866,25 @@ def _apply_backup(
             with tempfile.TemporaryDirectory(prefix="warehouse-db-backup-") as temporary:
                 dump = Path(temporary) / f"{backup_id}.dump"
                 result = hosted_database.backup_database(binding, dump, settings=settings)
+                backup_identity = dict(result["backup_identity"])
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.database_bindings
+                        SET backup_role_ref=:backup_role_ref,
+                            config=config || jsonb_build_object(
+                              'backup_identity_observed',CAST(:evidence AS jsonb)
+                            ),
+                            revision=revision+1
+                        WHERE id=:binding_id
+                        """
+                    ),
+                    {
+                        "binding_id": binding["id"],
+                        "backup_role_ref": backup_identity["role"],
+                        "evidence": _canonical(backup_identity),
+                    },
+                )
                 store = object_store_for_provider(settings, HDD_PROVIDER_KEY)
                 with dump.open("rb") as stream:
                     stored = store.put_stream(
@@ -877,6 +896,7 @@ def _apply_backup(
             verification = dict(result["restore_verification"])
             metadata = {
                 "format": result["format"],
+                "preserves_ownership": result["preserves_ownership"],
                 "stage": "completed",
                 "checksum_verified": stored.sha256 == result["sha256"],
                 "restore_verified": bool(verification.get("verified")),
@@ -885,6 +905,7 @@ def _apply_backup(
                 "server_version": result["server_version"],
                 "pg_dump_version": result["pg_dump_version"],
                 "pg_restore_version": result["pg_restore_version"],
+                "backup_identity": result["backup_identity"],
             }
             if not metadata["checksum_verified"] or not metadata["restore_verified"]:
                 raise hosted_database.HostedDatabaseUnavailable(
@@ -985,6 +1006,12 @@ def _apply_backup(
         result = hosted_database.restore_database(
             binding, path, expected_sha256=str(backup["sha256"]), settings=settings
         )
+        capability_evidence = hosted_database.reconcile_capabilities(
+            session,
+            binding,
+            settings=settings,
+        )
+        result["capability_evidence"] = capability_evidence
     except Exception as exc:
         session.execute(
             text(
@@ -1776,7 +1803,7 @@ def workspace_database_control(
                 text(
                     """
                     SELECT id,logical_name,provider_key,status,ownership_mode,
-                           database_ref,role_ref,runtime_role_ref,
+                           database_ref,role_ref,runtime_role_ref,backup_role_ref,
                            capabilities,config,actual_size_bytes,size_measured_at,
                            created_at,updated_at
                     FROM digital_asset.database_bindings

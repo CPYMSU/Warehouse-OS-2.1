@@ -230,6 +230,18 @@ def test_secretary_history_restores_after_reopen_and_is_idempotent(
         ]
         assert payload["history"]["has_more"] is False
 
+        audit_restored = reopened_client.get(
+            "/api/ai/conversation",
+            params={"id": conversation_id},
+        )
+        assert audit_restored.status_code == 200
+        audit_payload = audit_restored.json()
+        assert audit_payload["conversation"]["id"] == conversation_id
+        assert [item["content"] for item in audit_payload["messages"]] == [
+            "請記住這段對話",
+            "已記住這一輪。",
+        ]
+
         replay = reopened_client.post(
             "/api/agent/run/stream",
             json={
@@ -351,6 +363,11 @@ def test_secretary_history_is_private_between_accounts_in_one_company(
         assert colleague_bootstrap.json()["conversation"] is None
         forbidden = client.get(f"/api/ai/conversations/{conversation_id}")
         assert forbidden.status_code == 404
+        audit_forbidden = client.get(
+            "/api/ai/conversation",
+            params={"id": conversation_id},
+        )
+        assert audit_forbidden.status_code == 404
     finally:
         app.dependency_overrides.clear()
 

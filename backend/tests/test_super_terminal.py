@@ -67,9 +67,9 @@ def _client(monkeypatch) -> TestClient:
 
 
 def test_imported_catalogue_has_complete_legacy_command_counts() -> None:
-    assert len(tenant_entries()) == 495
+    assert len(tenant_entries()) == 499
     assert len(platform_entries()) == 22
-    assert len({entry["tool_name"] for entry in tenant_entries()}) == 495
+    assert len({entry["tool_name"] for entry in tenant_entries()}) == 499
 
 
 def test_retired_contracts_are_excluded_from_model_discovery() -> None:
@@ -91,8 +91,8 @@ def test_terminal_advertises_complete_catalogue_with_truthful_states(monkeypatch
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert len(names) == 495
-    assert response.json()["total"] == 495
+    assert len(names) == 499
+    assert response.json()["total"] == 499
     assert response.json()["executable"] > 2
     states = {item["command"]: item for item in response.json()["commands"]}
     assert states["whoami"]["availability"] == "active"
@@ -111,9 +111,9 @@ def test_terminal_advertises_complete_catalogue_with_truthful_states(monkeypatch
         "dm db onboarding",
     ):
         assert states[command]["availability"] == "active"
-    assert status["tenant_command_count"] == 495
+    assert status["tenant_command_count"] == 499
     assert status["platform_command_count"] == 22
-    assert status["active_tenant_command_count"] == 489
+    assert status["active_tenant_command_count"] == 493
     assert status["retired_tenant_command_count"] == 6
     assert status["awaiting_domain_adapter_count"] == 0
     assert status["invalid_contract_count"] == 0
@@ -147,8 +147,8 @@ def test_human_and_ai_paths_share_the_same_command_adapter(monkeypatch) -> None:
     assert ai.json()["status"] == "succeeded"
     assert ai.json()["tool_name"] == human.json()["tool_name"] == "warehouse_list"
     assert ai.json()["data"] == human.json()["data"]
-    assert len(tools.json()["tools"]) == 511
-    assert len(tools.json()["capability_states"]) == 511
+    assert len(tools.json()["tools"]) == 515
+    assert len(tools.json()["capability_states"]) == 515
     assert tools.json()["catalogue_scope"] == "global_command_metadata"
     assert tools.json()["data_scope"] == "current_tenant_only"
     states = {item["tool_name"]: item for item in tools.json()["capability_states"]}
@@ -224,9 +224,9 @@ def test_verified_inventory_adapter_executes_canonical_service(monkeypatch) -> N
 def test_verified_adapter_registry_covers_the_complete_retained_runtime() -> None:
     snapshot = verified_adapter_snapshot()
 
-    assert snapshot["count"] == 272
-    assert snapshot["read_count"] == 85
-    assert snapshot["write_count"] == 187
+    assert snapshot["count"] == 281
+    assert snapshot["read_count"] == 90
+    assert snapshot["write_count"] == 191
     assert set(snapshot["tool_names"]) == (
         legacy_read_runtime.SUPPORTED_LEGACY_READS
         | SUPPORTED_CAPABILITY_TOOLS
@@ -236,6 +236,15 @@ def test_verified_adapter_registry_covers_the_complete_retained_runtime() -> Non
             "db_schema",
             "inventory_list",
             "ledger_list",
+            "task_create",
+            "task_delete",
+            "task_history",
+            "task_list",
+            "task_meta",
+            "task_resolve",
+            "task_show",
+            "task_status",
+            "task_update",
         }
     )
 
@@ -266,9 +275,7 @@ def test_every_generic_retained_write_has_a_creation_or_target_path() -> None:
         parameter_destinations = {
             str(parameter.get("dest") or "") for parameter in entry.get("params") or []
         }
-        if not creates_or_targets_collection and not (
-            target_destinations & parameter_destinations
-        ):
+        if not creates_or_targets_collection and not (target_destinations & parameter_destinations):
             unreachable.append(tool_name)
 
     assert unreachable == []
@@ -322,7 +329,7 @@ def test_original_verified_read_adapters_remain_registered() -> None:
     assert {
         "read_count": snapshot["read_count"],
         "write_count": snapshot["write_count"],
-    } == {"read_count": 85, "write_count": 187}
+    } == {"read_count": 90, "write_count": 191}
     assert {
         "category_list_tenant",
         "db_query",
@@ -366,8 +373,8 @@ def test_manual_buttons_are_generated_from_the_complete_shared_catalogue(monkeyp
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
     payload = response.json()
-    assert payload["total"] == 517
-    assert payload["tenant_total"] == 495
+    assert payload["total"] == 521
+    assert payload["tenant_total"] == 499
     assert payload["platform_total"] == 22
     actions = {item["tool_name"]: item for item in payload["actions"]}
     assert actions["warehouse_list"]["manual_execution"] == "execute"
@@ -512,7 +519,7 @@ def test_every_non_retired_transport_contract_has_a_business_adapter() -> None:
         assert matched is not None, entry["tool_name"]
         assert matched.entry["tool_name"] == entry["tool_name"]
     states = [availability(entry) for entry in tenant_entries()]
-    assert states.count("active") == 489
+    assert states.count("active") == 493
     assert states.count("awaiting_domain_adapter") == 0
     assert states.count("retired_2_0") == 6
 

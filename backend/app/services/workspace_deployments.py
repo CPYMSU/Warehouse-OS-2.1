@@ -1919,6 +1919,156 @@ def observe_workspace_deployment(
     return {"ok": True, "deployment": _deployment_public(dict(row)), "events": events}
 
 
+def repair_workspace_deployment(
+    credential: WorkspaceCredential,
+    deployment_id: DeploymentReference,
+    payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Idempotently enqueue a bounded repair under the workspace credential."""
+
+    credential.require("deploy:write")
+    request = payload or {}
+    source = str(request.get("source") or "user").strip().lower()
+    if source not in {"user", "ai_secretary", "platform_probe"}:
+        raise HTTPException(status_code=422, detail="Invalid deployment repair source")
+    reason = str(request.get("reason") or "deployment_runtime_repair").strip()
+    if not reason or len(reason) > 240:
+        raise HTTPException(status_code=422, detail="Invalid deployment repair reason")
+
+    with tenant_session(credential.tenant_id) as session:
+        row = (
+            session.execute(
+                text(
+                    """
+                    SELECT * FROM digital_asset.deployments
+                    WHERE workspace_id=:workspace_id
+                      AND (
+                        CAST(id AS text)=:deployment_reference
+                        OR CAST(legacy_id AS text)=:deployment_reference
+                      )
+                    FOR UPDATE
+                    """
+                ),
+                {
+                    **_deployment_reference_params(deployment_id),
+                    "workspace_id": credential.workspace_id,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        resolved_id = UUID(str(row["id"]))
+        current_status = str(row["status"])
+        if current_status in {"queued", "building", "deploying"}:
+            return {
+                "ok": True,
+                "accepted": False,
+                "deployment": _deployment_public(dict(row)),
+                "next_action": "observe_deployment",
+            }
+        if current_status not in {"ready", "failed"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Deployment cannot be repaired from {current_status}",
+            )
+        active = bool(
+            session.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM digital_asset.workspaces "
+                    "WHERE id=:workspace_id AND active_deployment_id=:deployment_id)"
+                ),
+                {
+                    "workspace_id": credential.workspace_id,
+                    "deployment_id": resolved_id,
+                },
+            ).scalar_one()
+        )
+        if current_status == "ready" and not active:
+            raise HTTPException(
+                status_code=409,
+                detail="Only the active ready deployment can be repaired",
+            )
+        updated = (
+            session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET status='queued',health='pending',lease_owner=NULL,
+                        lease_expires_at=NULL,started_at=NULL,completed_at=NULL,
+                        result=result || jsonb_build_object(
+                          'repair_requested_at',now(),
+                          'repair_source',CAST(:source AS text)
+                        )
+                    WHERE id=:deployment_id
+                    RETURNING *
+                    """
+                ),
+                {"deployment_id": resolved_id, "source": source},
+            )
+            .mappings()
+            .one()
+        )
+        if active:
+            session.execute(
+                text(
+                    "UPDATE digital_asset.workspaces SET runtime_status='building' "
+                    "WHERE id=:workspace_id AND active_deployment_id=:deployment_id"
+                ),
+                {
+                    "workspace_id": credential.workspace_id,
+                    "deployment_id": resolved_id,
+                },
+            )
+        sequence = int(
+            session.execute(
+                text(
+                    "SELECT COALESCE(max(sequence),0)+1 "
+                    "FROM digital_asset.deployment_events WHERE deployment_id=:id"
+                ),
+                {"id": resolved_id},
+            ).scalar_one()
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO digital_asset.deployment_events(
+                  deployment_id,tenant_id,sequence,event_type,payload
+                ) VALUES (
+                  :id,:tenant_id,:sequence,'repair_requested',CAST(:payload AS jsonb)
+                )
+                """
+            ),
+            {
+                "id": resolved_id,
+                "tenant_id": credential.tenant_id,
+                "sequence": sequence,
+                "payload": json.dumps(
+                    {
+                        "credential_id": str(credential.credential_id),
+                        "source": source,
+                        "reason": reason,
+                        "previous_status": current_status,
+                        "active_deployment": active,
+                    }
+                ),
+            },
+        )
+    return {
+        "ok": True,
+        "accepted": True,
+        "deployment": _deployment_public(dict(updated)),
+        "repair_contract": {
+            "execution": "asynchronous",
+            "required_scope": "deploy:write",
+            "source": source,
+            "automatic_runtime_reconciliation": True,
+        },
+        "next_action": "observe_deployment",
+    }
+
+
 def cancel_workspace_deployment(
     credential: WorkspaceCredential,
     deployment_id: DeploymentReference,

@@ -142,6 +142,21 @@ def _retained_read_handler(tool_name: str) -> AdapterHandler:
     return execute
 
 
+def _task_handler(tool_name: str) -> AdapterHandler:
+    """Bind task genes to the version-aware native task Runtime."""
+
+    def execute(
+        actor: ActorContext,
+        values: Mapping[str, object],
+        origin: str,
+    ) -> object:
+        from app.services.task_runtime import execute_task_capability
+
+        return execute_task_capability(tool_name, actor, values, origin=origin)
+
+    return execute
+
+
 for _adapter in (
     VerifiedCapabilityAdapter(
         tool_name="inventory_list",
@@ -195,6 +210,35 @@ for _adapter in (
     ),
 ):
     _register(_adapter)
+
+
+for _tool_name, _api_method, _api_path, _effect in (
+    ("task_meta", "GET", "/api/tasks/meta", "read"),
+    ("task_list", "GET", "/api/tasks", "read"),
+    ("task_resolve", "GET", "/api/tasks", "read"),
+    ("task_show", "GET", "/api/tasks/{id}", "read"),
+    ("task_history", "GET", "/api/tasks/{id}/history", "read"),
+    ("task_create", "POST", "/api/tasks", "write"),
+    ("task_update", "POST", "/api/tasks/{id}/update", "write"),
+    ("task_status", "POST", "/api/tasks/{id}/status", "write"),
+    ("task_delete", "DELETE", "/api/tasks/{id}", "write"),
+):
+    _register(
+        VerifiedCapabilityAdapter(
+            tool_name=_tool_name,
+            api_method=_api_method,
+            api_path=_api_path,
+            effect=_effect,
+            domain="org",
+            semantic_resource="workflow.task",
+            verification=(
+                "postgresql_rls_read_with_canonical_version"
+                if _effect == "read"
+                else "postgresql_rls_versioned_write_and_readback"
+            ),
+            handler=_task_handler(_tool_name),
+        )
+    )
 
 
 # Second migration batch: every tuple freezes the imported method/path and the
@@ -606,7 +650,7 @@ for (
 
 
 _RETAINED_CAPABILITY_CONTRACT_SHA256 = (
-    "c19ef2c042f554a4d70a08dabe06482b7475e4790a45305d58243a81aa3e0b96"
+    "0218d8731d348518eb80ad135c50e73518ce777fc9e081343cd1ff49069ce02b"
 )
 _retained_contract_rows: list[list[object]] = []
 _retained_entries: dict[str, dict[str, object]] = {}

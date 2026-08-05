@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "$(uname -s)" == "Darwin" ]] || {
+  printf 'this sequence synchronizer is only for the macOS standby\n' >&2
+  exit 2
+}
+: "${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?local hosted admin password is required}"
+
+mode="${1:-all}"
+[[ "${mode}" == "all" || "${mode}" == "control" || "${mode}" == "hosted" ]] || {
+  printf 'usage: %s [all|control|hosted]\n' "$0" >&2
+  exit 2
+}
+
+psql_bin="${PSQL_BIN:-/opt/homebrew/opt/postgresql@18/bin/psql}"
+publisher_host="${WAREHOUSE_PUBLISHER_HOST:-100.98.166.49}"
+control_publisher_port="${WAREHOUSE_CONTROL_PUBLISHER_PORT:-15432}"
+hosted_publisher_port="${WAREHOUSE_HOSTED_PUBLISHER_PORT:-15433}"
+control_keychain_account="warehouse-control-replica"
+control_keychain_service="bonfirework-control-replication"
+hosted_keychain_account="warehouse-hosted-replica"
+hosted_keychain_service="bonfirework-hosted-replication"
+
+control_password="$(security find-generic-password \
+  -a "${control_keychain_account}" -s "${control_keychain_service}" -w)"
+hosted_password="$(security find-generic-password \
+  -a "${hosted_keychain_account}" -s "${hosted_keychain_service}" -w)"
+[[ "${control_password}" =~ ^[0-9a-f]{64}$ \
+  && "${hosted_password}" =~ ^[0-9a-f]{64}$ ]] || {
+  printf 'replication credentials are absent or malformed\n' >&2
+  exit 2
+}
+
+sequence_sql="
+select format(
+  'SELECT setval(%L::regclass, CASE WHEN %s > 0 THEN GREATEST((SELECT last_value FROM %s), %s) ELSE LEAST((SELECT last_value FROM %s), %s) END, true);',
+  format('%I.%I', schemaname, sequencename),
+  increment_by,
+  format('%I.%I', schemaname, sequencename),
+  coalesce(last_value, start_value),
+  format('%I.%I', schemaname, sequencename),
+  coalesce(last_value, start_value)
+)
+from pg_sequences
+where schemaname <> 'information_schema'
+  and schemaname not like 'pg_%'
+order by schemaname,sequencename"
+
+sync_control() {
+  ready="$("${psql_bin}" -X -h 127.0.0.1 -p 5432 -U peiyuan \
+    -d warehouse_os -Atc \
+    "select count(*) filter (where srsubstate::text='r'),count(*) from pg_subscription_rel where srsubid=(select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='warehouse_from_vultr')")"
+  [[ "${ready}" == "156|156" ]] || {
+    printf 'control subscription is not ready state=%s\n' "${ready}" >&2
+    exit 2
+  }
+  statements="$(PGPASSWORD="${control_password}" "${psql_bin}" -X \
+    -h "${publisher_host}" -p "${control_publisher_port}" \
+    -U warehouse_control_replica -d warehouse_os -Atc "${sequence_sql}")"
+  [[ -z "${statements}" ]] \
+    || printf '%s\n' "${statements}" \
+      | "${psql_bin}" -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 \
+          -U peiyuan -d warehouse_os >/dev/null
+  printf 'control_sequences_synced=%s\n' \
+    "$(printf '%s\n' "${statements}" | sed '/^$/d' | wc -l | tr -d ' ')"
+}
+
+sync_hosted() {
+  databases="$(PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+    "${psql_bin}" -X -h 127.0.0.1 -p 5433 -U warehouse_hosted_admin \
+      -d postgres -Atc \
+      "select datname from pg_database where datname ~ '^whdb_[0-9a-f]{32}$' order by datname")"
+  database_count=0
+  sequence_count=0
+  while IFS= read -r database; do
+    [[ "${database}" =~ ^whdb_[0-9a-f]{32}$ ]] || exit 2
+    ready="$(PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+      "${psql_bin}" -X -h 127.0.0.1 -p 5433 -U warehouse_hosted_admin \
+        -d "${database}" -Atc \
+        "select count(*) filter (where srsubstate::text='r'),count(*) from pg_subscription_rel where srsubid=(select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='warehouse_from_vultr')")"
+    [[ "${ready%%|*}" == "${ready##*|}" && "${ready%%|*}" != "0" ]] || {
+      printf 'hosted subscription is not ready database=%s state=%s\n' \
+        "${database}" "${ready}" >&2
+      exit 2
+    }
+    statements="$(PGPASSWORD="${hosted_password}" "${psql_bin}" -X \
+      -h "${publisher_host}" -p "${hosted_publisher_port}" \
+      -U warehouse_hosted_replica -d "${database}" -Atc "${sequence_sql}")"
+    [[ -z "${statements}" ]] \
+      || printf '%s\n' "${statements}" \
+        | PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+          "${psql_bin}" -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5433 \
+            -U warehouse_hosted_admin -d "${database}" >/dev/null
+    (( database_count += 1 ))
+    current_count="$(printf '%s\n' "${statements}" | sed '/^$/d' | wc -l | tr -d ' ')"
+    (( sequence_count += current_count ))
+  done <<<"${databases}"
+  printf 'hosted_databases_sequence_synced=%s\nhosted_sequences_synced=%s\n' \
+    "${database_count}" "${sequence_count}"
+}
+
+[[ "${mode}" == "hosted" ]] || sync_control
+[[ "${mode}" == "control" ]] || sync_hosted

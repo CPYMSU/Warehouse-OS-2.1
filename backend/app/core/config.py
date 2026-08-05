@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     research_execution_max_output_bytes: int = 100 * 1024 * 1024
     workflow_attachment_max_upload_bytes: int = 15 * 1024 * 1024
     shield_agent_socket: Path = Path("/run/warehouse-shield/agent.sock")
+    shield_agent_host: str = ""
+    shield_agent_port: int = 0
     shield_agent_token: SecretStr = SecretStr("")
     shield_agent_timeout_seconds: float = 8.0
     shield_agent_max_response_bytes: int = 2 * 1024 * 1024

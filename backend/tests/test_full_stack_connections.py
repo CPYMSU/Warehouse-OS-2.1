@@ -153,7 +153,7 @@ def test_identity_settings_cases_records_and_files_round_trip(monkeypatch) -> No
         response = client.get("/api/runtime/skills")
         assert response.status_code == 200
         skills = response.json()
-        assert skills["total"] == 517
+        assert skills["total"] == 521
         assert skills["skills"][0]["invocation"] == "goal_guided"
         assert "api_path" not in skills["skills"][0]
 
@@ -229,12 +229,102 @@ def test_identity_settings_cases_records_and_files_round_trip(monkeypatch) -> No
         assert download.status_code == 200
         assert download.content == b"record document"
 
+        records_meta = client.get("/api/records/meta")
+        assert records_meta.status_code == 200
+        assert records_meta.json()["can_configure"] is True
+        assert records_meta.json()["permissions"]["can_configure"] is True
+
+        configuration = client.get("/api/records/config")
+        assert configuration.status_code == 200
+        assert configuration.json()["can_configure"] is True
+        assert {item["key"] for item in configuration.json()["categories"]} >= {
+            "personnel",
+            "other",
+        }
+
+        category = client.post(
+            "/api/records/config/categories",
+            json={
+                "key": "connected_archive",
+                "name": "Connected archive",
+                "description": "Integration-owned category",
+                "icon": "box",
+                "order": 70,
+                "confidentiality": "internal",
+                "retention": {},
+            },
+        )
+        assert category.status_code == 201
+        assert category.json()["category"]["revision_no"] == 1
+
+        record_type = client.post(
+            "/api/records/config/types",
+            json={
+                "key": "connected_record",
+                "category_key": "connected_archive",
+                "name": "Connected record type",
+                "description": "Integration-owned type",
+                "lifecycle_mode": "dossier",
+                "confidentiality": "internal",
+                "fields": [],
+            },
+        )
+        assert record_type.status_code == 201
+        assert record_type.json()["type"]["revision_no"] == 1
+
+        revised_payload = {
+            "key": "connected_record",
+            "category_key": "connected_archive",
+            "name": "Connected record type R2",
+            "description": "Versioned without rewriting existing records",
+            "lifecycle_mode": "dossier",
+            "confidentiality": "internal",
+            "fields": [],
+            "expected_revision_no": 1,
+        }
+        revised = client.post(
+            "/api/records/config/types/connected_record/revisions",
+            json=revised_payload,
+        )
+        assert revised.status_code == 200
+        assert revised.json()["type"]["revision_no"] == 2
+        assert revised.json()["type"]["managed_by_template"] is False
+        assert (
+            client.post(
+                "/api/records/config/types/connected_record/revisions",
+                json=revised_payload,
+            ).status_code
+            == 409
+        )
+        disabled = client.post(
+            "/api/records/config/types/connected_record/disable",
+            json={"expected_revision_no": 2},
+        )
+        assert disabled.status_code == 200
+        assert disabled.json()["type"]["active"] is False
+        assert disabled.json()["type"]["revision_no"] == 3
+
+        audit_logs = client.get("/api/audit/logs?limit=50")
+        assert audit_logs.status_code == 200
+        assert audit_logs.json()["rows"]
+        assert audit_logs.json()["summary"]["total"] == len(audit_logs.json()["rows"])
+        assert all("operator_name" in row for row in audit_logs.json()["rows"])
+
+        audit_cli = client.get("/api/audit/cli?limit=50")
+        assert audit_cli.status_code == 200
+        assert isinstance(audit_cli.json()["rows"], list)
+        assert "summary" in audit_cli.json()
+
         response = client.post(
             "/api/ai/conversations",
             json={"title": "Connected conversation", "channel": "assistant"},
         )
         assert response.status_code == 201
         assert response.json()["conversation"]["title"] == "Connected conversation"
+        conversations = client.get("/api/ai/conversations?limit=100")
+        assert conversations.status_code == 200
+        assert conversations.json()["rows"]
+        assert conversations.json()["rows"][0]["title"] == "Connected conversation"
     finally:
         app.dependency_overrides.clear()
 
@@ -1042,7 +1132,7 @@ def test_auto_runtime_distils_all_company_authority_and_capability_genes(monkeyp
         result.observations["context_strategy"]
         == "domain_then_family_then_exact_tool_then_live_data"
     )
-    assert result.observations["capability_genes"] == 511
+    assert result.observations["capability_genes"] == 515
     assert result.observations["authority_world"]["positions"] >= 1
     assert result.distillation["selected_tool_names"] == ["warehouse_list"]
     assert result.decisions[0]["judgment"] == "ask_person"

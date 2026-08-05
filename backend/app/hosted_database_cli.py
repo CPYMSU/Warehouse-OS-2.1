@@ -261,7 +261,7 @@ def inspect_workspace(asset_no: str) -> dict[str, object]:
         database = session.execute(
             text(
                 "SELECT id,logical_name,provider_key,status,database_ref,role_ref,"
-                "runtime_role_ref,"
+                "runtime_role_ref,backup_role_ref,"
                 "actual_size_bytes,size_measured_at,capabilities,config "
                 "FROM digital_asset.database_bindings WHERE workspace_id=:workspace_id "
                 "ORDER BY is_default DESC,created_at LIMIT 1"

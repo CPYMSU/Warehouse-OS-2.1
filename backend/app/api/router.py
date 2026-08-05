@@ -5,7 +5,7 @@ from queue import Empty, Queue
 from threading import Thread
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from starlette.background import BackgroundTask
@@ -43,6 +43,12 @@ from app.services.conversation_history import (
 from app.services.language_contract import (
     localized_runtime_error,
     resolve_language_contract,
+)
+from app.services.member_provisioning import (
+    import_member_accounts,
+    provision_member_account,
+    update_access_role,
+    upsert_access_role,
 )
 from app.services.memory_fabric import (
     build_memory_capsule,
@@ -485,6 +491,56 @@ def users(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
     return users_payload(actor)
 
 
+@router.post("/api/users/create")
+def user_create(
+    payload: dict[str, object],
+    actor: ActorContext = Depends(current_actor),
+    execution_origin: str | None = Header(default=None, alias="X-Warehouse-Execution-Origin"),
+) -> dict[str, object]:
+    """Create one login identity and its tenant member/position atomically."""
+
+    return provision_member_account(actor, payload, origin=execution_origin or "api")
+
+
+@router.post("/api/users/import")
+def users_import(
+    payload: dict[str, object],
+    actor: ActorContext = Depends(current_actor),
+    execution_origin: str | None = Header(default=None, alias="X-Warehouse-Execution-Origin"),
+) -> dict[str, object]:
+    """Atomically import a bounded list of login members by real positions."""
+
+    return import_member_accounts(actor, payload, origin=execution_origin or "api")
+
+
+@router.post("/api/roles")
+def role_upsert(
+    payload: dict[str, object],
+    actor: ActorContext = Depends(current_actor),
+    execution_origin: str | None = Header(default=None, alias="X-Warehouse-Execution-Origin"),
+) -> dict[str, object]:
+    """Create or update one canonical tenant RBAC role."""
+
+    return upsert_access_role(actor, payload, origin=execution_origin or "api")
+
+
+@router.post("/api/roles/{role_ref}")
+def role_update(
+    role_ref: str,
+    payload: dict[str, object],
+    actor: ActorContext = Depends(current_actor),
+    execution_origin: str | None = Header(default=None, alias="X-Warehouse-Execution-Origin"),
+) -> dict[str, object]:
+    """Update a canonical tenant RBAC role resolved by UUID, key, or name."""
+
+    return update_access_role(
+        actor,
+        role_ref,
+        payload,
+        origin=execution_origin or "api",
+    )
+
+
 @router.get("/api/permissions/topology")
 def permissions_topology(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
     return topology_payload(actor)
@@ -868,22 +924,25 @@ def agent_run_stream(
     )
 
     def events() -> object:
-        yield json.dumps(
-            {
-                "event": "run_start",
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "turn_id": turn_id,
-                "user_message_id": user_message["id"],
-                "replayed": bool(existing_assistant),
-                "surface": payload.surface,
-                "context_mode": payload.context_mode,
-                "response_locale": language.locale,
-                "language_source": language.source,
-                "language_mode": language.mode,
-            },
-            ensure_ascii=False,
-        ) + "\n"
+        yield (
+            json.dumps(
+                {
+                    "event": "run_start",
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                    "turn_id": turn_id,
+                    "user_message_id": user_message["id"],
+                    "replayed": bool(existing_assistant),
+                    "surface": payload.surface,
+                    "context_mode": payload.context_mode,
+                    "response_locale": language.locale,
+                    "language_source": language.source,
+                    "language_mode": language.mode,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
 
         def safe_runtime_activity(
             source: object,
@@ -935,23 +994,22 @@ def agent_run_stream(
                 if isinstance(replay_downloads, list)
                 else []
             )
-            stored_activities = existing_assistant.get("metadata", {}).get(
-                "runtime_activities"
-            )
-            for stored_activity in (
-                stored_activities if isinstance(stored_activities, list) else []
-            ):
+            stored_activities = existing_assistant.get("metadata", {}).get("runtime_activities")
+            for stored_activity in stored_activities if isinstance(stored_activities, list) else []:
                 activity = safe_runtime_activity(stored_activity)
                 if activity:
-                    yield json.dumps(
-                        {
-                            "event": "runtime_activity",
-                            "run_id": run_id,
-                            "conversation_id": conversation_id,
-                            **activity,
-                        },
-                        ensure_ascii=False,
-                    ) + "\n"
+                    yield (
+                        json.dumps(
+                            {
+                                "event": "runtime_activity",
+                                "run_id": run_id,
+                                "conversation_id": conversation_id,
+                                **activity,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
             yield (
                 json.dumps(
                     {
@@ -961,15 +1019,12 @@ def agent_run_stream(
                         "turn_id": turn_id,
                         "message_id": existing_assistant["id"],
                         "status": (
-                            existing_assistant.get("metadata", {}).get("status")
-                            or "succeeded"
+                            existing_assistant.get("metadata", {}).get("status") or "succeeded"
                         ),
                         "message": existing_assistant["content"],
                         "replayed": True,
                         "response_locale": (
-                            existing_assistant.get("metadata", {}).get(
-                                "response_locale"
-                            )
+                            existing_assistant.get("metadata", {}).get("response_locale")
                             or language.locale
                         ),
                         "downloads": replay_downloads,
@@ -1075,22 +1130,28 @@ def agent_run_stream(
             try:
                 activity = activity_queue.get(timeout=8)
             except Empty:
-                yield json.dumps(
-                    {"event": "heartbeat", "run_id": run_id},
-                    ensure_ascii=False,
-                ) + "\n"
+                yield (
+                    json.dumps(
+                        {"event": "heartbeat", "run_id": run_id},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
                 continue
             if activity is activity_sentinel:
                 break
-            yield json.dumps(
-                {
-                    "event": "runtime_activity",
-                    "run_id": run_id,
-                    "conversation_id": conversation_id,
-                    **dict(activity),
-                },
-                ensure_ascii=False,
-            ) + "\n"
+            yield (
+                json.dumps(
+                    {
+                        "event": "runtime_activity",
+                        "run_id": run_id,
+                        "conversation_id": conversation_id,
+                        **dict(activity),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
         runtime_activities = [
             dict(activity_by_id[activity_id])
@@ -1233,11 +1294,9 @@ def agent_run_stream(
                 result = tool_result.get("result")
                 result = result if isinstance(result, dict) else {}
                 candidate = result.get("action")
-                if (
-                    isinstance(candidate, dict)
-                    and str(candidate.get("id") or candidate.get("action_id") or "")
-                    == str(payload.resume_confirmation_action_id or "")
-                ):
+                if isinstance(candidate, dict) and str(
+                    candidate.get("id") or candidate.get("action_id") or ""
+                ) == str(payload.resume_confirmation_action_id or ""):
                     authorization_action = candidate
             if isinstance(authorization_action, dict):
                 authorization_status = str(authorization_action.get("status") or "")
@@ -1332,7 +1391,8 @@ def agent_run_stream(
                                         item.get("result")
                                         if isinstance(item.get("result"), dict)
                                         else {}
-                                    ).get("ok") is not False
+                                    ).get("ok")
+                                    is not False
                                     else "failed"
                                 )
                             )[:48],
@@ -1342,9 +1402,7 @@ def agent_run_stream(
                     ][:24],
                     "summary": {
                         "goal_complete": bool(answer.reflection.get("goal_complete")),
-                        "requires_user_input": bool(
-                            answer.reflection.get("requires_user_input")
-                        ),
+                        "requires_user_input": bool(answer.reflection.get("requires_user_input")),
                         "runtime_stop_reason": str(
                             answer.reflection.get("runtime_stop_reason") or ""
                         )[:80],
@@ -1358,11 +1416,7 @@ def agent_run_stream(
             )
             + "\n"
         )
-        goal_complete = (
-            bool(answer.reflection.get("goal_complete"))
-            if answer.reflection
-            else True
-        )
+        goal_complete = bool(answer.reflection.get("goal_complete")) if answer.reflection else True
         answer_status = (
             "waiting_confirmation"
             if answer.confirmation_actions

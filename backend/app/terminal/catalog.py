@@ -21,7 +21,7 @@ from app.terminal.readiness import native_adapter_ready, readiness_snapshot
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
 
-CATALOGUE_REVISION = "capability-truth-v7-database-secretary.2026-08-03"
+CATALOGUE_REVISION = "capability-truth-v10-tenant-database-registry.2026-08-05"
 RETIRED_LIFECYCLES = frozenset({"retired_2_0"})
 
 
@@ -96,6 +96,7 @@ def command_summary(
         "risk": entry["risk"],
         "confirmation_policy": legacy_catalog.confirmation_contract(entry),
         "confirmation_required": legacy_catalog.ai_confirmation_required(entry),
+        "execution_identity": str(entry.get("execution_identity") or "company_ai"),
         "authorized": authorized,
         "available": state == "active",
         "adapter": (
@@ -106,6 +107,7 @@ def command_summary(
             else None
         ),
         "semantic_resource": (registered_adapter.semantic_resource if registered_adapter else None),
+        "semantic_contract": dict(entry.get("semantic_contract") or {}),
         "verification": (registered_adapter.verification if registered_adapter else None),
         "execution_kind": execution_kind(entry, platform=platform),
         "transitional_projection_available": False,

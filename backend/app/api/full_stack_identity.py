@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from webauthn import verify_authentication_response, verify_registration_response
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
@@ -40,10 +41,15 @@ from app.services.conversation_history import (
 from app.services.organization import NAVIGATION_CATALOG
 from app.services.passkey_grants import issue_step_up_grant
 from app.services.integrations import (
+    VoiceIntegrationError,
+    correct_voice_transcript,
     normalize_provider,
     public_state,
     save_configuration,
+    synthesize_voice_speech,
+    transcribe_voice_audio,
     validate_saved,
+    voice_capability_state,
 )
 from app.services.identity_titles import official_title_profile
 from app.services.identity_employment import (
@@ -1462,6 +1468,19 @@ def _require_integration_manager(actor: ActorContext) -> None:
         raise HTTPException(status_code=403, detail="Integration management permission is required")
 
 
+def _require_voice_user(actor: ActorContext) -> None:
+    if "ai.use" not in actor.permissions:
+        raise HTTPException(status_code=403, detail="Voice usage requires ai.use permission")
+
+
+def _voice_error_response(exc: VoiceIntegrationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"ok": False, "error": exc.message, "code": exc.code},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/api/integrations/{provider}")
 def integration_get(
     provider: str,
@@ -1529,16 +1548,51 @@ def integration_validate(
 
 
 @router.get("/api/voice/status")
-def voice_status_full(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
-    state = public_state(actor, "voice")
-    return {
-        "status": "ready" if state["connected"] else state["connection_status"],
-        "available": bool(state["connected"]),
-        "configured": bool(state["configured"]),
-        "asr": bool(state["connected"]),
-        "tts": bool(state["connected"]),
-        "provider": state["provider"],
-    }
+def voice_status_full(
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return voice_capability_state(actor, settings)
+
+
+@router.post("/api/voice/transcribe")
+def voice_transcribe_full(
+    request: Request,
+    audio: bytes = Body(..., media_type="application/octet-stream"),
+    lang: str = Query(default="zh", min_length=1, max_length=16),
+    correct: bool = Query(default=False),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> JSONResponse:
+    _require_voice_user(actor)
+    try:
+        result = transcribe_voice_audio(
+            actor,
+            settings,
+            audio,
+            request.headers.get("content-type") or "",
+            lang,
+        )
+        text_value = result.text
+        corrected = False
+        if correct:
+            text_value, corrected = correct_voice_transcript(actor, settings, text_value)
+        content: dict[str, object] = {
+            "ok": True,
+            "text": text_value,
+            "corrected": corrected,
+            "model": result.model,
+        }
+        if corrected:
+            content["raw_text"] = result.text
+        if result.trace_id:
+            content["trace_id"] = result.trace_id
+        return JSONResponse(
+            content=content,
+            headers={"Cache-Control": "no-store"},
+        )
+    except VoiceIntegrationError as exc:
+        return _voice_error_response(exc)
 
 
 @router.get("/api/ai/health")
@@ -1604,7 +1658,14 @@ def conversations_get(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     conversations = list_conversations(actor, limit=limit)
-    return {"available": True, "conversations": conversations, "items": conversations}
+    return {
+        "available": True,
+        "rows": conversations,
+        "hasMore": len(conversations) >= limit,
+        "has_more": len(conversations) >= limit,
+        "conversations": conversations,
+        "items": conversations,
+    }
 
 
 @router.post("/api/ai/conversations", status_code=201)
@@ -1627,6 +1688,27 @@ def conversation_detail(
     before_sequence: int | None = Query(default=None, ge=1),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
+    loaded = load_conversation(
+        actor,
+        conversation_id=conversation_id,
+        message_limit=message_limit,
+        before_sequence=before_sequence,
+    )
+    return {"available": True, **loaded}
+
+
+@router.get("/api/ai/conversation")
+def conversation_detail_legacy_query(
+    conversation_id: str = Query(alias="id", min_length=1, max_length=128),
+    message_limit: int = Query(default=80, ge=1, le=500),
+    before_sequence: int | None = Query(default=None, ge=1),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    """Serve the audit archive's former singular query-string contract.
+
+    Keep this alias on the same owner-scoped loader as the canonical plural
+    route so cached frontends remain functional without weakening isolation.
+    """
     loaded = load_conversation(
         actor,
         conversation_id=conversation_id,
@@ -1678,10 +1760,24 @@ def assistant_bootstrap_full(
     }
 
 
-@router.post("/api/voice/speak", status_code=204)
-def voice_speak(payload: dict[str, object] = Body(default={})) -> Response:
-    _ = payload
-    return Response(status_code=204)
+@router.post("/api/voice/speak")
+def voice_speak(
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    _require_voice_user(actor)
+    try:
+        result = synthesize_voice_speech(actor, settings, str(payload.get("text") or ""))
+    except VoiceIntegrationError as exc:
+        return _voice_error_response(exc)
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if result.trace_id:
+        headers["X-Voice-Trace-Id"] = result.trace_id
+    return Response(content=result.audio, media_type=result.content_type, headers=headers)
 
 
 def _challenge_text() -> str:

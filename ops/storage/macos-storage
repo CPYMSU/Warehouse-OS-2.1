@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+command_name="${1:-check}"
+data_root="${WAREHOUSE_STORAGE_ROOT:-/Volumes/BonfireworkData}"
+control_source="${WAREHOUSE_CONTROL_PGDATA:-/opt/homebrew/var/postgresql@18}"
+hosted_source="${WAREHOUSE_HOSTED_PGDATA:-/Users/peiyuan/Server/bonfirework/shared/hosted-databases}"
+
+fail() {
+  printf 'storage_status=blocked\nreason=%s\n' "$1" >&2
+  exit 2
+}
+
+[[ "${command_name}" == check || "${command_name}" == plan ]] \
+  || fail "supported commands are check and plan"
+[[ "${data_root}" == /Volumes/* ]] \
+  || fail "storage root must be a dedicated volume below /Volumes"
+[[ -d "${data_root}" ]] \
+  || fail "target volume is not mounted: ${data_root}"
+
+plist="$(diskutil info -plist "${data_root}")" \
+  || fail "diskutil cannot inspect target volume"
+internal="$(plutil -extract Internal raw -o - - <<<"${plist}" 2>/dev/null || printf unknown)"
+device="$(plutil -extract DeviceIdentifier raw -o - - <<<"${plist}" 2>/dev/null || printf unknown)"
+filesystem="$(plutil -extract FilesystemType raw -o - - <<<"${plist}" 2>/dev/null || printf unknown)"
+volume_uuid="$(plutil -extract VolumeUUID raw -o - - <<<"${plist}" 2>/dev/null || printf unknown)"
+
+[[ "${internal}" == false ]] \
+  || fail "refusing an internal or unidentified system disk"
+[[ -w "${data_root}" ]] \
+  || fail "target volume is not writable"
+
+raid_kind="external-volume"
+if raid_list="$(diskutil appleRAID list 2>/dev/null)" \
+  && grep -Fq "${device}" <<<"${raid_list}"; then
+  if grep -Eiq 'Mirror|Mirrored' <<<"${raid_list}"; then
+    raid_kind="apple-raid-mirror"
+  else
+    fail "target belongs to AppleRAID but is not a mirror"
+  fi
+elif [[ "${WAREHOUSE_HARDWARE_RAID_APPROVED:-false}" != true ]]; then
+  fail "no mirrored AppleRAID detected; set WAREHOUSE_HARDWARE_RAID_APPROVED=true only for a verified hardware RAID1 enclosure"
+else
+  raid_kind="approved-hardware-raid1"
+fi
+
+available_kib="$(df -Pk "${data_root}" | awk 'NR==2 {print $4}')"
+required_kib="$(du -sk "${control_source}" "${hosted_source}" | awk '{sum += $1} END {print sum * 3}')"
+(( available_kib >= required_kib )) \
+  || fail "target needs at least three times the current PostgreSQL bytes"
+
+printf 'storage_status=ready\n'
+printf 'storage_root=%s\n' "${data_root}"
+printf 'device=%s\nfilesystem=%s\nvolume_uuid=%s\n' "${device}" "${filesystem}" "${volume_uuid}"
+printf 'protection=%s\navailable_kib=%s\nrequired_kib=%s\n' "${raid_kind}" "${available_kib}" "${required_kib}"
+
+if [[ "${command_name}" == plan ]]; then
+  printf 'control_target=%s/postgresql/control\n' "${data_root}"
+  printf 'hosted_target=%s/postgresql/hosted\n' "${data_root}"
+  printf 'backup_target=%s/backups/postgresql\n' "${data_root}"
+  printf 'next_action=take verified backup, stop writers, copy with checksums, switch PGDATA, start and verify, retain source for rollback\n'
+fi

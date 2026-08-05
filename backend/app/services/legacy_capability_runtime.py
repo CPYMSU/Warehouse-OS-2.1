@@ -27,7 +27,6 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
-from app.core.security import hash_password
 from app.db.session import tenant_readonly_session, tenant_session
 
 if TYPE_CHECKING:
@@ -272,9 +271,7 @@ _APPEND_ONLY_CREATES = frozenset(
         "tender_submit_bid",
     }
 )
-_FORCED_CREATES = frozenset(
-    {*_APPEND_ONLY_CREATES, "fin_close", "wf_repair_plan"}
-)
+_FORCED_CREATES = frozenset({*_APPEND_ONLY_CREATES, "fin_close", "wf_repair_plan"})
 
 _ENTITY_KEY_DESTINATIONS = (
     "path.id",
@@ -810,171 +807,46 @@ def _create_login_user(
     *,
     origin: str,
 ) -> dict[str, object]:
-    username = str(values.get("body.username") or "").strip().lower()
-    password = str(values.get("body.password") or "")
-    display_name = str(values.get("body.display_name") or username).strip()
-    if not username or len(password) < 8 or not display_name:
-        raise HTTPException(
-            status_code=422,
-            detail="Username, display name and a password of at least 8 characters are required",
-        )
-    role_ref = str(values.get("body.role") or "").strip()
-    request_key = _request_key("user_add", actor, values)
-    with tenant_session(actor.tenant_id) as session:
-        replay = (
-            session.execute(
-                text(
-                    """
-                    SELECT id, after_payload FROM business.events
-                    WHERE tenant_id = :tenant_id AND tool_name = 'user_add'
-                      AND request_key = :request_key
-                    """
-                ),
-                {"tenant_id": actor.tenant_id, "request_key": request_key},
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if replay:
-            return {
-                "ok": True,
-                **dict(replay["after_payload"] or {}),
-                "event_id": str(replay["id"]),
-                "idempotent_replay": True,
-                "effect_verified": True,
-            }
-        if session.execute(
-            text("SELECT 1 FROM iam.users WHERE lower(username) = :username"),
-            {"username": username},
-        ).scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="Username already exists")
-        role = None
-        if role_ref:
-            role = (
-                session.execute(
-                    text(
-                        """
-                        SELECT id, role_key, name, level FROM iam.roles
-                        WHERE tenant_id = :tenant_id AND active
-                          AND (
-                            id::text = :role_ref OR role_key = :role_ref
-                            OR lower(name) = lower(:role_ref)
-                          )
-                        LIMIT 1
-                        """
-                    ),
-                    {"tenant_id": actor.tenant_id, "role_ref": role_ref},
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if role is None:
-                raise HTTPException(status_code=404, detail="Tenant role was not found")
-        user_id = uuid4()
-        level = int(role["level"]) if role else 1
-        session.execute(
-            text(
-                """
-                INSERT INTO iam.users(id, username, display_name, password_hash)
-                VALUES (:id, :username, :display_name, :password_hash)
-                """
-            ),
-            {
-                "id": user_id,
-                "username": username,
-                "display_name": display_name,
-                "password_hash": hash_password(password),
-            },
-        )
-        session.execute(
-            text(
-                """
-                INSERT INTO iam.memberships(
-                  tenant_id, user_id, role_level, topology_level, topology_title
-                ) VALUES (
-                  :tenant_id, :id, :level, :level, :topology_title
-                )
-                """
-            ),
-            {
-                "id": user_id,
-                "tenant_id": actor.tenant_id,
-                "level": level,
-                "topology_title": str(role["name"]) if role else "Member",
-            },
-        )
-        if role:
-            session.execute(
-                text(
-                    """
-                    INSERT INTO iam.membership_roles(tenant_id, user_id, role_id)
-                    VALUES (:tenant_id, :user_id, :role_id)
-                    """
-                ),
-                {
-                    "tenant_id": actor.tenant_id,
-                    "user_id": user_id,
-                    "role_id": role["id"],
-                },
-            )
-        event_id = uuid4()
-        result = {
-            "user_id": str(user_id),
-            "username": username,
-            "display_name": display_name,
-            "role": dict(_json_safe(dict(role))) if role else None,
-            "tenant_id": str(actor.tenant_id),
-            "transaction_committed": True,
-            "readback_verified": True,
-        }
-        session.execute(
-            text(
-                """
-                INSERT INTO business.events(
-                  id, tenant_id, tool_name, resource_type, entity_key,
-                  operation, request_key, confirmation_mode, origin,
-                  after_payload, actor_user_id
-                ) VALUES (
-                  :id, :tenant_id, 'user_add', 'iam.user', :entity_key,
-                  'user.add', :request_key, 'passkey', :origin,
-                  CAST(:after_payload AS jsonb), :actor_user_id
-                )
-                """
-            ),
-            {
-                "id": event_id,
-                "tenant_id": actor.tenant_id,
-                "entity_key": str(user_id),
-                "request_key": request_key,
-                "origin": origin[:80],
-                "after_payload": _canonical(result),
-                "actor_user_id": actor.user_id,
-            },
-        )
-        session.execute(
-            text(
-                """
-                INSERT INTO audit.events(
-                  tenant_id, actor_user_id, event_type, payload
-                ) VALUES (
-                  :tenant_id, :actor_user_id, 'iam.user.created',
-                  CAST(:audit_payload AS jsonb)
-                )
-                """
-            ),
-            {
-                "tenant_id": actor.tenant_id,
-                "actor_user_id": actor.user_id,
-                "audit_payload": _canonical({"user_id": str(user_id), "username": username}),
-            },
-        )
-    return {
-        "ok": True,
-        **result,
-        "event_id": str(event_id),
-        "idempotent_replay": False,
-        "effect_verified": True,
+    from app.services.member_provisioning import provision_member_account
+
+    return provision_member_account(
+        actor,
+        {
+            "username": values.get("body.username"),
+            "password": values.get("body.password"),
+            "display_name": values.get("body.display_name"),
+            "department": values.get("body.department"),
+            "position": values.get("body.position"),
+            "access_role": values.get("body.access_role"),
+        },
+        origin=origin,
+    )
+
+
+def _change_access_role(
+    tool_name: str,
+    actor: ActorContext,
+    values: dict[str, object],
+    *,
+    origin: str,
+) -> dict[str, object]:
+    from app.services.member_provisioning import update_access_role, upsert_access_role
+
+    payload = {
+        "name": values.get("body.name"),
+        "role_key": values.get("body.role_key"),
+        "permissions": values.get("body.permissions"),
+        "level": values.get("body.level"),
     }
+    payload = {key: value for key, value in payload.items() if value is not None}
+    if tool_name == "role_update":
+        return update_access_role(
+            actor,
+            str(values.get("path.id") or ""),
+            payload,
+            origin=origin,
+        )
+    return upsert_access_role(actor, payload, origin=origin)
 
 
 def _reset_inventory(
@@ -1676,6 +1548,8 @@ def execute_retained_capability(
         )
     if tool_name == "user_add":
         return _create_login_user(actor, values, origin=origin)
+    if tool_name in {"role_upsert", "role_update"}:
+        return _change_access_role(tool_name, actor, values, origin=origin)
     if tool_name == "inventory_reset":
         return _reset_inventory(actor, values, origin=origin)
     if tool_name == "profile_reset":

@@ -179,6 +179,15 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         assert created_response.status_code == 201
         task = created_response.json()
         task_id = task["id"]
+        assert task["can_update"] is True
+        assert task["can_delete"] is True
+        assert task["can_status"] is True
+        assert task["capabilities"] == {
+            "can_update": True,
+            "can_change_status": True,
+            "can_delete": True,
+            "can_reopen": False,
+        }
 
         opened = client.post(
             f"/api/tasks/{task_id}/collaboration/open",
@@ -264,6 +273,41 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
 
         active_actor = outsider
         assert client.get("/api/task-collaboration/discover").json()["items"] == []
+        assert client.get(f"/api/tasks/{task_id}/collaboration").status_code == 404
+
+        active_actor = owner
+        edited = client.patch(
+            f"/api/tasks/{task_id}",
+            json={
+                "expected_version": updated.json()["version"],
+                "title": "Edited collaboration event",
+                "kind": "event",
+                "category": "meeting",
+                "start_at": "2026-08-05T09:00:00+08:00",
+                "end_at": "2026-08-05T10:30:00+08:00",
+                "due_at": None,
+            },
+        )
+        assert edited.status_code == 200
+        assert edited.json()["title"] == "Edited collaboration event"
+        assert edited.json()["kind"] == "event"
+        assert edited.json()["category"] == "meeting"
+
+        unconfirmed = client.request(
+            "DELETE",
+            f"/api/tasks/{task_id}",
+            json={"expected_version": edited.json()["version"]},
+        )
+        assert unconfirmed.status_code == 422
+        deleted = client.request(
+            "DELETE",
+            f"/api/tasks/{task_id}",
+            json={"expected_version": edited.json()["version"], "confirm": True},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+        assert deleted.json()["collaboration_removed"] is True
+        assert client.get(f"/api/tasks/{task_id}").status_code == 404
         assert client.get(f"/api/tasks/{task_id}/collaboration").status_code == 404
     finally:
         app.dependency_overrides.clear()

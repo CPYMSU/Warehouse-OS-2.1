@@ -19,7 +19,13 @@
     {
       "glob": "backend/pyproject.toml",
       "risk": "critical",
-      "impacts": ["api", "dependencies", "integration"],
+      "impacts": ["api", "research_executor", "dependencies", "integration"],
+      "tests": ["backend/tests"]
+    },
+    {
+      "glob": "backend/Dockerfile.research-executor",
+      "risk": "critical",
+      "impacts": ["research_executor", "dependencies", "integration"],
       "tests": ["backend/tests"]
     },
     {
@@ -112,7 +118,7 @@
     {
       "glob": "ops/**",
       "risk": "critical",
-      "impacts": ["api", "control_plane", "integration"],
+      "impacts": ["control_plane", "integration"],
       "tests": ["backend/tests"]
     },
     {

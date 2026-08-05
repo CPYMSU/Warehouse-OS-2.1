@@ -149,10 +149,12 @@ Authorization: Bearer wak_<signed-token>
 Stable endpoints:
 
 - `GET /api/workspaces/v1/info`
+- `GET /api/workspaces/v1/usage`
 - `POST /api/workspaces/v1/storage/probe`
 - `PUT /api/workspaces/v1/runtime`
 - `POST /api/workspaces/v1/sources/upload`
 - `POST /api/workspaces/v1/deployments`
+- `POST /api/workspaces/v1/deployments/{deployment_id}/repair`
 - `POST /api/workspaces/v1/jobs`
 - `PUT /api/workspaces/v1/database/policy`
 - `GET /api/workspaces/v1/database/control`
@@ -173,12 +175,57 @@ stored token hash inside that tenant's RLS transaction; it never scans other
 companies' credential tables. Data writes support optimistic concurrency
 through `expected_version`; stale writes return HTTP 409.
 
+`usage` refreshes platform-owned measurements for source archives, every
+retained Runtime release/build/virtual environment, persistent DATA, managed
+data objects and PostgreSQL. It returns component bytes, `measured_at` and an
+additive `total_bytes`; workloads never receive host filesystem paths.
+
 The schema response contains both `collections` and real PostgreSQL `tables`.
 Collection endpoints remain the portable JSON document contract. Relational
 table endpoints operate only on readable tables and require exactly one primary
 key for writes; their opaque PostgreSQL row version is returned for optimistic
 concurrency. External providers expose relational tables but do not silently
 install the platform's `workspace_records` collection table.
+
+## Deployment self-repair
+
+Users never need a host port, SSH, Docker access or a database owner password
+to repair their own program. All calls use the platform HTTPS endpoint on port
+443 and a workspace key containing `deploy:write`:
+
+```http
+POST /api/workspaces/v1/deployments/{deployment_id}/repair
+Authorization: Bearer wak_<signed-token>
+Content-Type: application/json
+
+{"source":"user","reason":"health check reported a missing runtime"}
+```
+
+The call is asynchronous and idempotent. A `ready` deployment may be repaired
+only when it is the workspace's active revision; a failed deployment may be
+retried without replacing the previous healthy revision first. If the same
+deployment is already `queued`, `building` or `deploying`, the API returns the
+current deployment with `accepted=false` instead of creating duplicate work.
+Observe progress with:
+
+- `GET /api/workspaces/v1/deployments/{deployment_id}`
+- `GET /api/workspaces/v1/deployments/{deployment_id}/events`
+- `GET /api/workspaces/v1/deployments/{deployment_id}/logs` with `logs:read`
+
+The Runtime Controller separately reconciles every active `ready` deployment.
+If a platform-managed container has actually disappeared, it emits
+`self_heal_queued` and rebuilds that exact deployment automatically. Temporary
+Docker API failures and intentionally stopped containers are not treated as
+missing, which prevents a control-plane outage from causing mass redeploys.
+
+An AI Secretary uses the same repair endpoint with `source=ai_secretary`, a
+delegated workspace key and a concise reason. It may read redacted events/logs,
+classify a retryable failure, and request this bounded action. It never receives
+the Docker socket, server SSH key, database DSN or superuser role. Every request
+records the credential, source, reason, previous status and active-revision
+fact in the deployment event stream. Higher-risk actions such as database
+restore, destructive rollback, credential rotation or provider failover remain
+separate confirmation-gated operations.
 
 ## Standalone database and browser gateway
 

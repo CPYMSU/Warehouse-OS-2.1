@@ -194,6 +194,9 @@ def _serialize(session: Session, actor: ActorContext, task: dict[str, object]) -
             {"plan_id": task["plan_id"]},
         ).scalar_one_or_none()
     can_status = _can_manage_task(actor, session, task)
+    can_update = can_status
+    can_delete = can_status
+    can_reopen = can_status and task["status"] == "completed"
     return {
         "id": str(task["id"]),
         "title": task["title"],
@@ -225,7 +228,15 @@ def _serialize(session: Session, actor: ActorContext, task: dict[str, object]) -
         ],
         "assignee_name": assignees[0]["display_name"] if assignees else None,
         "can_status": can_status,
-        "can_reopen": can_status and task["status"] == "completed",
+        "can_update": can_update,
+        "can_delete": can_delete,
+        "can_reopen": can_reopen,
+        "capabilities": {
+            "can_update": can_update,
+            "can_change_status": can_status,
+            "can_delete": can_delete,
+            "can_reopen": can_reopen,
+        },
         "actions": sorted(_TRANSITIONS[str(task["status"])]),
     }
 
@@ -550,6 +561,10 @@ def update_task(actor: ActorContext, task_id: str, payload: dict[str, object]) -
             values["visibility"] = _enum(
                 payload.get("visibility"), _VISIBILITIES, label="visibility", default=""
             )
+        if "kind" in payload:
+            values["kind"] = _enum(
+                payload.get("kind"), _KINDS, label="task kind", default=""
+            )
         if "all_day" in payload:
             values["all_day"] = bool(payload["all_day"])
         if "owner_org_unit_id" in payload:
@@ -574,6 +589,19 @@ def update_task(actor: ActorContext, task_id: str, payload: dict[str, object]) -
             ):
                 raise HTTPException(status_code=422, detail="Plan is unavailable")
             values["plan_id"] = plan_id
+        effective_kind = str(values.get("kind") or task["kind"])
+        if task["kind"] == "plan" and effective_kind != "plan":
+            child_exists = session.execute(
+                text("SELECT 1 FROM workflow.tasks WHERE plan_id = :plan_id LIMIT 1"),
+                {"plan_id": target_id},
+            ).scalar_one_or_none()
+            if child_exists is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Move tasks out of this plan before changing its type",
+                )
+        if effective_kind == "plan":
+            values["plan_id"] = None
         assignees = None
         if "assignees" in payload:
             assignees = _assignees(actor, session, payload.get("assignees"))
@@ -625,6 +653,76 @@ def update_task(actor: ActorContext, task_id: str, payload: dict[str, object]) -
             {"task_id": task_id, "fields": changed_fields},
         )
         return _serialize(session, actor, _task_row(session, target_id))
+
+
+def delete_task(actor: ActorContext, task_id: str, payload: dict[str, object]) -> dict[str, object]:
+    _require(actor, "tasks.read", "tasks.create", "tasks.manage")
+    expected_version = payload.get("expected_version")
+    if not isinstance(expected_version, int) or expected_version < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Expected task version is required",
+        )
+    if payload.get("confirm") is not True:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Task deletion must be explicitly confirmed",
+        )
+    target_id = _uuid(task_id, label="task id")
+    with tenant_session(actor.tenant_id) as session:
+        task = _task_row(session, target_id)
+        if not _can_manage_task(actor, session, task):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Task delete permission denied",
+            )
+        collaboration_removed = bool(
+            session.execute(
+                text(
+                    "SELECT 1 FROM workflow.task_collaboration_spaces "
+                    "WHERE task_id = :task_id LIMIT 1"
+                ),
+                {"task_id": target_id},
+            ).scalar_one_or_none()
+        )
+        detached_plan_tasks = int(
+            session.execute(
+                text("SELECT count(*) FROM workflow.tasks WHERE plan_id = :task_id"),
+                {"task_id": target_id},
+            ).scalar_one()
+        )
+        result = session.execute(
+            text(
+                "DELETE FROM workflow.tasks "
+                "WHERE id = :task_id AND version = :expected_version"
+            ),
+            {"task_id": target_id, "expected_version": expected_version},
+        )
+        if result.rowcount != 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Task changed; refresh before deleting",
+            )
+        _audit(
+            session,
+            actor,
+            "task.deleted",
+            {
+                "task_id": str(target_id),
+                "title": task["title"],
+                "kind": task["kind"],
+                "version": expected_version,
+                "collaboration_removed": collaboration_removed,
+                "detached_plan_tasks": detached_plan_tasks,
+            },
+        )
+        return {
+            "ok": True,
+            "deleted": True,
+            "task_id": str(target_id),
+            "collaboration_removed": collaboration_removed,
+            "detached_plan_tasks": detached_plan_tasks,
+        }
 
 
 def update_task_status(

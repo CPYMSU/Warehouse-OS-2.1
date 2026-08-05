@@ -15,7 +15,7 @@ import time
 import traceback
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import httpx
@@ -32,6 +32,7 @@ from app.services.hosted_database import migration_database_url, runtime_databas
 from app.services.hosting_fabric import reconcile_repository_resources, runtime_environment
 from app.services.object_storage import object_store_read_candidates
 from app.services.source_packages import application_root, materialize_source_archive
+from app.services.workspace_usage import measure_workspace_runtime_storage
 
 
 def _python_api_launcher_source() -> str:
@@ -180,6 +181,14 @@ class DockerEngine:
             "status": state.get("Status"),
             "exit_code": state.get("ExitCode"),
         }
+
+    def container_exists(self, name: str) -> bool:
+        response = self.client.get(f"{self.api_prefix}/containers/{name}/json")
+        if response.status_code == 404:
+            return False
+        if response.status_code != 200:
+            self._raise_engine_error(response, "container inspection")
+        return True
 
     def wait(self, name: str, *, timeout: int = 1200) -> int:
         """Wait for a bounded one-shot container and return its exit code."""
@@ -345,7 +354,22 @@ class DockerEngine:
         if failure:
             raise RuntimeError(f"Docker Engine image pull failed: {failure[:500]}")
 
-    def build(self, root: Path, *, dockerfile: str, tag: str) -> list[str]:
+    def image_exists(self, image: str) -> bool:
+        encoded = quote(image, safe="")
+        response = self.client.get(
+            f"{self.api_prefix}/images/{encoded}/json",
+            timeout=30,
+        )
+        return response.status_code == 200
+
+    def build(
+        self,
+        root: Path,
+        *,
+        dockerfile: str,
+        tag: str,
+        pull: bool = True,
+    ) -> list[str]:
         dockerfile_path = (root / dockerfile).resolve()
         dockerfile_path.relative_to(root.resolve())
         if not dockerfile_path.is_file():
@@ -367,7 +391,7 @@ class DockerEngine:
                         "dockerfile": dockerfile,
                         "rm": "true",
                         "forcerm": "true",
-                        "pull": "true",
+                        "pull": str(pull).lower(),
                     },
                     headers={"Content-Type": "application/x-tar"},
                     content=stream,
@@ -400,6 +424,7 @@ class RuntimeController:
         self._last_capacity_observation = 0.0
         self._last_scaling_reconcile = 0.0
         self._last_repository_reconcile = 0.0
+        self._last_runtime_drift_reconcile = 0.0
 
     def reconcile_repositories(self) -> int:
         if time.monotonic() - self._last_repository_reconcile < 60:
@@ -912,6 +937,7 @@ class RuntimeController:
         if parsed.query:
             route += "?" + parsed.query
         candidates = [
+            f"http://api:8080{route}",
             f"http://warehouse-os-api-green:8080{route}",
             f"http://warehouse-os-api-blue:8080{route}",
             url,
@@ -973,8 +999,53 @@ class RuntimeController:
             f"{str(snapshot['workspace_id']).replace('-', '')[:20]}-"
             f"{str(snapshot['id']).replace('-', '')[:16]}-{suffix}:latest"
         )
-        logs = engine.build(root, dockerfile=selected_dockerfile, tag=tag)
+        if engine.image_exists(tag):
+            return tag, ["Reused immutable deployment image from the local Docker cache"]
+        try:
+            logs = engine.build(
+                root,
+                dockerfile=selected_dockerfile,
+                tag=tag,
+                pull=True,
+            )
+        except RuntimeError as exc:
+            if engine.image_exists(tag):
+                return tag, [
+                    "Recovered the immutable deployment image after an interrupted build stream"
+                ]
+            if not self._transient_registry_failure(str(exc)):
+                raise
+            logs = [
+                "Registry access failed; retried with trusted base images from the local cache"
+            ]
+            logs.extend(
+                engine.build(
+                    root,
+                    dockerfile=selected_dockerfile,
+                    tag=tag,
+                    pull=False,
+                )
+            )
         return tag, logs
+
+    @staticmethod
+    def _transient_registry_failure(message: str) -> bool:
+        normalized = message.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "connection reset",
+                "connection timed out",
+                "context deadline exceeded",
+                "failed to do request",
+                "failed to resolve source metadata",
+                "i/o timeout",
+                "network is unreachable",
+                "no such host",
+                "tls handshake timeout",
+                "unexpected eof",
+            )
+        )
 
     @staticmethod
     def _compose_environment(value: object) -> dict[str, str]:
@@ -1430,6 +1501,18 @@ class RuntimeController:
                 + ", ".join(str(item) for item in database_release.get("blockers", []))
             )
 
+        storage_measurement = measure_workspace_runtime_storage(
+            self.settings,
+            tenant_id=tenant_id,
+            workspace_id=snapshot["workspace_id"],
+        )
+        result["occupancy"] = {
+            "runtime_release_bytes": storage_measurement["runtime_release_bytes"],
+            "data_volume_bytes": storage_measurement["data_volume_bytes"],
+            "measured_at": storage_measurement["measured_at"],
+            "measurement_status": storage_measurement["measurement_status"],
+        }
+
         with tenant_session(tenant_id) as session:
             current = session.execute(
                 text(
@@ -1486,12 +1569,17 @@ class RuntimeController:
                 text(
                     """
                     UPDATE digital_asset.workspace_usage
-                    SET runtime_bytes=:runtime_bytes, revision=revision+1
+                    SET runtime_bytes=:runtime_bytes,
+                        data_volume_bytes=:data_volume_bytes,
+                        measured_at=:measured_at,
+                        revision=revision+1
                     WHERE workspace_id=:workspace_id
                     """
                 ),
                 {
-                    "runtime_bytes": materialized["runtime_bytes"],
+                    "runtime_bytes": storage_measurement["runtime_release_bytes"],
+                    "data_volume_bytes": storage_measurement["data_volume_bytes"],
+                    "measured_at": storage_measurement["measured_at"],
                     "workspace_id": snapshot["workspace_id"],
                 },
             )
@@ -1679,6 +1767,104 @@ class RuntimeController:
                 {"id": row["workspace_id"]},
             )
             _event(session, deployment_id, tenant_id, "failed", {"error": message})
+
+    def _runtime_drift_candidates(self) -> list[tuple[UUID, UUID, list[str]]]:
+        candidates: list[tuple[UUID, UUID, list[str]]] = []
+        for tenant_id in self._tenants():
+            with tenant_session(tenant_id) as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT d.id AS deployment_id,d.result
+                        FROM digital_asset.workspaces AS w
+                        JOIN digital_asset.deployments AS d
+                          ON d.id=w.active_deployment_id
+                        WHERE d.status='ready' AND d.health='healthy'
+                          AND d.runtime_profile_key IS NOT NULL
+                        ORDER BY d.completed_at NULLS LAST,d.created_at
+                        """
+                    )
+                ).mappings()
+                for row in rows:
+                    result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
+                    names = [
+                        str(value)
+                        for value in result.get("container_names") or []
+                        if re.fullmatch(r"warehouse-runtime-[a-zA-Z0-9_.-]+", str(value))
+                    ]
+                    if names:
+                        candidates.append(
+                            (tenant_id, UUID(str(row["deployment_id"])), names)
+                        )
+                    if len(candidates) >= 8:
+                        return candidates
+        return candidates
+
+    def reconcile_runtime_drift(self) -> int:
+        """Requeue an active healthy deployment when a managed container vanished."""
+
+        if time.monotonic() - self._last_runtime_drift_reconcile < 15:
+            return 0
+        self._last_runtime_drift_reconcile = time.monotonic()
+        candidates = self._runtime_drift_candidates()
+        if not candidates:
+            return 0
+        missing_by_deployment: list[tuple[UUID, UUID, list[str]]] = []
+        engine = DockerEngine(self.settings.runtime_docker_socket)
+        try:
+            for tenant_id, deployment_id, names in candidates:
+                missing = [name for name in names if not engine.container_exists(name)]
+                if missing:
+                    missing_by_deployment.append((tenant_id, deployment_id, missing))
+        finally:
+            engine.close()
+
+        repaired = 0
+        for tenant_id, deployment_id, missing in missing_by_deployment:
+            with tenant_session(tenant_id) as session:
+                queued = session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.deployments AS deployment
+                        SET status='queued',health='pending',lease_owner=NULL,
+                            lease_expires_at=NULL,started_at=NULL,completed_at=NULL
+                        WHERE deployment.id=:deployment_id
+                          AND deployment.status='ready'
+                          AND deployment.health='healthy'
+                          AND EXISTS (
+                            SELECT 1 FROM digital_asset.workspaces AS workspace
+                            WHERE workspace.active_deployment_id=deployment.id
+                          )
+                        RETURNING deployment.id
+                        """
+                    ),
+                    {"deployment_id": deployment_id},
+                ).scalar_one_or_none()
+                if queued is None:
+                    continue
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.workspaces
+                        SET runtime_status='building'
+                        WHERE active_deployment_id=:deployment_id
+                        """
+                    ),
+                    {"deployment_id": deployment_id},
+                )
+                _event(
+                    session,
+                    deployment_id,
+                    tenant_id,
+                    "self_heal_queued",
+                    {
+                        "reason": "managed_runtime_container_missing",
+                        "missing_container_names": missing,
+                        "worker": self.worker_id,
+                    },
+                )
+                repaired += 1
+        return repaired
 
     def _scaling_candidates(self) -> list[tuple[UUID, dict[str, object]]]:
         candidates: list[tuple[UUID, dict[str, object]]] = []
@@ -1912,6 +2098,7 @@ class RuntimeController:
             marker.write_text(f"{self.worker_id} {datetime.now(UTC).isoformat()}", encoding="utf-8")
             try:
                 self.observe_capacity()
+                self.reconcile_runtime_drift()
                 self.reconcile_scaling()
                 self.reconcile_repositories()
                 worked = self.run_once()

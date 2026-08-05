@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _RESOURCE_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
+_RESOURCE_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_-]*(?::[a-z][a-z0-9_-]*)+$")
 _ORIGINS = frozenset({"auto_runtime", "manual_ui", "api", "terminal", "super_terminal"})
 
 
@@ -71,22 +72,32 @@ def _resource_key(value: object) -> str:
 
 
 def _registry_definition(session: Session, resource_key: object) -> dict[str, object]:
-    key = _resource_key(resource_key)
-    resource = (
+    reference = str(resource_key or "").strip().lower()
+    if not (_RESOURCE_KEY_RE.fullmatch(reference) or _RESOURCE_ALIAS_RE.fullmatch(reference)):
+        raise HTTPException(status_code=422, detail="Invalid resource key or alias")
+    resources = (
         session.execute(
             text(
                 """
                 SELECT * FROM app.resource_types
-                WHERE resource_key = :resource_key AND active
+                WHERE active AND (
+                  resource_key=:reference OR aliases @> jsonb_build_array(:reference)
+                )
+                ORDER BY (resource_key=:reference) DESC,resource_key
+                LIMIT 3
                 """
             ),
-            {"resource_key": key},
+            {"reference": reference},
         )
         .mappings()
-        .one_or_none()
+        .all()
     )
-    if resource is None:
+    if not resources:
         raise HTTPException(status_code=404, detail="Semantic resource is not registered")
+    if len(resources) > 1 and resources[0]["resource_key"] != reference:
+        raise HTTPException(status_code=409, detail="Semantic resource alias is ambiguous")
+    resource = resources[0]
+    key = str(resource["resource_key"])
     fields = [
         dict(row)
         for row in session.execute(
@@ -128,15 +139,17 @@ def _public_resource(resource: dict[str, object]) -> dict[str, object]:
         "description": str(resource.get("description") or ""),
         "identity_fields": list(resource.get("identity_fields") or []),
         "allowed_effects": list(resource.get("allowed_effects") or []),
+        "aliases": list(resource.get("aliases") or []),
         "storage_adapter": str(resource["storage_adapter"]),
     }
 
 
 def list_resources(actor: ActorContext) -> dict[str, object]:
     with tenant_session(actor.tenant_id) as session:
-        rows = session.execute(
-            text(
-                """
+        rows = (
+            session.execute(
+                text(
+                    """
                 SELECT rt.*,
                        COUNT(rf.field_key) FILTER (WHERE rf.active)::integer AS field_count,
                        COUNT(rf.field_key) FILTER (
@@ -149,8 +162,11 @@ def list_resources(actor: ActorContext) -> dict[str, object]:
                 GROUP BY rt.resource_key
                 ORDER BY rt.resource_key
                 """
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     items = [
         {
             **_public_resource(dict(row)),
@@ -243,9 +259,10 @@ def list_mutations(
         clauses.append("resource_ref = :resource_ref")
         params["resource_ref"] = str(resource_ref).strip()
     with tenant_session(actor.tenant_id) as session:
-        rows = session.execute(
-            text(
-                f"""
+        rows = (
+            session.execute(
+                text(
+                    f"""
                 SELECT id, operation_id, actor_user_id, run_id, conversation_id,
                        execution_identity, origin, coverage, resource_key,
                        resource_id, resource_ref, effect, status, intent,
@@ -253,13 +270,16 @@ def list_mutations(
                        after_state, expected_version, committed_version,
                        verification, error, created_at, committed_at
                 FROM secretariat.data_mutations
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY created_at DESC
                 LIMIT :limit
                 """
-            ),
-            params,
-        ).mappings().all()
+                ),
+                params,
+            )
+            .mappings()
+            .all()
+        )
     items = [_json_safe(dict(row)) for row in rows]
     return {"ok": True, "items": items, "total": len(items), "limit": bounded_limit}
 
@@ -280,9 +300,10 @@ def list_capability_gaps(
         condition += " AND status = :status"
         params["status"] = normalized_status
     with tenant_session(actor.tenant_id) as session:
-        rows = session.execute(
-            text(
-                f"""
+        rows = (
+            session.execute(
+                text(
+                    f"""
                 SELECT id, fingerprint, resource_key, capability_key,
                        domain_key, effect, field_set, semantic_contract,
                        last_error,
@@ -294,9 +315,12 @@ def list_capability_gaps(
                 ORDER BY occurrence_count DESC, last_seen_at DESC
                 LIMIT :limit
                 """
-            ),
-            params,
-        ).mappings().all()
+                ),
+                params,
+            )
+            .mappings()
+            .all()
+        )
     items = [_json_safe(dict(row)) for row in rows]
     return {"ok": True, "items": items, "total": len(items), "limit": bounded_limit}
 
@@ -323,15 +347,12 @@ def record_missing_capability_gap(
     semantic_contract = dict(entry.get("semantic_contract") or {})
     declared_resource = str(semantic_contract.get("resource") or "").strip()
     effect = str(
-        semantic_contract.get("effect")
-        or ("write" if bool(entry.get("writes")) else "read")
+        semantic_contract.get("effect") or ("write" if bool(entry.get("writes")) else "read")
     )[:120]
     domain_key = str(entry.get("domain") or "").strip() or None
     if domain_key is None:
         try:
-            domain_key = str(
-                legacy_catalog.capability_summary(entry)["category"]
-            ).strip() or None
+            domain_key = str(legacy_catalog.capability_summary(entry)["category"]).strip() or None
         except (KeyError, TypeError, ValueError):
             domain_key = None
     safe_arguments = {
@@ -371,9 +392,10 @@ def record_missing_capability_gap(
                 ),
                 {"resource_key": declared_resource},
             ).scalar_one_or_none()
-        row = session.execute(
-            text(
-                """
+        row = (
+            session.execute(
+                text(
+                    """
                 INSERT INTO terminal.capability_gaps(
                   id, tenant_id, fingerprint, resource_key, capability_key,
                   domain_key, effect, field_set, examples,
@@ -400,24 +422,27 @@ def record_missing_capability_gap(
                   END
                 RETURNING id, fingerprint, occurrence_count, status
                 """
-            ),
-            {
-                "id": uuid4(),
-                "tenant_id": actor.tenant_id,
-                "fingerprint": fingerprint,
-                "resource_key": resource_key,
-                "capability_key": tool_name,
-                "domain_key": domain_key,
-                "effect": effect,
-                "examples": json.dumps([example], ensure_ascii=False, default=str),
-                "suggested_tool_name": tool_name[:128],
-                "semantic_contract": json.dumps(semantic_contract, ensure_ascii=False),
-                "last_error": json.dumps(
-                    {"reason": str(reason)[:2000], "origin": origin},
-                    ensure_ascii=False,
                 ),
-            },
-        ).mappings().one()
+                {
+                    "id": uuid4(),
+                    "tenant_id": actor.tenant_id,
+                    "fingerprint": fingerprint,
+                    "resource_key": resource_key,
+                    "capability_key": tool_name,
+                    "domain_key": domain_key,
+                    "effect": effect,
+                    "examples": json.dumps([example], ensure_ascii=False, default=str),
+                    "suggested_tool_name": tool_name[:128],
+                    "semantic_contract": json.dumps(semantic_contract, ensure_ascii=False),
+                    "last_error": json.dumps(
+                        {"reason": str(reason)[:2000], "origin": origin},
+                        ensure_ascii=False,
+                    ),
+                },
+            )
+            .mappings()
+            .one()
+        )
     return {
         "id": str(row["id"]),
         "fingerprint": str(row["fingerprint"]),
@@ -453,17 +478,15 @@ def _resolve_row(
         column_name = field.get("storage_column") if field else field_key
         predicates.append(f"CAST({_identifier(column_name)} AS text) = :resource_ref")
     if not predicates:
-        predicates.append(
-            f"CAST({_identifier(resource['id_column'])} AS text) = :resource_ref"
-        )
+        predicates.append(f"CAST({_identifier(resource['id_column'])} AS text) = :resource_ref")
     suffix = " FOR UPDATE" if lock else ""
     rows = (
         session.execute(
             text(
                 f"""
                 SELECT * FROM {_table_name(resource)}
-                WHERE {_identifier(resource['tenant_column'])} = :tenant_id
-                  AND ({' OR '.join(predicates)})
+                WHERE {_identifier(resource["tenant_column"])} = :tenant_id
+                  AND ({" OR ".join(predicates)})
                 LIMIT 3{suffix}
                 """
             ),
@@ -510,8 +533,7 @@ def _state(definition: dict[str, object], row: dict[str, object]) -> dict[str, o
         "resource_id": str(row[resource["id_column"]]),
         "version": _version(resource, row),
         "data": {
-            str(field["field_key"]): _extract_value(row, field)
-            for field in definition["fields"]
+            str(field["field_key"]): _extract_value(row, field) for field in definition["fields"]
         },
     }
 
@@ -555,9 +577,7 @@ def _relation_column(definition: dict[str, object], field_key: str) -> str:
     return _identifier(field["storage_column"])
 
 
-def observe_resource_graph(
-    actor: ActorContext, payload: dict[str, object]
-) -> dict[str, object]:
+def observe_resource_graph(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
     """Observe one tenant resource and its registered neighbourhood.
 
     Traversal is driven entirely by the semantic registry.  There are no
@@ -580,6 +600,7 @@ def observe_resource_graph(
         session.info["tenant_id"] = actor.tenant_id
         root_definition = _registry_definition(session, resource_key)
         root_row = _resolve_row(session, root_definition, ref)
+
         def enrich_observation(state: dict[str, object]) -> dict[str, object]:
             if state.get("resource") != "digital_asset.workspace":
                 return state
@@ -595,9 +616,7 @@ def observe_resource_graph(
                     "hosting_url_status": "active",
                     "application_url": data.get("public_url"),
                     "entry_kind": (
-                        "deployed_application"
-                        if data.get("public_url")
-                        else "workspace_status"
+                        "deployed_application" if data.get("public_url") else "workspace_status"
                     ),
                     "next_quota_increment_mb": WORKSPACE_QUOTA_STEP_MB,
                 }
@@ -614,9 +633,7 @@ def observe_resource_graph(
                 str(root_state["resource_id"]),
             )
         }
-        entities: list[dict[str, object]] = [
-            {**root_state, "depth": 0, "root": True}
-        ]
+        entities: list[dict[str, object]] = [{**root_state, "depth": 0, "root": True}]
         edges: list[dict[str, object]] = []
         relation_observations: list[dict[str, object]] = []
 
@@ -625,9 +642,10 @@ def observe_resource_graph(
             if depth >= max_depth:
                 continue
             current_key = str(definition["resource"]["resource_key"])
-            relations = session.execute(
-                text(
-                    """
+            relations = (
+                session.execute(
+                    text(
+                        """
                     SELECT * FROM app.resource_relations
                     WHERE active AND (
                       source_resource_key = :resource_key
@@ -635,26 +653,23 @@ def observe_resource_graph(
                     )
                     ORDER BY relation_key
                     """
-                ),
-                {"resource_key": current_key},
-            ).mappings().all()
+                    ),
+                    {"resource_key": current_key},
+                )
+                .mappings()
+                .all()
+            )
             for relation_row in relations:
                 relation = dict(relation_row)
                 outgoing = relation["source_resource_key"] == current_key
                 current_field = str(
-                    relation["source_field_key"]
-                    if outgoing
-                    else relation["target_field_key"]
+                    relation["source_field_key"] if outgoing else relation["target_field_key"]
                 )
                 other_key = str(
-                    relation["target_resource_key"]
-                    if outgoing
-                    else relation["source_resource_key"]
+                    relation["target_resource_key"] if outgoing else relation["source_resource_key"]
                 )
                 other_field = str(
-                    relation["target_field_key"]
-                    if outgoing
-                    else relation["source_field_key"]
+                    relation["target_field_key"] if outgoing else relation["source_field_key"]
                 )
                 join_value = _relation_value(definition, row, current_field)
                 if join_value is None:
@@ -662,27 +677,31 @@ def observe_resource_graph(
                 current_id = str(row[definition["resource"]["id_column"]])
                 other_definition = _registry_definition(session, other_key)
                 other_resource = other_definition["resource"]
-                related_rows = session.execute(
-                    text(
-                        f"""
+                related_rows = (
+                    session.execute(
+                        text(
+                            f"""
                         SELECT * FROM {_table_name(other_resource)}
-                        WHERE {_identifier(other_resource['tenant_column'])} = :tenant_id
+                        WHERE {_identifier(other_resource["tenant_column"])} = :tenant_id
                           AND {_relation_column(other_definition, other_field)} = :join_value
                         ORDER BY {
-                            _identifier(
-                                other_resource.get("version_column")
-                                or other_resource["id_column"]
-                            )
-                        } DESC
+                                _identifier(
+                                    other_resource.get("version_column")
+                                    or other_resource["id_column"]
+                                )
+                            } DESC
                         LIMIT :limit
                         """
-                    ),
-                    {
-                        "tenant_id": actor.tenant_id,
-                        "join_value": join_value,
-                        "limit": relation_limit,
-                    },
-                ).mappings().all()
+                        ),
+                        {
+                            "tenant_id": actor.tenant_id,
+                            "join_value": join_value,
+                            "limit": relation_limit,
+                        },
+                    )
+                    .mappings()
+                    .all()
+                )
                 relation_observations.append(
                     {
                         "relation": str(relation["relation_key"]),
@@ -695,9 +714,7 @@ def observe_resource_graph(
                 )
                 for related_row in related_rows:
                     related_dict = dict(related_row)
-                    related_state = enrich_observation(
-                        _state(other_definition, related_dict)
-                    )
+                    related_state = enrich_observation(_state(other_definition, related_dict))
                     related_id = str(related_state["resource_id"])
                     source = (
                         {"resource": current_key, "id": current_id}
@@ -731,9 +748,7 @@ def observe_resource_graph(
                             {
                                 "relation": str(relation["relation_key"]),
                                 "cardinality": str(relation["cardinality"]),
-                                "description": str(
-                                    relation.get("semantic_description") or ""
-                                ),
+                                "description": str(relation.get("semantic_description") or ""),
                                 "source": source,
                                 "target": target,
                             }
@@ -742,9 +757,7 @@ def observe_resource_graph(
                     if entity_key in visited:
                         continue
                     visited.add(entity_key)
-                    entities.append(
-                        {**related_state, "depth": depth + 1, "root": False}
-                    )
+                    entities.append({**related_state, "depth": depth + 1, "root": False})
                     queue.append((depth + 1, other_definition, related_dict))
 
     grouped: dict[str, list[dict[str, object]]] = {}
@@ -781,9 +794,7 @@ def observe_resource_graph(
                 "entity_count": len(entities),
                 "relation_count": len(edges),
                 "empty_relation_count": sum(
-                    1
-                    for item in relation_observations
-                    if int(item["matched_count"]) == 0
+                    1 for item in relation_observations if int(item["matched_count"]) == 0
                 ),
             },
             "uncertainties": [],
@@ -839,17 +850,21 @@ def query_resources(actor: ActorContext, payload: dict[str, object]) -> dict[str
                 else value
             )
         order_column = resource.get("version_column") or resource["id_column"]
-        rows = session.execute(
-            text(
-                f"""
+        rows = (
+            session.execute(
+                text(
+                    f"""
                 SELECT * FROM {_table_name(resource)}
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY {_identifier(order_column)} DESC
                 LIMIT :limit OFFSET :offset
                 """
-            ),
-            params,
-        ).mappings().all()
+                ),
+                params,
+            )
+            .mappings()
+            .all()
+        )
         items = [_state(definition, dict(row)) for row in rows]
     return {
         "ok": True,
@@ -1204,8 +1219,8 @@ def commit_mutation(
                 text(
                     f"""
                     UPDATE {_table_name(resource)}
-                    SET {', '.join(assignments)}
-                    WHERE {_identifier(resource['id_column'])} = :resource_id
+                    SET {", ".join(assignments)}
+                    WHERE {_identifier(resource["id_column"])} = :resource_id
                     RETURNING *
                     """
                 ),
@@ -1216,8 +1231,7 @@ def commit_mutation(
         )
         after = _state(definition, updated)
         verified = all(
-            after["data"].get(key) == _json_safe(value)
-            for key, value in actual_changes.items()
+            after["data"].get(key) == _json_safe(value) for key, value in actual_changes.items()
         )
         if not verified:
             raise RuntimeError("generic mutation read-back verification failed")
@@ -1464,9 +1478,7 @@ def record_mutation_failure(
                     "actor_user_id": actor.user_id,
                     "operation_id": operation_id,
                     "execution_identity": (
-                        "company_ai"
-                        if normalized_origin == "auto_runtime"
-                        else "requesting_user"
+                        "company_ai" if normalized_origin == "auto_runtime" else "requesting_user"
                     ),
                     "origin": normalized_origin,
                     "resource_key": resource["resource_key"],
@@ -1474,9 +1486,7 @@ def record_mutation_failure(
                     "resource_ref": ref,
                     "status": "conflict" if conflict else "rejected",
                     "intent": str(payload.get("intent") or "")[:4000],
-                    "reasoning_summary": str(
-                        payload.get("reasoning_summary") or ""
-                    )[:4000],
+                    "reasoning_summary": str(payload.get("reasoning_summary") or "")[:4000],
                     "requested_changes": json.dumps(
                         _json_safe(payload.get("changes") or {}), ensure_ascii=False
                     ),
@@ -1490,9 +1500,7 @@ def record_mutation_failure(
                         else None
                     ),
                     "committed_version": (
-                        str(current["version"])
-                        if current.get("version") is not None
-                        else None
+                        str(current["version"]) if current.get("version") is not None else None
                     ),
                     "idempotency_key": idempotency_key,
                     "verification": json.dumps(

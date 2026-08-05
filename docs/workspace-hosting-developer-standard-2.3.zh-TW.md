@@ -159,6 +159,8 @@
 - `database_access: migration` 只允許出現在一次性 lifecycle Job；平台將 owner DSN 注入該 Job 聲明的環境變數，Job 完成後不保留。
 - `database_access: runtime` 的一次性 Job 使用與線上服務相同的最小權限角色，適合 RLS 資料導入或相容性檢查。
 - 應用不得以 Web 啟動命令取得 migration DSN，也不得把遷移藏在長時間服務的 import 階段。
+- 平台備份使用每工作區獨立的 `NOLOGIN + BYPASSRLS` 身份；它只繼承該工作區 owner 權限，Runtime 不得成為其成員。`FORCE ROW LEVEL SECURITY` 不得以關閉 RLS 或只導出 Runtime 可見資料規避。
+- logical backup 必須保留 owner、核對校驗和，並在隔離臨時資料庫恢復；所有 FORCE RLS relation 的源庫與恢復庫行數必須逐表一致才可標記 ready。
 
 ### 06B · 聲明式發布生命週期
 
@@ -169,6 +171,10 @@ python3 dm.py job --source <SOURCE_VERSION_ID> --name migrate
 ~~~
 
 平台把成功證據綁定到 source version、hosting contract digest 與 Job deployment；其他源碼版本的成功記錄不能滿足本次門禁。
+
+### 06D · 平台占用計量
+
+`GET /api/workspaces/v1/usage` 與 `GET /api/workspaces/v1/info` 提供所有工作區一致的占用事實：託管源碼歸檔、全部保留 Runtime release／build／虛擬環境與依賴快取、排除 `.runtime` 後的持久 DATA、託管資料物件、PostgreSQL relation／index／TOAST，以及量測時間與總計。檔案系統量測不跟隨工作負載可建立的符號連結。
 
 ### 06C · 公開事實與資料庫事實的雙層驗收
 

@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+container="${CONTROL_POSTGRES_CONTAINER:-warehouse-os-postgres-1}"
+database="${CONTROL_POSTGRES_DATABASE:-warehouse_os}"
+role="warehouse_control_replica"
+publication="warehouse_control_pub"
+: "${REPL_PASSWORD:?REPL_PASSWORD is required}"
+
+docker exec -i -e REPL_PASSWORD "${container}" sh -lc \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" --set=repl_password="$REPL_PASSWORD"' <<'SQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'warehouse_control_replica') THEN
+    CREATE ROLE warehouse_control_replica LOGIN REPLICATION BYPASSRLS;
+  END IF;
+END
+$$;
+ALTER ROLE warehouse_control_replica
+  WITH LOGIN REPLICATION BYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE
+  PASSWORD :'repl_password';
+SELECT format(
+  'GRANT CONNECT ON DATABASE %I TO warehouse_control_replica',
+  current_database()
+) \gexec
+DO $$
+DECLARE schema_name text;
+DECLARE owner_name text;
+DECLARE target_table record;
+BEGIN
+  FOR schema_name IN
+    SELECT nspname FROM pg_namespace
+    WHERE nspname <> 'information_schema' AND nspname NOT LIKE 'pg_%'
+  LOOP
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO warehouse_control_replica', schema_name);
+    EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO warehouse_control_replica', schema_name);
+    EXECUTE format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA %I TO warehouse_control_replica', schema_name);
+    FOR owner_name IN
+      SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname = schema_name
+    LOOP
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO warehouse_control_replica',
+        owner_name,
+        schema_name
+      );
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON SEQUENCES TO warehouse_control_replica',
+        owner_name,
+        schema_name
+      );
+    END LOOP;
+  END LOOP;
+
+  FOR target_table IN
+    SELECT namespace.nspname AS schema_name, relation.relname AS table_name
+    FROM pg_class AS relation
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE relation.relkind IN ('r', 'p')
+      AND relation.relpersistence = 'p'
+      AND relation.relreplident <> 'f'
+      AND namespace.nspname <> 'information_schema'
+      AND namespace.nspname NOT LIKE 'pg_%'
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_index AS identity_index
+        WHERE identity_index.indrelid = relation.oid
+          AND identity_index.indisprimary
+      )
+  LOOP
+    EXECUTE format(
+      'ALTER TABLE %I.%I REPLICA IDENTITY FULL',
+      target_table.schema_name,
+      target_table.table_name
+    );
+  END LOOP;
+END
+$$;
+SELECT 'CREATE PUBLICATION warehouse_control_pub FOR ALL TABLES'
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_publication WHERE pubname = 'warehouse_control_pub'
+) \gexec
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class AS relation
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE relation.relkind IN ('r', 'p')
+      AND relation.relpersistence = 'p'
+      AND relation.relreplident <> 'f'
+      AND namespace.nspname <> 'information_schema'
+      AND namespace.nspname NOT LIKE 'pg_%'
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_index AS identity_index
+        WHERE identity_index.indrelid = relation.oid
+          AND identity_index.indisprimary
+      )
+  ) THEN
+    RAISE EXCEPTION 'control publication contains tables without a replica identity';
+  END IF;
+END
+$$;
+SQL
+
+printf 'configured_database=%s\nrole=%s\npublication=%s\n' \
+  "${database}" "${role}" "${publication}"

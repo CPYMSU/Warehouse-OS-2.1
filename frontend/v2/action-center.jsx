@@ -55,7 +55,7 @@ window.W2_LANG.addEN({
   "再次執行": "Run again",
   "關閉業務操作": "Close business actions",
   "沒有符合條件的操作": "No matching actions",
-  "能力拓撲": "Capability topology",
+  "指令集拓撲": "Command-set topology",
   "預設折疊 · 依業務域展開操作層級": "Collapsed by default · expand each business domain",
   "全部折疊": "Collapse all",
   "展開結果": "Expand results",
@@ -67,6 +67,13 @@ window.W2_LANG.addEN({
   "錄入、更新與完成業務": "Record, update and complete business work",
   "需要專用確認或多人治理": "Requires dedicated confirmation or multi-party governance",
   "跨公司平台治理入口": "Cross-company platform governance entry",
+  "執行身份": "Execution identity",
+  "請求帳號": "Requesting user",
+  "公司 AI": "Company AI",
+  "確認策略": "Confirmation policy",
+  "語義資源": "Semantic resource",
+  "驗證方式": "Verification",
+  "適配器": "Adapter",
   "{n} 個分支": "{n} branches",
   "{n} 項可執行": "{n} executable",
   "受治理操作不會由通用按鈕繞過確認；系統會返回它所需的專用流程。": "Governed actions never bypass confirmation through this general button; the system returns the dedicated flow required.",
@@ -89,7 +96,8 @@ const secretName = name => /password|secret|token|api.?key|credential|passkey|sq
 const textOf = value => String(value == null ? "" : value);
 const actionSearchText = action => [
   action.command, action.tool_name, action.description, action.category,
-  action.category_label, action.usage,
+  action.category_label, action.usage, action.execution_identity,
+  action.semantic_resource, action.verification, action.adapter,
   ...Object.keys((action.parameters && action.parameters.properties) || {}),
 ].join(" ").toLowerCase();
 const requestId = () => {
@@ -147,6 +155,9 @@ const stateLabel = action => {
   if (action.confirmation_required) return t("需要專用確認流程");
   return action.writes ? t("立即寫入並留痕") : t("只讀，不改動資料");
 };
+const executionIdentityLabel = action => action.execution_identity === "requesting_user"
+  ? t("請求帳號")
+  : t("公司 AI");
 
 const ActionField = ({ name, property, required, value, onChange, disabled }) => {
   const type = property.type || "string";
@@ -477,7 +488,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
           {loading && !catalogue && <div className="business-action-loading"><span className="spinner"/>{t("載入業務能力中…")}</div>}
           {!loading && loadError && !catalogue && <div className="business-action-load-error"><Icon name="alert" size={20}/><b>{t("業務能力暫時無法載入")}</b><small>{loadError}</small><button className="btn sm" onClick={() => load(true)}>{t("重新載入能力")}</button></div>}
           {!!catalogue && <div className="business-action-count">
-            <span><b>{t("能力拓撲")}</b><small>{t("共 {n} 項", { n: filtered.length })} · {t("預設折疊 · 依業務域展開操作層級")}</small></span>
+            <span><b>{t("指令集拓撲")}</b><small>{t("共 {n} 項", { n: filtered.length })} · {t("預設折疊 · 依業務域展開操作層級")}</small></span>
             <span className="business-action-topology-controls">
               <button type="button" disabled={loading} onClick={() => load(true)}>
                 {loading ? t("載入業務能力中…") : t("重新載入能力")}
@@ -486,7 +497,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
               <button type="button" onClick={expandTopology}>{t("展開結果")}</button>
             </span>
           </div>}
-          {!!catalogue && <nav className="business-action-topology" aria-label={t("能力拓撲")}>
+          {!!catalogue && <nav className="business-action-topology" aria-label={t("指令集拓撲")}>
             {topology.map((node, index) => {
               const categoryOpen = queryExpandsTopology || categoryForcesOpen || expandedCategories.has(node.key);
               const categoryId = "business-action-category-" + node.key.replace(/[^A-Za-z0-9_-]/g, "-");
@@ -519,7 +530,10 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
                           className={"business-action-row" + (selectedName === action.tool_name ? " is-selected" : "")}
                           onClick={() => choose(action)}>
                           <span className={"business-action-state is-" + (action.manual_execution === "execute" ? "ready" : action.confirmation_required ? "governed" : "locked")}/>
-                          <span><b>{action.command}</b><small>{action.description || action.tool_name}</small></span>
+                          <span><b>{action.command}</b><small>{[
+                            action.description || action.tool_name,
+                            action.semantic_resource,
+                          ].filter(Boolean).join(" · ")}</small></span>
                           <em>{String(action.risk || "low").toUpperCase()}</em>
                         </button>)}
                       </div>}
@@ -546,6 +560,13 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
             <div className={"business-action-policy is-" + (selected.manual_execution === "execute" ? "ready" : "governed")}>
               <Icon name={selected.manual_execution === "execute" ? "checkCircle" : "shield"} size={15}/>
               <span><b>{stateLabel(selected)}</b>{selected.confirmation_required && <small>{t("受治理操作不會由通用按鈕繞過確認；系統會返回它所需的專用流程。")}</small>}</span>
+            </div>
+            <div className="business-action-contract" aria-label={t("指令集拓撲")}>
+              <span><small>{t("執行身份")}</small><b>{executionIdentityLabel(selected)}</b></span>
+              <span><small>{t("確認策略")}</small><b>{selected.confirmation_policy && selected.confirmation_policy.mode || "direct"}</b></span>
+              <span><small>{t("語義資源")}</small><b>{selected.semantic_resource || "—"}</b></span>
+              <span><small>{t("驗證方式")}</small><b>{selected.verification || "—"}</b></span>
+              <span><small>{t("適配器")}</small><b>{selected.adapter || selected.execution_kind || "—"}</b></span>
             </div>
 
             {stage === "edit" && <div className="business-action-fields">

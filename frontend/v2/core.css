@@ -973,6 +973,13 @@ html.business-action-open { overflow: hidden; }
 .business-action-policy.is-governed { border-left-color: var(--warn); }
 .business-action-policy span { display: flex; flex-direction: column; gap: 3px; }
 .business-action-policy small { color: var(--ink-3); line-height: 1.45; }
+.business-action-contract {
+  margin: 8px 24px 0; display: grid; grid-template-columns: repeat(5,minmax(0,1fr));
+  border-top: 1px solid var(--rule); border-left: 1px solid var(--hair);
+}
+.business-action-contract > span { min-width: 0; padding: 8px 9px; display: flex; flex-direction: column; gap: 4px; border-right: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.business-action-contract small { color: var(--ink-4); font: 700 7.5px/1 var(--f-mono); letter-spacing: .05em; text-transform: uppercase; }
+.business-action-contract b { overflow: hidden; color: var(--ink-2); font: 700 9px/1.35 var(--f-mono); overflow-wrap: anywhere; }
 .business-action-fields { padding: 18px 24px 26px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px 16px; }
 .business-action-field { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .business-action-field-label { display: flex; justify-content: space-between; gap: 8px; font: 700 10px/1.2 var(--f-mono); }
@@ -1030,6 +1037,7 @@ html.business-action-open { overflow: hidden; }
   .business-action-title { padding: 18px 15px 14px; flex-direction: column; }
   .business-action-badges { justify-content: flex-start; }
   .business-action-policy { margin: 12px 15px 0; }
+  .business-action-contract { margin: 8px 15px 0; grid-template-columns: repeat(2,minmax(0,1fr)); }
   .business-action-fields, .business-action-review, .business-action-result { padding: 16px 15px 24px; }
   .business-action-review dl { grid-template-columns: 1fr; }
   .business-action-review dt { padding-bottom: 4px; border-bottom: 0; }

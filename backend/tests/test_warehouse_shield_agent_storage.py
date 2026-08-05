@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import platform
 from collections import namedtuple
 from pathlib import Path
 
@@ -19,6 +20,7 @@ def test_storage_sample_keeps_root_compatibility_and_reports_data_volume(
     monkeypatch, tmp_path: Path
 ) -> None:
     agent = _load_agent()
+    monkeypatch.setattr(agent, "IS_DARWIN", False)
     usage = namedtuple("usage", "total used free")
     data_mount = tmp_path / "warehouse-data"
     data_mount.mkdir()
@@ -94,6 +96,7 @@ def test_required_data_volume_has_independent_mount_and_capacity_alerts(
     monkeypatch, tmp_path: Path
 ) -> None:
     agent = _load_agent()
+    monkeypatch.setattr(agent, "IS_DARWIN", False)
     data_mount = tmp_path / "warehouse-data"
     data_mount.mkdir()
     data_device = tmp_path / "vdb1"
@@ -147,6 +150,7 @@ def test_required_data_volume_has_independent_mount_and_capacity_alerts(
 
 def test_custom_domain_agent_rejects_an_existing_server_name(monkeypatch, tmp_path: Path) -> None:
     agent = _load_agent()
+    monkeypatch.setattr(agent, "IS_DARWIN", False)
     available = tmp_path / "available"
     enabled = tmp_path / "enabled"
     available.mkdir()
@@ -175,6 +179,7 @@ def test_custom_domain_agent_rejects_an_existing_server_name(monkeypatch, tmp_pa
 
 def test_custom_domain_agent_writes_route_and_observes_tls(monkeypatch, tmp_path: Path) -> None:
     agent = _load_agent()
+    monkeypatch.setattr(agent, "IS_DARWIN", False)
     available = tmp_path / "available"
     enabled = tmp_path / "enabled"
     available.mkdir()
@@ -207,3 +212,78 @@ def test_custom_domain_agent_writes_route_and_observes_tls(monkeypatch, tmp_path
     configuration = (available / "warehouse-hosting-app.example.com.conf").read_text()
     assert "server_name app.example.com;" in configuration
     assert "rewrite ^/(.*)$ /assets/bonfire/project-api/$1 break;" in configuration
+
+
+def test_macos_agent_keeps_domain_mutation_at_the_cluster_gateway(monkeypatch) -> None:
+    agent = _load_agent()
+    monkeypatch.setattr(agent, "IS_DARWIN", True)
+
+    result = agent.apply_hosting_domain(
+        {
+            "hostname": "app.example.com",
+            "tenant_slug": "bonfire",
+            "workspace_key": "project-api",
+        },
+        "request-macos",
+    )
+
+    assert result == {
+        "ok": False,
+        "status": "blocked",
+        "applied": False,
+        "error": "mac_hosting_domains_are_managed_by_the_cluster_gateway",
+    }
+
+
+def test_macos_agent_ignores_linux_volume_contract_from_shared_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / "orbstack.env"
+    env_file.write_text(
+        "WAREHOUSE_SHIELD_DATA_MOUNTPOINT=/mnt/warehouse-data\n"
+        "WAREHOUSE_SHIELD_DATA_DEVICE=/dev/vdb1\n"
+        "WAREHOUSE_SHIELD_DATA_VOLUME_REQUIRED=true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setenv("WAREHOUSE_SHIELD_ENV_FILE", str(env_file))
+
+    agent = _load_agent()
+
+    assert agent.IS_DARWIN is True
+    assert agent.DATA_MOUNTPOINT == Path.home() / "Server/bonfirework-migration"
+    assert agent.DATA_DEVICE == ""
+    assert agent.DATA_VOLUME_REQUIRED is False
+
+
+def test_macos_logical_data_directory_reports_available(monkeypatch, tmp_path: Path) -> None:
+    agent = _load_agent()
+    data = tmp_path / "bonfirework-migration"
+    data.mkdir()
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(agent, "IS_DARWIN", True)
+    monkeypatch.setattr(agent.os.path, "ismount", lambda _value: False)
+    monkeypatch.setattr(agent.shutil, "disk_usage", lambda _value: usage(500, 125, 375))
+    monkeypatch.setattr(
+        agent,
+        "run_fixed",
+        lambda _arguments, timeout=15.0: {
+            "returncode": 0,
+            "stdout": "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+            "/dev/disk3s1 500 125 375 25% /System/Volumes/Data",
+            "stderr": "",
+        },
+    )
+
+    volume = agent.volume_sample(
+        volume_id="warehouse-data",
+        label="Warehouse data",
+        mountpoint=data,
+        expected_device="",
+        required=False,
+    )
+
+    assert volume["mounted"] is True
+    assert volume["available"] is True
+    assert volume["state"] == "mounted"
+    assert volume["used_pct"] == 25.0

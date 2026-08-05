@@ -33,6 +33,7 @@ from app.services.object_storage import (
     SSD_PROVIDER_KEY,
     object_store_for_provider,
 )
+from app.services.workspace_usage import measure_workspace_runtime_storage
 
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
@@ -284,7 +285,8 @@ def _workspace_billable_usage(
     workspace_id: object,
     asset_id: object,
     persist: bool = True,
-) -> dict[str, int]:
+    refresh_infrastructure: bool = False,
+) -> dict[str, object]:
     """Measure one aggregate quota across both media and the hosted database."""
 
     artifacts = (
@@ -306,59 +308,145 @@ def _workspace_billable_usage(
         .mappings()
         .one()
     )
-    database_bytes = int(
+    database_status = "cached"
+    if refresh_infrastructure:
+        database_measurements = []
+        bindings = [
+            dict(row)
+            for row in session.execute(
+                text(
+                    """
+                    SELECT * FROM digital_asset.database_bindings
+                    WHERE workspace_id=:workspace_id AND status='ready'
+                    ORDER BY is_default DESC,created_at
+                    """
+                ),
+                {"workspace_id": workspace_id},
+            )
+            .mappings()
+            .all()
+        ]
+        for binding in bindings:
+            try:
+                database_measurements.append(
+                    hosted_database.measure_database_size(session, binding)
+                )
+            except hosted_database.HostedDatabaseUnavailable:
+                database_measurements.append(
+                    {
+                        "database_bytes": max(
+                            0, int(binding.get("actual_size_bytes") or 0)
+                        ),
+                        "measurement_status": "cached_after_error",
+                    }
+                )
+        database_bytes = sum(
+            int(measurement["database_bytes"])
+            for measurement in database_measurements
+        )
+        database_status = (
+            "complete"
+            if all(
+                measurement.get("measurement_status")
+                in {"complete", "provider_reported"}
+                for measurement in database_measurements
+            )
+            else "partial"
+        )
+    else:
+        database_bytes = int(
+            session.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(actual_size_bytes), 0)::bigint
+                    FROM digital_asset.database_bindings
+                    WHERE workspace_id = :workspace_id AND status = 'ready'
+                    """
+                ),
+                {"workspace_id": workspace_id},
+            ).scalar_one()
+        )
+    persisted_runtime = (
         session.execute(
             text(
                 """
-                SELECT COALESCE(SUM(actual_size_bytes), 0)::bigint
-                FROM digital_asset.database_bindings
-                WHERE workspace_id = :workspace_id AND status = 'ready'
-                """
-            ),
-            {"workspace_id": workspace_id},
-        ).scalar_one()
-    )
-    runtime_bytes = int(
-        session.execute(
-            text(
-                """
-                SELECT COALESCE(runtime_bytes, 0)::bigint
+                SELECT COALESCE(runtime_bytes,0)::bigint AS runtime_bytes,
+                       COALESCE(data_volume_bytes,0)::bigint AS data_volume_bytes
                 FROM digital_asset.workspace_usage
-                WHERE workspace_id = :workspace_id
+                WHERE workspace_id=:workspace_id
                 """
             ),
             {"workspace_id": workspace_id},
-        ).scalar_one_or_none()
-        or 0
+        )
+        .mappings()
+        .one_or_none()
     )
+    runtime_measurement: dict[str, object] = {
+        "runtime_release_bytes": int(
+            persisted_runtime["runtime_bytes"] if persisted_runtime else 0
+        ),
+        "data_volume_bytes": int(
+            persisted_runtime["data_volume_bytes"] if persisted_runtime else 0
+        ),
+        "measurement_status": "cached",
+        "measured_at": datetime.now(UTC),
+    }
+    if refresh_infrastructure:
+        runtime_measurement = measure_workspace_runtime_storage(
+            get_settings(),
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
     usage = {
         "code_bytes": int(artifacts["code_bytes"]),
         "data_object_bytes": int(artifacts["data_object_bytes"]),
         "database_bytes": database_bytes,
-        "runtime_bytes": runtime_bytes,
+        "runtime_bytes": int(runtime_measurement["runtime_release_bytes"]),
+        "data_volume_bytes": int(runtime_measurement["data_volume_bytes"]),
     }
-    usage["total_bytes"] = sum(usage.values())
+    usage["total_bytes"] = sum(int(value) for value in usage.values())
+    usage["measured_at"] = runtime_measurement["measured_at"]
+    usage["measurement_status"] = (
+        "complete"
+        if runtime_measurement["measurement_status"] == "complete"
+        and database_status in {"complete", "cached"}
+        else "partial"
+    )
+    usage["database_measurement_status"] = database_status
+    usage["runtime_scan_error_count"] = int(
+        runtime_measurement.get("scan_error_count") or 0
+    )
     if persist:
         session.execute(
             text(
                 """
                 INSERT INTO digital_asset.workspace_usage(
                   tenant_id, workspace_id, code_bytes, data_object_bytes,
-                  database_bytes, runtime_bytes, measured_at
+                  database_bytes, runtime_bytes, data_volume_bytes, measured_at
                 ) VALUES (
                   :tenant_id, :workspace_id, :code_bytes, :data_object_bytes,
-                  :database_bytes, :runtime_bytes, now()
+                  :database_bytes, :runtime_bytes, :data_volume_bytes, :measured_at
                 )
                 ON CONFLICT (tenant_id, workspace_id) DO UPDATE SET
                   code_bytes = EXCLUDED.code_bytes,
                   data_object_bytes = EXCLUDED.data_object_bytes,
                   database_bytes = EXCLUDED.database_bytes,
                   runtime_bytes = EXCLUDED.runtime_bytes,
-                  measured_at = now(),
+                  data_volume_bytes = EXCLUDED.data_volume_bytes,
+                  measured_at = EXCLUDED.measured_at,
                   revision = digital_asset.workspace_usage.revision + 1
                 """
             ),
-            {"tenant_id": tenant_id, "workspace_id": workspace_id, **usage},
+            {
+                "tenant_id": tenant_id,
+                "workspace_id": workspace_id,
+                "code_bytes": usage["code_bytes"],
+                "data_object_bytes": usage["data_object_bytes"],
+                "database_bytes": usage["database_bytes"],
+                "runtime_bytes": usage["runtime_bytes"],
+                "data_volume_bytes": usage["data_volume_bytes"],
+                "measured_at": usage["measured_at"],
+            },
         )
     return usage
 
@@ -1312,6 +1400,11 @@ def list_assets(
                             FROM digital_asset.workspace_usage AS usage
                             WHERE usage.workspace_id = w.id
                           ), 0),
+                          'data_volume_bytes', COALESCE((
+                            SELECT usage.data_volume_bytes
+                            FROM digital_asset.workspace_usage AS usage
+                            WHERE usage.workspace_id = w.id
+                          ), 0),
                           'data_bytes', COALESCE((
                             SELECT SUM(ar.size_bytes)::bigint
                             FROM digital_asset.artifacts AS ar
@@ -1364,7 +1457,11 @@ def list_assets(
                               FROM digital_asset.workspace_usage AS usage
                               WHERE usage.workspace_id = w.id
                             ), 0),
-                          'measured_at', now(),
+                          'measured_at', COALESCE((
+                            SELECT usage.measured_at
+                            FROM digital_asset.workspace_usage AS usage
+                            WHERE usage.workspace_id = w.id
+                          ), now()),
                           'public_url', COALESCE(
                             w.public_url,
                             (
@@ -1577,6 +1674,26 @@ def list_assets(
     for asset in assets:
         workspace = asset.get("workspace") if isinstance(asset, dict) else None
         if isinstance(workspace, dict) and workspace.get("workspace_key"):
+            workspace.update(
+                {
+                    "source_archive_bytes": int(workspace.get("code_bytes") or 0),
+                    "runtime_release_bytes": int(workspace.get("runtime_bytes") or 0),
+                    "managed_data_object_bytes": int(workspace.get("data_bytes") or 0),
+                    "postgresql_bytes": int(workspace.get("database_bytes") or 0),
+                }
+            )
+            total_bytes = sum(
+                int(workspace.get(key) or 0)
+                for key in (
+                    "source_archive_bytes",
+                    "runtime_release_bytes",
+                    "data_volume_bytes",
+                    "managed_data_object_bytes",
+                    "postgresql_bytes",
+                )
+            )
+            workspace["storage_used_bytes"] = total_bytes
+            workspace["total_bytes"] = total_bytes
             workspace.update(_workspace_entry_fields(actor.tenant_slug, workspace))
     return {
         "ok": True,
@@ -1723,6 +1840,27 @@ def asset_detail(actor: ActorContext, asset_ref: object) -> dict[str, object]:
         workspaces: list[dict[str, object]] = []
         for workspace in workspace_rows:
             workspace_public = _public_workspace(workspace, actor.tenant_slug)
+            measured = _workspace_billable_usage(
+                session,
+                tenant_id=actor.tenant_id,
+                workspace_id=workspace["id"],
+                asset_id=workspace["asset_id"],
+                refresh_infrastructure=True,
+            )
+            workspace_public["usage"] = _json_safe(
+                {
+                    "source_archive_bytes": measured["code_bytes"],
+                    "runtime_release_bytes": measured["runtime_bytes"],
+                    "data_volume_bytes": measured["data_volume_bytes"],
+                    "managed_data_object_bytes": measured["data_object_bytes"],
+                    "postgresql_bytes": measured["database_bytes"],
+                    "total_bytes": measured["total_bytes"],
+                    "measured_at": measured["measured_at"],
+                    "measurement_status": measured["measurement_status"],
+                }
+            )
+            workspace_public.update(workspace_public["usage"])
+            workspace_public["storage_used_bytes"] = measured["total_bytes"]
             workspace_public["storage"] = _storage_profile(
                 _storage_binding_rows(session, workspace["id"])
             )
@@ -2970,7 +3108,16 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                          FROM digital_asset.workspace_usage AS usage
                          WHERE usage.workspace_id = w.id
                        ), 0) AS runtime_bytes,
-                       now() AS usage_measured_at,
+                       COALESCE((
+                         SELECT usage.data_volume_bytes
+                         FROM digital_asset.workspace_usage AS usage
+                         WHERE usage.workspace_id = w.id
+                       ), 0) AS data_volume_bytes,
+                       COALESCE((
+                         SELECT usage.measured_at
+                         FROM digital_asset.workspace_usage AS usage
+                         WHERE usage.workspace_id = w.id
+                       ), now()) AS usage_measured_at,
                        COALESCE((
                          SELECT SUM(ar.size_bytes)::bigint
                          FROM digital_asset.artifacts AS ar
@@ -2986,6 +3133,11 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                        ), 0)
                        + COALESCE((
                          SELECT usage.runtime_bytes
+                         FROM digital_asset.workspace_usage AS usage
+                         WHERE usage.workspace_id = w.id
+                       ), 0)
+                       + COALESCE((
+                         SELECT usage.data_volume_bytes
                          FROM digital_asset.workspace_usage AS usage
                          WHERE usage.workspace_id = w.id
                        ), 0) AS storage_used_bytes,
@@ -3108,9 +3260,14 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                 "runtime_type": runtime_type,
                 "storage_used_bytes": int(state.get("storage_used_bytes") or 0),
                 "code_bytes": int(state.get("code_bytes") or 0),
+                "source_archive_bytes": int(state.get("code_bytes") or 0),
                 "runtime_bytes": int(state.get("runtime_bytes") or 0),
+                "runtime_release_bytes": int(state.get("runtime_bytes") or 0),
                 "data_bytes": int(state.get("data_bytes") or 0),
+                "managed_data_object_bytes": int(state.get("data_bytes") or 0),
+                "data_volume_bytes": int(state.get("data_volume_bytes") or 0),
                 "database_bytes": int(state.get("database_bytes") or 0),
+                "postgresql_bytes": int(state.get("database_bytes") or 0),
                 "total_bytes": int(state.get("storage_used_bytes") or 0),
                 "measured_at": state.get("usage_measured_at"),
                 "database_medium": state.get("database_medium"),
@@ -5652,6 +5809,13 @@ def workspace_info(credential: WorkspaceCredential) -> dict[str, object]:
             .all()
         ]
         storage = _storage_profile(_storage_binding_rows(session, workspace["id"]))
+        measured = _workspace_billable_usage(
+            session,
+            tenant_id=credential.tenant_id,
+            workspace_id=workspace["id"],
+            asset_id=workspace["asset_id"],
+            refresh_infrastructure=True,
+        )
     with system_session() as session:
         tenant_slug = session.execute(
             text("SELECT slug FROM iam.tenants WHERE id = :tenant_id"),
@@ -5659,9 +5823,47 @@ def workspace_info(credential: WorkspaceCredential) -> dict[str, object]:
         ).scalar_one()
     workspace_public = _public_workspace(workspace, str(tenant_slug))
     workspace_public["storage"] = storage
+    usage = _json_safe(
+        {
+            "source_archive_bytes": int(measured["code_bytes"]),
+            "runtime_release_bytes": int(measured["runtime_bytes"]),
+            "data_volume_bytes": int(measured["data_volume_bytes"]),
+            "managed_data_object_bytes": int(measured["data_object_bytes"]),
+            "postgresql_bytes": int(measured["database_bytes"]),
+            "total_bytes": int(measured["total_bytes"]),
+            "quota_bytes": int(workspace["storage_quota_bytes"]),
+            "remaining_bytes": max(
+                int(workspace["storage_quota_bytes"]) - int(measured["total_bytes"]),
+                0,
+            ),
+            "measured_at": measured["measured_at"],
+            "measurement_status": measured["measurement_status"],
+            "database_measurement_status": measured["database_measurement_status"],
+            "runtime_scan_error_count": measured["runtime_scan_error_count"],
+            "sources": {
+                "source_archive": "custody_artifact_ledger",
+                "runtime_release": "governed_runtime_filesystem",
+                "data_volume": "governed_runtime_filesystem",
+                "managed_data_objects": "custody_artifact_ledger",
+                "postgresql": "pg_total_relation_size",
+            },
+        }
+    )
+    workspace_public.update(
+        {
+            "storage_used_bytes": usage["total_bytes"],
+            "source_archive_bytes": usage["source_archive_bytes"],
+            "runtime_release_bytes": usage["runtime_release_bytes"],
+            "data_volume_bytes": usage["data_volume_bytes"],
+            "postgresql_bytes": usage["postgresql_bytes"],
+            "total_bytes": usage["total_bytes"],
+            "usage_measured_at": usage["measured_at"],
+        }
+    )
     return {
         "ok": True,
         "workspace": workspace_public,
+        "usage": usage,
         "components": components,
         "databases": databases,
         "credential": {
@@ -5674,6 +5876,18 @@ def workspace_info(credential: WorkspaceCredential) -> dict[str, object]:
                 str(credential.parent_credential_id) if credential.parent_credential_id else None
             ),
         },
+    }
+
+
+def workspace_usage(credential: WorkspaceCredential) -> dict[str, object]:
+    """Return a fresh platform measurement for one authenticated workspace."""
+
+    info = workspace_info(credential)
+    return {
+        "ok": True,
+        "workspace_id": str(credential.workspace_id),
+        "workspace_key": info["workspace"]["workspace_key"],
+        "usage": info["usage"],
     }
 
 

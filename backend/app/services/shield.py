@@ -100,9 +100,17 @@ def _agent_request(
     raw = (json.dumps(request, separators=(",", ":")) + "\n").encode()
     response = bytearray()
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        if settings.shield_agent_host and settings.shield_agent_port > 0:
+            client_context = socket.create_connection(
+                (settings.shield_agent_host, settings.shield_agent_port),
+                timeout=settings.shield_agent_timeout_seconds,
+            )
+        else:
+            client_context = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with client_context as client:
             client.settimeout(settings.shield_agent_timeout_seconds)
-            client.connect(str(settings.shield_agent_socket))
+            if not settings.shield_agent_host or settings.shield_agent_port <= 0:
+                client.connect(str(settings.shield_agent_socket))
             client.sendall(raw)
             while len(response) <= settings.shield_agent_max_response_bytes:
                 chunk = client.recv(65536)

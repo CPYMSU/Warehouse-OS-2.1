@@ -66,7 +66,7 @@ from app.terminal.catalog import (
     ai_capability_genes,
     entry_by_tool_name,
 )
-from app.terminal.executor import execute_runtime_tool_call
+from app.terminal.executor import atomic_recovery_contract, execute_runtime_tool_call
 
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
@@ -191,9 +191,10 @@ def _resource_locators(value: object) -> tuple[str, ...]:
         for match in _MARKDOWN_RESOURCE_LOCATOR.finditer(item):
             include(match.group(1))
         for match in _ROOT_RESOURCE_LOCATOR.finditer(item):
-            if any(start <= match.start() < end for start, end in (
-                absolute.span() for absolute in absolute_matches
-            )):
+            if any(
+                start <= match.start() < end
+                for start, end in (absolute.span() for absolute in absolute_matches)
+            ):
                 continue
             include(match.group(1))
 
@@ -201,22 +202,12 @@ def _resource_locators(value: object) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _localized_grounding_gap(locale: str) -> str:
+def _localized_unverified_locator_placeholder(locale: str) -> str:
     selected = normalize_locale(locale) or "zh-Hant"
     return {
-        "zh-Hant": (
-            "目前的世界觀察不足以證明所要求的結果或資源位置；"
-            "Runtime 已停止交付未經證實的內容，且沒有把推測當成完成結果。"
-        ),
-        "zh-Hans": (
-            "目前的世界观察不足以证明所要求的结果或资源位置；"
-            "Runtime 已停止交付未经证实的内容，也没有把推测当成完成结果。"
-        ),
-        "en": (
-            "The current world observations do not establish the requested result or "
-            "resource location. The Runtime stopped instead of presenting an inference "
-            "as a completed outcome."
-        ),
+        "zh-Hant": "（未驗證地址已移除）",
+        "zh-Hans": "（未验证地址已移除）",
+        "en": "(unverified address removed)",
     }[selected]
 
 
@@ -255,8 +246,7 @@ def _ensure_message_locale(
         system_prompt=(
             "Repair only the language of the supplied user-facing message. Preserve its "
             "meaning and structure. Do not add facts. Return JSON only with one key named "
-            "message. "
-            + language_instruction(locale)
+            "message. " + language_instruction(locale)
         ),
         user_prompt=json.dumps({"message": safe_message}, ensure_ascii=False),
         metrics=metrics,
@@ -271,11 +261,7 @@ def _ensure_message_locale(
         locale=locale,
         fallback=safe_message,
     )
-    return (
-        repaired
-        if repaired and message_matches_locale(repaired, locale)
-        else safe_message
-    )
+    return repaired if repaired and message_matches_locale(repaired, locale) else safe_message
 
 
 def runtime_capability_map() -> list[dict[str, object]]:
@@ -528,141 +514,62 @@ def _parse_or_repair_json(
     return _json_object(repaired)
 
 
-def _repair_message_grounding(
-    connection: object,
-    *,
-    goal: str,
-    message: str,
-    locale: str,
-    ledger: list[dict[str, object]],
-    allowed_locators: set[str],
-    unsupported_locators: tuple[str, ...],
-    unsupported_claims: list[str],
-    metrics: list[dict[str, object]],
-    context_mode: str,
-    activity_callback: RuntimeActivityCallback | None,
-) -> str:
-    """Reconcile a proposed answer against the evidence ledger once."""
-
-    raw = _completion(
-        connection,
-        system_prompt=(
-            "You are the final evidence reconciler for Warehouse Intelligence Runtime. "
-            "Rewrite the proposed user-facing message so every claim about current world "
-            "state, an action outcome, an existing deliverable, or a usable resource locator "
-            "is supported by the supplied evidence ledger. Human-reported input may be "
-            "repeated as a request or report but is not proof. Stable explanation and advice "
-            "may remain without world evidence. Use only an exact locator from "
-            "allowed_resource_locators; never derive, join, guess, or extend a locator. If the "
-            "requested outcome is not established, say that plainly and do not claim "
-            "completion. Preserve useful supported facts. Return JSON only with one string key "
-            "named message. "
-            + language_instruction(locale)
-        ),
-        user_prompt=json.dumps(
-            {
-                "goal": goal,
-                "proposed_message": message,
-                "evidence_ledger": ledger,
-                "allowed_resource_locators": sorted(allowed_locators)[:80],
-                "unsupported_resource_locators": list(unsupported_locators),
-                "unsupported_claims": unsupported_claims[:20],
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            default=str,
-        ),
-        metrics=metrics,
-        phase="evidence_repair",
-        context_mode=context_mode,
-        max_tokens=1_200,
-        activity_callback=activity_callback,
-    )
-    parsed = _json_object(raw) or {}
-    return _public_message(parsed.get("message"), locale=locale, fallback="")
-
-
 def _finalize_grounded_message(
-    connection: object,
     *,
-    goal: str,
     message: str,
     locale: str,
-    ledger: list[dict[str, object]],
     grounding_sources: list[object],
     public_origin: str | None,
     unsupported_claims: list[str],
     force_reconciliation: bool,
-    metrics: list[dict[str, object]],
-    context_mode: str,
-    activity_callback: RuntimeActivityCallback | None,
     waiting_for_human_input: bool = False,
 ) -> tuple[str, dict[str, object]]:
-    """Apply exact-locator provenance after every prose transformation."""
+    """Remove invented locators without replacing a factual execution receipt.
+
+    Claim/evidence linkage is recorded by the reflection contract.  It must not
+    launch another model pass that can overwrite a successful server result.
+    Exact URL provenance remains deterministic: an unobserved locator is
+    removed from public prose, while the rest of the answer is preserved.
+    """
 
     unsupported_locators = _unsupported_resource_locators(
         message,
         grounding_sources,
         public_origin=public_origin,
     )
-    if not (unsupported_locators or unsupported_claims or force_reconciliation):
-        return message, {
-            "reconciled": False,
-            "unsupported_resource_locators": [],
-        }
-    if (
-        waiting_for_human_input
-        and unsupported_locators
-        and not unsupported_claims
-        and not force_reconciliation
-    ):
-        # A question such as “what is your exact HTTPS Origin?” may contain a
-        # model-authored example URL.  That example is neither a claimed live
-        # resource nor evidence, but it must not become a clickable invented
-        # locator.  Remove only the locator and preserve the useful question.
-        sanitized = message
-        placeholder = _localized_input_locator_placeholder(locale)
-        for locator in unsupported_locators:
-            sanitized = sanitized.replace(locator, placeholder)
-        sanitized = sanitized.strip()
-        remaining = _unsupported_resource_locators(
-            sanitized,
-            grounding_sources,
-            public_origin=public_origin,
-        )
-        if sanitized and not remaining and message_matches_locale(sanitized, locale):
-            return sanitized, {
-                "reconciled": False,
-                "waiting_input_sanitized": True,
-                "unsupported_resource_locators": list(unsupported_locators),
-            }
-    allowed = _allowed_resource_locators(
-        grounding_sources,
-        public_origin=public_origin,
-    )
-    repaired = _repair_message_grounding(
-        connection,
-        goal=goal,
-        message=message,
-        locale=locale,
-        ledger=ledger,
-        allowed_locators=allowed,
-        unsupported_locators=unsupported_locators,
-        unsupported_claims=unsupported_claims,
-        metrics=metrics,
-        context_mode=context_mode,
-        activity_callback=activity_callback,
-    )
-    remaining = _unsupported_resource_locators(
-        repaired,
-        grounding_sources,
-        public_origin=public_origin,
-    )
-    if not repaired or remaining or not message_matches_locale(repaired, locale):
-        repaired = _localized_grounding_gap(locale)
-    return repaired, {
-        "reconciled": True,
+    audit = {
+        "reconciled": False,
         "unsupported_resource_locators": list(unsupported_locators),
+        "unsupported_claims_recorded": list(unsupported_claims),
+        "world_evidence_missing": bool(force_reconciliation),
+    }
+    if not unsupported_locators:
+        return message, {
+            **audit,
+            "deterministic_sanitized": False,
+        }
+
+    placeholder = (
+        _localized_input_locator_placeholder(locale)
+        if waiting_for_human_input
+        else _localized_unverified_locator_placeholder(locale)
+    )
+    sanitized = message
+    for locator in unsupported_locators:
+        sanitized = sanitized.replace(locator, placeholder)
+    sanitized = sanitized.strip()
+    remaining = _unsupported_resource_locators(
+        sanitized,
+        grounding_sources,
+        public_origin=public_origin,
+    )
+    return sanitized, {
+        **audit,
+        # Removing a claimed deliverable URL means that operational result is
+        # incomplete.  Questions requesting user input remain valid questions.
+        "reconciled": not waiting_for_human_input,
+        "deterministic_sanitized": True,
+        "waiting_input_sanitized": waiting_for_human_input,
         "repair_left_unsupported_resource_locators": list(remaining),
     }
 
@@ -781,9 +688,7 @@ def _evidence_ledger(
     l1 = l1 if isinstance(l1, dict) else {}
     for key in ("company_summary", "company_authority_world", "hosted_application_world"):
         value = l1.get(key)
-        if value in (None, [], {}) or (
-            isinstance(value, dict) and value.get("loaded") is False
-        ):
+        if value in (None, [], {}) or (isinstance(value, dict) and value.get("loaded") is False):
             continue
         records.append(
             {
@@ -817,21 +722,18 @@ def _evidence_ledger(
             or f"capability:{int(item.get('runtime_round') or 0)}:{index}:"
             f"{str(item.get('tool_name') or 'unknown')}"
         )
-        result_status = str(
-            result.get("status") or ("succeeded" if result.get("ok") else "")
-        ).strip().lower()
+        result_status = (
+            str(result.get("status") or ("succeeded" if result.get("ok") else "")).strip().lower()
+        )
         effect_verified = bool(
-            result.get("ok") is True
-            and result_status in {"succeeded", "completed"}
+            result.get("ok") is True and result_status in {"succeeded", "completed"}
         )
         records.append(
             {
                 "evidence_id": evidence_id,
                 "source_type": "capability_result",
                 "authority": (
-                    "verified_capability_effect"
-                    if effect_verified
-                    else "observed_attempt_only"
+                    "verified_capability_effect" if effect_verified else "observed_attempt_only"
                 ),
                 "effect_verified": effect_verified,
                 "tool_name": item.get("tool_name"),
@@ -877,9 +779,7 @@ def _allowed_resource_locators(
     origin = str(public_origin or "").rstrip("/")
     if origin:
         allowed.update(
-            f"{origin}{locator}"
-            for locator in tuple(allowed)
-            if locator.startswith("/")
+            f"{origin}{locator}" for locator in tuple(allowed) if locator.startswith("/")
         )
     return allowed
 
@@ -891,9 +791,7 @@ def _unsupported_resource_locators(
     public_origin: str | None = None,
 ) -> tuple[str, ...]:
     allowed = _allowed_resource_locators(sources, public_origin=public_origin)
-    return tuple(
-        locator for locator in _resource_locators(message) if locator not in allowed
-    )
+    return tuple(locator for locator in _resource_locators(message) if locator not in allowed)
 
 
 def _apply_reflection_evidence_contract(
@@ -909,41 +807,12 @@ def _apply_reflection_evidence_contract(
         for item in ledger
         if isinstance(item, dict) and item.get("evidence_id")
     }
-    normalized_claims: list[dict[str, object]] = []
-    unsupported_claims: list[str] = []
-    for item in reflection.get("claims") or []:
-        if not isinstance(item, dict):
-            continue
-        statement = str(item.get("statement") or item.get("claim") or "").strip()[:800]
-        evidence_refs = list(
-            dict.fromkeys(
-                str(ref)
-                for ref in item.get("evidence_refs") or []
-                if str(ref) in valid_ids
-            )
-        )[:12]
-        requires_evidence = bool(item.get("requires_evidence"))
-        supported = not requires_evidence or bool(evidence_refs)
-        normalized_claims.append(
-            {
-                "statement": statement,
-                "requires_evidence": requires_evidence,
-                "evidence_refs": evidence_refs,
-                "supported": supported,
-            }
-        )
-        if statement and not supported:
-            unsupported_claims.append(statement)
-
     world_evidence_ids = {
         str(item.get("evidence_id"))
         for item in ledger
         if isinstance(item, dict)
         and (
-            (
-                item.get("source_type") == "capability_result"
-                and item.get("effect_verified") is True
-            )
+            (item.get("source_type") == "capability_result" and item.get("effect_verified") is True)
             or str(item.get("evidence_id"))
             in {
                 "context:company_authority_world",
@@ -970,6 +839,35 @@ def _apply_reflection_evidence_contract(
         and item.get("effect_verified") is not True
         and item.get("evidence_id")
     }
+    normalized_claims: list[dict[str, object]] = []
+    unsupported_claims: list[str] = []
+    for item in reflection.get("claims") or []:
+        if not isinstance(item, dict):
+            continue
+        statement = str(item.get("statement") or item.get("claim") or "").strip()[:800]
+        requires_evidence = bool(item.get("requires_evidence"))
+        supplied_refs = list(
+            dict.fromkeys(
+                str(ref) for ref in item.get("evidence_refs") or [] if str(ref) in valid_ids
+            )
+        )[:12]
+        evidence_refs = (
+            [ref for ref in supplied_refs if ref in world_evidence_ids]
+            if requires_evidence
+            else supplied_refs
+        )
+        supported = not requires_evidence or bool(evidence_refs)
+        normalized_claims.append(
+            {
+                "statement": statement,
+                "requires_evidence": requires_evidence,
+                "evidence_refs": evidence_refs,
+                "supported": supported,
+            }
+        )
+        if statement and not supported:
+            unsupported_claims.append(statement)
+
     waiting_for_human_input = bool(reflection.get("requires_user_input"))
     operational_without_world_evidence = (
         str(interaction_mode).strip().lower() == "operational"
@@ -988,7 +886,12 @@ def _apply_reflection_evidence_contract(
         or operational_attempt_without_verified_effect
     ):
         reflection["goal_complete"] = False
-        if not reflection.get("continue_reason"):
+        if str(reflection.get("continue_reason") or "").strip().lower() in {
+            "",
+            "complete",
+            "completed",
+            "goal_complete",
+        }:
             reflection["continue_reason"] = "world_evidence_required"
     reflection["claims"] = normalized_claims
     reflection["grounding"] = {
@@ -1004,6 +907,68 @@ def _apply_reflection_evidence_contract(
         ),
     }
     return reflection
+
+
+def _stage_autonomous_grounding_recovery(
+    reflection: dict[str, object],
+    layers: dict[str, object],
+) -> str | None:
+    """Turn an evidence gap into another Auto Runtime reasoning state.
+
+    Grounding is an observation, not a terminal policy verdict.  When the
+    reflection cannot yet link its material claims to the cumulative ledger,
+    the Runtime gets another bounded chance to reuse existing evidence or to
+    select a read capability from the atlas.  Human-input and confirmation
+    boundaries remain terminal until the human acts.
+    """
+
+    grounding = reflection.get("grounding")
+    grounding = grounding if isinstance(grounding, dict) else {}
+    has_gap = bool(
+        grounding.get("unsupported_claims")
+        or grounding.get("operational_without_world_evidence")
+        or grounding.get("operational_attempt_without_verified_effect")
+    )
+    l3 = layers.get("L3_execution_working_set")
+    l3 = l3 if isinstance(l3, dict) else {}
+    if not has_gap or bool(reflection.get("requires_user_input")):
+        l3.pop("grounding_recovery", None)
+        reflection.pop("grounding_recovery_mode", None)
+        return None
+
+    has_next_capability_request = bool(
+        reflection.get("next_domains")
+        or reflection.get("next_families")
+        or reflection.get("next_decisions")
+    )
+    mode = (
+        "execute_evidence_capabilities"
+        if has_next_capability_request
+        else "reflect_cumulative_evidence"
+    )
+    recovery = {
+        "schema": "warehouse.autonomous-grounding-recovery.v1",
+        "mode": mode,
+        "unsupported_claims": list(grounding.get("unsupported_claims") or [])[:20],
+        "world_evidence_ids": list(grounding.get("world_evidence_ids") or [])[:40],
+        "verified_capability_effect_ids": list(
+            grounding.get("verified_capability_effect_ids") or []
+        )[:40],
+        "attempt_only_evidence_ids": list(grounding.get("attempt_only_evidence_ids") or [])[:40],
+        "instruction": (
+            "Re-reflect against the cumulative evidence ledger. Reuse a verified result "
+            "when it already proves the claim; otherwise select the smallest read-only "
+            "capability that can observe the missing current-tenant fact."
+        ),
+    }
+    l3["grounding_recovery"] = recovery
+    reflection["goal_complete"] = False
+    reflection["continue_autonomously"] = True
+    reflection["requires_user_input"] = False
+    reflection["grounding_recovery_mode"] = mode
+    if mode == "reflect_cumulative_evidence":
+        reflection["continue_reason"] = "autonomous_grounding_recovery"
+    return mode
 
 
 def _domain_index_prompt(
@@ -1125,9 +1090,7 @@ def _authority_evidence_projection(
 
     visit(tool_results)
     responsibility_index = authority.get("responsibility_index")
-    responsibility_index = (
-        responsibility_index if isinstance(responsibility_index, dict) else {}
-    )
+    responsibility_index = responsibility_index if isinstance(responsibility_index, dict) else {}
     position_rows = {
         str(item.get("code")): item
         for item in authority.get("positions") or []
@@ -1162,14 +1125,8 @@ def _authority_evidence_projection(
             {
                 "code": code,
                 "exists": code in position_rows,
-                "name": (
-                    position_rows[code].get("name")
-                    if code in position_rows
-                    else None
-                ),
-                "active_holders": list(
-                    dict.fromkeys(holders_by_position.get(code, []))
-                ),
+                "name": (position_rows[code].get("name") if code in position_rows else None),
+                "active_holders": list(dict.fromkeys(holders_by_position.get(code, []))),
                 "workflow_nodes": position_contexts.get(code, []),
             }
             for code in sorted(position_values)
@@ -1178,11 +1135,7 @@ def _authority_evidence_projection(
             {
                 "code": code,
                 "exists": code in department_rows,
-                "name": (
-                    department_rows[code].get("name")
-                    if code in department_rows
-                    else None
-                ),
+                "name": (department_rows[code].get("name") if code in department_rows else None),
             }
             for code in sorted(department_values)
         ],
@@ -1307,6 +1260,105 @@ def _atomic_recovery_projection(
     return packets
 
 
+def _confirmation_binding_failure(
+    entry: dict[str, object] | None,
+    arguments: dict[str, object],
+    tool_results: list[dict[str, object]],
+) -> dict[str, object] | None:
+    """Require a current canonical observation before staging a governed write.
+
+    The catalogue describes the binding shape; this generic Runtime boundary
+    never selects a business object or rewrites model arguments.  It only checks
+    that the exact resource id and optimistic version chosen by the model are
+    already present in current world evidence.  When they are not, the failure
+    packet exposes observation capabilities so the model can reason and replan.
+    """
+
+    semantic_contract = dict((entry or {}).get("semantic_contract") or {})
+    binding = semantic_contract.get("confirmation_binding")
+    if not isinstance(binding, dict) or not binding.get("require_current_observation"):
+        return None
+    semantic_resource = str(binding.get("semantic_resource") or "").strip()
+    id_argument = str(binding.get("id_argument") or "").strip()
+    id_field = str(binding.get("id_field") or "").strip()
+    version_argument = str(binding.get("version_argument") or "").strip()
+    version_field = str(binding.get("version_field") or "").strip()
+    if not all((semantic_resource, id_argument, id_field)):
+        return None
+
+    attempted_id = str(arguments.get(id_argument) or "").strip()
+    attempted_version = arguments.get(version_argument) if version_argument else None
+    observed_entities: list[dict[str, object]] = []
+    for observation in reversed(_world_observation_projection(tool_results)):
+        if str(observation.get("semantic_resource") or "") != semantic_resource:
+            continue
+        entity = observation.get("canonical_entity")
+        if not isinstance(entity, dict) or not entity.get(id_field):
+            continue
+        projection = {
+            "id": entity.get(id_field),
+            "version": entity.get(version_field) if version_field else None,
+            "state": observation.get("state"),
+            "operation": observation.get("operation"),
+        }
+        if projection not in observed_entities:
+            observed_entities.append(projection)
+
+    matching = next(
+        (item for item in observed_entities if str(item.get("id") or "") == attempted_id),
+        None,
+    )
+    version_matches = bool(
+        matching is not None
+        and (not version_argument or str(matching.get("version")) == str(attempted_version))
+    )
+    if matching is not None and version_matches:
+        return None
+
+    if matching is not None:
+        state = "resource_version_changed"
+        error = "The governed action version is not the currently observed version"
+    elif observed_entities:
+        state = "resource_identity_unbound"
+        error = "The governed action target is not bound to the observed canonical resource"
+    else:
+        state = "resource_observation_required"
+        error = "A current canonical resource observation is required before authorization"
+    binding_observation = {
+        "schema": "warehouse.world-observation.v1",
+        "decision_owner": "auto_runtime",
+        "workflow_prescribed": False,
+        "semantic_resource": semantic_resource,
+        "operation": "authorization_binding",
+        "state": state,
+        "canonical_entity": None,
+        "attempted_entity": {
+            "id": attempted_id or None,
+            "version": attempted_version,
+        },
+        "observed_candidates": observed_entities[:12],
+        "uncertainties": [state],
+        "affordances": [
+            {"capability": str(tool_name)}
+            for tool_name in binding.get("resolve_capabilities") or []
+            if str(tool_name or "").strip()
+        ],
+    }
+    return {
+        "ok": False,
+        "command": str((entry or {}).get("command") or ""),
+        "tool_name": str((entry or {}).get("tool_name") or ""),
+        "status": state,
+        "writes": bool((entry or {}).get("writes")),
+        "risk": str((entry or {}).get("risk") or "unknown"),
+        "error": error,
+        "data": {
+            "world_observation": binding_observation,
+            "atomic_recovery": atomic_recovery_contract(entry, arguments),
+        },
+    }
+
+
 def _recovery_capability_names(
     packets: list[dict[str, object]],
 ) -> list[str]:
@@ -1323,8 +1375,7 @@ def _recovery_capability_names(
             for packet in packets
             if isinstance(packet, dict)
             for capability in packet.get("available_capabilities") or []
-            if isinstance(capability, dict)
-            and str(capability.get("tool_name") or "") in known
+            if isinstance(capability, dict) and str(capability.get("tool_name") or "") in known
         )
     )
 
@@ -1665,14 +1716,10 @@ def _route_goal(
         }
 
     atlas_domains = {
-        str(item.get("domain"))
-        for item in ai_capability_atlas()
-        if item.get("domain")
+        str(item.get("domain")) for item in ai_capability_atlas() if item.get("domain")
     }
     selected_domains = [
-        str(name)
-        for name in parsed.get("selected_domains") or []
-        if str(name) in atlas_domains
+        str(name) for name in parsed.get("selected_domains") or [] if str(name) in atlas_domains
     ]
     allowed_context = {
         "authority",
@@ -1682,9 +1729,7 @@ def _route_goal(
         "memory_index",
     }
     context_requests = [
-        str(name)
-        for name in parsed.get("context_requests") or []
-        if str(name) in allowed_context
+        str(name) for name in parsed.get("context_requests") or [] if str(name) in allowed_context
     ]
     # Compatibility with the original one-pass distiller and its saved/mock
     # responses. Exact tool names still undergo catalogue validation.
@@ -1699,18 +1744,12 @@ def _route_goal(
         for name in parsed.get("selected_families") or []
         if str(name) in known_family_keys
     ]
-    selected_domains.extend(
-        family.split(":", 1)[0] for family in selected_families
-    )
+    selected_domains.extend(family.split(":", 1)[0] for family in selected_families)
     selected_tools = [
-        str(name)
-        for name in parsed.get("selected_tool_names") or []
-        if str(name) in known_by_name
+        str(name) for name in parsed.get("selected_tool_names") or [] if str(name) in known_by_name
     ]
     if selected_tools and not selected_domains:
-        selected_domains = [
-            str(known_by_name[name]["domain"]) for name in selected_tools
-        ]
+        selected_domains = [str(known_by_name[name]["domain"]) for name in selected_tools]
     if selected_tools and not selected_families:
         selected_families = [
             (
@@ -1800,8 +1839,7 @@ def _select_tools(
         connection,
         raw,
         expected_contract=(
-            "selected_tool_names (array), context_focus (array), reasoning (string), "
-            "memory_depth"
+            "selected_tool_names (array), context_focus (array), reasoning (string), memory_depth"
         ),
         metrics=metrics,
         phase="select_tools",
@@ -1821,9 +1859,7 @@ def _select_tools(
     }
     parsed["selected_tool_names"] = list(
         dict.fromkeys(
-            str(name)
-            for name in parsed.get("selected_tool_names") or []
-            if str(name) in allowed
+            str(name) for name in parsed.get("selected_tool_names") or [] if str(name) in allowed
         )
     )[:24]
     _emit_activity(
@@ -1906,8 +1942,7 @@ def _plan_goal(
             "values. A Keychain is consent evidence, not completion evidence. "
             "The completion assessment is provisional until the independent reflection phase "
             "has linked material world claims to observed evidence. Do not put an unobserved "
-            "resource locator or deliverable in message. "
-            + _language_prompt(layers)
+            "resource locator or deliverable in message. " + _language_prompt(layers)
         ),
         user_prompt=(
             "GOAL="
@@ -2070,6 +2105,13 @@ def _reflect(
             "across later calls; a workspace key is not an asset reference. If a lookup "
             "used the wrong resource type, traverse or observe the registered relation "
             "instead of declaring the entity missing or creating a replacement. "
+            "A governed mutation may require its exact id and optimistic version to match "
+            "a current world observation. If authorization_binding reports observation, "
+            "identity or version uncertainty, use the advertised read capability, judge "
+            "the resulting candidates, and then form a new action with the observed "
+            "canonical values. Never invent an id, silently substitute another entity, or "
+            "ask the human to repeat information that available read capabilities can "
+            "resolve. Parameters are immutable after a Passkey is granted. "
             "Atomic recovery packets are optional affordances after a failed capability, "
             "not mandatory fallback steps. The company AI database Runtime may expose "
             "physical schemas, columns, keys, row values, read-only SQL and SQL writes under "
@@ -2107,10 +2149,14 @@ def _reflect(
             "derive or extend a resource locator; repeat only an exact locator present in cited "
             "evidence. If evidence is absent, continue through the capability atlas rather than "
             "manufacturing a result. "
+            "When grounding_recovery is present, it is a new autonomous reasoning state, not "
+            "a refusal. First check whether the cumulative ledger already has a verified "
+            "capability effect that proves the claim and cite its exact evidence_id. If not, "
+            "choose the smallest read-only observation capability through next domains, "
+            "families or decisions. Never repeat a completed write merely to obtain evidence. "
             "Do not classify a source checksum as missing human input when a registered "
             "source_version_id exists; observe the asset/version and let the deployment service "
-            "verify its stored SHA-256. "
-            + _language_prompt(layers)
+            "verify its stored SHA-256. " + _language_prompt(layers)
         ),
         user_prompt=json.dumps(
             {
@@ -2118,22 +2164,17 @@ def _reflect(
                 "round_number": round_number,
                 "plan": plan,
                 "prior_reflection": (
-                    _compact_for_model(prior_reflection)
-                    if prior_reflection
-                    else None
+                    _compact_for_model(prior_reflection) if prior_reflection else None
                 ),
                 "authority_projection_for_new_evidence": (
                     _authority_evidence_projection(layers, tool_results)
                 ),
-                "reference_values_from_full_results": (
-                    _reference_value_projection(tool_results)
-                ),
+                "reference_values_from_full_results": (_reference_value_projection(tool_results)),
                 "world_observations_from_full_results": (
                     _world_observation_projection(tool_results)
                 ),
-                "atomic_recovery_from_full_results": (
-                    _atomic_recovery_projection(tool_results)
-                ),
+                "atomic_recovery_from_full_results": (_atomic_recovery_projection(tool_results)),
+                "grounding_recovery": l3.get("grounding_recovery"),
                 "new_tool_results": _compact_for_model(
                     tool_results,
                     max_depth=4,
@@ -2153,9 +2194,7 @@ def _reflect(
                     list(l3.get("domain_capability_index") or []),
                     description_chars=110,
                 ),
-                "selected_exact_parameter_contracts": _parameter_contracts(
-                    selected_contract_names
-                ),
+                "selected_exact_parameter_contracts": _parameter_contracts(selected_contract_names),
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -2183,7 +2222,7 @@ def _reflect(
     ) or {
         "message": (
             _deterministic_execution_receipt(
-                tool_results,
+                list(l3.get("tool_results") or tool_results),
                 locale=_layer_locale(layers),
             )
             or localized_structure_failure(_layer_locale(layers))
@@ -2248,9 +2287,7 @@ def _apply_declarative_tool_composition(
             {
                 **item,
                 "judgment": "superseded",
-                "reasoning": (
-                    f"Provided by composite capability {superseded_by[tool_name]}"
-                ),
+                "reasoning": (f"Provided by composite capability {superseded_by[tool_name]}"),
                 "superseded_by": superseded_by[tool_name],
             }
             if tool_name in superseded_by
@@ -2269,8 +2306,7 @@ def _apply_human_input_decision_boundary(
     """Preserve a planner-selected question as the next valid Runtime state."""
 
     waiting = any(
-        str(item.get("judgment") or "").strip().lower()
-        in {"ask_person", "requires_user_input"}
+        str(item.get("judgment") or "").strip().lower() in {"ask_person", "requires_user_input"}
         for item in decisions
         if isinstance(item, dict)
     )
@@ -2446,11 +2482,7 @@ def _continuation_decisions(
         )
         if _decision_signature(
             str(decision["tool_name"]),
-            (
-                decision["arguments"]
-                if isinstance(decision.get("arguments"), dict)
-                else {}
-            ),
+            (decision["arguments"] if isinstance(decision.get("arguments"), dict) else {}),
         )
         not in executed_signatures
     ]
@@ -2497,9 +2529,7 @@ def _public_observations(
         "context_architecture": "hierarchical_funnel_v2",
         "context_strategy": "domain_then_family_then_exact_tool_then_live_data",
         "capability_domains": len(ai_capability_atlas()),
-        "capability_genes": sum(
-            int(item.get("gene_count") or 0) for item in ai_capability_atlas()
-        ),
+        "capability_genes": sum(int(item.get("gene_count") or 0) for item in ai_capability_atlas()),
         "semantic_resources": int(
             (layers.get("L0_permanent_world_map") or {}).get("resource_count") or 0
         ),
@@ -2565,10 +2595,7 @@ def run_auto_runtime(
         if isinstance(recent_layer, dict) and recent_referents:
             recent_layer["recent_turn_referents"] = recent_referents
     bounded_authorization: dict[str, object] | None = None
-    if (
-        isinstance(authorization_signal, dict)
-        and authorization_signal.get("executable") is True
-    ):
+    if isinstance(authorization_signal, dict) and authorization_signal.get("executable") is True:
         action = authorization_signal.get("action")
         action = action if isinstance(action, dict) else {}
         bounded_authorization = {
@@ -2621,9 +2648,7 @@ def run_auto_runtime(
         if bounded_authorization is not None:
             authorized_tool = str(bounded_authorization.get("tool_name") or "")
             authorized_gene = entry_by_tool_name(authorized_tool)
-            selected_tools = [
-                str(item) for item in route.get("selected_tool_names") or []
-            ]
+            selected_tools = [str(item) for item in route.get("selected_tool_names") or []]
             if authorized_tool and authorized_tool not in selected_tools:
                 selected_tools.append(authorized_tool)
             route["selected_tool_names"] = selected_tools
@@ -2633,8 +2658,7 @@ def run_auto_runtime(
             if authorized_gene is not None:
                 domain = str(authorized_gene.get("domain") or "")
                 family = (
-                    f"{domain}:"
-                    f"{str(authorized_gene.get('command') or '').split(maxsplit=1)[0]}"
+                    f"{domain}:{str(authorized_gene.get('command') or '').split(maxsplit=1)[0]}"
                 )
                 domains = [str(item) for item in route.get("selected_domains") or []]
                 families = [str(item) for item in route.get("selected_families") or []]
@@ -2693,9 +2717,7 @@ def run_auto_runtime(
                 else:
                     hydrate_experience_memory(layers, actor)
 
-        context_requests = [
-            str(item) for item in route.get("context_requests") or []
-        ]
+        context_requests = [str(item) for item in route.get("context_requests") or []]
         requested_memory_depth = str(route.get("memory_depth") or "index")
         hydrate_requested_context(
             context_requests,
@@ -2731,9 +2753,8 @@ def run_auto_runtime(
                     "memory_candidate": route.get("memory_candidate"),
                 }
             direct_review: dict[str, object] | None = None
-            if (
-                str(route.get("interaction_mode") or "conversation") != "conversation"
-                and not bool(route.get("requires_user_input"))
+            if str(route.get("interaction_mode") or "conversation") != "conversation" and not bool(
+                route.get("requires_user_input")
             ):
                 direct_plan = {
                     "message": direct.get("message") or route.get("message") or "",
@@ -2760,9 +2781,32 @@ def run_auto_runtime(
                     interaction_mode=str(route.get("interaction_mode") or "knowledge"),
                     ledger=_evidence_ledger(normalized_goal, layers, []),
                 )
-                requested_domains = [
-                    str(item) for item in direct_review.get("next_domains") or []
-                ]
+                for recovery_round in range(1, 3):
+                    recovery_mode = _stage_autonomous_grounding_recovery(
+                        direct_review,
+                        layers,
+                    )
+                    if recovery_mode != "reflect_cumulative_evidence":
+                        break
+                    prior_direct_review = direct_review
+                    direct_review = _reflect(
+                        connection,
+                        normalized_goal,
+                        direct_plan,
+                        [],
+                        round_number=recovery_round,
+                        layers=layers,
+                        metrics=phase_metrics,
+                        prior_reflection=prior_direct_review,
+                        context_mode=normalized_context_mode,
+                        activity_callback=activity_callback,
+                    )
+                    direct_review = _apply_reflection_evidence_contract(
+                        direct_review,
+                        interaction_mode=str(route.get("interaction_mode") or "knowledge"),
+                        ledger=_evidence_ledger(normalized_goal, layers, []),
+                    )
+                requested_domains = [str(item) for item in direct_review.get("next_domains") or []]
                 requested_families = [
                     str(item) for item in direct_review.get("next_families") or []
                 ]
@@ -2774,12 +2818,10 @@ def run_auto_runtime(
                 requested_tool_names = [
                     str(item.get("tool_name"))
                     for item in direct_review.get("next_decisions") or []
-                    if isinstance(item, dict)
-                    and str(item.get("tool_name")) in known_genes
+                    if isinstance(item, dict) and str(item.get("tool_name")) in known_genes
                 ]
                 requested_domains.extend(
-                    str(known_genes[name].get("domain") or "")
-                    for name in requested_tool_names
+                    str(known_genes[name].get("domain") or "") for name in requested_tool_names
                 )
                 requested_families.extend(
                     (
@@ -2799,9 +2841,7 @@ def run_auto_runtime(
                     route["selected_families"] = list(
                         dict.fromkeys(item for item in requested_families if item)
                     )[:16]
-                    route["selected_tool_names"] = list(
-                        dict.fromkeys(requested_tool_names)
-                    )[:24]
+                    route["selected_tool_names"] = list(dict.fromkeys(requested_tool_names))[:24]
                     route["reasoning"] = direct_review.get("continue_reason")
                     if isinstance(l2, dict):
                         l2["interaction_mode"] = "operational"
@@ -2813,9 +2853,7 @@ def run_auto_runtime(
                     direct["goal_complete"] = bool(direct_review.get("goal_complete"))
                     direct["revised_plan"] = direct_review.get("revised_plan") or []
                     direct["memory_candidate"] = direct_review.get("memory_candidate")
-                message = str(
-                    direct.get("message") or route.get("message") or ""
-                ).strip()
+                message = str(direct.get("message") or route.get("message") or "").strip()
                 if not message:
                     message = localized_empty_answer(normalized_response_locale)
                 message = _ensure_message_locale(
@@ -2835,24 +2873,17 @@ def run_auto_runtime(
                     else {}
                 )
                 message, grounding_repair = _finalize_grounded_message(
-                    connection,
-                    goal=normalized_goal,
                     message=message,
                     locale=normalized_response_locale,
-                    ledger=direct_ledger,
                     grounding_sources=direct_sources,
                     public_origin=getattr(settings, "public_origin", None),
                     unsupported_claims=[
-                        str(item)
-                        for item in review_grounding.get("unsupported_claims") or []
+                        str(item) for item in review_grounding.get("unsupported_claims") or []
                     ],
                     force_reconciliation=bool(
                         review_grounding.get("operational_without_world_evidence")
                     ),
                     waiting_for_human_input=bool(route.get("requires_user_input")),
-                    metrics=phase_metrics,
-                    context_mode=normalized_context_mode,
-                    activity_callback=activity_callback,
                 )
                 grounding_failed = bool(grounding_repair.get("reconciled"))
                 reflection = direct_review or {
@@ -2935,11 +2966,7 @@ def run_auto_runtime(
                 _finish_run(
                     actor,
                     run_id=runtime_run_id,
-                    status=(
-                        "succeeded"
-                        if bool(reflection.get("goal_complete"))
-                        else "waiting"
-                    ),
+                    status=("succeeded" if bool(reflection.get("goal_complete")) else "waiting"),
                     snapshot=final_snapshot,
                 )
                 return RuntimeResult(
@@ -2962,9 +2989,7 @@ def run_auto_runtime(
         domain_index = expand_capability_domains(
             layers,
             [str(item) for item in route.get("selected_domains") or []],
-            family_keys=[
-                str(item) for item in route.get("selected_families") or []
-            ],
+            family_keys=[str(item) for item in route.get("selected_families") or []],
         )
         if route.get("selected_tool_names"):
             selection = {
@@ -3000,9 +3025,7 @@ def run_auto_runtime(
         if isinstance(l2, dict):
             l2["context_focus"] = distillation.get("context_focus") or []
 
-        selected_history = [
-            str(item) for item in distillation.get("selected_tool_names") or []
-        ]
+        selected_history = [str(item) for item in distillation.get("selected_tool_names") or []]
         _emit_activity(
             activity_callback,
             activity_id="capability:selection",
@@ -3033,11 +3056,7 @@ def run_auto_runtime(
         )
         selected_names = {str(name) for name in distillation.get("selected_tool_names") or []}
         decisions = _apply_declarative_tool_composition(
-            [
-                dict(item)
-                for item in planned.get("decisions") or []
-                if isinstance(item, dict)
-            ]
+            [dict(item) for item in planned.get("decisions") or [] if isinstance(item, dict)]
         )
         capability_metadata = {
             str(item.get("tool_name")): item
@@ -3101,9 +3120,7 @@ def run_auto_runtime(
                     continue
                 executed_signatures.add(signature)
                 metadata = capability_metadata.get(tool_name) or {}
-                activity_id = (
-                    f"tool:{round_number}:{len(tool_results) + 1}:{tool_name}"
-                )
+                activity_id = f"tool:{round_number}:{len(tool_results) + 1}:{tool_name}"
                 tool_started = perf_counter()
                 _emit_activity(
                     activity_callback,
@@ -3117,14 +3134,12 @@ def run_auto_runtime(
                     round=round_number,
                 )
                 try:
-                    authorization_action_id = (
-                        decision.get("authorization_action_id")
-                        or safe_arguments.get("authorization_action_id")
-                    )
+                    authorization_action_id = decision.get(
+                        "authorization_action_id"
+                    ) or safe_arguments.get("authorization_action_id")
                     consumes_authorization = bool(
                         bounded_authorization is not None
-                        and tool_name
-                        == str(bounded_authorization.get("tool_name") or "")
+                        and tool_name == str(bounded_authorization.get("tool_name") or "")
                         and str(authorization_action_id or "")
                         == str(bounded_authorization.get("action_id") or "")
                     )
@@ -3139,20 +3154,25 @@ def run_auto_runtime(
                             settings=settings,
                         )
                     else:
-                        result = execute_runtime_tool_call(
-                            (
-                                actor
-                                if metadata.get("execution_identity")
-                                == "requesting_user"
-                                else company_ai
-                            ),
-                            tool_name,
+                        result = _confirmation_binding_failure(
+                            entry_by_tool_name(tool_name),
                             safe_arguments,
-                            execution_context={
-                                "run_id": str(runtime_run_id),
-                                "conversation_id": conversation_id,
-                            },
+                            tool_results,
                         )
+                        if result is None:
+                            result = execute_runtime_tool_call(
+                                (
+                                    actor
+                                    if metadata.get("execution_identity") == "requesting_user"
+                                    else company_ai
+                                ),
+                                tool_name,
+                                safe_arguments,
+                                execution_context={
+                                    "run_id": str(runtime_run_id),
+                                    "conversation_id": conversation_id,
+                                },
+                            )
                 except Exception:
                     _emit_activity(
                         activity_callback,
@@ -3179,10 +3199,7 @@ def run_auto_runtime(
                 credential_deliveries = action.get("credential_deliveries")
                 has_secure_delivery = bool(
                     delivered_credentials
-                    or (
-                        isinstance(credential_deliveries, list)
-                        and credential_deliveries
-                    )
+                    or (isinstance(credential_deliveries, list) and credential_deliveries)
                 )
                 for download in _safe_download_markers(result):
                     url = str(download["url"])
@@ -3232,8 +3249,7 @@ def run_auto_runtime(
                 )
                 if activity_status == "succeeded" and has_secure_delivery:
                     delivery_activity_id = (
-                        f"credential_delivery:{round_number}:"
-                        f"{len(tool_results) + 1}:{tool_name}"
+                        f"credential_delivery:{round_number}:{len(tool_results) + 1}:{tool_name}"
                     )
                     secure_delivery_started[delivery_activity_id] = perf_counter()
                     _emit_activity(
@@ -3253,15 +3269,11 @@ def run_auto_runtime(
                     }
                 )
                 if isinstance(l3, dict):
-                    l3["world_observations"] = _world_observation_projection(
-                        tool_results
-                    )
+                    l3["world_observations"] = _world_observation_projection(tool_results)
                     recovery_packets = _atomic_recovery_projection(tool_results)
                     recovery_names = _recovery_capability_names(recovery_packets)
                     l3["atomic_recovery"] = recovery_packets
-                    l3["recovery_capability_genes"] = ai_capability_genes(
-                        recovery_names
-                    )
+                    l3["recovery_capability_genes"] = ai_capability_genes(recovery_names)
                 executed_names.append(tool_name)
             return executed_names
 
@@ -3304,6 +3316,8 @@ def run_auto_runtime(
                     "next_decisions": [],
                 }
             )
+        else:
+            _stage_autonomous_grounding_recovery(reflection, layers)
         rounds.append(
             {
                 "round": 1,
@@ -3312,6 +3326,7 @@ def run_auto_runtime(
                 "goal_complete": bool(reflection.get("goal_complete")),
                 "continue_autonomously": bool(reflection.get("continue_autonomously")),
                 "continue_reason": reflection.get("continue_reason"),
+                "grounding_recovery_mode": reflection.get("grounding_recovery_mode"),
             }
         )
 
@@ -3328,20 +3343,45 @@ def run_auto_runtime(
                 break
             if not bool(reflection.get("continue_autonomously")):
                 break
-            requested_domains = [
-                str(item) for item in reflection.get("next_domains") or []
-            ]
-            requested_families = [
-                str(item) for item in reflection.get("next_families") or []
-            ]
+            if reflection.get("grounding_recovery_mode") == "reflect_cumulative_evidence":
+                prior_reflection = reflection
+                reflection = _reflect(
+                    connection,
+                    normalized_goal,
+                    planned,
+                    [],
+                    round_number=round_number,
+                    layers=layers,
+                    metrics=phase_metrics,
+                    prior_reflection=prior_reflection,
+                    context_mode=normalized_context_mode,
+                    activity_callback=activity_callback,
+                )
+                reflection = _apply_reflection_evidence_contract(
+                    reflection,
+                    interaction_mode=str(route.get("interaction_mode") or "operational"),
+                    ledger=_evidence_ledger(normalized_goal, layers, tool_results),
+                )
+                _stage_autonomous_grounding_recovery(reflection, layers)
+                rounds.append(
+                    {
+                        "round": round_number,
+                        "selected_tool_names": [],
+                        "executed_tool_names": [],
+                        "reasoning_only": True,
+                        "goal_complete": bool(reflection.get("goal_complete")),
+                        "continue_autonomously": bool(reflection.get("continue_autonomously")),
+                        "continue_reason": reflection.get("continue_reason"),
+                        "grounding_recovery_mode": reflection.get("grounding_recovery_mode"),
+                    }
+                )
+                continue
+            requested_domains = [str(item) for item in reflection.get("next_domains") or []]
+            requested_families = [str(item) for item in reflection.get("next_families") or []]
             family_domains = [
-                family.split(":", 1)[0]
-                for family in requested_families
-                if ":" in family
+                family.split(":", 1)[0] for family in requested_families if ":" in family
             ]
-            previous_capability_count = len(
-                l3.get("domain_capability_index") or []
-            )
+            previous_capability_count = len(l3.get("domain_capability_index") or [])
             if requested_domains or requested_families:
                 expand_capability_domains(
                     layers,
@@ -3354,9 +3394,7 @@ def run_auto_runtime(
                 if isinstance(item, dict) and item.get("tool_name")
             }
             known_tool_names.update(
-                _recovery_capability_names(
-                    list(l3.get("atomic_recovery") or [])
-                )
+                _recovery_capability_names(list(l3.get("atomic_recovery") or []))
             )
             continuation = _normalise_continuation_decisions(
                 reflection,
@@ -3364,8 +3402,7 @@ def run_auto_runtime(
             )
             if (
                 not continuation
-                and len(l3.get("domain_capability_index") or [])
-                > previous_capability_count
+                and len(l3.get("domain_capability_index") or []) > previous_capability_count
             ):
                 continuation = _continuation_decisions(
                     connection,
@@ -3383,11 +3420,7 @@ def run_auto_runtime(
                 for decision in continuation
                 if _decision_signature(
                     str(decision["tool_name"]),
-                    (
-                        decision["arguments"]
-                        if isinstance(decision.get("arguments"), dict)
-                        else {}
-                    ),
+                    (decision["arguments"] if isinstance(decision.get("arguments"), dict) else {}),
                 )
                 not in executed_signatures
             ]
@@ -3451,6 +3484,8 @@ def run_auto_runtime(
                         "next_decisions": [],
                     }
                 )
+            else:
+                _stage_autonomous_grounding_recovery(reflection, layers)
             rounds.append(
                 {
                     "round": round_number,
@@ -3459,6 +3494,7 @@ def run_auto_runtime(
                     "goal_complete": bool(reflection.get("goal_complete")),
                     "continue_autonomously": bool(reflection.get("continue_autonomously")),
                     "continue_reason": reflection.get("continue_reason"),
+                    "grounding_recovery_mode": reflection.get("grounding_recovery_mode"),
                 }
             )
             if len(tool_results) >= _MAX_AUTONOMOUS_TOOL_CALLS:
@@ -3494,13 +3530,9 @@ def run_auto_runtime(
         )
         grounding = reflection.get("grounding")
         grounding = grounding if isinstance(grounding, dict) else {}
-        final_ledger = _evidence_ledger(normalized_goal, layers, tool_results)
         message, grounding_repair = _finalize_grounded_message(
-            connection,
-            goal=normalized_goal,
             message=message,
             locale=normalized_response_locale,
-            ledger=final_ledger,
             grounding_sources=_grounding_source_values(
                 normalized_goal,
                 layers,
@@ -3508,16 +3540,9 @@ def run_auto_runtime(
                 download_markers,
             ),
             public_origin=getattr(settings, "public_origin", None),
-            unsupported_claims=[
-                str(item) for item in grounding.get("unsupported_claims") or []
-            ],
-            force_reconciliation=bool(
-                grounding.get("operational_without_world_evidence")
-            ),
+            unsupported_claims=[str(item) for item in grounding.get("unsupported_claims") or []],
+            force_reconciliation=bool(grounding.get("operational_without_world_evidence")),
             waiting_for_human_input=bool(reflection.get("requires_user_input")),
-            metrics=phase_metrics,
-            context_mode=normalized_context_mode,
-            activity_callback=activity_callback,
         )
         grounding["message_repair"] = grounding_repair
         reflection["grounding"] = grounding
@@ -3567,11 +3592,7 @@ def run_auto_runtime(
         _finish_run(
             actor,
             run_id=runtime_run_id,
-            status=(
-                "succeeded"
-                if bool(reflection.get("goal_complete"))
-                else "waiting"
-            ),
+            status=("succeeded" if bool(reflection.get("goal_complete")) else "waiting"),
             snapshot=final_snapshot,
         )
         for activity_id, started_at in secure_delivery_started.items():

@@ -134,6 +134,24 @@ def test_docker_engine_waits_for_one_shot_builder_exit(
     )
 
 
+def test_docker_engine_distinguishes_missing_managed_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeDockerClient(
+        [
+            _response(200, json={"ApiVersion": "1.53"}),
+            _response(404),
+            _response(200, json={"State": {"Running": True}}),
+        ]
+    )
+    monkeypatch.setattr(runtime_controller.httpx, "Client", lambda **kwargs: fake)
+
+    engine = DockerEngine(Path("/var/run/docker.sock"))
+
+    assert engine.container_exists("warehouse-runtime-missing") is False
+    assert engine.container_exists("warehouse-runtime-present") is True
+
+
 def test_docker_engine_reads_one_shot_cpu_and_memory_statistics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -673,6 +691,114 @@ def test_runtime_controller_reconciles_due_git_resources_at_a_bounded_interval(
     assert calls == [controller.settings]
 
 
+def test_custom_image_build_falls_back_to_cached_base_on_registry_outage(
+    tmp_path: Path,
+) -> None:
+    calls: list[bool] = []
+
+    class _Engine:
+        def image_exists(self, _image: str) -> bool:
+            return False
+
+        def build(
+            self,
+            _root: Path,
+            *,
+            dockerfile: str,
+            tag: str,
+            pull: bool,
+        ) -> list[str]:
+            assert dockerfile == "Dockerfile"
+            assert tag.startswith("warehouse-user/")
+            calls.append(pull)
+            if pull:
+                raise RuntimeError(
+                    "Docker image build failed: failed to resolve source metadata: "
+                    "context deadline exceeded"
+                )
+            return ["offline build complete"]
+
+    tag, logs = runtime_controller.RuntimeController(Settings())._prepare_custom_image(
+        _Engine(),
+        {
+            "workspace_id": "00000000-0000-0000-0000-000000000081",
+            "id": "00000000-0000-0000-0000-000000000082",
+            "requested_config": {},
+        },
+        tmp_path,
+    )
+
+    assert tag.startswith("warehouse-user/")
+    assert calls == [True, False]
+    assert logs == [
+        "Registry access failed; retried with trusted base images from the local cache",
+        "offline build complete",
+    ]
+
+
+def test_runtime_drift_requeues_only_active_ready_deployment_with_missing_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = UUID("00000000-0000-0000-0000-000000000091")
+    deployment_id = UUID("00000000-0000-0000-0000-000000000092")
+    executed: list[str] = []
+    events: list[tuple[object, ...]] = []
+
+    class _Result:
+        def __init__(self, value: object = None) -> None:
+            self.value = value
+
+        def scalar_one_or_none(self) -> object:
+            return self.value
+
+    class _Session:
+        def execute(self, statement: object, *_args: object, **_kwargs: object) -> _Result:
+            sql = str(statement)
+            executed.append(sql)
+            return _Result(deployment_id if "RETURNING deployment.id" in sql else None)
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id: UUID):
+        yield _Session()
+
+    class _Engine:
+        def __init__(self, _socket: Path) -> None:
+            pass
+
+        def container_exists(self, name: str) -> bool:
+            return name.endswith("present")
+
+        def close(self) -> None:
+            pass
+
+    controller = runtime_controller.RuntimeController(Settings())
+    monkeypatch.setattr(
+        controller,
+        "_runtime_drift_candidates",
+        lambda: [
+            (
+                tenant_id,
+                deployment_id,
+                ["warehouse-runtime-present", "warehouse-runtime-missing"],
+            )
+        ],
+    )
+    monkeypatch.setattr(runtime_controller.base, "DockerEngine", _Engine)
+    monkeypatch.setattr(runtime_controller.base, "tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        runtime_controller.base,
+        "_event",
+        lambda *args, **_kwargs: events.append(args),
+    )
+
+    assert controller.reconcile_runtime_drift() == 1
+    assert any("status='queued'" in sql and "health='pending'" in sql for sql in executed)
+    assert any("runtime_status='building'" in sql for sql in executed)
+    assert events[0][3] == "self_heal_queued"
+    assert events[0][4]["missing_container_names"] == ["warehouse-runtime-missing"]
+    assert controller.reconcile_runtime_drift() == 0
+
+
 def test_runtime_mounts_support_arbitrary_non_root_image_users(tmp_path: Path) -> None:
     source = tmp_path / "source"
     nested = source / "nested"
@@ -741,7 +867,5 @@ def test_public_route_verification_uses_internal_api_and_deployment_header(
         1,
     )
 
-    assert requests[0][0] == (
-        "http://warehouse-os-api-green:8080/assets/bonfire/mk4-workspace/health"
-    )
+    assert requests[0][0] == "http://api:8080/assets/bonfire/mk4-workspace/health"
     assert requests[0][1]["headers"] == {"host": "bonfirework.org"}

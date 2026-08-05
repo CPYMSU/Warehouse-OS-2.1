@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "$(uname -s)" == "Darwin" ]] || {
+  printf 'this verifier is only for the macOS subscriber\n' >&2
+  exit 2
+}
+: "${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD:?local hosted admin password is required}"
+
+psql_bin="${PSQL_BIN:-/opt/homebrew/opt/postgresql@18/bin/psql}"
+control_state="$("${psql_bin}" -X -h 127.0.0.1 -p 5432 -U peiyuan \
+  -d warehouse_os -Atc \
+  "select count(*) filter (where srsubstate::text='r'),count(*) from pg_subscription_rel where srsubid=(select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='warehouse_from_vultr')")"
+control_enabled="$("${psql_bin}" -X -h 127.0.0.1 -p 5432 -U peiyuan \
+  -d warehouse_os -Atc \
+  "select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subenabled and subname='warehouse_from_vultr'")"
+control_apply_workers="$("${psql_bin}" -X -h 127.0.0.1 -p 5432 -U peiyuan \
+  -d warehouse_os -Atc \
+  "select count(*) from pg_stat_subscription where subid in (select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database())) and relid is null")"
+
+databases="$(PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+  "${psql_bin}" -X -h 127.0.0.1 -p 5433 -U warehouse_hosted_admin \
+    -d postgres -Atc \
+    "select datname from pg_database where datname ~ '^whdb_[0-9a-f]{32}$' order by datname")"
+hosted_databases=0
+hosted_ready=0
+hosted_tables=0
+hosted_ready_tables=0
+failures=0
+while IFS= read -r database; do
+  [[ "${database}" =~ ^whdb_[0-9a-f]{32}$ ]] || exit 2
+  state="$(PGPASSWORD="${WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD}" \
+    "${psql_bin}" -X -h 127.0.0.1 -p 5433 -U warehouse_hosted_admin \
+      -d "${database}" -Atc \
+      "select count(*) filter (where srsubstate::text='r'),count(*),(select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subenabled and subname='warehouse_from_vultr'),(select count(*) from pg_stat_subscription where subid in (select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database())) and relid is null) from pg_subscription_rel where srsubid=(select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='warehouse_from_vultr')")"
+  IFS='|' read -r ready_count table_count enabled_count apply_workers <<<"${state}"
+  (( hosted_databases += 1 ))
+  (( hosted_tables += table_count ))
+  (( hosted_ready_tables += ready_count ))
+  if [[ "${ready_count}" == "${table_count}" && "${table_count}" != "0" \
+    && "${enabled_count}" == "1" && "${apply_workers}" == "1" ]]; then
+    (( hosted_ready += 1 ))
+  else
+    (( failures += 1 ))
+    printf 'hosted_not_ready database=%s state=%s\n' "${database}" "${state}" >&2
+  fi
+done <<<"${databases}"
+
+printf 'control_tables=%s\ncontrol_enabled=%s\ncontrol_apply_workers=%s\n' \
+  "${control_state}" "${control_enabled}" "${control_apply_workers}"
+printf 'hosted_databases=%s\nhosted_databases_ready=%s\nhosted_tables=%s|%s\n' \
+  "${hosted_databases}" "${hosted_ready}" \
+  "${hosted_ready_tables}" "${hosted_tables}"
+
+[[ "${control_state}" == "156|156" \
+  && "${control_enabled}" == "1" \
+  && "${control_apply_workers}" == "1" \
+  && "${failures}" == "0" ]]

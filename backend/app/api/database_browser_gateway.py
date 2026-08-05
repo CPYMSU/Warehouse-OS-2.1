@@ -32,6 +32,7 @@ from app.services.database_browser_gateway import (
     list_database_projects,
     normalize_origin,
     public_project_configuration,
+    reconcile_database_project_registry,
     require_project_origin,
 )
 from app.services.digital_asset_hosting import (
@@ -130,6 +131,15 @@ def standalone_database_project_create(
         "runtime_required": False,
         "runtime_deployed": False,
     }
+
+
+@router.post("/api/database-projects/reconcile")
+def standalone_database_project_registry_reconcile(
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    """Repair unambiguous legacy registry gaps without provisioning new data."""
+
+    return reconcile_database_project_registry(actor)
 
 
 @router.get("/api/workspaces/{workspace_ref}/database/onboarding")

@@ -304,6 +304,8 @@ def test_logical_backup_is_restore_verified_before_database_migration(
         },
     )
     database = workspace["database"]
+    backup_role_ref = database["backup_role_ref"]
+    assert backup_role_ref == f"whb_{workspace['workspace']['uuid'].replace('-', '')}"
     issued = digital_asset_hosting.issue_workspace_key(
         actor,
         workspace["workspace"]["uuid"],
@@ -324,6 +326,31 @@ def test_logical_backup_is_restore_verified_before_database_migration(
         assert all(control.json()["authorized_operations"].values())
         assert control.json()["credentials_exposed"] is False
 
+        usage_response = client.get("/api/workspaces/v1/usage", headers=headers)
+        assert usage_response.status_code == 200, usage_response.text
+        usage = usage_response.json()["usage"]
+        assert {
+            "source_archive_bytes",
+            "runtime_release_bytes",
+            "data_volume_bytes",
+            "managed_data_object_bytes",
+            "postgresql_bytes",
+            "total_bytes",
+            "measured_at",
+            "measurement_status",
+        }.issubset(usage)
+        assert usage["total_bytes"] == sum(
+            usage[key]
+            for key in (
+                "source_archive_bytes",
+                "runtime_release_bytes",
+                "data_volume_bytes",
+                "managed_data_object_bytes",
+                "postgresql_bytes",
+            )
+        )
+        assert usage["postgresql_bytes"] > 0
+
         reconcile = client.post(
             "/api/workspaces/v1/database/reconcile",
             headers=headers,
@@ -337,7 +364,38 @@ def test_logical_backup_is_restore_verified_before_database_migration(
         assert reconcile_body["capability_evidence"]["vector_extension"] is True
         assert reconcile_body["capability_evidence"]["runtime_role"]["database_owner"] is False
         assert reconcile_body["capability_evidence"]["runtime_role"]["bypass_rls"] is False
+        assert reconcile_body["capability_evidence"]["backup_role"]["can_login"] is False
+        assert reconcile_body["capability_evidence"]["backup_role"]["bypass_rls"] is True
+        assert (
+            reconcile_body["capability_evidence"]["backup_role"][
+                "runtime_can_assume_backup"
+            ]
+            is False
+        )
         assert reconcile_body["health"]["reachable"] is True
+
+        with tenant_session(actor.tenant_id) as session:
+            owner_url = hosted_database.migration_database_url(
+                session,
+                workspace["workspace"]["uuid"],
+                settings=settings,
+            )
+        assert owner_url is not None
+        with psycopg.connect(owner_url) as connection:
+            connection.execute(
+                "CREATE TABLE app.force_rls_backup_probe(id integer PRIMARY KEY,payload text)"
+            )
+            connection.execute(
+                "INSERT INTO app.force_rls_backup_probe VALUES (1,'first'),(2,'second')"
+            )
+            connection.execute("ALTER TABLE app.force_rls_backup_probe ENABLE ROW LEVEL SECURITY")
+            connection.execute("CREATE POLICY deny_workspace_runtime ON "
+                               "app.force_rls_backup_probe USING (false)")
+            connection.execute("ALTER TABLE app.force_rls_backup_probe FORCE ROW LEVEL SECURITY")
+        with psycopg.connect(owner_url) as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM app.force_rls_backup_probe"
+            ).fetchone()[0] == 0
 
         backup = client.post(
             "/api/workspaces/v1/fabric/resources",
@@ -353,10 +411,32 @@ def test_logical_backup_is_restore_verified_before_database_migration(
         verification = backup_body["action"]["result"]["verification"]
         assert verification["checksum_verified"] is True
         assert verification["restore_verified"] is True
+        assert verification["preserves_ownership"] is True
+        assert verification["backup_identity"]["can_login"] is False
+        assert verification["backup_identity"]["bypass_rls"] is True
+        assert verification["backup_identity"]["runtime_can_assume_backup"] is False
+        assert verification["restore_verification"]["force_rls"]["verified"] is True
+        assert verification["restore_verification"]["force_rls"]["table_count"] >= 1
+        assert verification["restore_verification"]["force_rls"]["source_row_count"] >= 2
+        assert (
+            verification["restore_verification"]["force_rls"]["source_row_count"]
+            == verification["restore_verification"]["force_rls"]["restored_row_count"]
+        )
         assert (
             verification["restore_verification"]["verification_database_disposition"]
             == "dropped"
         )
+        with tenant_session(actor.tenant_id) as session:
+            backup_binding = session.execute(
+                text(
+                    "SELECT backup_role_ref,config->'backup_identity_observed' AS evidence "
+                    "FROM digital_asset.database_bindings WHERE id=:id"
+                ),
+                {"id": database["id"]},
+            ).mappings().one()
+        assert backup_binding["backup_role_ref"] == backup_role_ref
+        assert backup_binding["evidence"]["bypass_rls"] is True
+        assert backup_binding["evidence"]["runtime_can_assume_backup"] is False
 
         migration = client.post(
             "/api/workspaces/v1/fabric/resources",
@@ -406,6 +486,11 @@ def test_logical_backup_is_restore_verified_before_database_migration(
                 connection.execute(
                     psycopg.sql.SQL("DROP ROLE IF EXISTS {}").format(
                         psycopg.sql.Identifier(str(runtime_role_ref))
+                    )
+                )
+                connection.execute(
+                    psycopg.sql.SQL("DROP ROLE IF EXISTS {}").format(
+                        psycopg.sql.Identifier(str(backup_role_ref))
                     )
                 )
                 connection.execute(

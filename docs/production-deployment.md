@@ -106,23 +106,43 @@ total timeout.
 
 ## GitHub Actions deployment
 
-Only two small workflows run automatically. Pull requests run syntax,
-generated-frontend and deployment-planner checks with a five-minute ceiling.
-They do not install application dependencies, start PostgreSQL, run pytest or
-build a Compose stack. Pushes to `main` use
-`.github/workflows/production-deploy.yml`, which is bound to the `production`
-GitHub Environment, accepts only the restricted deployment identity and runs
-with read-only repository permissions.
+Pull requests run syntax, generated-frontend and deployment-planner checks with
+a five-minute ceiling. They do not install application dependencies, start
+PostgreSQL, run pytest or build a Compose stack. Pushes to `main` use
+`.github/workflows/production-deploy.yml`, which first deploys the Mac primary
+through the `mac-production` Environment and then deploys the Vultr standby
+through `production`. Both jobs run with read-only repository permissions and
+share the target-neutral `.github/workflows/production-deploy-target.yml`.
 
-The deployment job refuses stale queued revisions, serializes production
-releases and requires the live server manifest. It fixes
+The production workflow requests a dedicated Mac mini self-hosted runner with
+the labels `self-hosted`, `macOS`, `ARM64` and `warehouse-production` for every
+job. GitHub supplies scheduling and audit logs, while checkout, comparison,
+packaging and deployment consume only Mac mini compute. Pull-request checks
+stay on GitHub-hosted runners and never request the production label.
+The runner host provides Homebrew Python 3.12–3.14 and Node.js 20 or newer
+under `/opt/homebrew/bin`; production jobs reuse those installations instead
+of downloading a fresh toolchain for every deployment.
+
+The Mac-primary job uses the deploy client's `local` transport: the runner
+invokes `/Users/<user>/Server/bonfirework/bin/warehouse-deploy` directly and
+places the immutable archive in the local incoming directory. No Tailscale or
+SSH credential is involved. After Mac health and the public endpoint pass, the
+same runner executes the Vultr job over its existing restricted SSH channel.
+Its known-hosts file is isolated under `RUNNER_TEMP`, so the job never replaces
+the Mac user's personal SSH configuration. The deploy client also passes
+`-F /dev/null`, preventing personal SSH `Include`, proxy or multiplexing rules
+from changing or blocking the automated connection.
+
+The workflow refuses stale queued revisions, serializes the entire two-target
+release and requires each node's live manifest. It fixes
 `WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic`, so GitHub performs only Python
 compilation, shell parsing, committed frontend-bundle verification, packaging
 and deployment. Standard/full pytest and disposable-database verification are
-local pre-Draft responsibilities and are never selected by GitHub. The active
-server remains responsible for checksummed extraction, required backups,
-candidate health, database revision, blue/green switching, public smoke and
-automatic traffic restoration on failure.
+local pre-Draft responsibilities and are never selected by GitHub. Each target
+manager independently recomputes the impact plan and remains responsible for
+checksummed extraction, required backups, candidate health, database revision
+and automatic restoration on failure. Vultr is not updated unless the Mac
+primary has already passed its target and public health checks.
 
 ## Hosted-data disk activation
 

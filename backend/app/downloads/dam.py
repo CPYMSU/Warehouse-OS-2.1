@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""dm.py 2.5.0 — Warehouse OS 智能數字資產託管客戶端。
+"""dm.py 2.6.0 — Warehouse OS 智能數字資產託管客戶端。
 
 這個版本只呼叫 Warehouse OS 2.1 原生端點：
   GET /api/workspaces/v1/info
+  GET /api/workspaces/v1/usage
   GET /api/workspaces/v1/database/schema
   GET /api/workspaces/v1/data/{collection}
   PUT /api/workspaces/v1/data/{collection}/{record_key}
@@ -42,7 +43,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 DEFAULT_BASE = "__WAREHOUSE_BASE__"
 
 
@@ -325,6 +326,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     commands.add_parser("info", help="查看工作區、組件、數據庫及本 Key 的作用域")
+    commands.add_parser("usage", help="刷新並查看源碼、Runtime、DATA 與 PostgreSQL 佔用")
 
     schema = commands.add_parser("schema", help="查看 Data API 的集合與記錄數")
     schema.add_argument("--database", help="指定邏輯數據庫；省略時使用第一個 ready 數據庫")
@@ -633,6 +635,8 @@ def main() -> None:
         result = client.request("GET", "/api/hosting/v2/requirements")
     elif args.command == "info":
         result = client.request("GET", "/api/workspaces/v1/info")
+    elif args.command == "usage":
+        result = client.request("GET", "/api/workspaces/v1/usage")
     elif args.command == "schema":
         result = client.request(
             "GET",

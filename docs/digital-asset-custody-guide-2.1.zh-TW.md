@@ -277,7 +277,7 @@ Git 同步只接受無憑證 HTTPS URL，先阻擋回環、私網與保留地址
 
 自訂網域先取得全平台唯一 hostname claim，再交由受限主機代理配置 Nginx 與 ACME。平台主域及其子域不可由工作區 Key 佔用；其他工作區或既有 Nginx 站點已持有同一 hostname 時會返回可診斷的 `blocked/409`，不會覆蓋原站點。
 
-本機 logical backup／同工作區 restore 可直接執行。PITR 或異地備份也使用相同 `backup` 資源，但只有服務器接入 WAL archive、base backup、timeline restore 或加密遠端 object store 後才會成為 ready；未接入時 action 會明確 blocked 並列出缺少的 provider capability。GPU 同理：只有 Runtime Worker 實測到可分配 GPU 池才會分配並向 Docker 注入 DeviceRequest。
+本機 logical backup／同工作區 restore 可直接執行。平台使用每工作區獨立、不可登入且可跨越 FORCE RLS 的備份身份；Runtime 永遠維持 NOBYPASSRLS 且不能切換到備份身份。ready 證據包括 owner 保留、校驗和、臨時庫恢復，以及 FORCE RLS relation 的逐表源／恢復行數一致。PITR 或異地備份也使用相同 `backup` 資源，但只有服務器接入 WAL archive、base backup、timeline restore 或加密遠端 object store 後才會成為 ready；未接入時 action 會明確 blocked 並列出缺少的 provider capability。GPU 同理：只有 Runtime Worker 實測到可分配 GPU 池才會分配並向 Docker 注入 DeviceRequest。
 
 ## 5. 使用 PostgreSQL Data API
 
@@ -375,6 +375,7 @@ curl -sS -X PUT \
 穩定工作區端點包括：
 
 - `GET /api/workspaces/v1/info`
+- `GET /api/workspaces/v1/usage`
 - `GET /api/workspaces/v1/database/schema`
 - `GET /api/workspaces/v1/database/health`
 - `GET /api/workspaces/v1/database/tables/{schema}/{table}/rows`
