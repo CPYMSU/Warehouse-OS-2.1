@@ -4083,9 +4083,18 @@ const SecretaryDock = () => {
       const displayText = e.detail && e.detail.display_text;
       const intent = e.detail && e.detail.intent;
       const businessContext = secretaryContextOf(e.detail);
+      const actionContext = secretaryActionContextOf(e.detail);
       businessContextRef.current = businessContext;
       if (p) {
-        if (sendRef.current) sendRef.current(p, displayText, intent, businessContext);
+        if (sendRef.current) {
+          sendRef.current(
+            p,
+            displayText,
+            intent,
+            businessContext,
+            actionContext ? { action_context: actionContext } : {},
+          );
+        }
       } else {
         const restored = restoreReadyRef.current
           ? Promise.resolve(null) : restoreSecretarySession();
@@ -4451,6 +4460,9 @@ const SecretaryDock = () => {
         ),
         surface: "secretary",
         context_mode: reasoningModeRef.current,
+        ...(runOptions && runOptions.action_context ? {
+          action_context: runOptions.action_context,
+        } : {}),
         ...(runOptions && runOptions.resume_confirmation_action_id ? {
           resume_confirmation_action_id: Number(runOptions.resume_confirmation_action_id),
           authorization_keychain_id: String(runOptions.authorization_keychain_id || ""),
@@ -5549,6 +5561,30 @@ const secretaryContextOf = (value, useRouteFallback = false) => {
   }
   return { entity_ref: entityRef, node_key: nodeKey, tab };
 };
+const secretaryActionContextOf = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value.action_context && typeof value.action_context === "object"
+    && !Array.isArray(value.action_context) ? value.action_context : value;
+  if (source.schema !== "warehouse.pages-action-context.v1") return null;
+  const actionKey = String(source.action_key || "").trim();
+  const workspaceRef = String(source.workspace_ref || "").trim();
+  const deploymentId = String(source.deployment_id || "").trim();
+  if (!/^pages\.[a-z0-9][a-z0-9_.:-]{0,153}$/.test(actionKey)) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(workspaceRef)) return null;
+  if (deploymentId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(deploymentId)) return null;
+  const suggestedToolNames = Array.from(new Set(
+    (Array.isArray(source.suggested_tool_names) ? source.suggested_tool_names : [])
+      .map(name => String(name || "").trim())
+      .filter(name => /^[a-z][a-z0-9_]{2,127}$/.test(name)),
+  )).slice(0, 8);
+  return {
+    schema: "warehouse.pages-action-context.v1",
+    action_key: actionKey,
+    workspace_ref: workspaceRef,
+    ...(deploymentId ? { deployment_id: deploymentId } : {}),
+    suggested_tool_names: suggestedToolNames,
+  };
+};
 const validReturnHash = (value) => {
   const hash = String(value || "");
   return hash.length <= 600 && /^#\/[A-Za-z0-9_-]+(?:\?[^\r\n]*)?$/.test(hash) ? hash : "";
@@ -6293,12 +6329,14 @@ W2.openSecretary = (prompt, options = {}) => {
   const displayText = typeof options === "string" ? options : options && (options.display_text || options.displayText);
   const intent = options && typeof options === "object" ? options.intent : undefined;
   const businessContext = secretaryContextOf(options, true);
+  const actionContext = secretaryActionContextOf(options);
   const detail = { prompt, display_text: displayText, intent };
   if (businessContext) {
     detail.entity_ref = businessContext.entity_ref;
     if (businessContext.node_key) detail.node_key = businessContext.node_key;
     if (businessContext.tab) detail.tab = businessContext.tab;
   }
+  if (actionContext) detail.action_context = actionContext;
   window.dispatchEvent(new CustomEvent("w2-secretary-open", { detail }));
 };
 

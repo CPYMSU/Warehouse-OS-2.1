@@ -80,10 +80,13 @@ def test_digital_asset_drawer_exposes_the_pages_hosting_console():
 
     assert "const PagesConsole" in source
     assert 'data-testid="pages-hosting-console"' in source
-    assert "Warehouse OS 內訪問" in source
     assert "發布歷史" in source
-    assert "回滾至此" in source
-    assert "不得使用已退役的 dm site rollback" in source
+    assert "data.actions" in source
+    assert "dispatchAction" in source
+    assert 'invocation.mode === "auto_runtime"' in source
+    assert "action_context: invocation.action_context" in source
+    assert 'invocation.mode === "typed_action"' in source
+    assert "不得使用已退役的 dm site rollback" not in source
     assert ".pages-console" in css
     assert ".pages-release-history" in css
 
@@ -91,17 +94,18 @@ def test_digital_asset_drawer_exposes_the_pages_hosting_console():
 def test_assets_poster_styles_are_loaded_and_cache_busted():
     index = INDEX.read_text(encoding="utf-8")
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
-    assert 'pages/pages-assets.jsx?v=20260805-pages-console1' in index
+    assert 'pages/pages-assets.jsx?v=20260806-pages-actions1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
     assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
     assert 'core.css?v=20260804-task-runtime1' in index
-    assert 'core.jsx?v=20260804-task-runtime2' in index
+    assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260804-task-runtime1' in index
-    assert 'dist/app.bundle.js?v=20260805-pages-console1' in index
-    assert 'dist/personal.bundle.js?v=20260801-workspace-runtime2' in PERSONAL.read_text(
+    assert 'dist/app.bundle.js?v=20260806-pages-actions1' in index
+    assert 'dist/personal.bundle.js?v=20260806-pages-actions1' in PERSONAL.read_text(
         encoding="utf-8"
     )
+    assert 'core.jsx?v=20260806-pages-actions1' in PERSONAL.read_text(encoding="utf-8")
 
 
 def test_audit_conversation_drawer_uses_native_detail_contract_and_truthful_errors():

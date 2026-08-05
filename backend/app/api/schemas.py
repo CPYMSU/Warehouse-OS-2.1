@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
@@ -36,6 +36,31 @@ class AiToolCallRequest(BaseModel):
     arguments: dict[str, object] = Field(default_factory=dict)
 
 
+class AgentActionContext(BaseModel):
+    """Bounded presentation hint; never live evidence or authorization."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_: Literal["warehouse.pages-action-context.v1"] = Field(alias="schema")
+    action_key: str = Field(
+        min_length=7,
+        max_length=160,
+        pattern=r"^pages\.[a-z0-9][a-z0-9_.:-]*$",
+    )
+    workspace_ref: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    deployment_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    suggested_tool_names: list[str] = Field(default_factory=list, max_length=8)
+
+
 class AgentRunRequest(BaseModel):
     text: str = Field(min_length=1, max_length=16_384)
     conversation_id: str | None = Field(default=None, max_length=128)
@@ -51,6 +76,10 @@ class AgentRunRequest(BaseModel):
     # the current turn may override it; fixed mode always honours this value.
     locale: Literal["zh-Hant", "zh-Hans", "en"] | None = None
     language_mode: Literal["auto", "fixed"] = "auto"
+    # A control-surface action may expose a bounded catalogue hint. The
+    # Runtime still judges freely, reloads live state and enforces capability
+    # permission/confirmation contracts at execution time.
+    action_context: AgentActionContext | None = None
     # A confirmation card only issues this opaque, one-use authorization
     # signal. The shared Runtime consumes it; the card endpoint never invokes
     # a business adapter directly.

@@ -8898,6 +8898,107 @@ COMMANDS = [
         "examples": ["dm hosting events --session 8a4210a3-9e19-4cad-8a2a-e5a940d29c76 --after 0"],
     },
     {
+        "command": "dm pages status",
+        "tool_name": "digital_market_pages_status",
+        "description": "讀取指定工作區的 Pages 2.1 控制面：規範入口、隔離 Origin、活動發布、歷史發布、數據庫瀏覽器來源及同一份可執行 action catalog。這是尚無 hosting session id 時的優先站點觀察能力",
+        "search_aliases": [
+            "Pages 托管控制台",
+            "Pages 当前站点",
+            "Pages 當前站點",
+            "read pages hosting status",
+        ],
+        "api_method": "GET",
+        "api_path": "/api/workspaces/{workspace_ref}/pages-console",
+        "permission": "asset_mgmt.read",
+        "permission_any": ["assets.read", "assets.manage", "asset_mgmt.read", "asset_mgmt.manage"],
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("limit", "query.limit", "發布歷史條數 1-50", ptype="int", default=20),
+        ],
+        "examples": ["dm pages status --workspace mk7-workspace"],
+    },
+    {
+        "command": "dm pages configure",
+        "tool_name": "digital_market_pages_configure",
+        "description": "在新的智能託管會話提交 Pages desired state。site_key 形成 https://bonfirework.org/apps/{site_key}/ 規範入口；獨立 alias 只有明確提供時才改變。服務會同步已存在瀏覽器數據庫項目的精確隔離 HTTPS Origin，來源已滿則原子拒絕",
+        "search_aliases": [
+            "定制 Pages 网址",
+            "定制 Pages 網址",
+            "修改 site key",
+            "configure pages site",
+        ],
+        "api_method": "POST",
+        "api_path": "/api/hosting/v2/sessions",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "high",
+        "ai_requires_confirmation": True,
+        "params": [
+            _p("workspace", "body.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("site-key", "body.desired_state.pages.site_key", "3-63 位小寫字母、數字或連字符的 Pages 短名稱", required=True),
+            _p("public-alias", "body.desired_state.pages.public_alias_enabled", "是否啟用獨立 apps.bonfirework.org alias；未提供時保持目前值", ptype="bool"),
+            _p("message", "body.message", "本次 Pages 變更目的", default="Configure the Pages site through governed desired state"),
+            _p("execute", "body.execute", "是否在會話內立即執行", ptype="bool", default=True),
+            _p("client-kind", "body.client_kind", "web_secretary/terminal_ai/external_ai/automation", default="web_secretary"),
+        ],
+        "examples": [
+            "dm pages configure --workspace mk7-workspace --site-key my-site --execute true"
+        ],
+    },
+    {
+        "command": "dm pages design",
+        "tool_name": "digital_market_pages_design",
+        "description": "讀取指定工作區目前活動或指定不可變源版本的 Pages design context、非秘密文件索引、設計證據與改造建議；不修改當前發布",
+        "api_method": "GET",
+        "api_path": "/api/workspaces/{workspace_ref}/pages/design",
+        "permission": "asset_mgmt.read",
+        "permission_any": ["assets.read", "assets.manage", "asset_mgmt.read", "asset_mgmt.manage"],
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("source", "query.source_ref", "可選不可變 source version UUID 或數字 ID"),
+        ],
+        "examples": ["dm pages design --workspace mk7-workspace"],
+    },
+    {
+        "command": "dm pages file",
+        "tool_name": "digital_market_pages_design_file",
+        "description": "從指定工作區的不可變源版本讀取一個 design context 已列出的非秘密代碼或設計文件；受大小、編碼和敏感路徑策略限制",
+        "api_method": "GET",
+        "api_path": "/api/workspaces/{workspace_ref}/pages/files/{file_path}",
+        "permission": "asset_mgmt.read",
+        "permission_any": ["assets.read", "assets.manage", "asset_mgmt.read", "asset_mgmt.manage"],
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("path", "path.file_path", "design context 返回的精確相對文件路徑", required=True),
+            _p("source", "query.source_ref", "可選不可變 source version UUID 或數字 ID"),
+        ],
+        "examples": ["dm pages file --workspace mk7-workspace --path index.html"],
+    },
+    {
+        "command": "dm pages release activate",
+        "tool_name": "digital_market_pages_release_activate",
+        "description": "重新核對指定 Pages 部署仍為 ready/healthy 後，原子切換工作區活動發布指針；既可回滾也可前進，不改寫歷史源碼",
+        "api_method": "POST",
+        "api_path": "/api/workspaces/{workspace_ref}/pages/releases/{deployment_id}/activate",
+        "permission": "asset_mgmt.manage",
+        "writes": True,
+        "risk": "high",
+        "ai_requires_confirmation": True,
+        "params": [
+            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p("deployment", "path.deployment_id", "目標 ready/healthy 部署 UUID 或數字 ID", required=True),
+        ],
+        "examples": [
+            "dm pages release activate --workspace mk7-workspace --deployment 74fb04b3-445b-42d1-ae91-db8b966cd2c1"
+        ],
+    },
+    {
         "command": "dm storage pools",
         "tool_name": "digital_market_storage_pools",
         "description": "觀察平台 HDD/SSD 儲存池的健康、水位、剩餘容量與資料庫策略閾值；不暴露服務器路徑。核心代碼默認 HDD，SSD 必須來自明確意圖，所有托管資料固定 HDD",
@@ -11392,6 +11493,11 @@ COMPOSITE_STORE_TOOL_NAMES = frozenset(
         "digital_market_hosting_continue",
         "digital_market_hosting_status",
         "digital_market_hosting_events",
+        "digital_market_pages_status",
+        "digital_market_pages_configure",
+        "digital_market_pages_design",
+        "digital_market_pages_design_file",
+        "digital_market_pages_release_activate",
         # Tenant-authenticated command whose business mutation is platform-only.
         "company_join_request",
         # Tenant organization writes coupled to platform membership/identity state.
@@ -11455,6 +11561,8 @@ _TENANT_ASSET_SIDECAR_WRITE_TOOLS = frozenset(
         "digital_market_archive",
         "digital_market_hosting_start",
         "digital_market_hosting_continue",
+        "digital_market_pages_configure",
+        "digital_market_pages_release_activate",
     }
 )
 _TENANT_ASSET_SIDECAR_READ_TOOLS = frozenset(
@@ -11464,6 +11572,9 @@ _TENANT_ASSET_SIDECAR_READ_TOOLS = frozenset(
         "digital_market_site_diff",
         "digital_market_hosting_status",
         "digital_market_hosting_events",
+        "digital_market_pages_status",
+        "digital_market_pages_design",
+        "digital_market_pages_design_file",
     }
 )
 COMPOSITE_STORE_ROUTE_CONTRACTS = {

@@ -21,7 +21,7 @@ from app.terminal.readiness import native_adapter_ready, readiness_snapshot
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
 
-CATALOGUE_REVISION = "capability-truth-v10-tenant-database-registry.2026-08-05"
+CATALOGUE_REVISION = "capability-truth-v11-pages-actions.2026-08-06"
 RETIRED_LIFECYCLES = frozenset({"retired_2_0"})
 
 
