@@ -11,6 +11,11 @@ Application authors should also use
 and its machine contract
 [`workspace-hosting-contract-2.3.json`](workspace-hosting-contract-2.3.json).
 
+AI 秘書、終端 AI 與前端整合的雙模式、Runtime 指令集和接口連線設計，請以
+[`warehouse-hosting-mechanisms-2.3.zh-TW.md`](warehouse-hosting-mechanisms-2.3.zh-TW.md)
+為共同指南；智能託管 API 會透過 `/api/hosting/v2/auto-runtime-guide.md` 提供同一份
+文件。
+
 Warehouse OS 2.1 treats a custodied program as an asset with one or more
 application workspaces. It does not import the Warehouse 2.0 customer-runtime,
 database, key, or site-publication contracts.
@@ -42,6 +47,82 @@ database, key, or site-publication contracts.
 | Customer-owned application database | `external_postgresql` | Validated, encrypted external DSN; the default binding drives Runtime and relational Data API without exposing credentials |
 | Legacy portable database | `warehouse_postgresql_data_api` | SSD control-plane compatibility source retained read-only after verified migration |
 | Application runtime | `runtime_controller` | Durable queue, isolated build/runtime, health verification and route activation |
+
+## User-selected dual hosting
+
+Every workspace now keeps the existing cloud hosting path and may explicitly
+select terminal hosting. Existing workspaces default to `hosting_mode=cloud`.
+
+- `cloud`: the asset runs on the Warehouse OS server, Vultr or a Mac mini
+  compute node. Storage, database and hosting remain compatible with the 2.1
+  contract.
+- `terminal`: the server records a terminal deployment and emits a durable
+  action to the user's paired terminal or AI. It does not enqueue a server
+  Runtime or create a `warehouse-runtime-*` container.
+
+The account control API is:
+
+- `GET|PUT /api/workspaces/{workspace}/hosting`
+- `GET /api/workspaces/{workspace}/hosting/notifications`
+- `POST /api/workspaces/{workspace}/hosting/notifications`
+- `POST /api/workspaces/{workspace}/hosting/notifications/{notification}/ack`
+- `GET|POST /api/workspaces/{workspace}/compute-usage`
+
+The intelligent hosting API exposes the same choice through
+`desired_state.hosting.mode` and provides notification polling at
+`/api/hosting/v2/notifications`. A terminal or AI reports a completed terminal
+deployment through
+`POST /api/hosting/v2/terminal-actions/{deployment}/complete`. It uses only the
+workspace key and never receives company control-plane credentials. Cloud
+compute usage is recorded separately from storage hosting usage so Warehouse OS
+can introduce CPU, memory, GPU or runtime-time billing later without changing
+the hosting contract. The same workspace-key surface exposes the current ledger
+through `GET /api/hosting/v2/compute-usage`; this is usage evidence, not yet an
+invoice.
+
+Before executing, a terminal can fetch the least-privilege action manifest from
+`GET /api/hosting/v2/terminal-actions/{deployment}`. It contains the verified
+source hash, source download route, runtime intent, data API route and completion
+route, but no database DSN, host path or company credential.
+
+The Warehouse Runtime Controller now samples cumulative Docker CPU, memory and
+network counters at a bounded interval and writes interval deltas to
+`compute_usage_events` with `metering_source=runtime`. The first sample after a
+controller restart is only a baseline; it does not fabricate the missing
+interval. GPU seconds remain zero until the provider supplies a GPU sampler, and
+pricing is intentionally left as a later billing-policy layer.
+
+The built-in sampler is scoped to containers actually owned by the Warehouse
+Runtime Controller (`compute_node=warehouse` and the workspace's active
+deployment). Vultr and Mac mini workers must report their own counters through
+the same compute-usage API; the controller never infers a remote provider from
+the workspace label and therefore cannot double-count another node.
+
+Terminal completion does not mark the workspace's server `runtime_status` as
+`ready` (or `failed`): that field remains `provisioned` because no Warehouse
+Runtime health check or server container was involved. The terminal outcome is
+available on the deployment record and in `workspace.config` as
+`terminal_last_status`, `terminal_last_deployment_id` and
+`terminal_last_completed_at`.
+
+The downloaded `dm.py` client exposes the terminal loop directly:
+
+```bash
+dm.py hosting guide --output warehouse-hosting-mechanisms-2.3.zh-TW.md
+dm.py hosting mode
+dm.py hosting set terminal --notify-targets terminal,ai
+dm.py hosting notifications --status pending
+dm.py hosting usage
+dm.py hosting action <deployment-uuid>
+dm.py hosting prepare <deployment-uuid> --directory .warehouse-terminal
+dm.py hosting ack <notification-uuid>
+dm.py hosting complete <deployment-uuid> --status succeeded --result '{"url":"http://127.0.0.1:8080"}'
+```
+
+`hosting prepare` only downloads and verifies the immutable source archive,
+safely materializes it under `source/`, and writes `terminal-manifest.json`; it
+never runs an untrusted command. Execution must be an explicit, user-approved
+sandbox step on the terminal.
 
 Provider keys are control-plane contracts. A production object store or
 container runtime can replace a development provider without changing the

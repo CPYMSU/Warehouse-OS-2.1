@@ -72,9 +72,21 @@ from app.services.hosting_fabric import (
     observe_action,
     observe_fabric,
 )
+from app.services.hosting_modes import (
+    acknowledge_hosting_notification,
+    create_hosting_notification,
+    get_hosting_mode,
+    list_compute_usage,
+    list_hosting_notifications,
+    record_compute_usage,
+    set_hosting_mode,
+)
 from app.services.hosting_requirements import (
+    AUTO_RUNTIME_GUIDE_FILENAME,
     CONTRACT_FILENAME,
     STANDARD_FILENAME,
+    auto_runtime_guide_bundle,
+    auto_runtime_guide_path,
     contract_path,
     requirements_bundle,
     standard_path,
@@ -204,9 +216,7 @@ async def _active_runtime_response(
                     headers=forwarded_headers,
                 )
                 if 200 <= documentation.status_code < 400:
-                    documentation_location = (
-                        f"/assets/{tenant_slug}/{workspace_key}/docs"
-                    )
+                    documentation_location = f"/assets/{tenant_slug}/{workspace_key}/docs"
             except httpx.HTTPError:
                 pass
     if upstream is None:
@@ -796,9 +806,7 @@ def customer_relation_rows(
     )
 
 
-@router.put(
-    "/api/workspaces/v1/database/tables/{schema_name}/{table_name}/rows/{record_key}"
-)
+@router.put("/api/workspaces/v1/database/tables/{schema_name}/{table_name}/rows/{record_key}")
 def customer_relation_row_put(
     schema_name: str,
     table_name: str,
@@ -914,6 +922,22 @@ def digital_asset_hosting_standard(
         ) from exc
 
 
+@router.get("/api/digital-assets/hosting-mechanisms")
+def digital_asset_hosting_mechanisms(
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    """Return the shared hosting/Auto Runtime guide to the AI secretary."""
+
+    _require_ai_use(actor)
+    try:
+        return auto_runtime_guide_bundle(public_surface="digital-assets")
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auto Runtime hosting guide is unavailable",
+        ) from exc
+
+
 @router.get("/api/storage/v1/pools")
 def hosted_storage_pools(
     actor: ActorContext = Depends(current_actor),
@@ -946,6 +970,23 @@ def digital_asset_hosting_standard_download() -> FileResponse:
         path,
         media_type="text/markdown; charset=utf-8",
         filename=STANDARD_FILENAME,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@router.get("/api/digital-assets/hosting-mechanisms/download")
+def digital_asset_hosting_mechanisms_download() -> FileResponse:
+    try:
+        path = auto_runtime_guide_path()
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auto Runtime hosting guide is unavailable",
+        ) from exc
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=AUTO_RUNTIME_GUIDE_FILENAME,
         headers={"Cache-Control": "public, max-age=300"},
     )
 
@@ -1239,6 +1280,40 @@ def digital_asset_workspace_create(
     return create_workspace(actor, asset_ref, payload)
 
 
+def _asset_hosting_workspace(actor: ActorContext, asset_ref: str) -> str:
+    detail = asset_detail(actor, asset_ref)
+    workspaces = detail.get("workspaces") if isinstance(detail, dict) else None
+    if not isinstance(workspaces, list) or not workspaces:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "asset_has_no_workspace",
+                "message": "Create a workspace before selecting its hosting mode",
+            },
+        )
+    workspace = workspaces[0]
+    if not isinstance(workspace, dict) or not workspace.get("uuid"):
+        raise HTTPException(status_code=503, detail="Workspace identity is unavailable")
+    return str(workspace["uuid"])
+
+
+@router.get("/api/digital-assets/{asset_ref}/hosting")
+def digital_asset_hosting_mode_get(
+    asset_ref: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return get_hosting_mode(actor, _asset_hosting_workspace(actor, asset_ref))
+
+
+@router.put("/api/digital-assets/{asset_ref}/hosting")
+def digital_asset_hosting_mode_set(
+    asset_ref: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return set_hosting_mode(actor, _asset_hosting_workspace(actor, asset_ref), payload)
+
+
 @router.post("/api/digital-assets/{asset_ref}/workspace-quota")
 def digital_asset_workspace_quota(
     asset_ref: str,
@@ -1318,9 +1393,7 @@ def workspace_database_health(
     )
 
 
-@router.get(
-    "/api/workspaces/{workspace_ref}/database/tables/{schema_name}/{table_name}/rows"
-)
+@router.get("/api/workspaces/{workspace_ref}/database/tables/{schema_name}/{table_name}/rows")
 def workspace_relation_rows(
     workspace_ref: str,
     schema_name: str,
@@ -1343,8 +1416,7 @@ def workspace_relation_rows(
 
 
 @router.put(
-    "/api/workspaces/{workspace_ref}/database/tables/"
-    "{schema_name}/{table_name}/rows/{record_key}"
+    "/api/workspaces/{workspace_ref}/database/tables/{schema_name}/{table_name}/rows/{record_key}"
 )
 def workspace_relation_row_put(
     workspace_ref: str,
@@ -1438,6 +1510,94 @@ def workspace_runtime_upgrade(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     return upgrade_workspace_runtime(actor, workspace_ref, payload)
+
+
+@router.get("/api/workspaces/{workspace_ref}/hosting")
+def workspace_hosting_mode_get(
+    workspace_ref: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    """Return the user's explicit cloud/terminal hosting choice."""
+
+    return get_hosting_mode(actor, workspace_ref)
+
+
+@router.put("/api/workspaces/{workspace_ref}/hosting")
+def workspace_hosting_mode_set(
+    workspace_ref: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    """Change hosting mode without changing the asset identity or its data."""
+
+    return set_hosting_mode(actor, workspace_ref, payload)
+
+
+@router.get("/api/workspaces/{workspace_ref}/hosting/notifications")
+def workspace_hosting_notifications_list(
+    workspace_ref: str,
+    target: str | None = Query(default=None),
+    notification_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_asset_read(actor)
+    return list_hosting_notifications(
+        actor.tenant_id,
+        workspace_ref,
+        target=target,
+        notification_status=notification_status,
+        limit=limit,
+    )
+
+
+@router.post("/api/workspaces/{workspace_ref}/hosting/notifications")
+def workspace_hosting_notification_create(
+    workspace_ref: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return create_hosting_notification(actor, workspace_ref, payload)
+
+
+@router.post("/api/workspaces/{workspace_ref}/hosting/notifications/{notification_ref}/ack")
+def workspace_hosting_notification_ack(
+    workspace_ref: str,
+    notification_ref: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_asset_manage(actor)
+    return acknowledge_hosting_notification(
+        actor.tenant_id,
+        workspace_ref,
+        notification_ref,
+        actor_user_id=actor.user_id,
+    )
+
+
+@router.get("/api/workspaces/{workspace_ref}/compute-usage")
+def workspace_compute_usage_list(
+    workspace_ref: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_asset_read(actor)
+    return list_compute_usage(actor.tenant_id, workspace_ref, limit=limit)
+
+
+@router.post("/api/workspaces/{workspace_ref}/compute-usage")
+def workspace_compute_usage_record(
+    workspace_ref: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    _require_asset_manage(actor)
+    return record_compute_usage(
+        actor.tenant_id,
+        workspace_ref,
+        payload,
+        actor_user_id=actor.user_id,
+    )
 
 
 @router.post("/api/workspaces/{workspace_ref}/storage")

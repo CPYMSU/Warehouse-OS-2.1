@@ -51,6 +51,7 @@ searchable as history but cannot be executed or exposed as model tools.
 | --- | --- |
 | Customer digital-asset custody, workspace keys and `dam.py` | [Warehouse OS 2.1《數字資產託管指南》](docs/digital-asset-custody-guide-2.1.zh-TW.md) |
 | Digital-asset providers, permanent entry, quota and runtime invariants | [Digital asset hosting contract](docs/digital-asset-hosting.md) |
+| Dual hosting, compute nodes, Auto Runtime command boundary and API connection guide | [Warehouse OS 2.3《託管機制與 Auto Runtime 連接指南》](docs/warehouse-hosting-mechanisms-2.3.zh-TW.md) |
 | AI-native semantic mutation, Passkey and Action Keychain | [AI-native universal action fabric](docs/ai-native-universal-action-fabric.zh-TW.md) |
 | Intelligent data decomposition and world observations | [Intelligent database decomposition](docs/intelligent-database-decomposition.zh-TW.md) |
 | Runtime API, streaming and key lifecycle | [Runtime API](docs/runtime-api.md) |

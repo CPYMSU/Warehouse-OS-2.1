@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import sys
+import zipfile
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api import digital_assets
 from app.api.deps import ActorContext, current_actor
+from app.downloads import dam
 from app.main import app
 from app.services.auto_runtime import _safe_download_markers
 from app.terminal import executor, legacy_catalog
@@ -42,6 +47,8 @@ def test_21_guide_and_cli_are_downloadable_without_legacy_runtime_paths() -> Non
         cli_download = client.get("/api/digital-assets/cli")
         standard = client.get("/api/digital-assets/hosting-standard")
         standard_download = client.get("/api/digital-assets/hosting-standard/download")
+        mechanisms = client.get("/api/digital-assets/hosting-mechanisms")
+        mechanisms_download = client.get("/api/digital-assets/hosting-mechanisms/download")
         contract_download = client.get("/api/digital-assets/hosting-contract.json")
     finally:
         app.dependency_overrides.clear()
@@ -70,6 +77,11 @@ def test_21_guide_and_cli_are_downloadable_without_legacy_runtime_paths() -> Non
     ]
     assert standard_download.status_code == 200
     assert standard_download.text.startswith("# Warehouse OS《託管應用技術要求 2.3》")
+    assert mechanisms.status_code == 200
+    assert mechanisms.json()["filename"] == "warehouse-hosting-mechanisms-2.3.zh-TW.md"
+    assert "execute_runtime_tool_call" in mechanisms.json()["content"]
+    assert mechanisms_download.status_code == 200
+    assert mechanisms_download.text == mechanisms.json()["content"]
     assert contract_download.status_code == 200
     assert contract_download.json()["contract"] == ("warehouse.hosting-application.v2.3")
 
@@ -239,6 +251,166 @@ def test_dm_hosting_requirements_dispatches_and_exposes_safe_downloads(
         "/api/digital-assets/hosting-standard/download",
         "/api/digital-assets/hosting-contract.json",
     ]
+
+
+def test_dm_hosting_guide_uses_the_auto_runtime_secretary_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = legacy_catalog.entry_by_tool_name("digital_market_hosting_guide")
+
+    assert entry is not None
+    assert entry["command"] == "dm hosting guide"
+    assert entry["api_method"] == "GET"
+    assert entry["api_path"] == "/api/hosting/v2/auto-runtime-guide"
+    assert entry["writes"] is False
+    assert legacy_catalog.ai_execution_route_ready(entry) is True
+    parsed, values = legacy_catalog.parse_line("dm hosting guide")
+    assert parsed["tool_name"] == "digital_market_hosting_guide"
+    assert values == {}
+    method, path, body = legacy_catalog.build_request(parsed, values)
+    assert (method, path, body) == (
+        "GET",
+        "/api/hosting/v2/auto-runtime-guide",
+        None,
+    )
+    monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
+    result = executor.execute_tool_call(_actor(), "digital_market_hosting_guide", {})
+    assert result["status"] == "succeeded"
+    assert result["data"]["filename"] == "warehouse-hosting-mechanisms-2.3.zh-TW.md"
+    assert "/api/hosting/v2/auto-runtime-guide.md" in [
+        item["url"] for item in _safe_download_markers(result)
+    ]
+
+
+def test_dm_cli_hosting_guide_downloads_as_a_read_only_document(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, object, str]] = []
+
+    class _Client:
+        def __init__(self, _base: str, _key: str) -> None:
+            pass
+
+        def download_text(
+            self,
+            path: str,
+            *,
+            output,
+            default_filename: str,
+        ) -> dict[str, object]:
+            calls.append((path, output, default_filename))
+            assert output is not None
+            output.write_text("# Auto Runtime hosting guide\n", encoding="utf-8")
+            return {
+                "ok": True,
+                "source": path,
+                "filename": default_filename,
+                "downloaded": True,
+                "path": str(output),
+                "size_bytes": 29,
+                "sha256": "a" * 64,
+            }
+
+    output = tmp_path / "hosting-guide.md"
+    monkeypatch.setattr(dam, "Client", _Client)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dm.py",
+            "--base",
+            "https://warehouse.test",
+            "--key",
+            "wak_test",
+            "hosting",
+            "guide",
+            "--output",
+            str(output),
+        ],
+    )
+
+    dam.main()
+
+    assert output.read_text(encoding="utf-8") == "# Auto Runtime hosting guide\n"
+    assert calls == [
+        (
+            "/api/hosting/v2/auto-runtime-guide.md",
+            output,
+            "warehouse-hosting-mechanisms-2.3.zh-TW.md",
+        )
+    ]
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["downloaded"] is True
+    assert printed["path"] == str(output)
+
+
+def test_dm_terminal_prepare_verifies_and_writes_manifest_without_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    source_archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(source_archive, "w") as archive:
+        archive.writestr("app.py", "print('prepared but never executed')\n")
+    source_sha256 = hashlib.sha256(source_archive.read_bytes()).hexdigest()
+
+    class _Client:
+        def __init__(self, _base: str, _key: str) -> None:
+            pass
+
+        def terminal_manifest(self, _deployment_id: str) -> dict[str, object]:
+            return {
+                "ok": True,
+                "manifest": {
+                    "deployment_id": "deployment-1",
+                    "hosting_mode": "terminal",
+                    "execution_target": "user_terminal",
+                    "source_version_id": "source-1",
+                    "source_sha256": source_sha256,
+                    "source_download": "/api/workspaces/v1/sources/source-1/download",
+                },
+                "deployment": {"status": "queued"},
+            }
+
+        def download_source(self, _source_id: str, output, **_kwargs: object) -> dict[str, object]:
+            target = output
+            target.write_bytes(source_archive.read_bytes())
+            return {
+                "ok": True,
+                "source_version_id": "source-1",
+                "path": str(target),
+                "size_bytes": target.stat().st_size,
+                "sha256": source_sha256,
+            }
+
+    monkeypatch.setattr(dam, "Client", _Client)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dm.py",
+            "--base",
+            "https://warehouse.test",
+            "--key",
+            "wak_test",
+            "hosting",
+            "prepare",
+            "deployment-1",
+            "--directory",
+            str(tmp_path / "prepared"),
+        ],
+    )
+
+    dam.main()
+
+    manifest_file = tmp_path / "prepared" / "terminal-manifest.json"
+    assert manifest_file.is_file()
+    saved = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert saved["manifest"]["source_version_id"] == "source-1"
+    assert saved["download"]["sha256"] == source_sha256
+    assert (tmp_path / "prepared" / "source" / "app.py").is_file()
+    assert saved["executed"] is False
 
 
 def test_native_provision_route_composes_asset_workspace_database_and_key(

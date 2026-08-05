@@ -51,6 +51,7 @@ def test_manifest_is_a_single_machine_contract_for_terminal_ai() -> None:
     assert [item["name"] for item in manifest["downloads"]] == [
         "dm.py",
         "dm-guide.md",
+        "warehouse-hosting-mechanisms-2.3.zh-TW.md",
         "workspace-hosting-developer-standard-2.3.zh-TW.md",
         "workspace-hosting-contract-2.3.json",
     ]
@@ -148,6 +149,8 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     kit = client.get("/api/hosting/v2/kit")
     cli = client.get("/api/hosting/v2/dm.py")
     guide = client.get("/api/hosting/v2/dm-guide.md")
+    auto_runtime_guide = client.get("/api/hosting/v2/auto-runtime-guide.md")
+    auto_runtime_bundle = client.get("/api/hosting/v2/auto-runtime-guide")
     requirements = client.get("/api/hosting/v2/requirements")
     standard = client.get("/api/hosting/v2/developer-standard.md")
     contract = client.get("/api/hosting/v2/contract.json")
@@ -165,11 +168,26 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert '"/api/hosting/v2/sessions"' in cli.text
     assert 'commands.add_parser("hosting"' in cli.text
     assert '"/api/hosting/v2/requirements"' in cli.text
+    assert '"/api/hosting/v2/terminal-actions/{safe_deployment}"' in cli.text
+    assert 'hosting_subcommands.add_parser(\n        "prepare"' in cli.text
     assert 'prog="dm.py"' in cli.text
     compile(cli.text, "dm.py", "exec")
     assert guide.status_code == 200
     assert "給終端 AI：優先使用智能託管接口" in guide.text
     assert "/api/hosting/v2/manifest" in guide.text
+    assert auto_runtime_guide.status_code == 200
+    assert auto_runtime_guide.headers["content-disposition"].endswith(
+        'filename="warehouse-hosting-mechanisms-2.3.zh-TW.md"'
+    )
+    assert "execute_runtime_tool_call" in auto_runtime_guide.text
+    assert "/api/hosting/v2/compute-usage" in auto_runtime_guide.text
+    assert "靜態 / 瀏覽器（MKS/MSU 類）" in auto_runtime_guide.text
+    assert "Vultr / Mac mini Cloud Runtime" in auto_runtime_guide.text
+    assert "Hybrid 分工" in auto_runtime_guide.text
+    assert "應用程式設計和接口連線準則" in auto_runtime_guide.text
+    assert auto_runtime_bundle.status_code == 200
+    assert auto_runtime_bundle.json()["filename"] == "warehouse-hosting-mechanisms-2.3.zh-TW.md"
+    assert auto_runtime_bundle.json()["content"] == auto_runtime_guide.text
     assert requirements.status_code == 200
     assert requirements.json()["version"] == "2.3"
     assert standard.status_code == 200
@@ -238,9 +256,16 @@ def test_intelligent_hosting_routes_are_published_before_api_fallback() -> None:
         "/api/hosting/v2/kit",
         "/api/hosting/v2/dm.py",
         "/api/hosting/v2/dm-guide.md",
+        "/api/hosting/v2/auto-runtime-guide.md",
+        "/api/hosting/v2/auto-runtime-guide",
         "/api/hosting/v2/requirements",
         "/api/hosting/v2/developer-standard.md",
         "/api/hosting/v2/contract.json",
+        "/api/hosting/v2/hosting",
+        "/api/hosting/v2/notifications",
+        "/api/hosting/v2/compute-usage",
+        "/api/hosting/v2/terminal-actions/{deployment_ref}",
+        "/api/hosting/v2/terminal-actions/{deployment_ref}/complete",
         "/api/hosting/v2/sessions",
         "/api/hosting/v2/sessions/{session_id}",
         "/api/hosting/v2/sessions/{session_id}/messages",

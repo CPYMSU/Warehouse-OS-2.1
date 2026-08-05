@@ -31,7 +31,8 @@ from app.services.digital_asset_hosting import (
     workspace_info,
 )
 from app.services.hosting_fabric import apply_fabric_resource, observe_fabric
-from app.services.hosting_requirements import requirement_downloads
+from app.services.hosting_modes import set_hosting_mode_for_credential
+from app.services.hosting_requirements import AUTO_RUNTIME_GUIDE_FILENAME, requirement_downloads
 from app.services.workspace_deployments import (
     activate_workspace_deployment,
     configure_workspace_runtime,
@@ -42,8 +43,12 @@ from app.services.workspace_deployments import (
 
 SESSION_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
 CLIENT_KINDS = frozenset({"unknown", "web_secretary", "terminal_ai", "external_ai", "automation"})
+# The hosting-agent event ledger already accepts the generic ``ready`` event.
+# Terminal completion is distinguished by its ``terminal`` stage and payload;
+# do not introduce a new event value without a matching database migration.
+TERMINAL_SESSION_READY_EVENT = "ready"
 RUNTIME_TYPES = frozenset(
-    {"auto", "static", "web", "api", "worker", "agent", "container", "compose"}
+    {"auto", "static", "web", "api", "worker", "agent", "job", "container", "compose"}
 )
 
 
@@ -94,10 +99,27 @@ def assistant_manifest() -> dict[str, object]:
             "message_stream": ("POST /api/hosting/v2/sessions/{session_id}/messages/stream"),
             "status": "GET /api/hosting/v2/sessions/{session_id}?refresh=true",
             "events": "GET /api/hosting/v2/sessions/{session_id}/events",
+            "hosting_mode": "GET /api/hosting/v2/hosting?workspace_ref=...",
+            "notifications": "GET /api/hosting/v2/notifications?workspace_ref=...",
+            "compute_usage": "GET /api/hosting/v2/compute-usage?workspace_ref=...",
+            "notification_ack": "POST /api/hosting/v2/notifications/{notification_id}/ack",
+            "terminal_manifest": (
+                "GET /api/hosting/v2/terminal-actions/{deployment_id}?workspace_ref=..."
+            ),
+            "terminal_complete": ("POST /api/hosting/v2/terminal-actions/{deployment_id}/complete"),
             "source": "POST /api/hosting/v2/sessions/{session_id}/sources",
             "cancel": "POST /api/hosting/v2/sessions/{session_id}/cancel",
+            "auto_runtime_guide": "GET /api/hosting/v2/auto-runtime-guide.md",
+            "auto_runtime_guide_bundle": "GET /api/hosting/v2/auto-runtime-guide",
         },
         "desired_state": {
+            "hosting": {
+                "mode": "cloud|terminal; user-selected execution location",
+                "compute_node": "warehouse|vultr|mac_mini|user_terminal",
+                "notify_targets": "terminal|ai or an array of both",
+                "cloud_fallback": "ask|never; terminal mode never switches silently",
+                "compute_budget": "optional limits for future cloud-compute billing",
+            },
             "storage": {"verify": "boolean; defaults to true before deployment"},
             "runtime": {
                 "type": "auto|static|web|api|worker|agent|job|container|compose",
@@ -162,6 +184,13 @@ def assistant_manifest() -> dict[str, object]:
                 "url": "/api/hosting/v2/dm-guide.md",
                 "media_type": "text/markdown",
             },
+            {
+                "name": AUTO_RUNTIME_GUIDE_FILENAME,
+                "url": "/api/hosting/v2/auto-runtime-guide.md",
+                "filename": AUTO_RUNTIME_GUIDE_FILENAME,
+                "media_type": "text/markdown",
+                "purpose": "托管机制、Auto Runtime 指令目录与 API 连接设计指南",
+            },
             *requirement_downloads(public_surface="hosting"),
         ],
     }
@@ -215,7 +244,7 @@ def _merge_desired_state(current: dict[str, object], supplied: object) -> dict[s
                 clean_resources.append(dict(item))
             merged[key] = clean_resources
             continue
-        if key not in {"storage", "runtime", "deployment"}:
+        if key not in {"hosting", "storage", "runtime", "deployment"}:
             raise HTTPException(
                 status_code=422,
                 detail={"reason": "unsupported_desired_state", "field": str(key)},
@@ -224,6 +253,18 @@ def _merge_desired_state(current: dict[str, object], supplied: object) -> dict[s
             raise HTTPException(status_code=422, detail=f"desired_state.{key} must be an object")
         base = merged.get(key) if isinstance(merged.get(key), dict) else {}
         merged[key] = {**base, **value}
+    hosting = merged.get("hosting") if isinstance(merged.get("hosting"), dict) else {}
+    if hosting:
+        mode = str(hosting.get("mode") or "cloud").strip().lower()
+        if mode not in {"cloud", "terminal"}:
+            raise HTTPException(
+                status_code=422,
+                detail="desired_state.hosting.mode must be cloud or terminal",
+            )
+        hosting["mode"] = mode
+        if "compute_node" in hosting and hosting["compute_node"] not in (None, ""):
+            hosting["compute_node"] = str(hosting["compute_node"]).strip().lower()
+        merged["hosting"] = hosting
     runtime = merged.get("runtime") if isinstance(merged.get("runtime"), dict) else {}
     runtime_type = str(runtime.get("type") or "auto").lower()
     if runtime_type not in RUNTIME_TYPES:
@@ -231,7 +272,7 @@ def _merge_desired_state(current: dict[str, object], supplied: object) -> dict[s
             status_code=422,
             detail=(
                 "desired_state.runtime.type must be "
-                "auto/static/web/api/worker/agent/container/compose"
+                "auto/static/web/api/worker/agent/job/container/compose"
             ),
         )
     if runtime:
@@ -850,6 +891,54 @@ def _refresh_state(
             status_value, stage = "awaiting_source", "source"
         elif (
             latest is not None
+            and latest.get("provider_key") == "terminal_queue"
+            and latest.get("status") not in {"ready", "failed", "cancelled"}
+        ):
+            status_value, stage = "running", "terminal"
+            diagnosis = {
+                "status": "awaiting_terminal",
+                "stage": "terminal",
+                "message": "The release is waiting for the user's terminal or AI to execute it.",
+                "deployment_id": latest.get("uuid") or latest.get("id"),
+                "next_action": "poll /api/hosting/v2/notifications or connect a terminal",
+            }
+        elif (
+            latest is not None
+            and latest.get("status") == "ready"
+            and latest.get("health") == "healthy"
+            and latest.get("provider_key") == "terminal_queue"
+        ):
+            deployment_ref = latest.get("uuid") or latest.get("id")
+            status_value, stage, completed = "completed", "terminal", True
+            diagnosis = {
+                "status": "terminal_completed",
+                "stage": "terminal",
+                "message": (
+                    "The user's terminal or AI completed the release; "
+                    "no cloud Runtime was activated."
+                ),
+                "deployment_id": deployment_ref,
+                "next_action": "sync the terminal result through the data API",
+            }
+            _event(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                # ``hosting_agent_events.event_type`` is append-only and its
+                # migration already permits the generic ``ready`` event. Keep
+                # the terminal distinction in the stage/payload instead of
+                # introducing an event value that the database constraint does
+                # not accept.
+                TERMINAL_SESSION_READY_EVENT,
+                "terminal",
+                "completed",
+                {
+                    "deployment_id": str(deployment_ref),
+                    "execution_target": "user_terminal",
+                    "health": "healthy",
+                },
+            )
+        elif (
+            latest is not None
             and latest.get("status") == "ready"
             and latest.get("health") == "healthy"
         ):
@@ -864,9 +953,8 @@ def _refresh_state(
                 if isinstance(desired_state.get("runtime"), dict)
                 else {}
             )
-            if (
-                str(runtime_options.get("type") or "").lower() != "job"
-                and deployment_options.get("activate_when_healthy", True)
+            if str(runtime_options.get("type") or "").lower() != "job" and deployment_options.get(
+                "activate_when_healthy", True
             ):
                 activate_workspace_deployment(credential, UUID(str(deployment_ref)))
             status_value, stage, completed = "completed", "ready", True
@@ -1060,6 +1148,46 @@ def execute_message(
     )
     if not bool(payload.get("execute")):
         return get_session(principal, row["id"], refresh=False)
+    hosting_options = (
+        desired_state.get("hosting") if isinstance(desired_state.get("hosting"), dict) else {}
+    )
+    if hosting_options:
+        try:
+            _event(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                "step_started",
+                "hosting.mode",
+                "running",
+                hosting_options,
+            )
+            hosting_result = set_hosting_mode_for_credential(credential, hosting_options)
+            _event(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                "step_succeeded",
+                "hosting.mode",
+                "succeeded",
+                hosting_result,
+            )
+        except Exception as exc:
+            diagnostic = failure_diagnostic("hosting.mode", exc)
+            _event(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                "step_failed",
+                "hosting.mode",
+                str(diagnostic["status"]),
+                diagnostic,
+            )
+            _update_session(
+                principal.tenant_id,
+                UUID(str(row["id"])),
+                status_value=str(diagnostic["status"]),
+                stage="hosting.mode",
+                diagnosis=diagnostic,
+            )
+            return get_session(principal, row["id"], refresh=False)
     resource_results, resource_diagnosis = _apply_desired_resources(
         principal,
         UUID(str(row["id"])),

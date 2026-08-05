@@ -188,6 +188,47 @@ def test_docker_engine_reads_one_shot_cpu_and_memory_statistics(
     }
 
 
+def test_docker_engine_reads_cumulative_resource_counters_for_metering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeDockerClient(
+        [
+            _response(200, json={"ApiVersion": "1.53"}),
+            _response(
+                200,
+                json={
+                    "cpu_stats": {"cpu_usage": {"total_usage": 2_500_000_000}},
+                    "memory_stats": {
+                        "usage": 10 * 1024 * 1024,
+                        "limit": 64 * 1024 * 1024,
+                        "stats": {"inactive_file": 2 * 1024 * 1024},
+                    },
+                    "networks": {
+                        "eth0": {"rx_bytes": 100, "tx_bytes": 25},
+                        "eth1": {"rx_bytes": 7, "tx_bytes": 3},
+                    },
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(runtime_controller.httpx, "Client", lambda **kwargs: fake)
+
+    engine = DockerEngine(Path("/var/run/docker.sock"))
+    assert engine.resource_usage("runtime-metered") == {
+        "cpu_seconds_total": 2.5,
+        "memory_bytes": 8 * 1024 * 1024,
+        "memory_raw_bytes": 10 * 1024 * 1024,
+        "memory_cache_bytes": 2 * 1024 * 1024,
+        "memory_limit_bytes": 64 * 1024 * 1024,
+        "network_bytes_total": 135.0,
+        "gpu_seconds_total": 0.0,
+    }
+    assert fake.requests[-1][2]["params"] == {
+        "stream": "false",
+        "one-shot": "true",
+    }
+
+
 def test_docker_engine_builds_create_safe_compose_replica_spec(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
