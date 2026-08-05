@@ -709,11 +709,18 @@ lane_rank() {
 }
 
 active_browser_image() {
-  local slot container
+  local slot container release image
   slot="$(active_slot)"
   [[ -n "${slot}" ]] || return 1
   container="warehouse-os-browser-${slot}"
-  docker inspect --format '{{.Config.Image}}' "${container}" 2>/dev/null
+  if docker inspect --format '{{.Config.Image}}' "${container}" 2>/dev/null; then
+    return 0
+  fi
+  release="$(basename "$(readlink -f "${CURRENT}" 2>/dev/null || true)")"
+  [[ -n "${release}" ]] || return 1
+  image="warehouse-os-browser:${release}"
+  docker image inspect "${image}" >/dev/null 2>&1 || return 1
+  printf '%s\n' "${image}"
 }
 
 active_api_image() {
