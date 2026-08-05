@@ -253,7 +253,7 @@ def test_dependency_free_alembic_head_matches_the_declared_graph() -> None:
         text=True,
     )
 
-    assert completed.stdout.strip() == "20260805_0077 (head)"
+    assert completed.stdout.strip() == "20260805_0078 (head)"
 
 
 def test_full_verification_can_use_an_ephemeral_environment() -> None:

@@ -2283,7 +2283,12 @@ def activate_workspace_deployment(
     }
 
 
-def active_workspace_runtime(tenant_slug: str, workspace_key: str) -> dict[str, object] | None:
+def active_workspace_runtime(
+    tenant_slug: str,
+    workspace_key: str,
+    *,
+    register_request: bool = True,
+) -> dict[str, object] | None:
     """Return the server-internal route for the workspace's verified revision."""
 
     with system_session() as session:
@@ -2294,12 +2299,13 @@ def active_workspace_runtime(tenant_slug: str, workspace_key: str) -> dict[str, 
     if tenant_id is None:
         return None
     with tenant_session(tenant_id) as session:
-        row = (
+        resolved = (
             session.execute(
                 text(
                     """
                 SELECT d.id, d.result, d.public_url, d.release_digest,
-                       d.runtime_profile_key
+                       d.runtime_profile_key, d.runtime_state,
+                       d.runtime_last_request_at
                 FROM digital_asset.workspaces AS w
                 JOIN digital_asset.deployments AS d ON d.id=w.active_deployment_id
                 JOIN digital_asset.assets AS a ON a.id=w.asset_id
@@ -2313,8 +2319,45 @@ def active_workspace_runtime(tenant_slug: str, workspace_key: str) -> dict[str, 
             .mappings()
             .one_or_none()
         )
-    if row is None:
-        return None
+        if resolved is None:
+            return None
+        row = dict(resolved)
+        result = row["result"] if isinstance(row["result"], dict) else {}
+        kind = str(result.get("runtime_kind") or "")
+        if register_request and kind in {"python", "node", "container"}:
+            touch_seconds = max(1, int(get_settings().runtime_activity_touch_seconds))
+            lifecycle = (
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.deployments
+                        SET runtime_last_request_at=CASE
+                              WHEN runtime_last_request_at IS NULL
+                                OR runtime_last_request_at
+                                  < now() - make_interval(secs => :touch_seconds)
+                              THEN now() ELSE runtime_last_request_at END,
+                            runtime_state=CASE
+                              WHEN runtime_state IN ('suspended','suspending','error')
+                              THEN 'wake_requested' ELSE runtime_state END,
+                            runtime_wake_requested_at=CASE
+                              WHEN runtime_state IN ('suspended','suspending','error')
+                              THEN now() ELSE runtime_wake_requested_at END,
+                            runtime_state_changed_at=CASE
+                              WHEN runtime_state IN ('suspended','suspending','error')
+                              THEN now() ELSE runtime_state_changed_at END,
+                            runtime_wake_error=CASE
+                              WHEN runtime_state IN ('suspended','suspending','error')
+                              THEN NULL ELSE runtime_wake_error END
+                        WHERE id=:id
+                        RETURNING runtime_state,runtime_last_request_at
+                        """
+                    ),
+                    {"id": row["id"], "touch_seconds": touch_seconds},
+                )
+                .mappings()
+                .one()
+            )
+            row.update(dict(lifecycle))
     result = row["result"] if isinstance(row["result"], dict) else {}
     if result.get("public_route") is False:
         return None
@@ -2325,6 +2368,7 @@ def active_workspace_runtime(tenant_slug: str, workspace_key: str) -> dict[str, 
             "runtime_rel_path": str(result["runtime_rel_path"]),
             "deployment_id": str(row["id"]),
             "release_digest": row["release_digest"],
+            "runtime_state": "not_applicable",
         }
     if kind in {"python", "node", "container"} and (
         result.get("internal_url") or result.get("internal_urls")
@@ -2339,5 +2383,7 @@ def active_workspace_runtime(tenant_slug: str, workspace_key: str) -> dict[str, 
             ],
             "deployment_id": str(row["id"]),
             "release_digest": row["release_digest"],
+            "runtime_state": str(row.get("runtime_state") or "running"),
+            "health_path": str(result.get("health_path") or "/health"),
         }
     return None

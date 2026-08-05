@@ -79,6 +79,27 @@ def test_docker_engine_negotiates_server_api_for_every_container_operation(
     assert fake.closed is True
 
 
+def test_docker_engine_stops_container_without_removing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeDockerClient(
+        [
+            _response(200, json={"ApiVersion": "1.53"}),
+            _response(204),
+        ]
+    )
+    monkeypatch.setattr(runtime_controller.httpx, "Client", lambda **kwargs: fake)
+
+    engine = DockerEngine(Path("/var/run/docker.sock"))
+    engine.stop("runtime-1", timeout=7)
+
+    assert fake.requests[-1] == (
+        "POST",
+        "/v1.53/containers/runtime-1/stop",
+        {"params": {"t": "7"}},
+    )
+
+
 def test_docker_engine_error_includes_sanitized_daemon_detail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -797,6 +818,85 @@ def test_runtime_drift_requeues_only_active_ready_deployment_with_missing_contai
     assert events[0][3] == "self_heal_queued"
     assert events[0][4]["missing_container_names"] == ["warehouse-runtime-missing"]
     assert controller.reconcile_runtime_drift() == 0
+
+
+def test_runtime_lifecycle_stops_idle_container_and_wakes_same_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = UUID("00000000-0000-0000-0000-000000000094")
+    deployment_id = UUID("00000000-0000-0000-0000-000000000095")
+    payload = {
+        "container_names": ["warehouse-runtime-fixture"],
+        "internal_url": "http://warehouse-runtime-fixture:8080",
+        "internal_urls": ["http://warehouse-runtime-fixture:8080"],
+        "health_path": "/health",
+    }
+
+    class _Result:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def scalar_one_or_none(self) -> object:
+            return self.value
+
+    queued_results: list[object] = []
+
+    class _Session:
+        def execute(self, *_args: object, **_kwargs: object) -> _Result:
+            return _Result(queued_results.pop(0))
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id: UUID):
+        yield _Session()
+
+    class _Engine:
+        running = True
+
+        def __init__(self) -> None:
+            self.started: list[str] = []
+            self.stopped: list[str] = []
+
+        def container_exists(self, _name: str) -> bool:
+            return True
+
+        def state(self, _name: str) -> dict[str, object]:
+            return {"running": self.running}
+
+        def start(self, name: str) -> None:
+            self.started.append(name)
+            self.running = True
+
+        def stop(self, name: str) -> None:
+            self.stopped.append(name)
+            self.running = False
+
+    health_checks: list[tuple[str, int]] = []
+    controller = runtime_controller.RuntimeController(
+        Settings(runtime_idle_timeout_seconds=60)
+    )
+    monkeypatch.setattr(runtime_controller.base, "tenant_session", fake_tenant_session)
+    monkeypatch.setattr(runtime_controller.base, "_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        controller,
+        "_wait_health",
+        lambda url, timeout: health_checks.append((url, timeout)),
+    )
+    engine = _Engine()
+
+    queued_results[:] = [payload, deployment_id]
+    assert controller._suspend_runtime(engine, tenant_id, deployment_id) is True
+    assert engine.stopped == ["warehouse-runtime-fixture"]
+    assert engine.running is False
+
+    queued_results[:] = [payload, deployment_id]
+    assert controller._wake_runtime(engine, tenant_id, deployment_id) is True
+    assert engine.started == ["warehouse-runtime-fixture"]
+    assert health_checks == [
+        (
+            "http://warehouse-runtime-fixture:8080/health",
+            controller.settings.runtime_wake_health_timeout_seconds,
+        )
+    ]
 
 
 def test_runtime_mounts_support_arbitrary_non_root_image_users(tmp_path: Path) -> None:

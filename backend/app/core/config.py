@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     runtime_controller_lease_seconds: int = 120
     runtime_controller_stale_seconds: int = 30
     runtime_health_timeout_seconds: int = 90
+    # Dynamic hosted applications keep their container and SSD-backed data but
+    # release RAM after an idle window. The public gateway requests an in-place
+    # restart and waits for the controller's health gate before proxying traffic.
+    runtime_idle_suspend_enabled: bool = True
+    runtime_idle_timeout_seconds: int = 30 * 60
+    runtime_activity_touch_seconds: int = 15
+    runtime_lifecycle_scan_seconds: float = 1.0
+    runtime_wake_timeout_seconds: float = 30.0
+    runtime_wake_health_timeout_seconds: int = 25
     # Observable host path for the independent PostgreSQL data plane whose
     # PGDATA lives on HDD.  The API never opens files below this path directly.
     hosted_database_root: Path = Path("var/hosted-databases")

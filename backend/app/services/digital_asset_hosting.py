@@ -785,9 +785,11 @@ def _public_workspace(row: dict[str, object], tenant_slug: str | None = None) ->
 
 def _public_deployment(row: dict[str, object]) -> dict[str, object]:
     provider = runtime_provider_observation()
+    public_row = dict(row)
+    public_row.pop("runtime_wake_error", None)
     return _json_safe(
         {
-            **row,
+            **public_row,
             "id": int(row["legacy_id"]),
             "uuid": row["id"],
             "runtime_available": provider["runtime_available"],

@@ -7,8 +7,10 @@ root-relative frontend assets working under ``/assets/{tenant}/{workspace}/``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
+import time
 from html import escape
 from mimetypes import guess_type
 from pathlib import Path
@@ -351,6 +353,42 @@ async def runtime_response(
     route = active_workspace_runtime(tenant_slug, workspace_key)
     if route is None:
         return None
+    if route["kind"] == "proxy" and route.get("runtime_state") in {
+        "suspended",
+        "suspending",
+        "wake_requested",
+        "waking",
+        "error",
+    }:
+        deadline = time.monotonic() + max(1.0, float(settings.runtime_wake_timeout_seconds))
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            refreshed = active_workspace_runtime(
+                tenant_slug,
+                workspace_key,
+                register_request=False,
+            )
+            if refreshed is None:
+                return None
+            route = refreshed
+            if route.get("runtime_state") == "running":
+                break
+        if route.get("runtime_state") != "running":
+            state = str(route.get("runtime_state") or "unknown")
+            detail = {
+                "reason": "hosted_runtime_waking",
+                "message": "Hosted Runtime is starting and has not passed its health gate yet",
+                "stage": "runtime.wake",
+                "component": "runtime",
+                "runtime_state": state,
+                "retryable": True,
+                "next_action": "retry this request shortly",
+            }
+            raise HTTPException(
+                status_code=503,
+                detail=detail,
+                headers={"Retry-After": "1"},
+            )
     prefix = _public_prefix(request, tenant_slug, workspace_key)
     if route["kind"] == "static":
         root = (settings.hosted_runtime_data_root / str(route["runtime_rel_path"])).resolve()
