@@ -193,6 +193,28 @@ public_smoke() {
   fi
 }
 
+standby_smoke() {
+  local port="$1" response_file base
+  base="http://127.0.0.1:${port}"
+  wait_health "${base}/api/health" 10 || return 1
+  if [[ "${PLAN_ADAPTIVE:-0}" != 1 || "${PLAN_FRONTEND:-0}" == 1 ]]; then
+    response_file="$(mktemp)"
+    if ! curl --fail --silent --show-error --max-time 10 \
+      --output "${response_file}" "${base}/" \
+      || ! grep -Fq 'WAREHOUSE OS 2.1' "${response_file}"; then
+      rm -f "${response_file}"
+      return 1
+    fi
+    rm -f "${response_file}"
+  fi
+  if [[ "${PLAN_ADAPTIVE:-0}" == 1 && "${PLAN_DOWNLOADS:-0}" == 1 ]]; then
+    curl --fail --silent --show-error --max-time 10 \
+      "${base}/api/digital-assets/guide/download" >/dev/null || return 1
+    curl --fail --silent --show-error --max-time 10 \
+      "${base}/api/digital-assets/cli" >/dev/null || return 1
+  fi
+}
+
 install_shield_agent() {
   local release_dir="$1" attempt
   [[ -f "${release_dir}/ops/server/warehouse-shield-agent.py" ]] \
@@ -886,7 +908,7 @@ install_release() {
   log_event deploy_phase succeeded "${release}" hosted_database "" \
     "$((SECONDS - phase_started))"
 
-  local previous_slot next_slot next_port container browser_container="" runtime_controller="" previous_release
+  local previous_slot next_slot next_port container browser_container="" runtime_controller="" previous_release smoke_result
   previous_slot="$(active_slot)"
   next_slot="$(other_slot "${previous_slot}")"
   next_port="$(slot_port "${next_slot}")"
@@ -919,7 +941,14 @@ install_release() {
 
   phase_started="${SECONDS}"
   switch_upstream "${next_port}"
-  if ! public_smoke; then
+  if [[ "${node_role}" == standby ]]; then
+    smoke_result=0
+    standby_smoke "${next_port}" || smoke_result=$?
+  else
+    smoke_result=0
+    public_smoke || smoke_result=$?
+  fi
+  if [[ "${smoke_result}" != 0 ]]; then
     if [[ -n "${previous_slot}" ]]; then
       switch_upstream "$(slot_port "${previous_slot}")"
     else
