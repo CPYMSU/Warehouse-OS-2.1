@@ -410,6 +410,10 @@ def test_standby_reseed_is_bounded_to_the_disposable_control_subscriber() -> Non
     assert 'CONTROL_CONTAINER=warehouse-os-postgres-1' in source
     assert "warehouse-os-hosted-postgres" not in source
     assert "standby-before-reseed.dump" in source
+    assert (
+        'pg_dump --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" '
+        "--format custom" in source
+    )
     assert "copy_data=true" in source
     assert "critical table counts differ after reseed" in source
     assert "reseed_standby_control_database" in manager
