@@ -49,6 +49,11 @@ Production secrets live only in
 files and local environment backups are ignored by Git and excluded from
 release archives.
 
+Runtime code must come only from the immutable release image. The Mac manager
+rejects Compose mounts targeting `/service/app`, `/service/alembic`, or
+`/frontend/v2`; durable data mounts remain supported. This prevents an old
+host-side hotfix from silently shadowing a newer release.
+
 ## Fixed deployment channel
 
 The database and deployment identities are intentionally separate. The

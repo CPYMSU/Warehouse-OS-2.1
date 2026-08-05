@@ -276,6 +276,17 @@ def test_macos_manager_versions_the_forced_command_gate() -> None:
     assert '"${DEPLOY_ROOT}/actions/warehouse-deploy-ssh-gate"' in source
 
 
+def test_macos_manager_rejects_mutable_runtime_code_overrides() -> None:
+    source = (REPO_ROOT / "ops" / "macos" / "warehouse-deploy-macos").read_text(
+        encoding="utf-8"
+    )
+
+    assert "reject_runtime_code_overrides()" in source
+    assert '("/service/app", "/service/alembic", "/frontend/v2")' in source
+    assert "mutable runtime code override is forbidden" in source
+    assert source.count("reject_runtime_code_overrides\n") == 3
+
+
 def test_standby_deploy_skips_database_writing_workers() -> None:
     source = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
         encoding="utf-8"

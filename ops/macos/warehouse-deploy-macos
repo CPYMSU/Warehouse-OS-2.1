@@ -332,6 +332,34 @@ compose() {
   "${DOCKER}" compose "${args[@]}" "$@"
 }
 
+reject_runtime_code_overrides() {
+  local rendered bad
+  rendered="$(mktemp "${TMPDIR:-/tmp}/warehouse-compose.XXXXXX")"
+  chmod 0600 "${rendered}"
+  if ! compose config --format json > "${rendered}"; then
+    rm -f "${rendered}"
+    fail "Mac Compose configuration is invalid"
+  fi
+  bad="$(python3 -c '
+import json, sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+roots = ("/service/app", "/service/alembic", "/frontend/v2")
+observed = []
+for service, config in (document.get("services") or {}).items():
+    for volume in config.get("volumes") or []:
+        if not isinstance(volume, dict):
+            continue
+        target = str(volume.get("target") or "").rstrip("/")
+        if any(target == root or target.startswith(root + "/") for root in roots):
+            observed.append(f"{service}:{target}")
+print(",".join(sorted(observed)))
+' "${rendered}")"
+  rm -f "${rendered}"
+  [[ -z "${bad}" ]] \
+    || fail "mutable runtime code override is forbidden: ${bad}"
+}
+
 install_shield_agent() {
   local installer="${CURRENT}/ops/macos/install-shield-agent"
   [[ -x "${installer}" ]] || return 0
@@ -400,6 +428,7 @@ show_status() {
 
 bootstrap() {
   require_runtime
+  reject_runtime_code_overrides
   acquire_lock
   mkdir -p "${INCOMING}" "${RELEASES}" "${STATE}" "${LOG_DIR}"
   chmod 0700 "${INCOMING}" "${STATE}"
@@ -498,6 +527,7 @@ prepare_release() {
   valid_release_id "${release}" || fail "invalid release id"
   [[ "${requested_mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid deployment mode"
   require_runtime
+  reject_runtime_code_overrides
   acquire_lock
 
   local archive="${INCOMING}/${release}.tar.gz"
@@ -635,6 +665,7 @@ activate_release() {
   activate_started="${SECONDS}"
   valid_release_id "${release}" || fail "invalid release id"
   require_runtime
+  reject_runtime_code_overrides
   acquire_lock
   prepared_state="${STATE}/prepared-${release}.env"
   require_file "${prepared_state}"
