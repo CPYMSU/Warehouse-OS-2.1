@@ -436,10 +436,19 @@ def test_standby_reseed_is_bounded_to_the_disposable_control_subscriber() -> Non
     assert 'CONTROL_CONTAINER=warehouse-os-postgres-1' in source
     assert "warehouse-os-hosted-postgres" not in source
     assert "standby-before-reseed.dump" in source
+    assert 'PUBLISHER_STATE="${STATE_ROOT}/publisher-conninfo"' in source
+    assert 'subscription_count}" == 0 && -s "${PUBLISHER_STATE}' in source
+    assert 'mv -f "${publisher_state_temporary}" "${PUBLISHER_STATE}"' in source
+    assert (
+        'if [[ "${subscription_count}" == 1 ]]; then\n'
+        '  control_psql -c "DROP SUBSCRIPTION' in source
+    )
     assert (
         'pg_dump --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" '
         "--format custom" in source
     )
+    assert "CREATE ROLE peiyuan NOLOGIN NOSUPERUSER" in source
+    assert "CREATE ROLE warehouse_control_replica" in source
     assert "copy_data=true" in source
     assert "critical table counts differ after reseed" in source
     assert "reseed_standby_control_database" in manager
