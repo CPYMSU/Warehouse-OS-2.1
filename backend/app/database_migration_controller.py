@@ -79,6 +79,27 @@ class MigrationFailure(RuntimeError):
         self.recovery_action = recovery_action
 
 
+def _failure_details(
+    request: MigrationRequest | None, exc: BaseException
+) -> dict[str, object]:
+    if isinstance(exc, MigrationFailure):
+        details: dict[str, object] = {"error_code": exc.code}
+        if exc.recovery_action:
+            details["recovery_action"] = exc.recovery_action
+        return details
+    database_error = getattr(exc, "orig", exc)
+    sqlstate = str(
+        getattr(database_error, "sqlstate", "")
+        or getattr(database_error, "pgcode", "")
+    )
+    if request is not None and request.node_role == "standby" and sqlstate == "42501":
+        return {
+            "error_code": "standby_ownership_drift",
+            "recovery_action": "reseed_standby_control_database",
+        }
+    return {}
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -553,11 +574,7 @@ def run_request(
         return 0
     except Exception as exc:
         message = _safe_error(exc)
-        failure_details: dict[str, object] = {}
-        if isinstance(exc, MigrationFailure):
-            failure_details["error_code"] = exc.code
-            if exc.recovery_action:
-                failure_details["recovery_action"] = exc.recovery_action
+        failure_details = _failure_details(request, exc)
         if state is not None:
             state.write("failed", error=message, completed_at=_now(), **failure_details)
         else:

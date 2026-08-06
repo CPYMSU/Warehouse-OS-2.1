@@ -16,6 +16,7 @@ from app.database_migration_controller import (
     MigrationRequest,
     StateWriter,
     _bootstrap_standby_cursor,
+    _failure_details,
     _revision_operations,
     _safe_error,
     build_plan,
@@ -117,12 +118,32 @@ def test_diagnostics_redact_database_passwords() -> None:
         "connection postgresql+psycopg://warehouse_migrator:top-secret@db/warehouse_os "
         "password=also-secret"
     )
-
     message = _safe_error(error)
 
     assert "top-secret" not in message
     assert "also-secret" not in message
     assert message.count("[redacted]") == 2
+
+
+def test_standby_permission_drift_requests_automatic_reseed() -> None:
+    request = MigrationRequest(
+        release_id="20260806T130000Z-abcdef123456-vultr-standby-smart",
+        git_sha="abcdef123456",
+        target_revision="20260806_0079",
+        node_role="standby",
+        requested_at="2026-08-06T13:00:00Z",
+    )
+
+    class InsufficientPrivilege(RuntimeError):
+        sqlstate = "42501"
+
+    class DatabaseFailure(RuntimeError):
+        orig = InsufficientPrivilege("permission denied for schema app")
+
+    assert _failure_details(request, DatabaseFailure()) == {
+        "error_code": "standby_ownership_drift",
+        "recovery_action": "reseed_standby_control_database",
+    }
 
 
 def test_revision_operation_scanner_separates_schema_and_data(tmp_path: Path) -> None:

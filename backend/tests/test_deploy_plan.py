@@ -322,6 +322,10 @@ def test_standby_reseed_uses_the_prepared_candidate_action() -> None:
     assert "publisher_environment=(-e PGUSER -e PGPASSWORD -e PGDATABASE)" in reseed
     assert 'PGDATABASE="${conninfo}"' not in reseed
     assert 'publisher_command pg_dump --schema-only --no-owner' in reseed
+    assert '--exclude-extension=${extension}' in reseed
+    assert 'CREATE DATABASE ${DATABASE} OWNER warehouse_migrator' in reseed
+    assert "CREATE EXTENSION IF NOT EXISTS" in reseed
+    assert "SET ROLE warehouse_migrator" in reseed
     assert 'WAREHOUSE_STANDBY_RESEED_MAX_WAIT_SECONDS:-3600' in reseed
     assert 'last_progress_second="${elapsed}"' in reseed
     assert "initial copy made no table progress" in reseed
