@@ -157,6 +157,51 @@ def _envelope(
     return result
 
 
+def _recover_hosting_runtime_contract(
+    tool_name: str,
+    values: Mapping[str, object],
+    result: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    """Repair one unambiguous desired-state shape error for Auto Runtime.
+
+    The target API remains the contract authority: recovery is only attempted
+    after its exact 422 response, and only the scalar runtime shorthand is
+    expanded. Arbitrary validation failures remain visible to the model.
+    """
+
+    if tool_name != "digital_market_hosting_start" or result.get("status") != (
+        "target_rejected"
+    ):
+        return None
+    data = result.get("data")
+    if not isinstance(data, Mapping) or data.get("http_status") != 422:
+        return None
+    response = data.get("response")
+    detail = response.get("detail") if isinstance(response, Mapping) else None
+    if detail != "desired_state.runtime must be an object":
+        return None
+    desired_state = values.get("body.desired_state")
+    if not isinstance(desired_state, Mapping):
+        return None
+    runtime_type = desired_state.get("runtime")
+    if not isinstance(runtime_type, str) or not runtime_type.strip():
+        return None
+
+    corrected_state = dict(desired_state)
+    corrected_state["runtime"] = {"type": runtime_type.strip()}
+    corrected_values = dict(values)
+    corrected_values["body.desired_state"] = corrected_state
+    evidence = {
+        "schema": "warehouse.contract-recovery.v1",
+        "reason": "target_422_unambiguous_shape_correction",
+        "corrected_fields": ["body.desired_state.runtime"],
+        "original_execution_id": result.get("execution_id"),
+        "original_status": result.get("status"),
+        "retry_count": 1,
+    }
+    return corrected_values, evidence
+
+
 def atomic_recovery_contract(
     entry: Mapping[str, Any] | None,
     values: Mapping[str, object] | None = None,
@@ -766,13 +811,26 @@ def execute_runtime_tool_call(
             values["body.run_id"] = execution_context["run_id"]
         if execution_context.get("conversation_id"):
             values["body.conversation_id"] = execution_context["conversation_id"]
-    return _execute_entry(
+    result = _execute_entry(
         entry,
         actor,
         values,
         origin="auto_runtime",
         enforce_actor_permissions=False,
     )
+    recovery = _recover_hosting_runtime_contract(tool_name, values, result)
+    if recovery is None:
+        return result
+    corrected_values, evidence = recovery
+    retried = _execute_entry(
+        entry,
+        actor,
+        corrected_values,
+        origin="auto_runtime",
+        enforce_actor_permissions=False,
+    )
+    retried["contract_recovery"] = evidence
+    return retried
 
 
 def execute_confirmed_runtime_tool_call(

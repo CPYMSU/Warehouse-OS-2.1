@@ -379,6 +379,7 @@ def test_account_pages_console_aggregates_non_secret_release_state(
                 "site_key": "design-lab",
                 "database_origin": "https://design-lab.bonfirework.org",
                 "public_alias": {"enabled": False, "url": None},
+                "runtime": {"delivery": "static_assets", "compute": "browser"},
             }
         },
     )
@@ -428,6 +429,16 @@ def test_account_pages_console_aggregates_non_secret_release_state(
 
     assert result["site"]["url"] == "https://bonfirework.org/apps/design-lab/"
     assert result["runtime"]["mode"] == "static_browser"
+    assert result["hosting_classification"] == {
+        "is_fully_static": True,
+        "pages_shell_is_static": True,
+        "application_requires_server_runtime": False,
+        "authoritative_runtime_field": "runtime.type",
+        "note": (
+            "site.runtime describes the Pages routing shell; runtime.type "
+            "describes the hosted application's actual compute contract."
+        ),
+    }
     assert result["current_release"]["uuid"] == str(active_id)
     assert result["releases"][1]["rollback_eligible"] is True
     assert result["database"]["count"] == 1
@@ -449,6 +460,19 @@ def test_account_pages_console_aggregates_non_secret_release_state(
         "digital_market_pages_release_activate"
     )
     assert "wak_" not in json.dumps(result)
+
+    workspace["config"] = {"runtime_type": "api"}
+    api_result = digital_assets_api.workspace_pages_console(
+        "design-lab",
+        limit=20,
+        actor=actor,
+        settings=Settings(public_origin="https://bonfirework.org"),
+    )
+    assert api_result["site"]["runtime"]["delivery"] == "static_assets"
+    assert api_result["runtime"]["type"] == "api"
+    assert api_result["hosting_classification"]["is_fully_static"] is False
+    assert api_result["hosting_classification"]["pages_shell_is_static"] is True
+    assert api_result["hosting_classification"]["application_requires_server_runtime"] is True
 
 
 def test_pages_api_routes_are_registered_before_the_api_catch_all() -> None:

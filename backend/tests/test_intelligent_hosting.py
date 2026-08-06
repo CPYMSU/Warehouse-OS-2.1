@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.api import intelligent_hosting as hosting_api
 from app.main import app
+from app.services import intelligent_hosting
 from app.services.digital_asset_hosting import WorkspaceCredential
 from app.services.intelligent_hosting import (
     HostingPrincipal,
@@ -277,3 +278,62 @@ def test_platform_secretary_commands_use_the_same_hosting_session_api() -> None:
         "execute": True,
         "client_kind": "web_secretary",
     }
+
+
+def test_refresh_completes_an_already_active_healthy_deployment(monkeypatch) -> None:
+    deployment_id = UUID("00000000-0000-0000-0000-000000000009")
+    session_id = UUID("00000000-0000-0000-0000-000000000010")
+    updates: list[dict[str, object]] = []
+    snapshot = {
+        "workspace": {"active_deployment_id": str(deployment_id)},
+        "sources": {"ok": True, "sources": [{"id": "source-1"}], "count": 1},
+        "deployments": {
+            "ok": True,
+            "deployments": [
+                {
+                    "uuid": str(deployment_id),
+                    "status": "ready",
+                    "health": "healthy",
+                }
+            ],
+        },
+        "pages": {"ok": True, "site": {"url": "https://example.test/app/"}},
+    }
+    row = {
+        "id": session_id,
+        "status": "running",
+        "current_stage": "runtime.deployment",
+        "desired_state": {
+            "runtime": {"type": "api"},
+            "deployment": {"state": "ready", "activate_when_healthy": True},
+        },
+        "state": {},
+        "diagnosis": None,
+    }
+
+    monkeypatch.setattr(intelligent_hosting, "observe_workspace", lambda _credential: snapshot)
+    monkeypatch.setattr(
+        intelligent_hosting,
+        "activate_workspace_deployment",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an already active deployment must not be activated again")
+        ),
+    )
+    monkeypatch.setattr(
+        intelligent_hosting,
+        "_update_session",
+        lambda *_args, **kwargs: updates.append(kwargs),
+    )
+    monkeypatch.setattr(intelligent_hosting, "_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        intelligent_hosting,
+        "_row",
+        lambda *_args, **_kwargs: {**row, "status": "completed", "current_stage": "ready"},
+    )
+
+    result = intelligent_hosting._refresh_state(_principal(), row, _credential())
+
+    assert result["status"] == "completed"
+    assert updates[0]["status_value"] == "completed"
+    assert updates[0]["stage"] == "ready"
+    assert updates[0]["completed"] is True

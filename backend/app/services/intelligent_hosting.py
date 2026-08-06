@@ -955,6 +955,16 @@ def _refresh_state(
             and latest.get("health") == "healthy"
         ):
             deployment_ref = latest.get("uuid") or latest.get("id")
+            workspace_observation = (
+                snapshot.get("workspace")
+                if isinstance(snapshot.get("workspace"), dict)
+                else {}
+            )
+            already_active = bool(
+                deployment_ref
+                and str(workspace_observation.get("active_deployment_id") or "")
+                == str(deployment_ref)
+            )
             pages_observation = (
                 snapshot.get("pages") if isinstance(snapshot.get("pages"), dict) else {}
             )
@@ -976,6 +986,7 @@ def _refresh_state(
             if (
                 str(runtime_options.get("type") or "").lower() != "job"
                 and deployment_options.get("activate_when_healthy", True)
+                and not already_active
             ):
                 activate_workspace_deployment(credential, UUID(str(deployment_ref)))
             status_value, stage, completed = "completed", "ready", True
