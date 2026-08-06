@@ -382,7 +382,11 @@ curl -sS -X PUT \
 - `PUT /api/workspaces/v1/database/tables/{schema}/{table}/rows/{record_key}`
 - `GET /api/workspaces/v1/data/{collection}`
 - `PUT /api/workspaces/v1/data/{collection}/{record_key}`
-- `POST /api/workspaces/v1/sources/upload`
+- `POST /api/workspaces/v1/source-uploads`（建立或恢復分片上傳）
+- `PUT /api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}`
+- `POST /api/workspaces/v1/source-uploads/{upload_id}/complete`（立即返回 `202`）
+- `GET /api/workspaces/v1/source-uploads/{upload_id}`
+- `POST /api/workspaces/v1/sources/upload`（舊版小型源包相容入口）
 - `GET /api/workspaces/v1/sources`
 - `POST /api/workspaces/v1/deployments`
 - `POST /api/workspaces/v1/jobs`
@@ -396,6 +400,10 @@ curl -sS -X PUT \
 - `POST /api/workspaces/v1/database/reconcile`
 
 `workspace:read` 控制 `info`，`data:read` 控制 schema、健康狀態、集合及關係表讀取，`data:write` 控制記錄與關係表寫入；`deploy:read/write` 控制源碼與部署，`logs:read` 控制脫敏日誌。
+
+源包統一使用 4 MiB、逐片 SHA-256 綁定的可恢復上傳；官方終端最多四路並發，只補傳缺失分片。`complete` 僅原子入隊並返回 `202`，完整 SHA-256、安全解壓檢查與不可變源版本登記由 Runtime Controller 在請求期限之外完成。只有 `verified` 工件計入用量；中斷或失敗的暫存分片自動過期回收，且永不切換現有正式發布。
+
+智能託管會話使用相同協議，路徑位於 `/api/hosting/v2/sessions/{session_id}/source-uploads`；狀態成為 `verified` 後，以 `POST /api/hosting/v2/sessions/{session_id}/sources/attach` 附加 `source_version_id`。因此帳戶登入與工作區 Key 共用同一套持久化上傳實作。
 
 資料庫策略可選 `platform_managed`、`external`、`workspace_managed` 或 `none`。前兩者以唯一預設 `database_binding` 驅動 Runtime、Schema、Data API、Migration 與健康檢查，完整 DSN 只加密保存並在 Runtime 啟動前注入，不出現在 API、AI 上下文、審計或日誌。`workspace_managed` 允許 WAK 在受限 Container／Compose 與該工作區命名卷內使用 MySQL、MongoDB、SQLite 或其他引擎並自行管理 Schema；`none` 不注入資料庫。這種自由不包含宿主機 root、Docker socket、host network、host path、特權容器或其他工作區資料。
 

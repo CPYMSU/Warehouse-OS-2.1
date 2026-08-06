@@ -73,7 +73,7 @@ def assistant_manifest() -> dict[str, object]:
 
     return {
         "schema": "warehouse.intelligent-hosting.v2",
-        "version": "2.4",
+        "version": "2.5",
         "purpose": (
             "Converse about one hosting goal, submit a desired state, attach source, "
             "and observe exact deployment evidence without composing low-level routes."
@@ -99,7 +99,28 @@ def assistant_manifest() -> dict[str, object]:
             "message_stream": ("POST /api/hosting/v2/sessions/{session_id}/messages/stream"),
             "status": "GET /api/hosting/v2/sessions/{session_id}?refresh=true",
             "events": "GET /api/hosting/v2/sessions/{session_id}/events",
-            "source": "POST /api/hosting/v2/sessions/{session_id}/sources",
+            "source_upload": {
+                "initialize": (
+                    "POST /api/hosting/v2/sessions/{session_id}/source-uploads"
+                ),
+                "part": (
+                    "PUT /api/hosting/v2/sessions/{session_id}/source-uploads/"
+                    "{upload_id}/parts/{part_no}"
+                ),
+                "complete": (
+                    "POST /api/hosting/v2/sessions/{session_id}/source-uploads/"
+                    "{upload_id}/complete"
+                ),
+                "status": (
+                    "GET /api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}"
+                ),
+                "attach": (
+                    "POST /api/hosting/v2/sessions/{session_id}/sources/attach"
+                ),
+                "legacy_small_package": (
+                    "POST /api/hosting/v2/sessions/{session_id}/sources"
+                ),
+            },
             "cancel": "POST /api/hosting/v2/sessions/{session_id}/cancel",
         },
         "pages_runtime": {
@@ -719,7 +740,7 @@ def _plan(desired_state: dict[str, object], snapshot: dict[str, object]) -> dict
                 if observation_diagnostic is not None
                 else {
                     "kind": "source_archive",
-                    "upload": "POST /api/hosting/v2/sessions/{session_id}/sources",
+                    "upload": assistant_manifest()["conversation"]["source_upload"],
                     "accepted": ["zip", "tar", "tar.gz", "tgz"],
                 }
             )
@@ -1041,6 +1062,8 @@ def get_session(
         "self": f"/api/hosting/v2/sessions/{row['id']}",
         "events": f"/api/hosting/v2/sessions/{row['id']}/events",
         "source": f"/api/hosting/v2/sessions/{row['id']}/sources",
+        "source_uploads": f"/api/hosting/v2/sessions/{row['id']}/source-uploads",
+        "source_attach": f"/api/hosting/v2/sessions/{row['id']}/sources/attach",
         "messages": f"/api/hosting/v2/sessions/{row['id']}/messages",
         "pages": f"/api/hosting/v2/sessions/{row['id']}/pages",
         "pages_design": f"/api/hosting/v2/sessions/{row['id']}/pages/design",

@@ -152,7 +152,11 @@ Stable endpoints:
 - `GET /api/workspaces/v1/usage`
 - `POST /api/workspaces/v1/storage/probe`
 - `PUT /api/workspaces/v1/runtime`
-- `POST /api/workspaces/v1/sources/upload`
+- `POST /api/workspaces/v1/source-uploads` (initialize or resume)
+- `PUT /api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}`
+- `POST /api/workspaces/v1/source-uploads/{upload_id}/complete` (returns `202`)
+- `GET /api/workspaces/v1/source-uploads/{upload_id}`
+- `POST /api/workspaces/v1/sources/upload` (legacy small-package compatibility)
 - `POST /api/workspaces/v1/deployments`
 - `POST /api/workspaces/v1/deployments/{deployment_id}/repair`
 - `POST /api/workspaces/v1/jobs`
@@ -174,6 +178,19 @@ Keys carry signed tenant/workspace locators and scopes. The server verifies the
 stored token hash inside that tenant's RLS transaction; it never scans other
 companies' credential tables. Data writes support optimistic concurrency
 through `expected_version`; stale writes return HTTP 409.
+
+Source packages use 4 MiB independently hashed parts. Clients may upload up to
+four parts concurrently and retry only missing parts. Completion atomically
+queues durable verification; full SHA-256, archive safety inspection and the
+immutable source-version transaction run in the controller after the HTTP 202
+response. Only verified artifacts enter usage billing. Abandoned staging parts
+expire automatically and never change the active release.
+
+Intelligent Hosting sessions expose the same protocol below
+`/api/hosting/v2/sessions/{session_id}/source-uploads`; once status is
+`verified`, attach `source_version_id` with
+`POST /api/hosting/v2/sessions/{session_id}/sources/attach`. Account sessions
+and workspace keys therefore share one durable ingestion implementation.
 
 `usage` refreshes platform-owned measurements for source archives, every
 retained Runtime release/build/virtual environment, persistent DATA, managed

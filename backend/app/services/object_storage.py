@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -53,6 +54,13 @@ class LocalContentAddressedObjectStore:
     def _key(self, tenant_id: UUID, sha256: str) -> str:
         return f"tenants/{tenant_id}/sha256/{sha256[:2]}/{sha256}"
 
+    def object_key_for_sha256(self, tenant_id: UUID, sha256: str) -> str:
+        """Resolve the immutable key used by safe, reference-checked cleanup."""
+
+        if len(sha256) != 64 or any(value not in "0123456789abcdef" for value in sha256):
+            raise HTTPException(status_code=422, detail="Invalid object SHA-256")
+        return self._key(tenant_id, sha256)
+
     def probe_writable(self) -> dict[str, object]:
         """Prove create/write/fsync/read/delete instead of trusting configuration."""
 
@@ -86,6 +94,61 @@ class LocalContentAddressedObjectStore:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Unsafe object key") from exc
         return candidate
+
+    def source_upload_part_path(
+        self,
+        *,
+        tenant_id: UUID,
+        upload_id: UUID,
+        part_no: int,
+    ) -> Path:
+        """Return one private resumable-upload part without exposing host paths."""
+
+        if part_no < 0:
+            raise HTTPException(status_code=422, detail="Invalid upload part number")
+        return self.path_for(
+            f".source-uploads/{tenant_id}/{upload_id}/parts/{part_no:08d}.part"
+        )
+
+    def put_source_upload_part(
+        self,
+        *,
+        tenant_id: UUID,
+        upload_id: UUID,
+        part_no: int,
+        content: bytes,
+    ) -> Path:
+        """Atomically persist one bounded part so interrupted uploads can resume."""
+
+        target = self.source_upload_part_path(
+            tenant_id=tenant_id,
+            upload_id=upload_id,
+            part_no=part_no,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary_name = tempfile.mkstemp(prefix="part-", dir=target.parent)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+            target.chmod(0o600)
+            return target
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def remove_source_upload(
+        self,
+        *,
+        tenant_id: UUID,
+        upload_id: UUID,
+    ) -> None:
+        """Remove only the validated staging directory for one upload job."""
+
+        root = self.path_for(f".source-uploads/{tenant_id}/{upload_id}")
+        shutil.rmtree(root, ignore_errors=True)
 
     def put_stream(
         self,
@@ -127,7 +190,7 @@ class LocalContentAddressedObjectStore:
                         "actual": sha256,
                     },
                 )
-            object_key = self._key(tenant_id, sha256)
+            object_key = self.object_key_for_sha256(tenant_id, sha256)
             target = self.path_for(object_key)
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if target.exists():

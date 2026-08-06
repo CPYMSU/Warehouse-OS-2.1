@@ -157,7 +157,7 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert kit.status_code == 200
     assert cli.status_code == 200
     assert 'DEFAULT_BASE = "http://testserver"' in cli.text
-    assert 'VERSION = "2.6.0"' in cli.text
+    assert 'VERSION = "2.7.0"' in cli.text
     assert "/api/workspaces/v1/usage" in cli.text
     assert 'commands.add_parser("job"' in cli.text
     assert 'commands.add_parser("database"' in cli.text
@@ -248,7 +248,15 @@ def test_intelligent_hosting_routes_are_published_before_api_fallback() -> None:
         "/api/hosting/v2/sessions/{session_id}/messages",
         "/api/hosting/v2/sessions/{session_id}/messages/stream",
         "/api/hosting/v2/sessions/{session_id}/events",
+        "/api/hosting/v2/sessions/{session_id}/source-uploads",
+        "/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}",
+        "/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}/complete",
+        (
+            "/api/hosting/v2/sessions/{session_id}/source-uploads/"
+            "{upload_id}/parts/{part_no}"
+        ),
         "/api/hosting/v2/sessions/{session_id}/sources",
+        "/api/hosting/v2/sessions/{session_id}/sources/attach",
         "/api/workspaces/v1/fabric/manifest",
         "/api/workspaces/v1/fabric",
         "/api/workspaces/v1/fabric/resources",

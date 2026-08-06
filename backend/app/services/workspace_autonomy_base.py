@@ -610,11 +610,21 @@ def autonomy_manifest(credential: WorkspaceCredential) -> dict[str, object]:
             "primary_key_non_expiring_by_default": True,
             "elastic_quota_multi_unit": True,
             "automatic_quota_growth_for_primary_data_writes": True,
+            "resumable_parallel_source_uploads": True,
+            "source_verification_outside_request_deadline": True,
             "host_paths_or_platform_credentials_exposed": False,
         },
         "capabilities": {
             "data": ["schema", "list", "put"],
-            "source_and_runtime": ["upload", "configure", "deploy", "observe", "activate"],
+            "source_and_runtime": [
+                "resumable_upload",
+                "parallel_parts",
+                "asynchronous_verify",
+                "configure",
+                "deploy",
+                "observe",
+                "activate",
+            ],
             "infrastructure": [
                 "container",
                 "compose",
