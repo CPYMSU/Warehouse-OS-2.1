@@ -22,7 +22,10 @@ concurrency:
 jobs:
   coordinated-deploy:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 25
+    # Ordinary releases still finish on the fast path.  The ceiling must also
+    # cover the bounded one-time standby recovery lane, whose own hard limit is
+    # 60 minutes and which continuously reports copy progress.
+    timeout-minutes: 70
     env:
       DEPLOY_MODE: ${{ github.event.inputs.mode || 'smart' }}
       WAREHOUSE_CLUSTER_PREFLIGHT: basic
