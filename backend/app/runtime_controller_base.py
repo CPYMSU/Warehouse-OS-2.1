@@ -1869,19 +1869,42 @@ class RuntimeController:
             if re.fullmatch(r"warehouse-runtime-[a-zA-Z0-9_.-]+", str(value))
         ]
 
+    def _runtime_idle_seconds(self, pages_config: object) -> int:
+        default = max(60, int(self.settings.runtime_idle_timeout_seconds))
+        config = dict(pages_config) if isinstance(pages_config, dict) else {}
+        policy = config.get("runtime_policy")
+        policy = dict(policy) if isinstance(policy, dict) else {}
+        requested = policy.get("idle_timeout_seconds")
+        if not isinstance(requested, bool):
+            try:
+                if requested not in (None, ""):
+                    return min(86_400, max(60, int(requested)))
+            except (TypeError, ValueError):
+                pass
+        frontend = config.get("static_frontend")
+        frontend = dict(frontend) if isinstance(frontend, dict) else {}
+        if bool(frontend.get("enabled")) and str(
+            frontend.get("backend_fallback") or ""
+        ).lower() == "scale_to_zero":
+            return 60
+        return default
+
     def _runtime_lifecycle_candidates(self) -> list[tuple[UUID, dict[str, object]]]:
         candidates: list[tuple[UUID, dict[str, object]]] = []
-        idle_seconds = max(60, int(self.settings.runtime_idle_timeout_seconds))
+        now = datetime.now(UTC)
         for tenant_id in self._tenants():
             with tenant_session(tenant_id) as session:
                 rows = session.execute(
                     text(
                         """
                         SELECT d.id AS deployment_id,d.runtime_state,
-                               d.runtime_last_request_at,d.result
+                               d.runtime_last_request_at,d.result,
+                               route.config AS pages_config
                         FROM digital_asset.workspaces AS w
                         JOIN digital_asset.deployments AS d
                           ON d.workspace_id=w.id
+                        LEFT JOIN platform.pages_routes AS route
+                          ON route.workspace_id=w.id
                         WHERE d.status='ready' AND d.health='healthy'
                           AND d.runtime_state != 'not_applicable'
                           AND d.result->>'runtime_kind' IN ('python','node','container')
@@ -1891,22 +1914,29 @@ class RuntimeController:
                             d.runtime_state IN (
                               'wake_requested','waking','suspending'
                             )
-                            OR (
-                              d.runtime_state='running'
-                              AND d.runtime_last_request_at
-                                < now() - make_interval(secs => :idle_seconds)
-                            )
+                            OR d.runtime_state='running'
                           )
                         ORDER BY
                           CASE WHEN d.runtime_state IN ('wake_requested','waking')
                             THEN 0 ELSE 1 END,
                           d.runtime_last_request_at NULLS FIRST
-                        LIMIT 32
+                        LIMIT 128
                         """
-                    ),
-                    {"idle_seconds": idle_seconds},
+                    )
                 ).mappings()
-                candidates.extend((tenant_id, dict(row)) for row in rows)
+                for result in rows:
+                    row = dict(result)
+                    idle_seconds = self._runtime_idle_seconds(row.get("pages_config"))
+                    row["runtime_idle_timeout_seconds"] = idle_seconds
+                    if row.get("runtime_state") == "running":
+                        last_request = row.get("runtime_last_request_at")
+                        if not isinstance(last_request, datetime):
+                            continue
+                        if last_request.tzinfo is None:
+                            last_request = last_request.replace(tzinfo=UTC)
+                        if last_request >= now - timedelta(seconds=idle_seconds):
+                            continue
+                    candidates.append((tenant_id, row))
         return candidates
 
     def _record_runtime_lifecycle_error(
@@ -2014,8 +2044,16 @@ class RuntimeController:
         engine: DockerEngine,
         tenant_id: UUID,
         deployment_id: UUID,
+        idle_seconds: int | None = None,
     ) -> bool:
-        idle_seconds = max(60, int(self.settings.runtime_idle_timeout_seconds))
+        idle_seconds = max(
+            60,
+            int(
+                idle_seconds
+                if idle_seconds is not None
+                else self.settings.runtime_idle_timeout_seconds
+            ),
+        )
         with tenant_session(tenant_id) as session:
             result = session.execute(
                 text(
@@ -2099,7 +2137,14 @@ class RuntimeController:
                     if row.get("runtime_state") in {"wake_requested", "waking"}:
                         changed += int(self._wake_runtime(engine, tenant_id, deployment_id))
                     else:
-                        changed += int(self._suspend_runtime(engine, tenant_id, deployment_id))
+                        changed += int(
+                            self._suspend_runtime(
+                                engine,
+                                tenant_id,
+                                deployment_id,
+                                int(row.get("runtime_idle_timeout_seconds") or 0) or None,
+                            )
+                        )
                 except Exception as exc:
                     self._record_runtime_lifecycle_error(tenant_id, deployment_id, exc)
         finally:

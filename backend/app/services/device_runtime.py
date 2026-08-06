@@ -466,6 +466,10 @@ def migrate_workspace_to_device_pages(
             "loopback_origin": f"http://127.0.0.1:{DEVICE_AGENT_PORT}",
             "fallback": "scale_to_zero",
         },
+        "runtime_policy": {
+            "mode": "serverless_compatibility",
+            "idle_timeout_seconds": 60,
+        },
     }
     origin = pages_runtime_url(str(route["site_key"]), settings)
     existing_browser: dict[str, object] | None = None

@@ -93,10 +93,31 @@ def _package_inputs(
         is_declared = True
     else:
         site = design.get("site") if isinstance(design.get("site"), dict) else {}
+        candidates = [
+            str(value).replace("\\", "/")
+            for value in archive.signals.get("candidate_entrypoints") or []
+        ]
+        candidate_names = {Path(value).name.lower() for value in candidates}
+        legacy_runtime = None
+        legacy_handler = None
+        if archive.signals.get("python_source") and (
+            archive.signals.get("requirements_txt")
+            or {"app.py", "main.py", "server.py", "asgi.py", "wsgi.py"}
+            & candidate_names
+        ):
+            legacy_runtime = "python"
+            for module in ("app", "main", "server", "asgi", "wsgi"):
+                if f"{module}.py" in candidate_names:
+                    legacy_handler = f"{module}:app"
+                    break
+        elif archive.signals.get("package_json") or archive.signals.get("node_source"):
+            legacy_runtime = "node"
         manifest = synthesize_pages_app_manifest(
             source_paths,
             name=str(site.get("site_key") or descriptor.get("filename") or "Pages application"),
             version=str(source.get("version_no") or "1.0.0"),
+            legacy_runtime=legacy_runtime,
+            legacy_handler=legacy_handler,
         )
         is_declared = False
     return design, descriptor, archive_path, manifest, is_declared

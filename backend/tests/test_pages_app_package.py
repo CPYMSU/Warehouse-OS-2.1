@@ -148,6 +148,35 @@ def test_legacy_static_source_gets_conservative_generated_contract() -> None:
     assert manifest["device"]["mode"] == "disabled"
 
 
+def test_legacy_mixed_source_declares_scale_to_zero_backend() -> None:
+    manifest = synthesize_pages_app_manifest(
+        {"frontend/index.html", "frontend/app.js", "app.py", "requirements.txt"},
+        name="Legacy API Pages",
+        legacy_runtime="python",
+        legacy_handler="app:app",
+    )
+
+    assert manifest["generated"] is True
+    assert manifest["web"]["root"] == "frontend"
+    assert manifest["functions"] == [
+        {
+            "name": "legacy.api",
+            "route": "/api/*",
+            "methods": ["DELETE", "GET", "PATCH", "POST", "PUT"],
+            "runtime": "serverless_python",
+            "auth": "session",
+            "secret_refs": [],
+            "timeout_seconds": 60,
+            "source": ".",
+            "handler": "app:app",
+        }
+    ]
+    assert manifest["device"] == {
+        "mode": "optional",
+        "capabilities": ["python.runtime"],
+    }
+
+
 def test_pages_zip_is_deterministic_and_excludes_sensitive_files(tmp_path: Path) -> None:
     source = tmp_path / "source"
     (source / "web").mkdir(parents=True)
