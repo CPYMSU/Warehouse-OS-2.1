@@ -327,7 +327,11 @@ def _bootstrap_standby_cursor(connection: Connection, version_table: str) -> Non
             text("SELECT version_num FROM app.alembic_version")
         ).scalar_one_or_none()
         if primary_revision is None:
-            raise RuntimeError("standby cannot bootstrap without the replicated primary revision")
+            raise MigrationFailure(
+                "standby cannot bootstrap without the replicated primary revision",
+                code="standby_legacy_gap",
+                recovery_action="reseed_standby_control_database",
+            )
         connection.execute(
             text(f"INSERT INTO app.{version_table}(version_num) VALUES (:revision)"),
             {"revision": str(primary_revision)},
