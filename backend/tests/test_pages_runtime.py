@@ -504,18 +504,17 @@ def test_account_pages_console_aggregates_non_secret_release_state(
             "usage": {"total_bytes": 1024, "quota_bytes": 4096},
         },
     )
+    site = {
+        "url": "https://bonfirework.org/apps/design-lab/",
+        "site_key": "design-lab",
+        "database_origin": "https://design-lab.bonfirework.org",
+        "public_alias": {"enabled": False, "url": None},
+        "runtime": {"delivery": "static_assets", "compute": "browser"},
+    }
     monkeypatch.setattr(
         digital_assets_api,
         "get_pages_site",
-        lambda *_args: {
-            "site": {
-                "url": "https://bonfirework.org/apps/design-lab/",
-                "site_key": "design-lab",
-                "database_origin": "https://design-lab.bonfirework.org",
-                "public_alias": {"enabled": False, "url": None},
-                "runtime": {"delivery": "static_assets", "compute": "browser"},
-            }
-        },
+        lambda *_args: {"site": site},
     )
     monkeypatch.setattr(
         digital_assets_api,
@@ -601,6 +600,13 @@ def test_account_pages_console_aggregates_non_secret_release_state(
     assert "wak_" not in json.dumps(result)
 
     workspace["config"] = {"runtime_type": "api"}
+    site["config"] = {
+        "static_frontend": {
+            "enabled": True,
+            "backend_fallback": "scale_to_zero",
+        },
+        "device_runtime": {"enabled": True},
+    }
     api_result = digital_assets_api.workspace_pages_console(
         "design-lab",
         limit=20,
@@ -609,9 +615,18 @@ def test_account_pages_console_aggregates_non_secret_release_state(
     )
     assert api_result["site"]["runtime"]["delivery"] == "static_assets"
     assert api_result["runtime"]["type"] == "api"
+    assert api_result["runtime"]["mode"] == "static_frontend_device_first"
+    assert api_result["runtime"]["compute_location"] == (
+        "browser_then_user_device_with_serverless_fallback"
+    )
+    assert api_result["runtime"]["idle_server_memory"] == "near_zero"
     assert api_result["hosting_classification"]["is_fully_static"] is False
     assert api_result["hosting_classification"]["pages_shell_is_static"] is True
     assert api_result["hosting_classification"]["application_requires_server_runtime"] is True
+    assert (
+        api_result["hosting_classification"]["resident_server_runtime_required"]
+        is False
+    )
 
 
 def test_pages_api_routes_are_registered_before_the_api_catch_all() -> None:

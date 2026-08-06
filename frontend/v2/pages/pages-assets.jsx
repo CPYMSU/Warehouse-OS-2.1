@@ -141,8 +141,9 @@ window.W2_LANG.addEN({
   "Pages 托管控制台": "Pages hosting console", "Warehouse OS 內訪問": "Open in Warehouse OS",
   "正式入口": "Canonical URL", "複製網址": "Copy URL", "網址已複製": "URL copied",
   "當前發布": "Current release", "發布新版": "Publish release", "發布歷史": "Release history",
-  "托管模式": "Hosting mode", "瀏覽器計算": "Browser compute", "專用 Runtime": "Dedicated Runtime",
+  "托管模式": "Hosting mode", "瀏覽器計算": "Browser compute", "Pages 靜態": "Pages static", "專用 Runtime": "Dedicated Runtime",
   "計算位置": "Compute location", "用戶瀏覽器": "User browser", "Warehouse Runtime": "Warehouse Runtime",
+  "後端按需": "Backend on demand", "設備可選 · 平台按需": "Optional device · platform on demand",
   "閒置內存": "Idle memory", "接近 0": "Near zero", "由 Runtime 配置管理": "Managed by Runtime profile",
   "平台數據庫 API": "Platform database API", "獨立網址": "Independent URL",
   "默認關閉": "Off by default", "已開啟": "Enabled", "隔離運行來源": "Isolated runtime origin",
@@ -329,6 +330,9 @@ const PagesConsole = ({ ws }) => {
   const current = data.current_release || null;
   const alias = site.public_alias || {};
   const entryUrl = site.url || wsHref(ws);
+  const browserOnly = runtime.mode === "static_browser";
+  const deviceFirstPages = runtime.mode === "static_frontend_device_first";
+  const pagesFrontend = browserOnly || deviceFirstPages;
   const actionItems = data.actions && Array.isArray(data.actions.items) ? data.actions.items : [];
   const actionByKey = actionItems.reduce((result, action) => {
     if (action && action.action_key) result[String(action.action_key)] = action;
@@ -410,8 +414,8 @@ const PagesConsole = ({ ws }) => {
         </div>
 
         <div className="pages-console-grid">
-          <div><LB dim>{t("托管模式")}</LB><strong>{t(runtime.mode === "static_browser" ? "瀏覽器計算" : "專用 Runtime")}</strong><small>{runtime.type || "static"}</small></div>
-          <div><LB dim>{t("計算位置")}</LB><strong>{t(runtime.compute_location === "browser" ? "用戶瀏覽器" : "Warehouse Runtime")}</strong><small>{t("閒置內存")} · {t(runtime.idle_server_memory === "near_zero" ? "接近 0" : "由 Runtime 配置管理")}</small></div>
+          <div><LB dim>{t("托管模式")}</LB><strong>{t(browserOnly ? "瀏覽器計算" : deviceFirstPages ? "Pages 靜態" : "專用 Runtime")}</strong><small>{runtime.type || "static"}{deviceFirstPages ? ` · ${t("後端按需")}` : ""}</small></div>
+          <div><LB dim>{t("計算位置")}</LB><strong>{t(pagesFrontend ? "用戶瀏覽器" : "Warehouse Runtime")}</strong><small>{deviceFirstPages ? t("設備可選 · 平台按需") : <>{t("閒置內存")} · {t(runtime.idle_server_memory === "near_zero" ? "接近 0" : "由 Runtime 配置管理")}</>}</small></div>
           <div><LB dim>{t("數據庫綁定")}</LB><strong>{nfmt(database.count, 0)}</strong><small>{t("平台數據庫 API")}</small></div>
           <div><LB dim>{t("獨立網址")}</LB><strong>{t(alias.enabled ? "已開啟" : "默認關閉")}</strong><small>{alias.enabled && alias.hostname || t("不可原地修改")}</small></div>
         </div>
