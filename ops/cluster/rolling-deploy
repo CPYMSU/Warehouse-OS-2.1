@@ -93,6 +93,47 @@ run_node() {
     "${deploy_command[@]}"
 }
 
+upload_node_secret() {
+  local prefix="$1" label="$2" source_file="$3" remote_name="$4"
+  local host user identity incoming known_hosts transport scp_legacy
+  local scp_options
+  [[ -f "${source_file}" ]] || fail "secret handoff file is missing for ${label}"
+  [[ "${remote_name}" =~ ^control-replication-[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}\.env$ ]] \
+    || fail "secret handoff name is invalid for ${label}"
+  host="$(node_value "${prefix}" HOST 207.148.120.30)"
+  user="$(node_value "${prefix}" USER warehouse-deploy)"
+  identity="$(node_value "${prefix}" IDENTITY "${HOME}/.ssh/warehouse_os_deploy_ed25519")"
+  incoming="$(node_value "${prefix}" INCOMING /var/lib/warehouse-deploy/incoming)"
+  known_hosts="$(node_value "${prefix}" KNOWN_HOSTS "${HOME}/.ssh/known_hosts")"
+  transport="$(node_value "${prefix}" TRANSPORT ssh)"
+  scp_legacy="$(node_value "${prefix}" SCP_LEGACY 0)"
+  [[ "${incoming}" == /* && "${incoming}" != *[[:space:]]* \
+      && "${incoming}" != *../* && "${incoming}" != */.. ]] \
+    || fail "incoming path is unsafe for ${label}"
+  if [[ "${transport}" == local ]]; then
+    install -m 0600 "${source_file}" "${incoming}/${remote_name}"
+    return 0
+  fi
+  [[ -n "${host}" && "${host}" != *[[:space:]]* ]] \
+    || fail "host is invalid for ${label}"
+  [[ "${user}" =~ ^[A-Za-z_][A-Za-z0-9._-]{0,63}$ ]] \
+    || fail "user is invalid for ${label}"
+  [[ -f "${identity}" ]] || fail "identity is missing for ${label}: ${identity}"
+  [[ -f "${known_hosts}" ]] || fail "known hosts are missing for ${label}: ${known_hosts}"
+  scp_options=(
+    -F /dev/null
+    -i "${identity}"
+    -o BatchMode=yes
+    -o IdentitiesOnly=yes
+    -o StrictHostKeyChecking=yes
+    -o UserKnownHostsFile="${known_hosts}"
+    -o ConnectTimeout=15
+  )
+  [[ "${scp_legacy}" == 1 ]] && scp_options+=(-O)
+  scp -p "${scp_options[@]}" "${source_file}" \
+    "${user}@${host}:${incoming}/${remote_name}"
+}
+
 wait_phase() {
   local primary_pid="$1" standby_pid="$2"
   if wait "${primary_pid}"; then PRIMARY_STATUS=0; else PRIMARY_STATUS=$?; fi
@@ -105,7 +146,9 @@ run_preflight() {
   node "${ROOT}/scripts/build_v2_frontend.cjs" --check
   bash -n \
     "${ROOT}/ops/deploy" \
+    "${ROOT}/ops/cluster/configure-control-publication-macos" \
     "${ROOT}/ops/cluster/rolling-deploy" \
+    "${ROOT}/ops/cluster/set-vultr-reverse-subscriptions" \
     "${ROOT}/ops/macos/warehouse-deploy-macos" \
     "${ROOT}/ops/macos/warehouse-deploy-ssh-gate" \
     "${ROOT}/ops/server/warehouse-deploy"
@@ -162,7 +205,21 @@ standby_migration="$(awk -F= '$1 == "migration_required" {print $2; exit}' "${st
 if [[ "${primary_migration}" == 1 ]]; then
   printf '==> background database gate: standby schema, then primary data\n'
   # Both prepares only build and validate code. The database phase is explicit:
-  # standby schema first, then primary backup/schema/data, then replication.
+  # bootstrap the fenced subscriber if needed, apply standby schema first, then
+  # primary backup/schema/data, and finally reconcile replication.
+  : "${WAREHOUSE_CONTROL_REPL_PASSWORD:?control replication password is required for a schema release}"
+  [[ "${WAREHOUSE_CONTROL_REPL_PASSWORD}" =~ ^[0-9a-f]{64}$ ]] \
+    || fail "control replication password is malformed"
+  WAREHOUSE_CONTROL_REPL_PASSWORD="${WAREHOUSE_CONTROL_REPL_PASSWORD}" \
+    "${ROOT}/ops/cluster/configure-control-publication-macos"
+  control_secret_file="${WORK_DIR}/control-replication-${standby_release}.env"
+  (
+    umask 077
+    printf 'WAREHOUSE_CONTROL_REPL_PASSWORD=%s\n' \
+      "${WAREHOUSE_CONTROL_REPL_PASSWORD}" > "${control_secret_file}"
+  )
+  upload_node_secret WAREHOUSE_STANDBY vultr-standby \
+    "${control_secret_file}" "$(basename "${control_secret_file}")"
   run_node WAREHOUSE_STANDBY vultr-standby "migration-start ${standby_release}" ""
   run_node WAREHOUSE_STANDBY vultr-standby "migration-wait ${standby_release}" ""
   run_node WAREHOUSE_STANDBY vultr-standby "migration-status ${standby_release}" ""

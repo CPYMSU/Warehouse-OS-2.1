@@ -6,8 +6,9 @@ mode="${1:-verify}"
   printf 'this reverse subscription manager is only for the Vultr Linux node\n' >&2
   exit 2
 }
-[[ "${mode}" == prepare || "${mode}" == enable || "${mode}" == disable || "${mode}" == verify ]] || {
-  printf 'usage: %s prepare|enable|disable|verify\n' "$0" >&2
+[[ "${mode}" == prepare-control || "${mode}" == prepare || "${mode}" == enable \
+    || "${mode}" == disable || "${mode}" == verify ]] || {
+  printf 'usage: %s prepare-control|prepare|enable|disable|verify\n' "$0" >&2
   exit 2
 }
 
@@ -19,12 +20,18 @@ hosted_port="${WAREHOUSE_MAC_HOSTED_PUBLISHER_PORT:-5433}"
 control_subscription=warehouse_from_mac
 hosted_subscription=warehouse_from_mac
 
-if [[ "${mode}" == prepare ]]; then
+if [[ "${mode}" == prepare-control || "${mode}" == prepare ]]; then
   [[ "${WAREHOUSE_CONFIRM_REVERSE_PREPARE:-}" == YES ]] || {
-    printf 'prepare requires WAREHOUSE_CONFIRM_REVERSE_PREPARE=YES\n' >&2
+    printf '%s requires WAREHOUSE_CONFIRM_REVERSE_PREPARE=YES\n' "${mode}" >&2
     exit 2
   }
   : "${WAREHOUSE_CONTROL_REPL_PASSWORD:?control replication password is required}"
+  [[ "${WAREHOUSE_CONTROL_REPL_PASSWORD}" =~ ^[0-9a-f]{64}$ ]] || {
+    printf 'control replication password is malformed\n' >&2
+    exit 2
+  }
+fi
+if [[ "${mode}" == prepare ]]; then
   : "${WAREHOUSE_HOSTED_REPL_PASSWORD:?hosted replication password is required}"
 fi
 if [[ "${mode}" == enable ]]; then
@@ -52,46 +59,74 @@ hosted_psql() {
     'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DATABASE" "$@"' sh "$@"
 }
 
-databases="$(docker exec "${hosted_container}" sh -lc \
-  'psql -X -At -U "$POSTGRES_USER" -d postgres -c "select datname from pg_database where datname ~ '\''^whdb_[0-9a-f]{32}$'\'' order by 1"')"
-[[ -n "${databases}" ]] || {
-  printf 'no hosted databases found\n' >&2
-  exit 2
-}
-database_count="$(printf '%s\n' "${databases}" | sed '/^$/d' | wc -l | tr -d ' ')"
+databases=""
+database_count=0
+if [[ "${mode}" != prepare-control ]]; then
+  databases="$(docker exec "${hosted_container}" sh -lc \
+    'psql -X -At -U "$POSTGRES_USER" -d postgres -c "select datname from pg_database where datname ~ '\''^whdb_[0-9a-f]{32}$'\'' order by 1"')"
+  [[ -n "${databases}" ]] || {
+    printf 'no hosted databases found\n' >&2
+    exit 2
+  }
+  database_count="$(printf '%s\n' "${databases}" | sed '/^$/d' | wc -l | tr -d ' ')"
+fi
 
 prepare_control() {
-  local existing metadata publisher_tables local_tables
+  local bootstrap_only="${1:-0}"
+  local existing metadata publisher_tables local_tables publisher_slot_state create_slot
   export PGPASSWORD="${WAREHOUSE_CONTROL_REPL_PASSWORD}"
   publisher_tables="$(docker exec -e PGPASSWORD "${control_container}" psql -X -At \
     -h "${publisher_host}" -p "${control_port}" -U warehouse_control_replica \
     -d warehouse_os -c "select count(*) from pg_publication_tables where pubname='warehouse_control_pub'")"
   local_tables="$(control_psql -At -c \
     "select count(*) from pg_tables where schemaname <> 'information_schema' and schemaname not like 'pg_%'")"
-  [[ "${publisher_tables}" =~ ^[1-9][0-9]*$ && "${publisher_tables}" == "${local_tables}" ]] || {
-    printf 'control table inventory mismatch publisher=%s local=%s\n' \
-      "${publisher_tables}" "${local_tables}" >&2
-    exit 2
-  }
+  [[ "${publisher_tables}" =~ ^[1-9][0-9]*$ ]] \
+    || { printf 'control publisher table inventory is empty\n' >&2; exit 2; }
+  if [[ "${publisher_tables}" != "${local_tables}" ]]; then
+    [[ "${bootstrap_only}" == 1 ]] || {
+      printf 'control table inventory mismatch publisher=%s local=%s\n' \
+        "${publisher_tables}" "${local_tables}" >&2
+      exit 2
+    }
+    printf 'control_bootstrap_inventory=will_reseed publisher=%s local=%s\n' \
+      "${publisher_tables}" "${local_tables}"
+  fi
   existing="$(control_psql -At -c \
     "select count(*) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${control_subscription}'")"
   if [[ "${existing}" == 0 ]]; then
+    publisher_slot_state="$(docker exec -e PGPASSWORD "${control_container}" psql -X -At \
+      -h "${publisher_host}" -p "${control_port}" -U warehouse_control_replica \
+      -d warehouse_os -c "select active::int from pg_replication_slots where slot_name='vultr_control'")"
+    case "${publisher_slot_state}" in
+      "") create_slot=true ;;
+      0) create_slot=false ;;
+      1)
+        printf 'publisher slot vultr_control is already active\n' >&2
+        exit 2
+        ;;
+      *)
+        printf 'publisher slot vultr_control has invalid state=%s\n' \
+          "${publisher_slot_state}" >&2
+        exit 2
+        ;;
+    esac
     export PUBLISHER_PASSWORD="${WAREHOUSE_CONTROL_REPL_PASSWORD}"
     docker exec -i \
       -e PUBLISHER_PASSWORD -e PUBLISHER_HOST="${publisher_host}" \
-      -e PUBLISHER_PORT="${control_port}" \
+      -e PUBLISHER_PORT="${control_port}" -e CREATE_SLOT="${create_slot}" \
       "${control_container}" sh -lc \
       'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
 \getenv publisher_password PUBLISHER_PASSWORD
 \getenv publisher_host PUBLISHER_HOST
 \getenv publisher_port PUBLISHER_PORT
+\getenv create_slot CREATE_SLOT
 \set publisher_conninfo 'host=' :publisher_host ' port=' :publisher_port ' dbname=warehouse_os user=warehouse_control_replica password=' :publisher_password ' connect_timeout=10 sslmode=disable application_name=vultr-control-subscriber'
 CREATE SUBSCRIPTION warehouse_from_mac
   CONNECTION :'publisher_conninfo'
   PUBLICATION warehouse_control_pub
   WITH (
     copy_data=false,
-    create_slot=true,
+    create_slot=:create_slot,
     enabled=false,
     run_as_owner=true,
     slot_name='vultr_control',
@@ -105,7 +140,11 @@ SQL
   fi
   metadata="$(control_psql -At -c \
     "select subslotname,subenabled,subrunasowner,substream::text,suborigin from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${control_subscription}'")"
-  [[ "${metadata}" == 'vultr_control|f|t|p|none' ]] || {
+  if [[ "${bootstrap_only}" == 1 ]]; then
+    [[ "${metadata}" =~ ^vultr_control\|[ft]\|t\|p\|none$ ]]
+  else
+    [[ "${metadata}" == 'vultr_control|f|t|p|none' ]]
+  fi || {
     printf 'unexpected control reverse subscription metadata=%s\n' "${metadata}" >&2
     exit 2
   }
@@ -183,9 +222,12 @@ set_state() {
 }
 
 verify_state() {
+  local control_only="${1:-0}"
   local control_meta hosted_total hosted_enabled hosted_workers database
   control_meta="$(control_psql -At -c \
     "select count(*),count(*) filter (where subenabled),(select count(*) from pg_stat_subscription where pid is not null and relid is null and subid in (select oid from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${control_subscription}')) from pg_subscription where subdbid=(select oid from pg_database where datname=current_database()) and subname='${control_subscription}'")"
+  printf 'control_reverse=%s\n' "${control_meta}"
+  [[ "${control_only}" == 1 ]] && return 0
   hosted_total=0
   hosted_enabled=0
   hosted_workers=0
@@ -196,11 +238,15 @@ verify_state() {
     hosted_enabled=$((hosted_enabled + enabled))
     hosted_workers=$((hosted_workers + workers))
   done <<<"${databases}"
-  printf 'control_reverse=%s\n' "${control_meta}"
   printf 'hosted_reverse=%s|%s|%s\n' "${hosted_total}" "${hosted_enabled}" "${hosted_workers}"
 }
 
 case "${mode}" in
+  prepare-control)
+    prepare_control 1
+    verify_state 1
+    exit 0
+    ;;
   prepare)
     prepared_hosted=0
     prepare_control

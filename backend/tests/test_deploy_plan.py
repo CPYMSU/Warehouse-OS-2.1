@@ -384,11 +384,24 @@ def test_cluster_database_gate_runs_standby_schema_before_primary_data() -> None
         'run_node WAREHOUSE_STANDBY vultr-standby '
         '"migration-start ${standby_release}"'
     )
+    publication_bootstrap = source.index(
+        '"${ROOT}/ops/cluster/configure-control-publication-macos"', database_gate
+    )
+    secret_handoff = source.index(
+        "upload_node_secret WAREHOUSE_STANDBY vultr-standby", database_gate
+    )
     primary_start = source.index(
         'run_node WAREHOUSE_PRIMARY mac-primary '
         '"migration-start ${primary_release}"'
     )
-    assert database_gate < standby_start < primary_start < activation
+    assert (
+        database_gate
+        < publication_bootstrap
+        < secret_handoff
+        < standby_start
+        < primary_start
+        < activation
+    )
     assert 'run_node WAREHOUSE_PRIMARY mac-primary "migration-start ${primary_release}"' in source
     assert 'run_node WAREHOUSE_PRIMARY mac-primary "migration-wait ${primary_release}"' in source
     assert (
@@ -441,9 +454,41 @@ def test_standby_reseed_is_bounded_to_the_disposable_control_subscriber() -> Non
         "--format custom" in source
     )
     assert "copy_data=true" in source
+    assert 'prepare-control' in source
+    assert 'control-replication-${RELEASE_ID}.env' in source
+    assert "warehouse-deploy:600" in source
+    assert "rm -f -- \"${SECRET_FILE}\"" in source
     assert "critical table counts differ after reseed" in source
     assert "reseed_standby_control_database" in manager
     assert "standby-reseed-attempted" in manager
+
+
+def test_control_replication_bootstrap_is_control_only_and_secret_backed() -> None:
+    subscriptions = (
+        REPO_ROOT / "ops" / "cluster" / "set-vultr-reverse-subscriptions"
+    ).read_text(encoding="utf-8")
+    publication = (
+        REPO_ROOT / "ops" / "cluster" / "configure-control-publication-macos"
+    ).read_text(encoding="utf-8")
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "production-deploy.yml"
+    ).read_text(encoding="utf-8")
+    manager = (REPO_ROOT / "ops" / "server" / "warehouse-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    control_mode = subscriptions[
+        subscriptions.index("prepare-control)") : subscriptions.index(
+            "prepare)\n", subscriptions.index("prepare-control)")
+        )
+    ]
+    assert "prepare_control 1" in control_mode
+    assert "prepare_hosted" not in control_mode
+    assert "WAREHOUSE_HOSTED_REPL_PASSWORD" not in publication
+    assert "WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD" not in publication
+    assert "warehouse_control_pub" in publication
+    assert "secrets.WAREHOUSE_CONTROL_REPL_PASSWORD" in workflow
+    assert "ALTER SUBSCRIPTION warehouse_from_mac ENABLE" in manager
 
 
 def test_server_deploy_has_a_persistent_prepare_activate_contract() -> None:

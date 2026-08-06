@@ -22,7 +22,9 @@ jobs:
           bash -n \
             ops/deploy \
             ops/fast-deploy \
+            ops/cluster/configure-control-publication-macos \
             ops/cluster/rolling-deploy \
+            ops/cluster/set-vultr-reverse-subscriptions \
             ops/macos/warehouse-deploy-macos \
             ops/macos/warehouse-deploy-ssh-gate \
             ops/server/warehouse-deploy \
