@@ -15,6 +15,9 @@ SUBSCRIPTION=warehouse_from_mac
 ARCHIVE_ROOT=/mnt/warehouse-data/hosted/archive/standby-reseed
 STATE_ROOT="${SHARED}/database-reseed"
 WAIT_SECONDS="${WAREHOUSE_STANDBY_RESEED_WAIT_SECONDS:-900}"
+RELEASE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+RELEASE_ID="${RELEASE_ROOT##*/}"
+SECRET_FILE="/var/lib/warehouse-deploy/incoming/control-replication-${RELEASE_ID}.env"
 
 fail() {
   printf 'warehouse-standby-reseed: %s\n' "$*" >&2
@@ -26,6 +29,8 @@ fail() {
   || fail "WAREHOUSE_CONFIRM_STANDBY_RESEED=YES is required"
 [[ "${WAIT_SECONDS}" =~ ^[1-9][0-9]{1,3}$ ]] \
   || fail "WAREHOUSE_STANDBY_RESEED_WAIT_SECONDS must be 10..9999"
+[[ "${RELEASE_ID}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
+  || fail "candidate release identity is invalid"
 [[ -f "${ENV_FILE}" ]] || fail "production environment is missing"
 docker inspect "${CONTROL_CONTAINER}" >/dev/null 2>&1 \
   || fail "control PostgreSQL container is missing"
@@ -56,6 +61,38 @@ grep -Fq 'warehouse_migrator=default_transaction_read_only=true' <<<"${role_fenc
 
 subscription_count="$(control_psql -At -c \
   "select count(*) from pg_subscription where subname='${SUBSCRIPTION}'")"
+if [[ "${subscription_count}" == 0 ]]; then
+  [[ -f "${SECRET_FILE}" && ! -L "${SECRET_FILE}" ]] \
+    || fail "control subscription bootstrap handoff is missing"
+  trap 'rm -f -- "${SECRET_FILE}"' EXIT
+  secret_metadata="$(stat -c '%U:%a' "${SECRET_FILE}")"
+  [[ "${secret_metadata}" == warehouse-deploy:600 \
+      || "${secret_metadata}" == root:600 ]] \
+    || fail "control subscription bootstrap handoff permissions are unsafe"
+  secret_lines="$(wc -l < "${SECRET_FILE}" | tr -d ' ')"
+  IFS= read -r secret_line < "${SECRET_FILE}"
+  secret_key="${secret_line%%=*}"
+  secret_value="${secret_line#*=}"
+  [[ "${secret_lines}" == 1 \
+      && "${secret_key}" == WAREHOUSE_CONTROL_REPL_PASSWORD \
+      && "${secret_value}" =~ ^[0-9a-f]{64}$ ]] \
+    || fail "control subscription bootstrap handoff is malformed"
+  control_replication_password="${secret_value}"
+  if ! WAREHOUSE_CONFIRM_REVERSE_PREPARE=YES \
+      WAREHOUSE_CONTROL_REPL_PASSWORD="${control_replication_password}" \
+      "${RELEASE_ROOT}/ops/cluster/set-vultr-reverse-subscriptions" \
+        prepare-control; then
+    rm -f -- "${SECRET_FILE}"
+    fail "control subscription bootstrap failed"
+  fi
+  rm -f -- "${SECRET_FILE}"
+  trap - EXIT
+  unset control_replication_password secret_key secret_line secret_value
+  subscription_count="$(control_psql -At -c \
+    "select count(*) from pg_subscription where subname='${SUBSCRIPTION}'")"
+else
+  rm -f -- "${SECRET_FILE}"
+fi
 [[ "${subscription_count}" == 1 ]] || fail "expected exactly one control subscription"
 
 conninfo="$(control_psql -At -c \

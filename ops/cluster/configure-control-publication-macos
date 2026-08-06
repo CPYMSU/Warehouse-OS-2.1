@@ -1,0 +1,88 @@
+#!/bin/zsh
+set -Eeuo pipefail
+
+[[ "$(uname -s)" == Darwin ]] || {
+  print -u2 'this control publisher configurator is only for macOS'
+  exit 2
+}
+: "${WAREHOUSE_CONTROL_REPL_PASSWORD:?control replication password is required}"
+[[ "${WAREHOUSE_CONTROL_REPL_PASSWORD}" =~ ^[0-9a-f]{64}$ ]] || {
+  print -u2 'control replication password is malformed'
+  exit 2
+}
+
+PSQL="${PSQL_BIN:-/opt/homebrew/opt/postgresql@18/bin/psql}"
+[[ -x "${PSQL}" ]] || {
+  print -u2 "PostgreSQL client is unavailable: ${PSQL}"
+  exit 2
+}
+export WAREHOUSE_CONTROL_REPL_PASSWORD
+
+"${PSQL}" -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 \
+  -U peiyuan -d warehouse_os <<'SQL'
+\getenv repl_password WAREHOUSE_CONTROL_REPL_PASSWORD
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='warehouse_control_replica') THEN
+    CREATE ROLE warehouse_control_replica LOGIN REPLICATION BYPASSRLS;
+  END IF;
+END
+$$;
+ALTER ROLE warehouse_control_replica
+  WITH LOGIN REPLICATION BYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE
+  PASSWORD :'repl_password';
+GRANT CONNECT ON DATABASE warehouse_os TO warehouse_control_replica;
+DO $$
+DECLARE schema_name text;
+DECLARE owner_name text;
+DECLARE target_table record;
+BEGIN
+  FOR schema_name IN
+    SELECT nspname FROM pg_namespace
+    WHERE nspname <> 'information_schema' AND nspname NOT LIKE 'pg_%'
+  LOOP
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO warehouse_control_replica', schema_name);
+    EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO warehouse_control_replica', schema_name);
+    EXECUTE format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA %I TO warehouse_control_replica', schema_name);
+    FOR owner_name IN
+      SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname=schema_name
+    LOOP
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO warehouse_control_replica',
+        owner_name, schema_name
+      );
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON SEQUENCES TO warehouse_control_replica',
+        owner_name, schema_name
+      );
+    END LOOP;
+  END LOOP;
+  FOR target_table IN
+    SELECT n.nspname AS schema_name, c.relname AS table_name
+    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE c.relkind IN ('r','p') AND c.relpersistence='p'
+      AND c.relreplident <> 'f'
+      AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg_%'
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_index i WHERE i.indrelid=c.oid AND i.indisprimary
+      )
+  LOOP
+    EXECUTE format('ALTER TABLE %I.%I REPLICA IDENTITY FULL',
+      target_table.schema_name, target_table.table_name);
+  END LOOP;
+END
+$$;
+SELECT 'CREATE PUBLICATION warehouse_control_pub FOR ALL TABLES'
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_publication WHERE pubname='warehouse_control_pub'
+) \gexec
+SQL
+
+control_tables="$("${PSQL}" -X -At -h 127.0.0.1 -p 5432 -U peiyuan \
+  -d warehouse_os -c "select count(*) from pg_publication_tables where pubname='warehouse_control_pub'")"
+[[ "${control_tables}" =~ ^[1-9][0-9]*$ ]] || {
+  print -u2 'control publication contains no tables'
+  exit 2
+}
+print 'macos_control_publication=ready'
+print "control_tables=${control_tables}"

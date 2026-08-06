@@ -1280,6 +1280,12 @@ reconcile_prepared_migration() {
     return 0
   }
 
+  # A freshly bootstrapped subscriber is deliberately created disabled.  The
+  # standby remains write-fenced while this worker is enabled for replication.
+  docker exec "${control_container}" sh -lc \
+    'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ALTER SUBSCRIPTION warehouse_from_mac ENABLE"' \
+    >/dev/null
+
   # The replicated primary Alembic cursor is a barrier: when it reaches the
   # target, primary DDL has committed and a publication refresh can discover
   # every newly created table.
