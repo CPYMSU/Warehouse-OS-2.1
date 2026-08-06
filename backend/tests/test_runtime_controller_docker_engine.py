@@ -39,7 +39,7 @@ class _FakeDockerClient:
 def _response(
     status: int,
     *,
-    json: dict[str, object] | None = None,
+    json: object | None = None,
     text: str = "",
 ) -> httpx.Response:
     request = httpx.Request("GET", "http://docker/test")
@@ -171,6 +171,53 @@ def test_docker_engine_distinguishes_missing_managed_container(
 
     assert engine.container_exists("warehouse-runtime-missing") is False
     assert engine.container_exists("warehouse-runtime-present") is True
+
+
+def test_docker_engine_lists_only_managed_runtime_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeDockerClient(
+        [
+            _response(200, json={"ApiVersion": "1.53"}),
+            _response(
+                200,
+                json=[
+                    {
+                        "Names": ["/warehouse-runtime-active"],
+                        "State": "running",
+                        "Labels": {
+                            "org.bonfirework.managed": "runtime-controller",
+                            "org.bonfirework.deployment": "deployment-1",
+                            "org.bonfirework.workspace": "workspace-1",
+                        },
+                    },
+                    {
+                        "Names": ["/unrelated-container"],
+                        "State": "running",
+                        "Labels": {
+                            "org.bonfirework.managed": "runtime-controller",
+                        },
+                    },
+                ],
+            ),
+        ]
+    )
+    monkeypatch.setattr(runtime_controller.httpx, "Client", lambda **kwargs: fake)
+
+    engine = DockerEngine(Path("/var/run/docker.sock"))
+
+    assert engine.managed_runtime_containers() == [
+        {
+            "name": "warehouse-runtime-active",
+            "deployment_id": "deployment-1",
+            "workspace_id": "workspace-1",
+            "running": True,
+        }
+    ]
+    assert fake.requests[-1][2]["params"] == {
+        "all": "true",
+        "filters": '{"label":["org.bonfirework.managed=runtime-controller"]}',
+    }
 
 
 def test_docker_engine_reads_one_shot_cpu_and_memory_statistics(
@@ -818,6 +865,42 @@ def test_runtime_drift_requeues_only_active_ready_deployment_with_missing_contai
     assert events[0][3] == "self_heal_queued"
     assert events[0][4]["missing_container_names"] == ["warehouse-runtime-missing"]
     assert controller.reconcile_runtime_drift() == 0
+
+
+def test_runtime_orphan_reconcile_stops_only_nonresident_managed_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class _Engine:
+        def __init__(self, _socket: Path) -> None:
+            observed["created"] = True
+
+        def managed_runtime_containers(self) -> list[dict[str, object]]:
+            return [
+                {"name": "warehouse-runtime-active", "running": True},
+                {"name": "warehouse-runtime-orphan", "running": True},
+                {"name": "warehouse-runtime-stopped", "running": False},
+            ]
+
+        def stop(self, name: str) -> None:
+            observed.setdefault("stopped", []).append(name)
+
+        def close(self) -> None:
+            observed["closed"] = True
+
+    controller = runtime_controller.RuntimeController(Settings())
+    monkeypatch.setattr(
+        controller,
+        "_resident_runtime_container_names",
+        lambda: {"warehouse-runtime-active"},
+    )
+    monkeypatch.setattr(runtime_controller.base, "DockerEngine", _Engine)
+
+    assert controller.reconcile_orphan_runtime_containers() == 1
+    assert observed["stopped"] == ["warehouse-runtime-orphan"]
+    assert observed["closed"] is True
+    assert controller.reconcile_orphan_runtime_containers() == 0
 
 
 def test_runtime_lifecycle_stops_idle_container_and_wakes_same_container(

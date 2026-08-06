@@ -199,6 +199,62 @@ class DockerEngine:
             self._raise_engine_error(response, "container inspection")
         return True
 
+    def managed_runtime_containers(self) -> list[dict[str, object]]:
+        response = self.client.get(
+            f"{self.api_prefix}/containers/json",
+            params={
+                "all": "true",
+                "filters": json.dumps(
+                    {
+                        "label": [
+                            "org.bonfirework.managed=runtime-controller",
+                        ]
+                    },
+                    separators=(",", ":"),
+                ),
+            },
+        )
+        if response.status_code != 200:
+            self._raise_engine_error(response, "managed container listing")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Docker Engine container listing returned invalid JSON") from exc
+        if not isinstance(payload, list):
+            raise RuntimeError("Docker Engine container listing returned invalid data")
+        containers: list[dict[str, object]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            names = item.get("Names")
+            labels = item.get("Labels")
+            if not isinstance(names, list) or not isinstance(labels, dict):
+                continue
+            name = next(
+                (
+                    str(value).removeprefix("/")
+                    for value in names
+                    if re.fullmatch(
+                        r"/?warehouse-runtime-[a-zA-Z0-9_.-]+",
+                        str(value),
+                    )
+                ),
+                None,
+            )
+            if name is None:
+                continue
+            containers.append(
+                {
+                    "name": name,
+                    "deployment_id": str(
+                        labels.get("org.bonfirework.deployment") or ""
+                    ),
+                    "workspace_id": str(labels.get("org.bonfirework.workspace") or ""),
+                    "running": str(item.get("State") or "").lower() == "running",
+                }
+            )
+        return containers
+
     def wait(self, name: str, *, timeout: int = 1200) -> int:
         """Wait for a bounded one-shot container and return its exit code."""
 
@@ -435,6 +491,7 @@ class RuntimeController:
         self._last_repository_reconcile = 0.0
         self._last_runtime_drift_reconcile = 0.0
         self._last_runtime_lifecycle_reconcile = 0.0
+        self._last_runtime_orphan_reconcile = 0.0
 
     def reconcile_repositories(self) -> int:
         if time.monotonic() - self._last_repository_reconcile < 60:
@@ -2147,6 +2204,51 @@ class RuntimeController:
                 repaired += 1
         return repaired
 
+    def _resident_runtime_container_names(self) -> set[str]:
+        names: set[str] = set()
+        for tenant_id in self._tenants():
+            with tenant_session(tenant_id) as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT d.result
+                        FROM digital_asset.workspaces AS w
+                        JOIN digital_asset.deployments AS d
+                          ON d.id=w.active_deployment_id
+                        WHERE d.status='ready' AND d.health='healthy'
+                          AND d.runtime_state IN (
+                            'wake_requested','waking','running','suspending'
+                          )
+                        """
+                    )
+                ).scalars()
+                for result in rows:
+                    names.update(self._runtime_container_names(result))
+        return names
+
+    def reconcile_orphan_runtime_containers(self) -> int:
+        """Stop stale managed runtimes without removing rollback artifacts."""
+
+        if time.monotonic() - self._last_runtime_orphan_reconcile < 15:
+            return 0
+        self._last_runtime_orphan_reconcile = time.monotonic()
+        resident_names = self._resident_runtime_container_names()
+        engine = DockerEngine(self.settings.runtime_docker_socket)
+        stopped = 0
+        try:
+            for container in engine.managed_runtime_containers():
+                name = str(container.get("name") or "")
+                if (
+                    container.get("running") is True
+                    and name
+                    and name not in resident_names
+                ):
+                    engine.stop(name)
+                    stopped += 1
+        finally:
+            engine.close()
+        return stopped
+
     def _scaling_candidates(self) -> list[tuple[UUID, dict[str, object]]]:
         candidates: list[tuple[UUID, dict[str, object]]] = []
         for tenant_id in self._tenants():
@@ -2382,6 +2484,7 @@ class RuntimeController:
                 self.observe_capacity()
                 self.reconcile_runtime_lifecycle()
                 self.reconcile_runtime_drift()
+                self.reconcile_orphan_runtime_containers()
                 self.reconcile_scaling()
                 self.reconcile_repositories()
                 worked = self.run_once()
