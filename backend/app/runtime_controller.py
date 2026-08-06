@@ -17,6 +17,12 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app import runtime_controller_base as base
+from app.services.source_uploads import (
+    claim_source_upload,
+    expire_source_uploads,
+    fail_claimed_source_upload,
+    process_claimed_source_upload,
+)
 from app.services.workspace_autonomy import allocation_target_bytes
 
 DockerEngine = base.DockerEngine
@@ -191,6 +197,28 @@ class RuntimeController(base.RuntimeController):
             return 0
         self._last_repository_reconcile = base.time.monotonic()
         return reconcile_repository_resources(self.settings)
+
+    def run_once(self) -> bool:
+        """Prefer queued source verification, then preserve deployment behavior."""
+
+        now = base.time.monotonic()
+        if now - getattr(self, "_last_source_upload_cleanup", 0.0) >= 60:
+            self._last_source_upload_cleanup = now
+            expire_source_uploads(self.settings)
+        if getattr(self, "_source_upload_was_last", False):
+            self._source_upload_was_last = False
+            if super().run_once():
+                return True
+        claimed_upload = claim_source_upload(self.worker_id, self.settings)
+        if claimed_upload is None:
+            return super().run_once()
+        tenant_id, upload_id = claimed_upload
+        try:
+            process_claimed_source_upload(tenant_id, upload_id, self.settings)
+        except Exception as exc:
+            fail_claimed_source_upload(tenant_id, upload_id, exc)
+        self._source_upload_was_last = True
+        return True
 
     def _container_spec(
         self, snapshot: dict[str, object], host_root: Path, host_data: Path

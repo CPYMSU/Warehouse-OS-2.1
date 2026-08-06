@@ -501,7 +501,7 @@ def test_secretary_contract_supports_pages_configuration_and_design_reads() -> N
 
     assert desired["pages"]["site_key"] == "customer-portal"
     assert desired["pages"]["public_alias_enabled"] is True
-    assert manifest["version"] == "2.4"
+    assert manifest["version"] == "2.5"
     assert manifest["pages_runtime"]["stable_url"] == ("https://bonfirework.org/apps/{site_key}/")
     assert manifest["pages_runtime"]["isolated_runtime_origin"] == (
         "https://{site_key}.bonfirework.org/"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -39,18 +40,50 @@ from app.services.intelligent_hosting import (
 )
 from app.services.object_storage import object_store_for_provider
 from app.services.source_packages import inspect_source_archive
+from app.services.source_uploads import (
+    SOURCE_UPLOAD_CHUNK_BYTES,
+    complete_source_upload,
+    create_source_upload,
+    put_source_upload_part,
+    source_upload_status,
+)
 from app.services.workspace_autonomy import (
     SOURCE_UPLOAD_HEADROOM_BYTES,
     ensure_capacity,
     provision_idempotently,
 )
 from app.services.workspace_deployments import (
+    list_workspace_sources,
     register_workspace_source,
     workspace_source_upload_target,
 )
 
 router = APIRouter(tags=["intelligent-hosting-compat"])
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _session_upload_response(
+    result: dict[str, object],
+    session_id: str,
+) -> dict[str, object]:
+    upload_id = str(result["upload_id"])
+    return {
+        **result,
+        "endpoints": {
+            "part": (
+                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
+                f"{upload_id}/parts/{{part_no}}"
+            ),
+            "complete": (
+                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
+                f"{upload_id}/complete"
+            ),
+            "status": (
+                f"/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}"
+            ),
+            "attach": f"/api/hosting/v2/sessions/{session_id}/sources/attach",
+        },
+    }
 
 
 def hosting_principal(
@@ -244,6 +277,96 @@ def _upload_size(file: UploadFile) -> int:
 
 
 @router.post(
+    "/api/hosting/v2/sessions/{session_id}/source-uploads",
+    status_code=status.HTTP_201_CREATED,
+)
+def intelligent_hosting_source_upload_create(
+    session_id: str,
+    response: Response,
+    payload: dict[str, object] = Body(default={}),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    principal: HostingPrincipal = Depends(hosting_principal),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    result = create_source_upload(
+        credential,
+        payload,
+        idempotency_key=idempotency_key,
+        settings=settings,
+    )
+    return _session_upload_response(result, session_id)
+
+
+@router.put(
+    "/api/hosting/v2/sessions/{session_id}/source-uploads/"
+    "{upload_id}/parts/{part_no}"
+)
+async def intelligent_hosting_source_upload_part(
+    session_id: str,
+    upload_id: UUID,
+    part_no: int,
+    request: Request,
+    response: Response,
+    content_sha256: str = Header(alias="Content-SHA256"),
+    content_length: int | None = Header(default=None, alias="Content-Length"),
+    principal: HostingPrincipal = Depends(hosting_principal),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    if content_length is not None and content_length > SOURCE_UPLOAD_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="Upload part exceeds the chunk limit")
+    content = await request.body()
+    if len(content) > SOURCE_UPLOAD_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="Upload part exceeds the chunk limit")
+    result = put_source_upload_part(
+        credential,
+        upload_id,
+        part_no,
+        content,
+        expected_sha256=content_sha256,
+        settings=settings,
+    )
+    return _session_upload_response(result, session_id)
+
+
+@router.post(
+    "/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}/complete",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def intelligent_hosting_source_upload_complete(
+    session_id: str,
+    upload_id: UUID,
+    response: Response,
+    principal: HostingPrincipal = Depends(hosting_principal),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    result = complete_source_upload(credential, upload_id, settings=settings)
+    return _session_upload_response(result, session_id)
+
+
+@router.get(
+    "/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}"
+)
+def intelligent_hosting_source_upload_status(
+    session_id: str,
+    upload_id: UUID,
+    response: Response,
+    principal: HostingPrincipal = Depends(hosting_principal),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    return _session_upload_response(
+        source_upload_status(credential, upload_id),
+        session_id,
+    )
+
+
+@router.post(
     "/api/hosting/v2/sessions/{session_id}/sources",
     status_code=status.HTTP_201_CREATED,
 )
@@ -329,6 +452,53 @@ def intelligent_hosting_source_upload(
     return {
         "ok": True,
         "source": source,
+        "session": session_result["session"],
+        "next_action": (
+            f"POST /api/hosting/v2/sessions/{session_id}/messages with "
+            "desired_state.deployment.state=ready and execute=true"
+        ),
+    }
+
+
+@router.post("/api/hosting/v2/sessions/{session_id}/sources/attach")
+def intelligent_hosting_source_attach(
+    session_id: str,
+    response: Response,
+    payload: dict[str, object] = Body(default={}),
+    principal: HostingPrincipal = Depends(hosting_principal),
+) -> dict[str, object]:
+    """Attach a source already verified by the resumable workspace data plane."""
+
+    response.headers["Cache-Control"] = "no-store"
+    _row, credential = session_credential(principal, session_id)
+    source_ref = str(payload.get("source_version_id") or payload.get("source_ref") or "").strip()
+    if not source_ref:
+        raise HTTPException(status_code=422, detail="source_version_id is required")
+    sources = list_workspace_sources(credential)["sources"]
+    source = next(
+        (
+            item
+            for item in sources
+            if source_ref in {str(item.get("uuid") or ""), str(item.get("id") or "")}
+        ),
+        None,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="Verified workspace source not found")
+    source_result = {
+        "ok": True,
+        "idempotent_replay": True,
+        "source": source,
+        "artifact": source.get("artifact"),
+        "archive": {
+            "validated": True,
+            "signals": {"hosting_contract": source.get("hosting_contract")},
+        },
+    }
+    session_result = record_source_attached(principal, session_id, source_result)
+    return {
+        "ok": True,
+        "source": source_result,
         "session": session_result["session"],
         "next_action": (
             f"POST /api/hosting/v2/sessions/{session_id}/messages with "

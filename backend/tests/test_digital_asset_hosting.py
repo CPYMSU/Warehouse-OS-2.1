@@ -40,7 +40,7 @@ from app.terminal import executor, legacy_catalog
 pytestmark = pytest.mark.integration
 
 
-def _source_zip(files: dict[str, str]) -> bytes:
+def _source_zip(files: dict[str, str | bytes]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in files.items():
@@ -636,6 +636,85 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
         assert version_conflict.status_code == 409
         assert version_conflict.json()["detail"]["reason"] == "source_version_number_conflict"
 
+        resumable_package = _source_zip(
+            {
+                "index.html": "<!doctype html><title>Resumable Pages upload</title>",
+                "assets/course.bin": secrets.token_bytes(4 * 1024 * 1024 + 1024),
+            }
+        )
+        resumable_digest = hashlib.sha256(resumable_package).hexdigest()
+        upload_created = client.post(
+            "/api/workspaces/v1/source-uploads",
+            headers={**headers, "Idempotency-Key": "resumable-source-v1.1.0"},
+            json={
+                "filename": "resumable.zip",
+                "content_type": "application/zip",
+                "size_bytes": len(resumable_package),
+                "sha256": resumable_digest,
+                "version_no": "v1.1.0",
+                "component": "frontend",
+            },
+        )
+        assert upload_created.status_code == 201, upload_created.text
+        upload_id = upload_created.json()["upload_id"]
+        assert upload_created.json()["status"] == "created"
+        assert upload_created.json()["part_count"] == 2
+        chunk_size = upload_created.json()["chunk_size_bytes"]
+        for part_no in range(2):
+            part_content = resumable_package[
+                part_no * chunk_size : (part_no + 1) * chunk_size
+            ]
+            part = client.put(
+                f"/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
+                headers={
+                    **headers,
+                    "Content-SHA256": hashlib.sha256(part_content).hexdigest(),
+                },
+                content=part_content,
+            )
+            assert part.status_code == 200, part.text
+        assert part.json()["progress"] == 1.0
+        first_part = resumable_package[:chunk_size]
+        part_replay = client.put(
+            f"/api/workspaces/v1/source-uploads/{upload_id}/parts/0",
+            headers={
+                **headers,
+                "Content-SHA256": hashlib.sha256(first_part).hexdigest(),
+            },
+            content=first_part,
+        )
+        assert part_replay.status_code == 200
+        assert part_replay.json()["idempotent_replay"] is True
+        init_replay = client.post(
+            "/api/workspaces/v1/source-uploads",
+            headers={**headers, "Idempotency-Key": "resumable-source-v1.1.0"},
+            json={
+                "filename": "resumable.zip",
+                "content_type": "application/zip",
+                "size_bytes": len(resumable_package),
+                "sha256": resumable_digest,
+                "version_no": "v1.1.0",
+                "component": "frontend",
+            },
+        )
+        assert init_replay.status_code == 201
+        assert init_replay.json()["received_parts"] == [0, 1]
+        completed_upload = client.post(
+            f"/api/workspaces/v1/source-uploads/{upload_id}/complete",
+            headers=headers,
+            json={},
+        )
+        assert completed_upload.status_code == 202, completed_upload.text
+        assert completed_upload.json()["status"] == "queued"
+        assert RuntimeController(settings).run_once() is True
+        verified_upload = client.get(
+            f"/api/workspaces/v1/source-uploads/{upload_id}", headers=headers
+        )
+        assert verified_upload.status_code == 200
+        assert verified_upload.json()["status"] == "verified"
+        assert verified_upload.json()["source"]["artifact_sha256"] == resumable_digest
+        assert client.get("/api/workspaces/v1/sources", headers=headers).json()["count"] == 2
+
         deployment = client.post(
             "/api/workspaces/v1/deployments",
             headers={**headers, "Idempotency-Key": "deploy-v1"},
@@ -1011,6 +1090,70 @@ def test_intelligent_hosting_workspace_key_reaches_healthy_runtime(tmp_path, mon
         )
         assert uploaded.status_code == 201, uploaded.text
         assert uploaded.json()["session"]["status"] == "planning"
+        attached = client.post(
+            f"/api/hosting/v2/sessions/{session_id}/sources/attach",
+            headers=headers,
+            json={
+                "source_version_id": uploaded.json()["source"]["source"]["uuid"]
+            },
+        )
+        assert attached.status_code == 200, attached.text
+        assert attached.json()["session"]["status"] == "planning"
+
+        session_package = _source_zip(
+            {"index.html": "<!doctype html><title>Session resumable source</title>"}
+        )
+        session_digest = hashlib.sha256(session_package).hexdigest()
+        session_upload = client.post(
+            f"/api/hosting/v2/sessions/{session_id}/source-uploads",
+            headers={**headers, "Idempotency-Key": "session-resumable-v1.1.0"},
+            json={
+                "filename": "session-source.zip",
+                "content_type": "application/zip",
+                "size_bytes": len(session_package),
+                "sha256": session_digest,
+                "version_no": "v1.1.0",
+                "component": "frontend",
+            },
+        )
+        assert session_upload.status_code == 201, session_upload.text
+        session_upload_id = session_upload.json()["upload_id"]
+        session_part = client.put(
+            (
+                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
+                f"{session_upload_id}/parts/0"
+            ),
+            headers={**headers, "Content-SHA256": session_digest},
+            content=session_package,
+        )
+        assert session_part.status_code == 200, session_part.text
+        session_complete = client.post(
+            (
+                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
+                f"{session_upload_id}/complete"
+            ),
+            headers=headers,
+            json={},
+        )
+        assert session_complete.status_code == 202, session_complete.text
+        assert RuntimeController(settings).run_once() is True
+        session_verified = client.get(
+            (
+                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
+                f"{session_upload_id}"
+            ),
+            headers=headers,
+        )
+        assert session_verified.status_code == 200
+        assert session_verified.json()["status"] == "verified"
+        session_attached = client.post(
+            f"/api/hosting/v2/sessions/{session_id}/sources/attach",
+            headers=headers,
+            json={
+                "source_version_id": session_verified.json()["source"]["uuid"]
+            },
+        )
+        assert session_attached.status_code == 200, session_attached.text
 
         started = client.post(
             f"/api/hosting/v2/sessions/{session_id}/messages",

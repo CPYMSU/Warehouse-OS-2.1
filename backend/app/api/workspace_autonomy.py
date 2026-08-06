@@ -15,6 +15,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
@@ -27,6 +28,13 @@ from app.db.session import tenant_session
 from app.services.digital_asset_hosting import WorkspaceCredential, put_workspace_record
 from app.services.object_storage import object_store_for_provider
 from app.services.source_packages import inspect_source_archive
+from app.services.source_uploads import (
+    SOURCE_UPLOAD_CHUNK_BYTES,
+    complete_source_upload,
+    create_source_upload,
+    put_source_upload_part,
+    source_upload_status,
+)
 from app.services.workspace_autonomy import (
     SOURCE_UPLOAD_HEADROOM_BYTES,
     autonomy_manifest,
@@ -228,6 +236,75 @@ def _upload_size(file: UploadFile) -> int:
         return size
     except (AttributeError, OSError, ValueError):
         return 0
+
+
+@router.post(
+    "/api/workspaces/v1/source-uploads",
+    status_code=status.HTTP_201_CREATED,
+)
+def autonomous_source_upload_create(
+    payload: dict[str, object] = Body(default={}),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Reserve a resumable upload shared by all present and future workspaces."""
+
+    return create_source_upload(
+        credential,
+        payload,
+        idempotency_key=idempotency_key,
+        settings=settings,
+    )
+
+
+@router.put("/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}")
+async def autonomous_source_upload_part(
+    upload_id: UUID,
+    part_no: int,
+    request: Request,
+    content_sha256: str = Header(alias="Content-SHA256"),
+    content_length: int | None = Header(default=None, alias="Content-Length"),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Persist one independently retryable, hash-bound part."""
+
+    if content_length is not None and content_length > SOURCE_UPLOAD_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="Upload part exceeds the chunk limit")
+    content = await request.body()
+    if len(content) > SOURCE_UPLOAD_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="Upload part exceeds the chunk limit")
+    return put_source_upload_part(
+        credential,
+        upload_id,
+        part_no,
+        content,
+        expected_sha256=content_sha256,
+        settings=settings,
+    )
+
+
+@router.post(
+    "/api/workspaces/v1/source-uploads/{upload_id}/complete",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def autonomous_source_upload_complete(
+    upload_id: UUID,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Atomically queue a complete upload; verification runs after the response."""
+
+    return complete_source_upload(credential, upload_id, settings=settings)
+
+
+@router.get("/api/workspaces/v1/source-uploads/{upload_id}")
+def autonomous_source_upload_status(
+    upload_id: UUID,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+) -> dict[str, object]:
+    return source_upload_status(credential, upload_id)
 
 
 @router.post("/api/workspaces/v1/sources/upload", status_code=status.HTTP_201_CREATED)

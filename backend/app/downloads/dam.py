@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dm.py 2.6.0 — Warehouse OS 智能數字資產託管客戶端。
+"""dm.py 2.7.0 — Warehouse OS 智能數字資產託管客戶端。
 
 這個版本只呼叫 Warehouse OS 2.1 原生端點：
   GET /api/workspaces/v1/info
@@ -7,7 +7,10 @@
   GET /api/workspaces/v1/database/schema
   GET /api/workspaces/v1/data/{collection}
   PUT /api/workspaces/v1/data/{collection}/{record_key}
-  POST /api/workspaces/v1/sources/upload
+  POST /api/workspaces/v1/source-uploads
+  PUT  /api/workspaces/v1/source-uploads/{id}/parts/{part_no}
+  POST /api/workspaces/v1/source-uploads/{id}/complete
+  GET  /api/workspaces/v1/source-uploads/{id}
   GET  /api/workspaces/v1/sources
   GET  /api/workspaces/v1/sources/{id}/download
   PUT  /api/workspaces/v1/runtime
@@ -32,18 +35,19 @@ WAREHOUSE_BASE_URL。CLI 不提供 2.0 的 SQLite 或 raw SQL 命令。
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 from pathlib import Path
 
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 DEFAULT_BASE = "__WAREHOUSE_BASE__"
 
 
@@ -112,7 +116,7 @@ class Client:
                 detail = error.get("detail") or error.get("error") or error
                 message = (
                     json.dumps(detail, ensure_ascii=False)
-                    if isinstance(detail, (dict, list))
+                    if isinstance(detail, dict | list)
                     else str(detail)
                 )
             except (json.JSONDecodeError, AttributeError):
@@ -135,55 +139,103 @@ class Client:
     ) -> dict[str, object]:
         if not path.is_file():
             raise SystemExit(f"找不到源碼壓縮包：{path}")
-        boundary = "warehouse-" + uuid.uuid4().hex
-        fields = {"version_no": version, "component": component}
-        chunks: list[bytes] = []
-        for name, value in fields.items():
-            if value is None:
-                continue
-            chunks.extend(
-                [
-                    f"--{boundary}\r\n".encode(),
-                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
-                    str(value).encode("utf-8"),
-                    b"\r\n",
-                ]
-            )
-        content = path.read_bytes()
-        chunks.extend(
-            [
-                f"--{boundary}\r\n".encode(),
-                (
-                    f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'
-                ).encode(),
-                b"Content-Type: application/octet-stream\r\n\r\n",
-                content,
-                b"\r\n",
-                f"--{boundary}--\r\n".encode(),
-            ]
-        )
-        body = b"".join(chunks)
-        request = urllib.request.Request(
-            self.base + "/api/workspaces/v1/sources/upload",
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": "Bearer " + self.key,
-                "Accept": "application/json",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Content-SHA256": hashlib.sha256(content).hexdigest(),
-                "User-Agent": f"WarehouseOS-dam/{VERSION}",
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size_bytes += len(chunk)
+        sha256 = digest.hexdigest()
+        upload = self.request(
+            "POST",
+            "/api/workspaces/v1/source-uploads",
+            payload={
+                "filename": path.name,
+                "content_type": "application/octet-stream",
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+                "version_no": version,
+                "component": component,
             },
+            headers={"Idempotency-Key": f"source:{sha256}"},
         )
+        upload_id = str(upload.get("upload_id") or "")
+        if not upload_id:
+            raise SystemExit("服務端沒有返回 upload_id")
+        if upload.get("status") == "verified":
+            return upload
+        if upload.get("status") in {"failed", "expired", "cancelled"}:
+            raise SystemExit(
+                "源碼上傳無法恢復："
+                + json.dumps(upload.get("error") or upload, ensure_ascii=False)
+            )
+        chunk_size = int(upload.get("chunk_size_bytes") or 4 * 1024 * 1024)
+        part_count = int(upload.get("part_count") or 0)
+        received = {int(value) for value in (upload.get("received_parts") or [])}
+
+        def put_part(part_no: int) -> dict[str, object]:
+            with path.open("rb") as source:
+                source.seek(part_no * chunk_size)
+                content = source.read(chunk_size)
+            part_digest = hashlib.sha256(content).hexdigest()
+            request = urllib.request.Request(
+                self.base
+                + f"/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
+                data=content,
+                method="PUT",
+                headers={
+                    "Authorization": "Bearer " + self.key,
+                    "Accept": "application/json",
+                    "Content-Type": "application/octet-stream",
+                    "Content-SHA256": part_digest,
+                    "User-Agent": f"WarehouseOS-dam/{VERSION}",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    value = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode("utf-8", "replace")
+                raise RuntimeError(f"分片 {part_no} HTTP {exc.code}：{raw}") from exc
+            except urllib.error.URLError as exc:
+                raise RuntimeError(f"分片 {part_no} 連接失敗：{exc.reason}") from exc
+            if not isinstance(value, dict):
+                raise RuntimeError(f"分片 {part_no} 返回格式錯誤")
+            return value
+
+        missing = [part_no for part_no in range(part_count) if part_no not in received]
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                value = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", "replace")
-            raise SystemExit(f"HTTP {exc.code}：{raw}") from exc
-        if not isinstance(value, dict):
-            raise SystemExit("服務端返回格式錯誤：預期 JSON 物件")
-        return value
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, min(4, len(missing)))
+            ) as executor:
+                futures = [executor.submit(put_part, part_no) for part_no in missing]
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        self.request(
+            "POST",
+            f"/api/workspaces/v1/source-uploads/{upload_id}/complete",
+            payload={},
+        )
+        deadline = time.monotonic() + 15 * 60
+        while time.monotonic() < deadline:
+            observed = self.request(
+                "GET", f"/api/workspaces/v1/source-uploads/{upload_id}"
+            )
+            state = str(observed.get("status") or "")
+            if state == "verified":
+                return observed
+            if state in {"failed", "expired", "cancelled"}:
+                raise SystemExit(
+                    "源碼校驗失敗："
+                    + json.dumps(observed.get("error") or observed, ensure_ascii=False)
+                )
+            time.sleep(0.5)
+        raise SystemExit(f"源碼校驗仍在後台執行，可稍後查詢 upload_id={upload_id}")
 
     def upload_hosting_source(
         self,
@@ -193,57 +245,17 @@ class Client:
         version: str | None,
         component: str | None,
     ) -> dict[str, object]:
-        if not path.is_file():
-            raise SystemExit(f"找不到源碼壓縮包：{path}")
-        boundary = "warehouse-" + uuid.uuid4().hex
-        chunks: list[bytes] = []
-        for name, value in {"version_no": version, "component": component}.items():
-            if value is None:
-                continue
-            chunks.extend(
-                [
-                    f"--{boundary}\r\n".encode(),
-                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
-                    str(value).encode("utf-8"),
-                    b"\r\n",
-                ]
-            )
-        content = path.read_bytes()
-        chunks.extend(
-            [
-                f"--{boundary}\r\n".encode(),
-                (
-                    f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'
-                ).encode(),
-                b"Content-Type: application/octet-stream\r\n\r\n",
-                content,
-                b"\r\n",
-                f"--{boundary}--\r\n".encode(),
-            ]
-        )
-        body = b"".join(chunks)
+        uploaded = self.upload_source(path, version=version, component=component)
+        source = uploaded.get("source") if isinstance(uploaded.get("source"), dict) else {}
+        source_id = str(source.get("uuid") or uploaded.get("source_version_id") or "")
+        if not source_id:
+            raise SystemExit("已驗證上傳沒有返回 source_version_id")
         safe_session = urllib.parse.quote(session_id, safe="")
-        request = urllib.request.Request(
-            self.base + f"/api/hosting/v2/sessions/{safe_session}/sources",
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": "Bearer " + self.key,
-                "Accept": "application/json",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Content-SHA256": hashlib.sha256(content).hexdigest(),
-                "User-Agent": f"WarehouseOS-dm/{VERSION}",
-            },
+        return self.request(
+            "POST",
+            f"/api/hosting/v2/sessions/{safe_session}/sources/attach",
+            payload={"source_version_id": source_id},
         )
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                value = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", "replace")
-            raise SystemExit(f"HTTP {exc.code}：{raw}") from exc
-        if not isinstance(value, dict):
-            raise SystemExit("服務端返回格式錯誤：預期 JSON 物件")
-        return value
 
     def download_source(self, source_id: str, output: Path | None) -> dict[str, object]:
         safe_source = urllib.parse.quote(source_id, safe="")

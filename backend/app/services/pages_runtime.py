@@ -1233,8 +1233,22 @@ def pages_design_context(
         "compute_placement": compute_placement,
         "change_policy": {
             "active_release_mutable": False,
-            "workspace_upload": "POST /api/workspaces/v1/sources/upload",
-            "hosting_session_upload": ("POST /api/hosting/v2/sessions/{session_id}/sources"),
+            "workspace_upload": {
+                "initialize": "POST /api/workspaces/v1/source-uploads",
+                "part": "PUT /api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
+                "complete": "POST /api/workspaces/v1/source-uploads/{upload_id}/complete",
+                "status": "GET /api/workspaces/v1/source-uploads/{upload_id}",
+                "legacy_small_package": "POST /api/workspaces/v1/sources/upload",
+            },
+            "hosting_session_upload": {
+                "upload": "use workspace_upload",
+                "attach": (
+                    "POST /api/hosting/v2/sessions/{session_id}/sources/attach"
+                ),
+                "legacy_small_package": (
+                    "POST /api/hosting/v2/sessions/{session_id}/sources"
+                ),
+            },
             "workflow": [
                 "read selected code/design files",
                 "create a modified source archive",
