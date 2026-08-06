@@ -166,12 +166,16 @@ start_database_migration() {
   if [[ "$(container_value "${container}" '{{.State.Running}}')" == true ]]; then
     return 0
   fi
+  : "${WAREHOUSE_CONTROL_REPL_PASSWORD:?control backup password is required}"
+  [[ "${WAREHOUSE_CONTROL_REPL_PASSWORD}" =~ ^[0-9a-f]{64}$ ]] \
+    || fail "control backup password is malformed"
   "${DOCKER}" rm -f "${container}" >/dev/null 2>&1 || true
   "${DOCKER}" run -d \
     --name "${container}" \
     --network bonfirework-runtime \
     --env-file "${ENV_FILE}" \
     -e WAREHOUSE_NODE_ROLE=primary \
+    -e "WAREHOUSE_BACKUP_DATABASE_URL=postgresql+psycopg://warehouse_control_replica:${WAREHOUSE_CONTROL_REPL_PASSWORD}@host.docker.internal:5432/warehouse_os" \
     --label org.bonfirework.role=database-migration-controller \
     --label "org.bonfirework.release=${release}" \
     -v "${job_dir}:/migration" \

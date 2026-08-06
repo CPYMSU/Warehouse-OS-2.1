@@ -107,7 +107,12 @@ def _now() -> str:
 def _safe_error(exc: BaseException) -> str:
     """Return bounded diagnostics without credentials or connection strings."""
 
-    value = str(exc).replace("\x00", " ")
+    diagnostics = [str(exc)]
+    if isinstance(exc, subprocess.CalledProcessError):
+        diagnostics.extend(
+            value for value in (exc.stderr, exc.stdout) if isinstance(value, str)
+        )
+    value = " ".join(diagnostics).replace("\x00", " ")
     value = re.sub(
         r"(?i)(password|passwd|pwd|token|secret)\s*[=:]\s*[^\s,;]+",
         r"\1=[redacted]",
@@ -392,7 +397,17 @@ def verified_backup(
     partial.unlink(missing_ok=True)
     try:
         runner(
-            ["pg_dump", "--dbname", database, "--format", "custom", "--file", str(partial)],
+            [
+                "pg_dump",
+                "--dbname",
+                database,
+                "--format",
+                "custom",
+                "--no-publications",
+                "--no-subscriptions",
+                "--file",
+                str(partial),
+            ],
             check=True,
             env=environment,
             capture_output=True,
@@ -425,6 +440,7 @@ class DatabaseMigrationController:
         config_path: Path,
         backup_dir: Path,
         database_url: str,
+        backup_database_url: str | None = None,
         *,
         engine: Engine | None = None,
     ) -> None:
@@ -433,6 +449,7 @@ class DatabaseMigrationController:
         self.config_path = config_path
         self.backup_dir = backup_dir
         self.database_url = database_url
+        self.backup_database_url = backup_database_url or database_url
         self.engine = engine or create_engine(database_url, poolclass=NullPool, pool_pre_ping=True)
 
     def _alembic_config(self, connection: Connection, version_table: str) -> Config:
@@ -496,7 +513,7 @@ class DatabaseMigrationController:
             if self.request.node_role == "primary":
                 self.state.write("backing_up", current_revision=current, plan=plan_payload)
                 backup_name, backup_sha256 = verified_backup(
-                    self.database_url,
+                    self.backup_database_url,
                     self.backup_dir,
                     self.request.release_id,
                 )
@@ -564,12 +581,14 @@ def run_request(
         database_url = os.getenv("WAREHOUSE_MIGRATION_DATABASE_URL", "").strip()
         if not database_url:
             raise RuntimeError("WAREHOUSE_MIGRATION_DATABASE_URL is required")
+        backup_database_url = os.getenv("WAREHOUSE_BACKUP_DATABASE_URL", "").strip()
         DatabaseMigrationController(
             request,
             state,
             config_path,
             backup_dir,
             database_url,
+            backup_database_url,
         ).run()
         return 0
     except Exception as exc:
