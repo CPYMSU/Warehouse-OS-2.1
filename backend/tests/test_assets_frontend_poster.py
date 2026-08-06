@@ -86,6 +86,10 @@ def test_digital_asset_drawer_exposes_the_pages_hosting_console():
     assert 'invocation.mode === "auto_runtime"' in source
     assert "action_context: invocation.action_context" in source
     assert 'invocation.mode === "typed_action"' in source
+    assert 'runtime.mode === "static_frontend_device_first"' in source
+    assert 'deviceFirstPages ? "Pages 靜態"' in source
+    assert 'pagesFrontend ? "用戶瀏覽器"' in source
+    assert 't("設備可選 · 平台按需")' in source
     assert "不得使用已退役的 dm site rollback" not in source
     assert ".pages-console" in css
     assert ".pages-release-history" in css
@@ -94,14 +98,14 @@ def test_digital_asset_drawer_exposes_the_pages_hosting_console():
 def test_assets_poster_styles_are_loaded_and_cache_busted():
     index = INDEX.read_text(encoding="utf-8")
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
-    assert 'pages/pages-assets.jsx?v=20260806-pages-actions1' in index
+    assert 'pages/pages-assets.jsx?v=20260806-pages-runtime2' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
     assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
     assert 'core.css?v=20260806-login-swiss1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260804-task-runtime1' in index
-    assert 'dist/app.bundle.js?v=20260806-login-swiss1' in index
+    assert 'dist/app.bundle.js?v=20260806-pages-runtime2' in index
     assert 'dist/personal.bundle.js?v=20260806-login-swiss1' in PERSONAL.read_text(
         encoding="utf-8"
     )
