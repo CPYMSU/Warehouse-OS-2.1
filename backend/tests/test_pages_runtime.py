@@ -7,13 +7,19 @@ from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.api import digital_assets as digital_assets_api
 from app.api.deps import ActorContext
-from app.api.hosted_runtime_gateway import _pages_shell_document, _static_cache_headers
+from app.api.hosted_runtime_gateway import (
+    _browser_compatibility_script,
+    _pages_shell_document,
+    _pages_static_response,
+    _static_cache_headers,
+)
 from app.core.config import Settings
 from app.main import app
-from app.services import pages_runtime
+from app.services import device_runtime, pages_runtime
 from app.services.intelligent_hosting import _merge_desired_state, assistant_manifest
 
 
@@ -229,6 +235,134 @@ def test_static_cache_headers_revalidate_html_and_lock_hashed_assets() -> None:
     assert plain["X-Warehouse-Release"] == "release-20260805"
 
 
+def test_pages_static_frontend_is_served_without_waking_backend(tmp_path: Path) -> None:
+    release = tmp_path / "release" / "frontend"
+    release.mkdir(parents=True)
+    (release / "index.html").write_text(
+        "<!doctype html><html><head></head><body>Device first</body></html>",
+        encoding="utf-8",
+    )
+    route = {
+        "kind": "static",
+        "runtime_rel_path": "release/frontend",
+        "site_key": "design-lab",
+        "workspace_key": "design-lab",
+        "deployment_id": "00000000-0000-0000-0000-000000000005",
+        "release_digest": "release-device-first",
+        "device_runtime": {
+            "enabled": True,
+            "loopback_origin": "http://127.0.0.1:47821",
+            "fallback": "scale_to_zero",
+        },
+    }
+    settings = Settings(hosted_runtime_data_root=tmp_path)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": [(b"accept", b"text/html")],
+        }
+    )
+
+    response = _pages_static_response(route, "", request, settings)
+
+    assert response is not None
+    assert response.headers["X-Warehouse-Pages-Delivery"] == "static-device-first"
+    assert b"__WAREHOUSE_DEVICE_RUNTIME__" in response.body
+    assert b"127.0.0.1:47821" in response.body
+
+
+def test_migrated_static_release_resolves_from_pages_cache_without_database_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment_id = "00000000-0000-0000-0000-000000000005"
+    frontend = tmp_path / "release" / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setattr(
+        pages_runtime,
+        "resolve_pages_site_key",
+        lambda _site_key: {
+            "site_key": "design-lab",
+            "workspace_key": "design-lab",
+            "workspace_id": "00000000-0000-0000-0000-000000000002",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "active_deployment_id": deployment_id,
+            "config": {
+                "static_frontend": {
+                    "enabled": True,
+                    "runtime_rel_path": "release",
+                    "root": "frontend",
+                    "deployment_id": deployment_id,
+                    "release_digest": "release-device-first",
+                    "backend_fallback": "scale_to_zero",
+                },
+                "device_runtime": {"enabled": True},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        device_runtime,
+        "tenant_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("static cache must not query PostgreSQL")
+        ),
+    )
+
+    resolved = device_runtime.pages_static_release(
+        "design-lab",
+        settings=Settings(hosted_runtime_data_root=tmp_path),
+    )
+
+    assert resolved is not None
+    assert resolved["kind"] == "static"
+    assert resolved["runtime_rel_path"] == "release/frontend"
+
+
+def test_pages_static_frontend_leaves_api_misses_for_runtime_fallback(
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "index.html").write_text("<html></html>", encoding="utf-8")
+    route = {
+        "kind": "static",
+        "runtime_rel_path": "release",
+        "deployment_id": "00000000-0000-0000-0000-000000000005",
+        "workspace_key": "design-lab",
+    }
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/items",
+            "headers": [(b"accept", b"application/json")],
+        }
+    )
+
+    assert _pages_static_response(
+        route,
+        "api/items",
+        request,
+        Settings(hosted_runtime_data_root=tmp_path),
+    ) is None
+
+
+def test_browser_contract_routes_fetch_xhr_and_events_to_device_first() -> None:
+    script = _browser_compatibility_script(
+        "",
+        device_runtime={"enabled": True, "fallback": "scale_to_zero"},
+        workspace_key="design-lab",
+    )
+
+    assert "127.0.0.1:47821" in script
+    assert "X-Warehouse-Device-Runtime" in script
+    assert "deviceMap(u)" in script
+    assert "fallback\":\"scale_to_zero" in script
+
+
 def test_design_context_excludes_secrets_and_describes_immutable_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -431,12 +565,17 @@ def test_account_pages_console_aggregates_non_secret_release_state(
     assert result["runtime"]["mode"] == "static_browser"
     assert result["hosting_classification"] == {
         "is_fully_static": True,
+        "frontend_is_static": True,
+        "backend_is_device_first": False,
         "pages_shell_is_static": True,
         "application_requires_server_runtime": False,
+        "resident_server_runtime_required": False,
+        "server_fallback": None,
         "authoritative_runtime_field": "runtime.type",
         "note": (
-            "site.runtime describes the Pages routing shell; runtime.type "
-            "describes the hosted application's actual compute contract."
+            "Static frontend delivery is independent from the backend contract. "
+            "Non-static backends run on the user's device first and retain a "
+            "scale-to-zero platform fallback."
         ),
     }
     assert result["current_release"]["uuid"] == str(active_id)
