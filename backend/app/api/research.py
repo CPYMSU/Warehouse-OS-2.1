@@ -18,7 +18,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.api.deps import ActorContext, current_actor
 from app.core.config import Settings, get_settings
@@ -34,6 +34,12 @@ from app.services.research_execution import (
     list_executions,
     promote_artifact,
     retry_execution,
+)
+from app.services.research_refinement import (
+    publish_refinement,
+    refinement_media,
+    refinement_workspace,
+    save_refinement_draft,
 )
 from app.services.research_review import (
     add_annotation_message,
@@ -260,6 +266,71 @@ def research_file_review_workspace(
             settings,
         )
     return result
+
+
+@router.post("/api/research/projects/{project_ref}/files/{file_ref}/refinement")
+def research_manuscript_refinement_workspace(
+    project_ref: str,
+    file_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
+    """Start or resume one browser-local manuscript draft."""
+
+    return refinement_workspace(actor, project_ref, file_ref, settings)
+
+
+@router.put("/api/research/projects/{project_ref}/files/{file_ref}/refinement")
+def research_manuscript_refinement_save(
+    project_ref: str,
+    file_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    payload: dict[str, object] = Body(...),
+) -> dict[str, object]:
+    """Optimistically synchronize a recoverable structured manuscript draft."""
+
+    return save_refinement_draft(actor, project_ref, file_ref, payload)
+
+
+@router.post("/api/research/projects/{project_ref}/files/{file_ref}/refinement/submit")
+def research_manuscript_refinement_submit(
+    project_ref: str,
+    file_ref: str,
+    background_tasks: BackgroundTasks,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    payload: dict[str, object] = Body(...),
+) -> dict[str, object]:
+    """Assemble the content draft into one immutable DOCX and Git version."""
+
+    result = publish_refinement(actor, project_ref, file_ref, payload, settings)
+    version_id = (result.get("version") or {}).get("id")
+    if version_id:
+        background_tasks.add_task(distill_document_index, actor, version_id, settings)
+    return result
+
+
+@router.get(
+    "/api/research/projects/{project_ref}/files/{file_ref}/refinement/media/{relationship_id}"
+)
+def research_manuscript_refinement_media(
+    project_ref: str,
+    file_ref: str,
+    relationship_id: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    version: int | None = Query(default=None, ge=1),
+) -> Response:
+    """Serve one validated source figure without exposing object-storage keys."""
+
+    content, content_type = refinement_media(
+        actor, project_ref, file_ref, relationship_id, version, settings
+    )
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 
 
 @router.post(

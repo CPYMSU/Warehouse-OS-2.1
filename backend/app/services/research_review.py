@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
+import posixpath
 import re
 import zipfile
 from dataclasses import dataclass
@@ -31,11 +33,14 @@ if TYPE_CHECKING:
     from app.core.config import Settings
 
 
-PROCESSOR_VERSION = "word-review-v1"
+PROCESSOR_VERSION = "word-review-v2"
 MAX_AI_CONTEXT = 52_000
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 
 @dataclass(frozen=True)
@@ -214,7 +219,7 @@ def _docx_styles(archive: zipfile.ZipFile) -> dict[str, str]:
     return styles
 
 
-def _node_text(node: ElementTree.Element) -> str:
+def _node_text(node: ElementTree.Element, *, include_image_labels: bool = True) -> str:
     parts: list[str] = []
     seen_images: set[str] = set()
     for item in node.iter():
@@ -224,12 +229,67 @@ def _node_text(node: ElementTree.Element) -> str:
             parts.append("\t")
         elif item.tag in {_tag(W_NS, "br"), _tag(W_NS, "cr")}:
             parts.append("\n")
-        elif item.tag == _tag(WP_NS, "docPr"):
+        elif include_image_labels and item.tag == _tag(WP_NS, "docPr"):
             label = str(item.attrib.get("descr") or item.attrib.get("title") or "").strip()
             if label and label not in seen_images:
                 seen_images.add(label)
                 parts.append(f" [圖：{label}] ")
     return re.sub(r"[ \u00a0]+", " ", "".join(parts)).strip()
+
+
+def _docx_relationships(archive: zipfile.ZipFile) -> dict[str, dict[str, str]]:
+    try:
+        root = ElementTree.fromstring(archive.read("word/_rels/document.xml.rels"))
+    except (KeyError, ElementTree.ParseError):
+        return {}
+    relationships: dict[str, dict[str, str]] = {}
+    for item in root.findall(_tag(REL_NS, "Relationship")):
+        relationship_id = str(item.attrib.get("Id") or "").strip()
+        target = str(item.attrib.get("Target") or "").strip()
+        if not relationship_id or not target or item.attrib.get("TargetMode") == "External":
+            continue
+        normalized_target = target.lstrip("/")
+        archive_path = posixpath.normpath(
+            normalized_target
+            if normalized_target.startswith("word/")
+            else posixpath.join("word", normalized_target)
+        )
+        if archive_path.startswith("word/media/") and archive_path in archive.namelist():
+            relationships[relationship_id] = {
+                "relationship_id": relationship_id,
+                "archive_path": archive_path,
+                "content_type": mimetypes.guess_type(archive_path)[0]
+                or "application/octet-stream",
+            }
+    return relationships
+
+
+def _paragraph_images(
+    paragraph: ElementTree.Element,
+    relationships: dict[str, dict[str, str]],
+) -> list[dict[str, str]]:
+    labels = [
+        str(item.attrib.get("descr") or item.attrib.get("title") or item.attrib.get("name") or "")
+        .strip()
+        for item in paragraph.findall(f".//{_tag(WP_NS, 'docPr')}")
+    ]
+    images: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(paragraph.findall(f".//{_tag(A_NS, 'blip')}")):
+        relationship_id = str(item.attrib.get(_tag(R_NS, "embed")) or "").strip()
+        relationship = relationships.get(relationship_id)
+        if not relationship or relationship_id in seen:
+            continue
+        seen.add(relationship_id)
+        images.append(
+            {
+                **relationship,
+                "alt_text": (
+                    labels[index] if index < len(labels) and labels[index] else "Research figure"
+                ),
+            }
+        )
+    return images
 
 
 def _paragraph_style(paragraph: ElementTree.Element, styles: dict[str, str]) -> str:
@@ -252,6 +312,7 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
     with zipfile.ZipFile(path) as archive:
         root = ElementTree.fromstring(archive.read("word/document.xml"))
         styles = _docx_styles(archive)
+        relationships = _docx_relationships(archive)
     body = root.find(f".//{_tag(W_NS, 'body')}")
     if body is None:
         return []
@@ -260,11 +321,10 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
     table_index = 0
     for body_index, child in enumerate(list(body)):
         if child.tag == _tag(W_NS, "p"):
-            value = _node_text(child)
+            value = _node_text(child, include_image_labels=False)
+            images = _paragraph_images(child, relationships)
             current_paragraph = paragraph_index
             paragraph_index += 1
-            if not value:
-                continue
             style_name = _paragraph_style(child, styles)
             level = _heading_level(style_name)
             has_numbering = child.find(
@@ -288,20 +348,35 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
                 block_type = "list_item"
             else:
                 block_type = "paragraph"
-            raw.append(
-                {
-                    "block_type": block_type,
-                    "heading_level": level,
-                    "content": value,
-                    "locator": {
-                        "format": "docx-openxml",
-                        "body_index": body_index,
-                        "paragraph_index": current_paragraph,
-                        "style": style_name or None,
-                        "contains_math": has_math,
-                    },
-                }
-            )
+            if value:
+                raw.append(
+                    {
+                        "block_type": block_type,
+                        "heading_level": level,
+                        "content": value,
+                        "locator": {
+                            "format": "docx-openxml",
+                            "body_index": body_index,
+                            "paragraph_index": current_paragraph,
+                            "style": style_name or None,
+                            "contains_math": has_math,
+                        },
+                    }
+                )
+            for image in images:
+                raw.append(
+                    {
+                        "block_type": "image",
+                        "heading_level": None,
+                        "content": image["alt_text"],
+                        "locator": {
+                            "format": "docx-openxml",
+                            "body_index": body_index,
+                            "paragraph_index": current_paragraph,
+                            **image,
+                        },
+                    }
+                )
         elif child.tag == _tag(W_NS, "tbl"):
             current_table = table_index
             table_index += 1
@@ -323,6 +398,7 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
                                 "table_index": current_table,
                                 "row_index": row_index,
                                 "cell_count": len(cells),
+                                "cells": cells,
                             },
                         }
                     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import zipfile
 from pathlib import Path
 from uuid import uuid4
@@ -16,6 +17,7 @@ from app.db.session import system_session
 from app.main import app
 from app.services import research_review
 from app.services.integrations import ModelConnection
+from app.services.research_refinement import _assemble_docx, _normalized_blocks
 from app.services.research_review import parse_document_blocks, resolve_anchor
 
 
@@ -35,19 +37,36 @@ def _paper_docx(path: Path) -> None:
             <w:document
               xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
               xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
-              xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+              xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+              xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
               <w:body>
                 <w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>MK51 Paper</w:t></w:r></w:p>
                 <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Method</w:t></w:r></w:p>
                 <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Calibrated response</w:t></w:r>
                   <w:r><w:drawing><wp:docPr id="1" name="Figure 1"
-                    descr="Calibration curve"/></w:drawing></w:r>
+                    descr="Calibration curve"/><a:blip r:embed="rId5"/></w:drawing></w:r>
                 </w:p>
                 <w:p><m:oMath><m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f></m:oMath></w:p>
                 <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Sample</w:t></w:r></w:p></w:tc>
                   <w:tc><w:p><w:r><w:t>Value</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
               </w:body>
             </w:document>""",
+        )
+        archive.writestr(
+            "word/_rels/document.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId5"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+                Target="media/image1.png"/>
+            </Relationships>""",
+        )
+        archive.writestr(
+            "word/media/image1.png",
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ),
         )
 
 
@@ -70,14 +89,18 @@ def test_docx_review_parser_preserves_structure_math_images_and_tables(tmp_path:
         "title",
         "heading",
         "paragraph",
+        "image",
         "equation",
         "table_row",
     ]
     assert blocks[2].heading_path == ("MK51 Paper", "Method")
     assert "Calibrated response" in blocks[2].content
-    assert "圖：Calibration curve" in blocks[2].content
-    assert blocks[3].content == "ab"
-    assert blocks[4].content == "Sample | Value"
+    assert blocks[3].content == "Calibration curve"
+    assert blocks[3].locator["relationship_id"] == "rId5"
+    assert blocks[3].locator["archive_path"] == "word/media/image1.png"
+    assert blocks[4].content == "ab"
+    assert blocks[5].content == "Sample | Value"
+    assert blocks[5].locator["cells"] == ["Sample", "Value"]
     assert blocks[1].start_offset == len("MK51 Paper") + 2
     assert blocks[-1].end_offset > blocks[-1].start_offset
 
@@ -110,6 +133,54 @@ def test_character_anchor_uses_context_to_disambiguate_duplicate_text() -> None:
     assert anchor["start_block_ordinal"] == 1
     assert anchor["quote"] == "repeats concept"
     assert len(anchor["anchor_sha256"]) == 64
+
+
+def test_content_refinement_reassembles_docx_text_figures_and_tables(tmp_path: Path) -> None:
+    source = tmp_path / "paper.docx"
+    target = tmp_path / "refined.docx"
+    _paper_docx(source)
+    parsed = parse_document_blocks(
+        source,
+        {
+            "original_filename": "paper.docx",
+            "content_type": (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "size_bytes": source.stat().st_size,
+        },
+    )
+    blocks = [
+        {
+            "id": block.stable_key,
+            "type": block.block_type,
+            "text": "Rewritten calibrated response"
+            if block.block_type == "paragraph"
+            else block.content,
+            "level": block.heading_level,
+            "cells": ["Sample", "Refined value"]
+            if block.block_type == "table_row"
+            else None,
+            "source": block.locator,
+        }
+        for block in parsed
+    ]
+    normalized = _normalized_blocks(blocks, existing=blocks)
+    target.write_bytes(_assemble_docx(source, normalized).read())
+
+    refined = parse_document_blocks(
+        target,
+        {
+            "original_filename": "paper.docx",
+            "content_type": (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "size_bytes": target.stat().st_size,
+        },
+    )
+
+    assert any(block.content == "Rewritten calibrated response" for block in refined)
+    assert any(block.block_type == "image" for block in refined)
+    assert any(block.content == "Sample | Refined value" for block in refined)
 
 
 @pytest.mark.integration
@@ -211,7 +282,7 @@ def test_document_review_annotation_and_grounded_question_round_trip(
         assert workspace_response.status_code == 200
         workspace = workspace_response.json()
         assert workspace["index"]["status"] == "ready"
-        assert workspace["index"]["block_count"] == 5
+        assert workspace["index"]["block_count"] == 6
         assert workspace["capabilities"]["character_anchors"] is True
         assert workspace["version"]["filename"] == "paper.docx"
         assert "object_key" not in workspace["version"]
@@ -247,5 +318,59 @@ def test_document_review_annotation_and_grounded_question_round_trip(
         ).json()
         assert len(refreshed["annotations"]) == 1
         assert len(refreshed["questions"]) == 1
+
+        refinement_response = client.post(
+            f"/api/research/projects/{project_id}/files/{file_id}/refinement",
+            json={},
+        )
+        assert refinement_response.status_code == 200
+        refinement = refinement_response.json()
+        assert refinement["capabilities"]["browser_compute"] is True
+        assert refinement["capabilities"]["office_runtime_required"] is False
+        assert len(refinement["draft"]["blocks"]) == 6
+        figure = next(
+            block for block in refinement["draft"]["blocks"] if block["type"] == "image"
+        )
+        assert figure["media_url"].endswith("?version=1")
+        media_response = client.get(figure["media_url"])
+        assert media_response.status_code == 200
+        assert media_response.headers["content-type"] == "image/png"
+
+        draft_blocks = refinement["draft"]["blocks"]
+        paragraph = next(block for block in draft_blocks if block["type"] == "paragraph")
+        paragraph["text"] = "Rewritten calibrated response"
+        save_response = client.put(
+            f"/api/research/projects/{project_id}/files/{file_id}/refinement",
+            json={
+                "expected_revision": refinement["draft"]["revision"],
+                "blocks": draft_blocks,
+            },
+        )
+        assert save_response.status_code == 200
+        assert save_response.json()["draft"]["revision"] == 1
+        stale_response = client.put(
+            f"/api/research/projects/{project_id}/files/{file_id}/refinement",
+            json={"expected_revision": 0, "blocks": draft_blocks},
+        )
+        assert stale_response.status_code == 409
+
+        submit_response = client.post(
+            f"/api/research/projects/{project_id}/files/{file_id}/refinement/submit",
+            json={"expected_revision": 1, "commit_message": "Refine argument content"},
+        )
+        assert submit_response.status_code == 200
+        submitted = submit_response.json()
+        assert submitted["version"]["version"] == 2
+        assert submitted["version"]["commit_message"] == "Refine argument content"
+        assert submitted["draft_revision"] == 2
+
+        latest_review = client.get(
+            f"/api/research/projects/{project_id}/files/{file_id}/review"
+        ).json()
+        assert any(
+            block["content"] == "Rewritten calibrated response"
+            for block in latest_review["blocks"]
+        )
+        assert any(block["block_type"] == "image" for block in latest_review["blocks"])
     finally:
         app.dependency_overrides.clear()

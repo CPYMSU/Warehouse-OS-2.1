@@ -42,6 +42,9 @@ RESEARCH_TOOLS = {
     "research_file_versions",
     "research_file_preview",
     "research_document_review",
+    "research_manuscript_refinement",
+    "research_manuscript_draft_save",
+    "research_manuscript_submit",
     "research_document_annotate",
     "research_document_ask",
     "research_file_diff",
@@ -119,6 +122,9 @@ def test_research_routes_and_capability_catalogue_share_exact_permissions() -> N
     assert reader_actions["research_git_log"]["authorized"] is True
     assert reader_actions["research_file_versions"]["authorized"] is True
     assert reader_actions["research_file_preview"]["authorized"] is True
+    assert reader_actions["research_manuscript_refinement"]["authorized"] is False
+    assert reader_actions["research_manuscript_draft_save"]["authorized"] is False
+    assert reader_actions["research_manuscript_submit"]["authorized"] is False
     assert reader_actions["research_file_diff"]["authorized"] is True
     assert reader_actions["research_workflow_show"]["authorized"] is True
     assert reader_actions["research_dmp_show"]["authorized"] is True
@@ -144,6 +150,9 @@ def test_research_routes_and_capability_catalogue_share_exact_permissions() -> N
     }
     assert writer_actions["research_project_create"]["authorized"] is True
     assert writer_actions["research_upload_contract"]["authorized"] is True
+    assert writer_actions["research_manuscript_refinement"]["authorized"] is True
+    assert writer_actions["research_manuscript_draft_save"]["authorized"] is True
+    assert writer_actions["research_manuscript_submit"]["authorized"] is True
     assert writer_actions["research_api_key_issue"]["authorized"] is True
     assert writer_actions["research_api_keys_list"]["authorized"] is True
     assert writer_actions["research_api_key_revoke"]["authorized"] is True
