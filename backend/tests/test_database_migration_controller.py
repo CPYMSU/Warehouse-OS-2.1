@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -293,7 +294,27 @@ def test_verified_backup_keeps_password_out_of_process_arguments(tmp_path: Path)
     assert digest
     assert all("secret-value" not in " ".join(command) for command, _ in calls)
     assert calls[0][1]["PGPASSWORD"] == "secret-value"
+    assert "--no-publications" in calls[0][0]
+    assert "--no-subscriptions" in calls[0][0]
     assert os.stat(tmp_path / filename).st_mode & 0o777 == 0o600
+
+
+def test_safe_error_includes_sanitized_subprocess_stderr() -> None:
+    error = subprocess.CalledProcessError(
+        1,
+        ["pg_dump"],
+        stderr=(
+            "pg_dump: ERROR: row security blocked token=private-value "
+            "postgresql://backup:password-value@postgres/warehouse_os"
+        ),
+    )
+
+    observed = _safe_error(error)
+
+    assert "row security blocked" in observed
+    assert "private-value" not in observed
+    assert "password-value" not in observed
+    assert "token=[redacted]" in observed
 
 
 @pytest.mark.skipif(
