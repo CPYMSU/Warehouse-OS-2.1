@@ -351,9 +351,13 @@ def test_database_migrations_are_detached_from_web_startup_and_deploy_process() 
     assert "run_control_migrations" not in macos
     assert "backup_control_database" not in macos
     assert "python -m app.database_migration_controller" in macos
-    assert "WAREHOUSE_BACKUP_DATABASE_URL=" in macos
-    assert "warehouse_control_replica" in macos
-    assert "WAREHOUSE_CONTROL_REPL_PASSWORD" in macos
+    publication = (
+        REPO_ROOT / "ops" / "cluster" / "configure-control-publication-macos"
+    ).read_text(encoding="utf-8")
+    assert "warehouse_control_backup" in publication
+    assert "NOLOGIN INHERIT NOREPLICATION BYPASSRLS" in publication
+    assert "GRANT pg_read_all_data TO warehouse_control_backup" in publication
+    assert "GRANT warehouse_control_backup TO warehouse_migrator" in publication
     assert "python -m app.database_migration_controller" in server
     assert "WAREHOUSE_MIGRATION_DATABASE_URL: \"\"" in compose
     assert "WAREHOUSE_MIGRATOR_DB_PASSWORD: \"\"" in compose

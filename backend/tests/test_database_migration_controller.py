@@ -294,9 +294,19 @@ def test_verified_backup_keeps_password_out_of_process_arguments(tmp_path: Path)
     assert digest
     assert all("secret-value" not in " ".join(command) for command, _ in calls)
     assert calls[0][1]["PGPASSWORD"] == "secret-value"
+    assert calls[0][0][calls[0][0].index("--role") + 1] == "warehouse_control_backup"
     assert "--no-publications" in calls[0][0]
     assert "--no-subscriptions" in calls[0][0]
     assert os.stat(tmp_path / filename).st_mode & 0o777 == 0o600
+
+    with pytest.raises(ValueError, match="backup role"):
+        verified_backup(
+            "postgresql+psycopg://migrator:secret@postgres/warehouse_os",
+            tmp_path,
+            "20260805T150000Z-abcdef123456-mac-primary-smart",
+            backup_role="unsafe-role;drop",
+            runner=runner,
+        )
 
 
 def test_safe_error_includes_sanitized_subprocess_stderr() -> None:
