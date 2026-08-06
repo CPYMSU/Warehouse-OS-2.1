@@ -16,6 +16,7 @@ ARCHIVE_ROOT=/mnt/warehouse-data/hosted/archive/standby-reseed
 STATE_ROOT="${SHARED}/database-reseed"
 WAIT_SECONDS="${WAREHOUSE_STANDBY_RESEED_WAIT_SECONDS:-900}"
 MAX_WAIT_SECONDS="${WAREHOUSE_STANDBY_RESEED_MAX_WAIT_SECONDS:-3600}"
+SYNC_WORKERS="${WAREHOUSE_STANDBY_RESEED_SYNC_WORKERS:-3}"
 RELEASE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RELEASE_ID="${RELEASE_ROOT##*/}"
 SECRET_FILE="/var/lib/warehouse-deploy/incoming/control-replication-${RELEASE_ID}.env"
@@ -32,6 +33,8 @@ fail() {
   || fail "WAREHOUSE_STANDBY_RESEED_WAIT_SECONDS must be 10..9999"
 [[ "${MAX_WAIT_SECONDS}" =~ ^[1-9][0-9]{1,4}$ ]] \
   || fail "WAREHOUSE_STANDBY_RESEED_MAX_WAIT_SECONDS must be 10..99999"
+[[ "${SYNC_WORKERS}" =~ ^[1-9][0-9]?$ ]] \
+  || fail "WAREHOUSE_STANDBY_RESEED_SYNC_WORKERS must be 1..99"
 (( MAX_WAIT_SECONDS >= WAIT_SECONDS )) \
   || fail "standby reseed maximum wait must not be shorter than its stall window"
 [[ "${RELEASE_ID}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
@@ -63,6 +66,43 @@ grep -Fq 'warehouse_os=default_transaction_read_only=true' <<<"${role_fences}" \
   || fail "standby application role is not fenced read-only"
 grep -Fq 'warehouse_migrator=default_transaction_read_only=true' <<<"${role_fences}" \
   || fail "standby migrator role is not fenced read-only"
+
+# PostgreSQL defaults to two table synchronization workers.  A standby reseed
+# is the one path where copying several independent tables in parallel is both
+# safe and useful.  Raise the reloadable per-subscription limit without
+# exceeding the postmaster-level logical worker budget (one worker is reserved
+# for the subscription apply process).  This changes only the disposable
+# standby control database server; the writable Mac primary is untouched.
+max_logical_workers="$(control_psql -At -c \
+  "select setting::int from pg_settings where name='max_logical_replication_workers'")"
+current_sync_workers="$(control_psql -At -c \
+  "select setting::int from pg_settings where name='max_sync_workers_per_subscription'")"
+[[ "${max_logical_workers}" =~ ^[1-9][0-9]*$ \
+    && "${current_sync_workers}" =~ ^[1-9][0-9]*$ ]] \
+  || fail "logical replication worker settings are invalid"
+available_sync_workers=$(( max_logical_workers - 1 ))
+(( available_sync_workers >= 1 )) \
+  || fail "logical replication worker budget cannot run a table copy"
+effective_sync_workers="${SYNC_WORKERS}"
+if (( effective_sync_workers > available_sync_workers )); then
+  effective_sync_workers="${available_sync_workers}"
+fi
+if (( effective_sync_workers > current_sync_workers )); then
+  control_psql -c \
+    "ALTER SYSTEM SET max_sync_workers_per_subscription = '${effective_sync_workers}'" \
+    >/dev/null
+  control_psql -At -c "select pg_reload_conf()" >/dev/null
+  for _ in $(seq 1 10); do
+    current_sync_workers="$(control_psql -At -c \
+      "select setting::int from pg_settings where name='max_sync_workers_per_subscription'")"
+    [[ "${current_sync_workers}" == "${effective_sync_workers}" ]] && break
+    sleep 1
+  done
+  [[ "${current_sync_workers}" == "${effective_sync_workers}" ]] \
+    || fail "parallel table synchronization setting did not reload"
+fi
+printf 'standby_reseed_parallelism=requested=%s effective=%s logical_worker_budget=%s\n' \
+  "${SYNC_WORKERS}" "${current_sync_workers}" "${max_logical_workers}"
 
 subscription_count="$(control_psql -At -c \
   "select count(*) from pg_subscription where subname='${SUBSCRIPTION}'")"

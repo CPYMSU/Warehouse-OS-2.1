@@ -328,6 +328,10 @@ def test_standby_reseed_uses_the_prepared_candidate_action() -> None:
     assert "CREATE EXTENSION IF NOT EXISTS" in reseed
     assert "SET ROLE warehouse_migrator" in reseed
     assert 'WAREHOUSE_STANDBY_RESEED_MAX_WAIT_SECONDS:-3600' in reseed
+    assert 'WAREHOUSE_STANDBY_RESEED_SYNC_WORKERS:-3' in reseed
+    assert "max_sync_workers_per_subscription" in reseed
+    assert "max_logical_replication_workers" in reseed
+    assert "standby_reseed_parallelism=" in reseed
     assert 'last_progress_second="${elapsed}"' in reseed
     assert "initial copy made no table progress" in reseed
 
@@ -497,6 +501,7 @@ def test_control_replication_bootstrap_is_control_only_and_secret_backed() -> No
     assert "WAREHOUSE_HOSTED_DB_ADMIN_PASSWORD" not in publication
     assert "warehouse_control_pub" in publication
     assert "secrets.WAREHOUSE_CONTROL_REPL_PASSWORD" in workflow
+    assert "timeout-minutes: 70" in workflow
     assert "ALTER SUBSCRIPTION warehouse_from_mac ENABLE" in manager
 
 
