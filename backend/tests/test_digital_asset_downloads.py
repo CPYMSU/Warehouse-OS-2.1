@@ -68,8 +68,14 @@ def test_21_guide_and_cli_are_downloadable_without_legacy_runtime_paths() -> Non
         "health_path succeeds",
         "public route reaches the target deployment",
     ]
+    compute = standard.json()["contract"]["compute_placement_guidance"]
+    assert compute["schema"] == "warehouse.compute-placement-advice.v1"
+    assert compute["advisory_only"] is True
+    assert compute["automatic_code_rewrite"] is False
+    assert "Java is not JavaScript" in compute["language_boundaries"]["java_kotlin_scala"]
     assert standard_download.status_code == 200
     assert standard_download.text.startswith("# Warehouse OS《託管應用技術要求 2.3》")
+    assert "03A · 計算位置與減少雲端 Runtime" in standard_download.text
     assert contract_download.status_code == 200
     assert contract_download.json()["contract"] == ("warehouse.hosting-application.v2.3")
 

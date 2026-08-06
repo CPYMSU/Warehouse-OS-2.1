@@ -177,6 +177,7 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert standard.text.startswith("# Warehouse OS《託管應用技術要求 2.3》")
     assert contract.status_code == 200
     assert contract.json()["example_manifest"]["runtime"]["health_path"] == ("/healthz")
+    assert contract.json()["compute_placement_guidance"]["advisory_only"] is True
 
 
 def test_workspace_key_session_surface_uses_one_conversation_contract(monkeypatch) -> None:

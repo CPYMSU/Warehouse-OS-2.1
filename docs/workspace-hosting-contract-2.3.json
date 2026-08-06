@@ -163,6 +163,52 @@
     ],
     "privileged_runtime": false
   },
+  "compute_placement_guidance": {
+    "schema": "warehouse.compute-placement-advice.v1",
+    "interface": "dm pages design --workspace <workspace>",
+    "advisory_only": true,
+    "automatic_code_rewrite": false,
+    "confirmation_required_before_new_release": true,
+    "recommended_hosting_modes": [
+      "pure_static",
+      "static_with_on_demand_api",
+      "on_demand_or_dedicated_runtime_review"
+    ],
+    "placement_priority": [
+      "browser_javascript_typescript",
+      "browser_webassembly_after_measurement",
+      "platform_database_api",
+      "scale_to_zero_function",
+      "optional_local_agent",
+      "dedicated_runtime_when_continuous_process_is_proven"
+    ],
+    "language_boundaries": {
+      "javascript_typescript": "ordinary browser runtime for UI and non-secret deterministic work",
+      "python": "rewrite pure modules or evaluate measured Pyodide/WebAssembly; retain privileged work on demand",
+      "java_kotlin_scala": "requires a JVM in an optional local process or server Runtime; Java is not JavaScript",
+      "rust_c_cpp_go": "may target WebAssembly when capability and mobile-resource limits are verified"
+    },
+    "browser_forbidden": [
+      "secret values",
+      "database credentials",
+      "authoritative authorization decisions",
+      "privileged shared writes"
+    ],
+    "browser_measure_before_adoption": [
+      "initial download bytes",
+      "cold-start latency",
+      "mobile memory",
+      "CPU and battery impact"
+    ],
+    "accepted_change_workflow": [
+      "inspect exact source evidence",
+      "present a file-level proposal",
+      "obtain user confirmation",
+      "create a new immutable source version",
+      "verify an inactive candidate",
+      "activate with a rollback point"
+    ]
+  },
   "manifest_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "warehouse.hosting.json",

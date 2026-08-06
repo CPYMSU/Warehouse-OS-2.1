@@ -275,6 +275,49 @@ def test_materialized_package_is_bound_to_the_immutable_source(
         package.path.unlink(missing_ok=True)
 
 
+def test_package_contract_exposes_read_only_compute_placement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_path = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("index.html", "<main>Portable</main>")
+    placement = {
+        "schema": "warehouse.compute-placement-advice.v1",
+        "advisory_only": True,
+        "automatic_code_rewrite": False,
+        "recommended_hosting_mode": "pure_static",
+    }
+    design = {
+        "schema": "warehouse.pages-design-context.v1",
+        "source": {"id": "source-v4", "version_no": "4"},
+        "file_count": 1,
+        "excluded_sensitive_files": 0,
+        "read_file": "/api/workspaces/v1/pages/files/{path}?source_ref=source-v4",
+        "compute_placement": placement,
+    }
+    descriptor = {
+        "filename": "portable-source.zip",
+        "size_bytes": archive_path.stat().st_size,
+        "sha256": "c" * 64,
+    }
+    manifest = synthesize_pages_app_manifest(
+        {"index.html"},
+        name="Portable App",
+        version="4",
+    )
+    monkeypatch.setattr(
+        pages_app_package,
+        "_package_inputs",
+        lambda *_args, **_kwargs: (design, descriptor, archive_path, manifest, False),
+    )
+
+    contract = pages_app_package.pages_app_package_contract(object(), Settings())
+
+    assert contract["design_context"]["compute_placement"] == placement
+    assert contract["design_context"]["compute_placement"]["advisory_only"] is True
+
+
 def test_pages_action_catalog_exposes_one_read_only_package_export() -> None:
     catalog = pages_action_catalog(
         workspace_ref="question-studio",
@@ -294,3 +337,8 @@ def test_pages_action_catalog_exposes_one_read_only_package_export() -> None:
         "client_action": "open_url",
         "url": "/api/workspaces/question-studio/pages/package/download",
     }
+    design = next(
+        item for item in catalog["items"] if item["action_key"] == "pages.design.review"
+    )
+    assert "compute_placement" in design["invocation"]["goal"]
+    assert "JavaScript/TypeScript" in design["invocation"]["goal"]

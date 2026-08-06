@@ -168,7 +168,9 @@ def pages_action_catalog(
                 workspace_ref,
                 goal=(
                     f"审阅并改进工作区「{workspace_ref}」的 Pages 设计。"
-                    "先读取 design context 与必要的非秘密文件，提出有文件证据的建议；"
+                    "先读取 design context、compute_placement 与必要的非秘密文件，"
+                    "说明哪些计算适合浏览器 JavaScript/TypeScript 或 WebAssembly，"
+                    "哪些必须保留平台数据 API、按需函数或 Runtime，并提出有文件证据的建议；"
                     "用户确认后才建立新的不可变源版本、预览并激活，禁止原地修改当前 Release。"
                 ),
                 suggested_tools=[
