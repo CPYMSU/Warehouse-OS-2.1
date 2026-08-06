@@ -1013,15 +1013,18 @@ const Login2 = ({ onDone, notice }) => {
               ? <h1>Join a company<br/>already in<br/><span className="hollow">order</span>.</h1>
               : <h1>{t("加入一家")}<br/>{t("已在")}<span className="hollow">{t("秩序")}</span><br/>{t("中的公司。")}</h1>))
           : (L === "en"
-            ? <h1>One entry.<br/>Every possibility<br/>within <span className="hollow">reach</span>.</h1>
-            : <h1>{t("一個入口，")}<br/>{t("承載組織的")}<br/>{t("全部")}<span className="hollow">{t("可能")}</span>{t("。")}</h1>)}
-          <div style={{ marginTop: 30, maxWidth: "46ch", fontSize: 15, lineHeight: 1.7, color: "var(--ink-2)" }}>
+            ? <h1 className="login-manifesto-title">Think like a farmer.<br/>Respect natural rhythms.<br/>Steward time.<br/>Let every resource <span className="hollow">grow naturally</span>.</h1>
+            : <h1 className="login-manifesto-title">
+                {t("像農民一樣思考。")}<br/>
+                {t("尊重規律，經營時間，")}<br/>
+                {t("讓每一份資源")}<span className="hollow">{t("自然生長")}</span>{t("。")}
+              </h1>)}
+          {mode !== "login" && <div style={{ marginTop: 30, maxWidth: "46ch", fontSize: 15, lineHeight: 1.7, color: "var(--ink-2)" }}>
             {mode === "apply" ? t("開通即建立獨立數據庫與初始表;審批通過後,你就是新公司的系統管理員。")
-            : mode === "join" ? (isBiuCatalogue
+            : (isBiuCatalogue
               ? t("從案例收錄、律師、證據、調解到多級審理,選擇一個 BIU 內部學術職位參與。")
-              : t("填一張申請單:帳號、企業代碼、期望角色。企業管理員審批通過後,即可登入開工。"))
-            : t("連接人與 AI、知識、代碼、數據與行動。讓每一個工作區成為共同創造的起點，讓智能成為可以被調用的基礎設施。")}
-          </div>
+              : t("填一張申請單:帳號、企業代碼、期望角色。企業管理員審批通過後,即可登入開工。"))}
+          </div>}
           {mode === "apply" && (
             <div style={{ marginTop: 26, maxWidth: 480 }} className="col">
               {[t("先有平臺帳號 — 申請加入任一公司"), t("登入後在頂欄公司切換器提交開通申請"), t("平台審批通過 — 你即成為新公司系統管理員")].map((s, i) => (

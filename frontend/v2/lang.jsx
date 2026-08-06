@@ -70,7 +70,13 @@ const EXTRA_T = "駕駛艙場評買潤與筆虧萬億項觀暫遲賣憑漲篩選
 const EXTRA_S = "驾驶舱场评买润与笔亏万亿项观暂迟卖凭涨筛选范围参约仅议担咨余订阅额详虚争费布间访识软准阶负责专属并骤况汇论户税御紧凑屉则许坏删周驻长闲业于驳将启该锁复样义获须内轻销闸枢占挂张适冻释过题创语径债龄贷捡垫摊银净几术从听缩导纬绪较响视败飞诉脏恒轮温触侧质畅变简废链签稳节赁劳并译声谈罚讼志谁备脚频滚历纯讯抢减双阵职毕托扑签协纵颜尽钥浏忆汇传闪择洁汉绕织辑枪铁鸡壳浅征挡离际练侦诊脉淀谨强折叠岛倾艺炼滤缓缀桥独残坞学钴烧觉杂鲜";
 for (let i = 0; i < EXTRA_T.length; i++) S_MAP[EXTRA_T[i]] = EXTRA_S[i];
 const CN_EXTRA = { "設置": "设置", "台賬": "台账", "臺賬": "台账", "軟體": "软件", "介面": "界面", "程式": "程序", "嗎": "吗" };
-const CN = { ...CN_EXTRA };
+const CN = {
+  ...CN_EXTRA,
+  "像農民一樣思考。": "像农民一样思考。",
+  "尊重規律，經營時間，": "尊重规律，经营时间，",
+  "讓每一份資源": "让每一份资源",
+  "自然生長": "自然生长",
+};
 const toSimp = (str) => {
   let out = "";
   for (const ch of String(str)) out += S_MAP[ch] || ch;
@@ -199,6 +205,10 @@ const EN = {
   "待確認（未寫庫）": "awaiting confirmation (no write yet)", "部分完成": "partially completed",
   "(完成,但沒有返回文字)": "(done, no text returned)",
   // 登入海報
+  "像農民一樣思考。": "Think like a farmer.",
+  "尊重規律，經營時間，": "Respect natural rhythms. Steward time.",
+  "讓每一份資源": "Let every resource ",
+  "自然生長": "grow naturally",
   "連接人與 AI、知識、代碼、數據與行動。讓每一個工作區成為共同創造的起點，讓智能成為可以被調用的基礎設施。":
     "Connect people and AI, knowledge, code, data, and action. Make every workspace a starting point for shared creation—and intelligence an infrastructure you can call.",
   "人類因篝火聚集，文明因連接誕生。":
