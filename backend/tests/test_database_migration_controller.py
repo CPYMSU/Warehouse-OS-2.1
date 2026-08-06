@@ -12,8 +12,10 @@ from sqlalchemy import create_engine, text
 
 from app.database_migration_controller import (
     REQUEST_SCHEMA,
+    MigrationFailure,
     MigrationRequest,
     StateWriter,
+    _bootstrap_standby_cursor,
     _revision_operations,
     _safe_error,
     build_plan,
@@ -218,6 +220,28 @@ def test_standby_refuses_legacy_gap_and_accepts_new_schema_revision(tmp_path: Pa
     assert [(item.revision, item.scope) for item in plan] == [
         ("next_schema", "schema")
     ]
+
+
+def test_standby_cursor_bootstrap_requests_safe_reseed_without_primary_revision() -> None:
+    class _EmptyResult:
+        def scalar_one_or_none(self) -> None:
+            return None
+
+    class _Connection:
+        def exec_driver_sql(self, _statement: str) -> None:
+            return None
+
+        def execute(self, _statement: object) -> _EmptyResult:
+            return _EmptyResult()
+
+        def commit(self) -> None:
+            return None
+
+    with pytest.raises(MigrationFailure) as raised:
+        _bootstrap_standby_cursor(_Connection(), "alembic_version_standby")
+
+    assert raised.value.code == "standby_legacy_gap"
+    assert raised.value.recovery_action == "reseed_standby_control_database"
 
 
 def test_verified_backup_keeps_password_out_of_process_arguments(tmp_path: Path) -> None:
