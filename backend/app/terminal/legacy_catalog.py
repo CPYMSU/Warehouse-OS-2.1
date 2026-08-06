@@ -10295,6 +10295,81 @@ COMMANDS = [
         ],
     },
     {
+        "command": "research manuscript refinement",
+        "tool_name": "research_manuscript_refinement",
+        "description": "啟動或恢復一份 DOCX 的結構化內容精修草稿；正文、圖像與表格由瀏覽器本地處理",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+        ],
+        "examples": [
+            "research manuscript refinement --project MK51 --file manuscript/paper.docx",
+        ],
+    },
+    {
+        "command": "research manuscript draft save",
+        "tool_name": "research_manuscript_draft_save",
+        "description": "以 revision 樂觀鎖同步結構化論文內容塊；只覆寫可恢復草稿，不生成文件版本或 Git commit",
+        "api_method": "PUT",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+            _p(
+                "revision",
+                "body.expected_revision",
+                "當前草稿 revision",
+                required=True,
+                ptype="int",
+            ),
+            _p(
+                "blocks",
+                "body.blocks",
+                "完整結構化內容塊 JSON 陣列",
+                required=True,
+                ptype="json",
+            ),
+        ],
+        "examples": [
+            "research manuscript draft save --project MK51 --file manuscript/paper.docx "
+            "--revision 3 --blocks '[{\"id\":\"draft-1\",\"type\":\"paragraph\",\"text\":\"...\"}]'",
+        ],
+    },
+    {
+        "command": "research manuscript submit",
+        "tool_name": "research_manuscript_submit",
+        "description": "把已同步精修草稿組裝為正式 DOCX，建立不可變文件版本、SHA-256、Git commit 與稽核記錄",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement/submit",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+            _p(
+                "revision",
+                "body.expected_revision",
+                "已同步的草稿 revision",
+                required=True,
+                ptype="int",
+            ),
+            _p("message", "body.commit_message", "正式版本修改說明"),
+        ],
+        "examples": [
+            "research manuscript submit --project MK51 --file manuscript/paper.docx "
+            "--revision 4 --message '重寫方法與結果銜接'",
+        ],
+    },
+    {
         "command": "research document annotate",
         "tool_name": "research_document_annotate",
         "description": "對論文的選定字符範圍新增版本化批注；anchor JSON 須包含 quote，可附 prefix / suffix",

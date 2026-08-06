@@ -58,6 +58,7 @@ const RESEARCH_TABS = [
   ["overview", "總覽"],
   ["guide", "論文導引"],
   ["projects", "課題庫"],
+  ["refinement", "論文精修"],
   ["workflow", "研究流程"],
   ["evidence", "證據與覆核"],
   ["execution", "重現運算"],
@@ -798,6 +799,205 @@ const Viewer = ({ project, file, preview, diff, tab, onTab, blobUrl, busy, canAn
   );
 };
 
+const refinementLocalKey = fileId => {
+  const user = window.W2_USER || {};
+  return "w2_research_refinement:v1:" + encodeURIComponent(W2.tenant() || "default") +
+    ":" + encodeURIComponent(clean(user.id || user.user_id || user.username || "anonymous")) +
+    ":" + encodeURIComponent(clean(fileId));
+};
+const readRefinementLocal = fileId => {
+  try { return JSON.parse(localStorage.getItem(refinementLocalKey(fileId)) || "null"); }
+  catch (_error) { return null; }
+};
+const writeRefinementLocal = (fileId, value) => {
+  try { localStorage.setItem(refinementLocalKey(fileId), JSON.stringify(value)); return true; }
+  catch (_error) { return false; }
+};
+
+const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onError }) => {
+  const activeFile = files.find(item => clean(item.id) === clean(fileId)) || files[0] || null;
+  const [workspace, setWorkspace] = useState(null);
+  const [blocks, setBlocks] = useState([]);
+  const [state, setState] = useState("loading");
+  const [commitMessage, setCommitMessage] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [localWarning, setLocalWarning] = useState("");
+  const blocksRef = useRef([]);
+  const revisionRef = useRef(0);
+  const editSerial = useRef(0);
+  const savedSerial = useRef(0);
+  const savingRef = useRef(false);
+  const base = project && activeFile
+    ? "/api/research/projects/" + encodeURIComponent(project.id) + "/files/" + encodeURIComponent(activeFile.id) + "/refinement"
+    : "";
+
+  const cache = (nextBlocks, dirty) => {
+    if (!activeFile || !workspace) return;
+    const ok = writeRefinementLocal(activeFile.id, {
+      base_version_id: clean((workspace.base_version || {}).id),
+      revision: revisionRef.current,
+      dirty: Boolean(dirty),
+      blocks: nextBlocks,
+      updated_at: Date.now(),
+    });
+    setLocalWarning(ok ? "" : "本機儲存空間不足；請保持頁面開啟直到平台同步完成。");
+  };
+
+  useEffect(() => {
+    if (activeFile && clean(activeFile.id) !== clean(fileId)) onFile(clean(activeFile.id));
+  }, [clean(activeFile && activeFile.id)]);
+  useEffect(() => {
+    let alive = true;
+    setWorkspace(null); setBlocks([]); setState(base ? "loading" : "empty");
+    setCommitMessage(""); setLocalWarning("");
+    editSerial.current = 0; savedSerial.current = 0; revisionRef.current = 0;
+    if (!base) return () => { alive = false; };
+    W2.post(base, {}).then(data => {
+      if (!alive) return;
+      const serverBlocks = ((data.draft || {}).blocks || []).map(item => ({ ...item }));
+      const local = readRefinementLocal(activeFile.id);
+      const restoreLocal = local && local.dirty === true &&
+        clean(local.base_version_id) === clean((data.base_version || {}).id) &&
+        Number(local.revision) === Number((data.draft || {}).revision) &&
+        Array.isArray(local.blocks) && local.blocks.length;
+      const next = restoreLocal ? local.blocks : serverBlocks;
+      setWorkspace(data); setBlocks(next); blocksRef.current = next;
+      revisionRef.current = Number((data.draft || {}).revision) || 0;
+      editSerial.current = restoreLocal ? 1 : 0;
+      savedSerial.current = 0;
+      setState(restoreLocal ? "local" : "saved");
+    }).catch(reason => {
+      if (!alive) return;
+      setState("error"); onError(clean(reason.message || reason));
+    });
+    return () => { alive = false; };
+  }, [base]);
+
+  const syncDraft = async () => {
+    if (!workspace || savingRef.current || editSerial.current <= savedSerial.current) return !savingRef.current;
+    savingRef.current = true;
+    const serial = editSerial.current;
+    const snapshot = blocksRef.current.map(item => ({ ...item }));
+    setState("saving");
+    try {
+      const data = await W2.json(base, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_revision: revisionRef.current, blocks: snapshot }),
+      });
+      revisionRef.current = Number((data.draft || {}).revision) || revisionRef.current + 1;
+      savedSerial.current = serial;
+      setWorkspace(current => ({ ...current, ...data, draft: { ...(current || {}).draft, ...(data.draft || {}) } }));
+      if (editSerial.current === serial) {
+        setState("saved"); cache(blocksRef.current, false);
+      } else {
+        setState("local"); cache(blocksRef.current, true);
+      }
+      return true;
+    } catch (reason) {
+      const conflict = reason && reason.status === 409;
+      setState(conflict ? "conflict" : "local");
+      cache(blocksRef.current, true);
+      onError(conflict ? "精修草稿已在另一個裝置更新；本機內容仍安全保留，請重新載入後合併。" : clean(reason.message || reason));
+      return false;
+    } finally {
+      savingRef.current = false;
+    }
+  };
+  useEffect(() => {
+    if (!workspace || editSerial.current <= savedSerial.current || state === "conflict") return () => {};
+    const timer = window.setTimeout(() => { syncDraft(); }, 900);
+    return () => window.clearTimeout(timer);
+  }, [blocks, workspace && workspace.draft && workspace.draft.id, state === "conflict"]);
+
+  const changeBlocks = updater => {
+    const next = updater(blocksRef.current).map(item => ({ ...item }));
+    blocksRef.current = next; setBlocks(next);
+    editSerial.current += 1; setState("local"); cache(next, true);
+  };
+  const updateBlock = (id, patch) => changeBlocks(current => current.map(item =>
+    clean(item.id) === clean(id) ? { ...item, ...patch } : item));
+  const removeBlock = id => changeBlocks(current => current.length > 1
+    ? current.filter(item => clean(item.id) !== clean(id)) : current);
+  const moveBlock = (index, direction) => changeBlocks(current => {
+    const target = index + direction;
+    if (target < 0 || target >= current.length) return current;
+    const next = [...current];
+    [next[index], next[target]] = [next[target], next[index]];
+    return next;
+  });
+  const addParagraph = () => changeBlocks(current => [...current, {
+    id: "draft-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+    type: "paragraph", text: "", level: null,
+  }]);
+  const submit = async () => {
+    if (publishing || state === "conflict") return;
+    if (editSerial.current > savedSerial.current && !await syncDraft()) return;
+    setPublishing(true);
+    try {
+      const result = await W2.post(base + "/submit", {
+        expected_revision: revisionRef.current,
+        commit_message: commitMessage.trim() || "提交論文內容精修",
+      });
+      revisionRef.current = Number(result.draft_revision) || revisionRef.current + 1;
+      savedSerial.current = editSerial.current;
+      setWorkspace(current => ({ ...current, draft: {
+        ...(current.draft || {}), revision: revisionRef.current, state: "submitted",
+      }}));
+      setCommitMessage(""); setState("submitted"); cache(blocksRef.current, false);
+      if (onPublished) await onPublished(result);
+    } catch (reason) { onError(clean(reason.message || reason)); }
+    finally { setPublishing(false); }
+  };
+
+  if (!project) return <EmptyPanel title="先選擇研究課題" copy="論文精修只處理當前課題中的真實 DOCX 主稿。"/>;
+  if (!files.length) return <EmptyPanel title="尚無可精修的 Word 論文" copy="先在課題庫上傳 DOCX；系統會自動提取正文、圖像與表格。"/>;
+  if (!workspace || state === "loading") return <div className="rv-loading block">EXTRACTING MANUSCRIPT CONTENT…</div>;
+  const characters = blocks.reduce((sum, item) => sum + clean(item.text).length, 0);
+  const figures = blocks.filter(item => item.type === "image").length;
+  const tables = new Set(blocks.filter(item => item.type === "table_row").map(item => item.table_key)).size;
+  const statusLabel = state === "saving" ? "正在同步平台"
+    : state === "local" ? "本機草稿已保存"
+    : state === "conflict" ? "等待合併衝突"
+    : state === "submitted" ? "正式版本已提交" : "平台草稿已同步";
+  return <div className="rv-refinement" data-testid="research-refinement-workspace">
+    <header className="rv-refinement-head">
+      <label><span>MANUSCRIPT / 選擇主稿</span><select value={clean(activeFile.id)} onChange={event => onFile(clean(event.target.value))}>
+        {files.map((item, index) => <option key={item.id} value={clean(item.id)}>{String(index + 1).padStart(2, "0")} · {item.logical_path}</option>)}
+      </select></label>
+      <div><span>BASE VERSION</span><strong>V{(workspace.base_version || {}).version} · {shortSha((workspace.base_version || {}).git_sha)}</strong></div>
+      <div className={"rv-refinement-sync " + state}><i/><span>{statusLabel}</span><small>REV {revisionRef.current}</small></div>
+    </header>
+    {workspace.source_changed && <div className="rv-refinement-conflict">課題庫已有較新的正式版本。這份草稿仍保留，但提交前需要重新基準化。</div>}
+    {localWarning && <div className="rv-refinement-conflict">{localWarning}</div>}
+    <div className="rv-refinement-grid">
+      <main className="rv-refinement-paper">
+        <div className="rv-refinement-ledger"><span>CONTENT BLOCKS · {blocks.length}</span><b>{characters.toLocaleString()} CHAR</b><b>{figures} FIG</b><b>{tables} TABLE</b></div>
+        <article>
+          {blocks.map((block, index) => <section key={block.id} className={"rv-refinement-block " + block.type}>
+            <aside><b>{String(index + 1).padStart(3, "0")}</b><span>{clean(block.type).toUpperCase()}</span><button disabled={index === 0} onClick={() => moveBlock(index, -1)}>↑</button><button disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)}>↓</button>{block.type !== "image" && <button onClick={() => removeBlock(block.id)}>×</button>}</aside>
+            {block.type === "image" ? <figure><img src={block.media_url} alt={block.text || "Research figure"}/><textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="圖題或替代文字"/></figure>
+            : block.type === "table_row" ? <div className="rv-refinement-table-row">{(block.cells || []).map((cell, cellIndex) => <textarea key={cellIndex} value={cell} onChange={event => {
+              const cells = [...(block.cells || [])]; cells[cellIndex] = event.target.value; updateBlock(block.id, { cells, text: cells.join(" | ") });
+            }}/>)}</div>
+            : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
+              <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
+            </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="輸入論文內容…"/></div>}
+          </section>)}
+          <button className="rv-refinement-add" onClick={addParagraph}>＋ 新增內容段落</button>
+        </article>
+      </main>
+      <aside className="rv-refinement-inspector">
+        <header><span>CONTENT-FIRST / 內容優先</span><strong>不啟動 Office Runtime</strong></header>
+        <div className="rv-refinement-principles"><article><b>01</b><strong>ARGUMENT</strong><p>每一段先回答：本段主張是什麼，它服務哪個研究問題？</p></article><article><b>02</b><strong>EVIDENCE</strong><p>圖表不是裝飾；正文必須精確解釋資料版本、觀察與不確定性。</p></article><article><b>03</b><strong>REVISION</strong><p>草稿持續覆寫，正式提交才形成不可變 DOCX、SHA-256 與 Git commit。</p></article></div>
+        <label className="rv-refinement-commit"><span>VERSION NOTE / 本次修改說明</span><textarea value={commitMessage} onChange={event => setCommitMessage(event.target.value)} placeholder="例如：重寫方法與結果銜接，統一三張圖的論證口徑"/></label>
+        <button className="rv-refinement-submit" disabled={publishing || state === "saving" || state === "conflict" || workspace.source_changed} onClick={submit}>{publishing ? "ASSEMBLING DOCX…" : "提交正式 DOCX 版本"}</button>
+        <small>瀏覽器負責編輯計算；平台只保存可恢復草稿。提交時才組裝 DOCX 並進入課題版本譜系。</small>
+      </aside>
+    </div>
+  </div>;
+};
+
 const Page = () => {
   const [section, setSection] = useState(() => {
     try {
@@ -839,6 +1039,8 @@ const Page = () => {
   const canReview = W2.hasPermission("research.review");
   const selectedProject = projects.find(item => clean(item.id) === clean(projectId)) || null;
   const selectedFile = detail && (detail.files || []).find(item => clean(item.id) === clean(fileId)) || null;
+  const refinementFiles = ((detail && detail.files) || []).filter(item =>
+    clean(item.logical_path).toLowerCase().endsWith(".docx"));
   const totals = useMemo(() => projects.reduce((sum, item) => ({
     files: sum.files + (Number(item.file_count) || 0),
     versions: sum.versions + (Number(item.version_count) || 0),
@@ -849,16 +1051,18 @@ const Page = () => {
     overview: ["R01", "RESEARCH VAULT", "科研總覽", "研究不是文件堆積，而是一條可閱讀、可比較、可重現的證據鏈。"],
     guide: ["R02", "RESEARCH COMPASS", "論文導引", "把一個模糊想法推進為可提交論文：每一步都有產出、完成條件與下一個動作。"],
     projects: ["R03", "PROJECT LIBRARY", "課題庫", "每個課題都是獨立 Git 空間；文件、數據、代碼與提交保持同步。"],
-    workflow: ["R04", "RESEARCH OPERATING MODEL", "研究流程", "把研究問題、資料治理、協議與每一次 Run 連成可執行的工作流。"],
-    evidence: ["R05", "CLAIM — EVIDENCE", "證據與覆核", "每項主張都必須指向精確資料版本或 Run，經覆核後才進入研究發布。"],
-    execution: ["R06", "REPRODUCIBLE COMPUTE", "重現運算", "把固定文件版本送進受控計算環境，讓日誌、產物與結果雜湊回到證據鏈。"],
-    revisions: ["R07", "REVISION LINEAGE", "版本譜系", "沿提交時間線閱讀研究推進，定位每一次論證與數據變更。"],
-    formats: ["R08", "FORMAT CAPABILITIES", "格式能力", "同一托管邊界內直接閱覽異構科研材料，並按格式選擇差異策略。"],
+    refinement: ["R04", "MANUSCRIPT REFINEMENT", "論文精修", "提取正文、圖像與表格，在瀏覽器本地精修內容；草稿即時同步，正式提交才生成新版本。"],
+    workflow: ["R05", "RESEARCH OPERATING MODEL", "研究流程", "把研究問題、資料治理、協議與每一次 Run 連成可執行的工作流。"],
+    evidence: ["R06", "CLAIM — EVIDENCE", "證據與覆核", "每項主張都必須指向精確資料版本或 Run，經覆核後才進入研究發布。"],
+    execution: ["R07", "REPRODUCIBLE COMPUTE", "重現運算", "把固定文件版本送進受控計算環境，讓日誌、產物與結果雜湊回到證據鏈。"],
+    revisions: ["R08", "REVISION LINEAGE", "版本譜系", "沿提交時間線閱讀研究推進，定位每一次論證與數據變更。"],
+    formats: ["R09", "FORMAT CAPABILITIES", "格式能力", "同一托管邊界內直接閱覽異構科研材料，並按格式選擇差異策略。"],
   }[section];
   const sectionCounts = {
     overview: projects.length,
     guide: selectedProject ? "09" : "—",
     projects: totals.files,
+    refinement: refinementFiles.length,
     workflow: workflow ? (workflow.stats.protocols + workflow.stats.runs) : 0,
     evidence: workflow ? workflow.stats.claims : 0,
     execution: workflow ? workflow.stats.executions : 0,
@@ -1338,7 +1542,7 @@ const Page = () => {
       complete: researchFiles.some(item => ["dataset", "database"].includes(item.file_kind)) },
     { no: "05", key: "analyse", title: "ANALYSE", zh: "分析與重現", output: "固定輸入 · 日誌 · 結果產物", section: "execution", tool: "research_execution_submit", command: "research execution submit", write: true,
       complete: workflowStats.successful_executions > 0 || workflowStats.completed_runs > 0 || hasPath(["results/", "output/"]) },
-    { no: "06", key: "write", title: "WRITE THE ARGUMENT", zh: "寫作與修訂", output: "主稿 · 章節 · 圖表 · 引用", section: "projects", tool: "research_project_show", command: "research project show",
+    { no: "06", key: "write", title: "WRITE THE ARGUMENT", zh: "寫作與修訂", output: "主稿 · 章節 · 圖表 · 引用", section: "refinement", tool: "research_project_show", command: "research project show",
       complete: hasPath(["manuscript/", "dissertation", "paper/", "thesis/"]) },
     { no: "07", key: "argue", title: "LINK CLAIMS", zh: "連結主張與證據", output: "主張 · 證據版本 · 限制", section: "evidence", tool: "research_claim_create", command: "research claim create", write: true,
       complete: workflowStats.claims > 0 && workflowStats.evidence_links > 0 },
@@ -1577,6 +1781,22 @@ const Page = () => {
             </div>
           </Band>
         </>}
+      </>}
+
+      {section === "refinement" && <>
+        <section className="rv-refinement-poster" aria-label="論文精修內容工作台">
+          <article><span>04 / MANUSCRIPT</span><strong>CONTENT<br/>BEFORE<br/>FORMAT</strong><small>TEXT · FIGURE · TABLE</small></article>
+          <article><b>{String(refinementFiles.length).padStart(2, "0")}</b><span>EDITABLE DOCX</span><p>提取結構<br/>瀏覽器精修<br/>草稿同步<br/>正式提交</p></article>
+          <article><span>COMPUTE LOCATION</span><strong>YOUR<br/>BROWSER</strong><p>Mac mini 不啟動 Office Runtime；平台只處理同步、版本與 Git。</p></article>
+        </section>
+        <Band no="01" title="MANUSCRIPT REFINEMENT" sub="正文、圖像與表格 · 本地編輯 · 平台自動保存">
+          <RefinementWorkspace project={selectedProject} files={refinementFiles} fileId={fileId}
+            onFile={setFileId} onError={setError} onPublished={async result => {
+              await loadProjects(projectId);
+              await loadDetail(projectId);
+              setFileId(clean((result.file || {}).id));
+            }}/>
+        </Band>
       </>}
 
       {projectsMounted && <div hidden={section !== "projects"} aria-hidden={section !== "projects"}>

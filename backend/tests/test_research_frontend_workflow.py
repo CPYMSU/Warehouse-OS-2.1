@@ -113,3 +113,22 @@ def test_docx_reader_reuses_version_scoped_render_cache_across_navigation() -> N
     assert "adoptResearchDocx(cached, root)" in source
     assert "projectsMounted" in source
     assert 'hidden={section !== "projects"}' in source
+
+
+def test_manuscript_refinement_is_browser_local_recoverable_and_formally_versioned() -> None:
+    source = RESEARCH_PAGE.read_text(encoding="utf-8")
+    styles = RESEARCH_STYLE.read_text(encoding="utf-8")
+
+    assert '["refinement", "論文精修"]' in source
+    assert 'data-testid="research-refinement-workspace"' in source
+    assert '"w2_research_refinement:v1:"' in source
+    assert 'method: "PUT"' in source
+    assert 'expected_revision: revisionRef.current' in source
+    assert 'base + "/submit"' in source
+    assert "提交正式 DOCX 版本" in source
+    assert "不啟動 Office Runtime" in source
+    assert "block.type === \"image\"" in source
+    assert "block.type === \"table_row\"" in source
+    assert ".rv-refinement-grid" in styles
+    assert ".rv-refinement-table-row" in styles
+    assert "@media(max-width:680px)" in styles
