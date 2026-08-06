@@ -113,7 +113,10 @@ async def pages_hostname_route(request: Request, call_next):
         "workspace_key": str(route["workspace_key"]),
     }
     original_path = request.scope.get("path", "/")
-    if not str(original_path).startswith("/api/"):
+    # A Pages hostname is an application origin. Root-relative /api calls belong
+    # to that application too; platform browser APIs use their absolute public
+    # origin and therefore never need to escape this mapping.
+    if str(original_path) != "/api/database-gateway/v1/sdk.js":
         internal_path = pages_internal_path(route, str(original_path))
         request.scope["path"] = internal_path
         request.scope["raw_path"] = internal_path.encode("utf-8")

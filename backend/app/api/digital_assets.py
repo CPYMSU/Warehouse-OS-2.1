@@ -32,6 +32,12 @@ from app.api.deps import ActorContext, current_actor
 from app.core.config import Settings, get_settings
 from app.services.database_browser_gateway import browser_access_configuration
 from app.services.deployment_acceptance import accept_workspace_deployment
+from app.services.device_runtime import (
+    DEVICE_AGENT_FILENAME,
+    device_runtime_manifest,
+    device_runtime_source_target,
+    migrate_workspace_to_device_pages,
+)
 from app.services.digital_asset_hosting import (
     WorkspaceCredential,
     add_version,
@@ -111,6 +117,9 @@ router = APIRouter(tags=["digital-asset-hosting"])
 _bearer = HTTPBearer(auto_error=False)
 _GUIDE_FILENAME = "digital-asset-custody-guide-2.1.zh-TW.md"
 _CLI_PATH = Path(__file__).resolve().parents[1] / "downloads" / "dam.py"
+_DEVICE_AGENT_PATH = (
+    Path(__file__).resolve().parents[1] / "downloads" / "warehouse_device_agent.py"
+)
 
 
 async def _active_runtime_response(
@@ -1368,6 +1377,99 @@ def account_pages_release_activate(
     )
 
 
+@router.get("/api/workspaces/{workspace_ref}/device-runtime")
+def account_device_runtime_manifest(
+    workspace_ref: str,
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Return a non-secret, account-authorized local Runtime distribution contract."""
+
+    return device_runtime_manifest(actor, workspace_ref, settings=settings)
+
+
+@router.get("/api/workspaces/{workspace_ref}/device-runtime/source")
+def account_device_runtime_source(
+    workspace_ref: str,
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    """Download the active verified source for execution on the account's device."""
+
+    descriptor = device_runtime_source_target(actor, workspace_ref)
+    path = None
+    for store in object_store_read_candidates(
+        settings,
+        str(descriptor["storage_provider"]),
+    ):
+        candidate = store.path_for(str(descriptor["object_key"]))
+        if candidate.is_file():
+            path = candidate
+            break
+    if path is None:
+        raise HTTPException(status_code=404, detail="Source object is unavailable")
+    return FileResponse(
+        path,
+        media_type=str(descriptor.get("content_type") or "application/octet-stream"),
+        filename=str(descriptor.get("filename") or path.name),
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-SHA256": str(descriptor["sha256"]),
+            "X-Warehouse-Source-Version": str(descriptor["id"]),
+            "X-Warehouse-Workspace": str(descriptor["workspace_key"]),
+        },
+    )
+
+
+@router.get("/api/device-runtime/v1/agent.py")
+def account_device_runtime_agent(
+    actor: ActorContext = Depends(current_actor),
+) -> FileResponse:
+    """Download the stdlib-only loopback agent after account authentication."""
+
+    _require_asset_read(actor)
+    if not _DEVICE_AGENT_PATH.is_file():
+        raise HTTPException(status_code=503, detail="Device Runtime agent is unavailable")
+    return FileResponse(
+        _DEVICE_AGENT_PATH,
+        media_type="text/x-python; charset=utf-8",
+        filename=DEVICE_AGENT_FILENAME,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+@router.get("/api/workspaces/{workspace_ref}/pages/device-migration")
+def account_pages_device_migration_plan(
+    workspace_ref: str,
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return migrate_workspace_to_device_pages(
+        actor,
+        workspace_ref,
+        settings=settings,
+        execute=False,
+    )
+
+
+@router.post("/api/workspaces/{workspace_ref}/pages/device-migration")
+def account_pages_device_migration_apply(
+    workspace_ref: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    execute = payload.get("execute", True)
+    if not isinstance(execute, bool):
+        raise HTTPException(status_code=422, detail="execute must be a boolean")
+    return migrate_workspace_to_device_pages(
+        actor,
+        workspace_ref,
+        settings=settings,
+        execute=execute,
+    )
+
+
 @router.get("/api/workspaces/{workspace_ref}/pages-console")
 def workspace_pages_console(
     workspace_ref: str,
@@ -1417,6 +1519,19 @@ def workspace_pages_console(
     config = workspace.get("config") if isinstance(workspace.get("config"), dict) else {}
     runtime_type = str(config.get("runtime_type") or "static")
     browser_compute = runtime_type == "static"
+    site_config = site.get("config") if isinstance(site.get("config"), dict) else {}
+    static_frontend = (
+        site_config.get("static_frontend")
+        if isinstance(site_config.get("static_frontend"), dict)
+        else {}
+    )
+    device_runtime = (
+        site_config.get("device_runtime")
+        if isinstance(site_config.get("device_runtime"), dict)
+        else {}
+    )
+    frontend_is_static = bool(static_frontend.get("enabled"))
+    device_first = bool(device_runtime.get("enabled"))
     workspace_public = {
         key: workspace.get(key)
         for key in (
@@ -1502,18 +1617,42 @@ def workspace_pages_console(
         "site": site,
         "runtime": {
             "type": runtime_type,
-            "mode": "static_browser" if browser_compute else "dedicated_runtime",
-            "compute_location": "browser" if browser_compute else "warehouse_runtime",
-            "idle_server_memory": "near_zero" if browser_compute else "profile_managed",
+            "mode": (
+                "static_browser"
+                if browser_compute
+                else "static_frontend_device_first"
+                if frontend_is_static and device_first
+                else "dedicated_runtime"
+            ),
+            "compute_location": (
+                "browser"
+                if browser_compute
+                else "browser_then_user_device_with_serverless_fallback"
+                if frontend_is_static and device_first
+                else "warehouse_runtime"
+            ),
+            "idle_server_memory": (
+                "near_zero"
+                if browser_compute or (frontend_is_static and device_first)
+                else "profile_managed"
+            ),
+            "device_runtime": device_runtime,
         },
         "hosting_classification": {
             "is_fully_static": browser_compute,
+            "frontend_is_static": frontend_is_static or browser_compute,
+            "backend_is_device_first": device_first,
             "pages_shell_is_static": site_runtime.get("delivery") == "static_assets",
             "application_requires_server_runtime": not browser_compute,
+            "resident_server_runtime_required": not (
+                browser_compute or (frontend_is_static and device_first)
+            ),
+            "server_fallback": static_frontend.get("backend_fallback"),
             "authoritative_runtime_field": "runtime.type",
             "note": (
-                "site.runtime describes the Pages routing shell; runtime.type "
-                "describes the hosted application's actual compute contract."
+                "Static frontend delivery is independent from the backend contract. "
+                "Non-static backends run on the user's device first and retain a "
+                "scale-to-zero platform fallback."
             ),
         },
         "database": database_public,

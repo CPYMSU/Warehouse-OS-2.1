@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import time
 from html import escape
@@ -22,6 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.api import digital_assets as legacy
 from app.core.config import Settings, get_settings
+from app.services.device_runtime import pages_static_release
 from app.services.pages_runtime import (
     pages_entry_path,
     pages_runtime_url,
@@ -83,24 +85,68 @@ def _static_cache_headers(
     }
 
 
-def _browser_compatibility_script(prefix: str) -> str:
+def _browser_compatibility_script(
+    prefix: str,
+    *,
+    device_runtime: dict[str, object] | None = None,
+    workspace_key: str = "",
+) -> str:
     encoded = prefix.replace("\\", "\\\\").replace("'", "\\'")
+    device = device_runtime if isinstance(device_runtime, dict) else {}
+    device_payload = json.dumps(
+        {
+            "enabled": bool(device.get("enabled")),
+            "workspaceKey": workspace_key,
+            "loopbackOrigin": str(
+                device.get("loopback_origin") or "http://127.0.0.1:47821"
+            ).rstrip("/"),
+            "fallback": str(device.get("fallback") or "scale_to_zero"),
+        },
+        separators=(",", ":"),
+    ).replace("<", "\\u003c")
     return f"""<script>(function(){{
 const P='{encoded}';
+const D={device_payload};
+const originalFetch=window.fetch;
 const map=(u)=>{{if(typeof u!=='string'||!u.startsWith('/')||u.startsWith(P+'/'))return u;
 if(u.startsWith('//'))return u;return P+u;}};
-const originalFetch=window.fetch;if(originalFetch)window.fetch=function(input,init){{
-if(typeof input==='string')input=map(input);else if(input&&input.url&&input.url.startsWith('/'))input=new Request(map(input.url),input);
-return originalFetch.call(this,input,init);}};
-if(window.XMLHttpRequest){{const open=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){{arguments[1]=map(u);return open.apply(this,arguments);}};}}
-if(window.EventSource){{const Native=window.EventSource;window.EventSource=function(u,c){{return new Native(map(u),c);}};window.EventSource.prototype=Native.prototype;}}
+const localBase=D.loopbackOrigin+'/v1/workspaces/'+encodeURIComponent(D.workspaceKey);
+let localReady=false;
+const probe=D.enabled&&D.workspaceKey?Promise.race([
+originalFetchSafe(localBase+'/health',{{headers:{{'X-Warehouse-Device-Runtime':'1'}},cache:'no-store'}})
+.then(r=>r.ok?r.json():null).then(v=>{{localReady=!!(v&&v.ready&&v.workspace_key===D.workspaceKey);return localReady;}}).catch(()=>false),
+new Promise(resolve=>setTimeout(()=>resolve(false),220))
+]):Promise.resolve(false);
+function originalFetchSafe(input,init){{return originalFetch.call(window,input,init);}}
+const backendCandidate=(u,init)=>{{if(typeof u!=='string'||!u.startsWith('/')||u.startsWith('//'))return false;
+const method=String(init&&init.method||'GET').toUpperCase();if(method!=='GET'&&method!=='HEAD')return true;
+const path=u.split(/[?#]/,1)[0];return !/\\.(?:avif|css|gif|ico|jpe?g|js|json|map|mjs|png|svg|webmanifest|webp|woff2?)(?:$|[?#])/i.test(path);}};
+const deviceMap=(u)=>D.enabled&&localReady&&backendCandidate(u)?localBase+u:map(u);
+if(originalFetch){{window.fetch.__warehouseOriginal=originalFetch;window.fetch=async function(input,init){{
+let raw=typeof input==='string'?input:(input&&input.url||'');const mapped=map(raw);
+if(D.enabled&&backendCandidate(raw,init)){{await probe;if(localReady){{try{{
+const target=localBase+raw;const headers=new Headers(init&&init.headers||(input instanceof Request?input.headers:undefined));headers.set('X-Warehouse-Device-Runtime','1');
+const localInit={{...(init||{{}}),headers,credentials:'omit'}};return await originalFetch.call(this,target,localInit);
+}}catch(error){{localReady=false;}}}}}}
+if(typeof input==='string')input=mapped;else if(input&&input.url&&input.url.startsWith('/'))input=new Request(mapped,input);
+return originalFetch.call(this,input,init);}};window.fetch.__warehouseOriginal=originalFetch;}}
+if(window.XMLHttpRequest){{const open=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){{arguments[1]=deviceMap(u);return open.apply(this,arguments);}};}}
+if(window.EventSource){{const Native=window.EventSource;window.EventSource=function(u,c){{return new Native(deviceMap(u),c);}};window.EventSource.prototype=Native.prototype;}}
 if(window.WebSocket){{const Native=window.WebSocket;window.WebSocket=function(u,p){{if(typeof u==='string'&&u.startsWith('/')){{const scheme=location.protocol==='https:'?'wss:':'ws:';u=scheme+'//'+location.host+map(u);}}return p===undefined?new Native(u):new Native(u,p);}};window.WebSocket.prototype=Native.prototype;}}
 for(const method of ['pushState','replaceState']){{const original=history[method];history[method]=function(s,t,u){{if(typeof u==='string')u=map(u);return original.call(this,s,t,u);}};}}
 window.__WAREHOUSE_WORKSPACE_PREFIX__=P;
+window.__WAREHOUSE_DEVICE_RUNTIME__={{...D,get localReady(){{return localReady;}},ready:probe}};
 }})();</script>"""
 
 
-def _rewrite_text(content: bytes, content_type: str, prefix: str) -> bytes:
+def _rewrite_text(
+    content: bytes,
+    content_type: str,
+    prefix: str,
+    *,
+    device_runtime: dict[str, object] | None = None,
+    workspace_key: str = "",
+) -> bytes:
     lowered = content_type.lower()
     if not any(token in lowered for token in ("text/html", "text/css", "application/xhtml")):
         return content
@@ -124,7 +170,11 @@ def _rewrite_text(content: bytes, content_type: str, prefix: str) -> bytes:
             ),
             text,
         )
-        script = _browser_compatibility_script(clean_prefix)
+        script = _browser_compatibility_script(
+            clean_prefix,
+            device_runtime=device_runtime,
+            workspace_key=workspace_key,
+        )
         if re.search(r"<head(?:\s[^>]*)?>", text, re.IGNORECASE):
             text = re.sub(
                 r"(<head(?:\s[^>]*)?>)",
@@ -149,6 +199,96 @@ def _rewrite_text(content: bytes, content_type: str, prefix: str) -> bytes:
             flags=re.IGNORECASE,
         )
     return text.encode("utf-8")
+
+
+def _navigation_request(request: Request) -> bool:
+    return request.headers.get("sec-fetch-mode", "").lower() == "navigate" or (
+        "text/html" in request.headers.get("accept", "").lower()
+    )
+
+
+def _generic_device_page(route: dict[str, object]) -> Response:
+    site_key = escape(str(route.get("site_key") or "Hosted application"))
+    workspace_key = escape(str(route.get("workspace_key") or ""))
+    release = escape(str(route.get("release_digest") or "Awaiting static release"))
+    document = f"""<!doctype html><html lang="zh-Hans"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{site_key} · Warehouse Pages</title><style>
+:root{{font-family:Inter,ui-sans-serif,system-ui;color:#111;background:#f4f2ec}}
+body{{margin:0;min-height:100vh;display:grid;place-items:center}}main{{width:min(760px,calc(100% - 48px));border-top:8px solid #e31b23;padding-top:28px}}
+h1{{font-size:clamp(42px,9vw,96px);line-height:.88;letter-spacing:-.065em;margin:0 0 30px}}p{{font-size:16px;line-height:1.7;max-width:620px}}
+code{{font:600 13px ui-monospace,monospace}}.label{{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}}
+</style></head><body><main><div class="label">Warehouse Pages · Device First</div>
+<h1>{site_key}</h1><p>此项目的网页入口已由平台静态托管。后端计算优先交给用户设备上的 Local Agent；设备未连接时，由按需 Runtime 安全回退。</p>
+<p><code>{workspace_key}</code><br><code>{release}</code></p></main></body></html>"""
+    return HTMLResponse(
+        document,
+        headers={
+            "Cache-Control": "public, max-age=30, must-revalidate",
+            "X-Warehouse-Pages-Delivery": "generic-static",
+        },
+    )
+
+
+def _pages_static_response(
+    route: dict[str, object],
+    runtime_path: str,
+    request: Request,
+    settings: Settings,
+) -> Response | None:
+    if request.method not in {"GET", "HEAD"}:
+        return None
+    if route.get("kind") == "generic":
+        if runtime_path in {"", "/"} or _navigation_request(request):
+            return _generic_device_page(route)
+        return None
+    if route.get("kind") != "static":
+        return None
+    root = (settings.hosted_runtime_data_root / str(route["runtime_rel_path"])).resolve()
+    try:
+        root.relative_to(settings.hosted_runtime_data_root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Pages static route is unsafe") from None
+    target = (root / runtime_path).resolve() if runtime_path else root / "index.html"
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Hosted file not found") from None
+    if target.is_dir():
+        target = target / "index.html"
+    if not target.is_file() and _navigation_request(request):
+        target = root / "index.html"
+    if not target.is_file():
+        if request.headers.get("sec-fetch-dest", "").lower() in {
+            "font",
+            "image",
+            "manifest",
+            "script",
+            "style",
+        }:
+            raise HTTPException(status_code=404, detail="Pages asset not found")
+        return None
+    content_type = guess_type(str(target))[0] or "application/octet-stream"
+    headers = {
+        **_static_cache_headers(route, runtime_path, content_type),
+        "X-Warehouse-Deployment": str(route["deployment_id"]),
+        "X-Warehouse-Pages-Delivery": "static-device-first",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if request.headers.get("if-none-match") == headers["ETag"]:
+        return Response(status_code=304, headers=headers)
+    content = _rewrite_text(
+        target.read_bytes(),
+        content_type,
+        "",
+        device_runtime=(
+            route.get("device_runtime")
+            if isinstance(route.get("device_runtime"), dict)
+            else None
+        ),
+        workspace_key=str(route.get("workspace_key") or ""),
+    )
+    return Response(content=content, media_type=content_type, headers=headers)
 
 
 def _rewrite_location(location: str, internal_url: str, prefix: str) -> str:
@@ -350,6 +490,21 @@ async def runtime_response(
     request: Request,
     settings: Settings,
 ) -> Response | None:
+    pages_state = getattr(request.state, "pages_hostname_route", None)
+    if isinstance(pages_state, dict) and pages_state.get("site_key"):
+        pages_release = pages_static_release(
+            str(pages_state["site_key"]),
+            settings=settings,
+        )
+        if pages_release is not None:
+            static_response = _pages_static_response(
+                pages_release,
+                runtime_path,
+                request,
+                settings,
+            )
+            if static_response is not None:
+                return static_response
     route = active_workspace_runtime(tenant_slug, workspace_key)
     if route is None:
         return None
@@ -416,7 +571,7 @@ async def runtime_response(
         if request.headers.get("if-none-match") == headers["ETag"]:
             return Response(status_code=304, headers=headers)
         raw_content = target.read_bytes()
-        content = raw_content if not prefix else _rewrite_text(raw_content, content_type, prefix)
+        content = _rewrite_text(raw_content, content_type, prefix)
         return Response(
             content=content,
             media_type=content_type,

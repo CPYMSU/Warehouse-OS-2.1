@@ -81,6 +81,13 @@ def pages_action_catalog(
     database_count = int(database.get("count") or 0)
     browser = database.get("browser") if isinstance(database.get("browser"), dict) else {}
     browser_capable = database_count > 0
+    site_config = site.get("config") if isinstance(site.get("config"), dict) else {}
+    device_runtime = (
+        site_config.get("device_runtime")
+        if isinstance(site_config.get("device_runtime"), dict)
+        else {}
+    )
+    device_enabled = bool(device_runtime.get("enabled"))
     items: list[dict[str, Any]] = [
         _action(
             "pages.status.refresh",
@@ -195,6 +202,44 @@ def pages_action_catalog(
                     "digital_market_pages_design",
                     "digital_market_hosting_start",
                 ],
+            ),
+        ),
+        _action(
+            "pages.device.runtime",
+            label="設備運行" if device_enabled else "升級設備優先",
+            description=(
+                "读取 Local Agent、已验证源代码、静态前端、数据库 API 与按需回退状态。"
+                if device_enabled
+                else "迁移为静态前端直出、用户设备优先计算与平台按需回退。"
+            ),
+            icon="gear",
+            placement="primary",
+            enabled=bool(device_enabled or can_manage),
+            disabled_reason=permission_reason,
+            effect="read" if device_enabled else "mutation",
+            confirmation_required=not device_enabled,
+            invocation=_runtime_invocation(
+                "pages.device.runtime",
+                workspace_ref,
+                goal=(
+                    f"读取工作区「{workspace_ref}」的 Device Runtime、静态前端、"
+                    "浏览器数据库 API 与 scale-to-zero 回退状态，不修改部署。"
+                    if device_enabled
+                    else (
+                        f"把工作区「{workspace_ref}」升级为静态前端直出、用户设备 Local Agent "
+                        "优先、平台 scale-to-zero 兜底。先读取迁移计划；确认后执行 Pages Device "
+                        "Migration。只配置数据库浏览器安全 API，不执行数据库 schema 迁移。"
+                    )
+                ),
+                suggested_tools=(
+                    ["digital_market_pages_status", "digital_market_device_runtime"]
+                    if device_enabled
+                    else [
+                        "digital_market_pages_device_plan",
+                        "digital_market_pages_device_migrate",
+                        "digital_market_device_runtime",
+                    ]
+                ),
             ),
         ),
         _action(
