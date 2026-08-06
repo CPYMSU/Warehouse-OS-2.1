@@ -664,22 +664,23 @@ def _public_project(row: dict[str, object]) -> dict[str, object]:
     return _json_safe({**row, "metadata": row.get("metadata") or {}})
 
 
-def _public_version(row: dict[str, object]) -> dict[str, object]:
-    return _json_safe(
-        {
-            "id": row["id"],
-            "version": row["version"],
-            "filename": row["original_filename"],
-            "content_type": row["content_type"],
-            "content_sha256": row["content_sha256"],
-            "size_bytes": row["size_bytes"],
-            "preview": row.get("preview") or {},
-            "git_sha": row.get("git_sha"),
-            "commit_message": row.get("commit_message"),
-            "created_by": row.get("created_by"),
-            "created_at": row.get("created_at"),
-        }
-    )
+def _public_version(row: dict[str, object], *, include_preview: bool = True) -> dict[str, object]:
+    payload = {
+        "id": row["id"],
+        "version": row["version"],
+        "filename": row["original_filename"],
+        "content_type": row["content_type"],
+        "content_sha256": row["content_sha256"],
+        "size_bytes": row["size_bytes"],
+        "preview_available": bool(row.get("preview_available") or row.get("preview")),
+        "git_sha": row.get("git_sha"),
+        "commit_message": row.get("commit_message"),
+        "created_by": row.get("created_by"),
+        "created_at": row.get("created_at"),
+    }
+    if include_preview:
+        payload["preview"] = row.get("preview") or {}
+    return _json_safe(payload)
 
 
 def _public_file(row: dict[str, object]) -> dict[str, object]:
@@ -885,13 +886,16 @@ def project_detail(actor: ActorContext, project_ref: object) -> dict[str, object
                     """
                 SELECT f.*, latest.version AS current_version,
                        latest.content_type, latest.content_sha256,
-                       latest.size_bytes, latest.git_sha, latest.preview,
+                       latest.size_bytes, latest.git_sha, latest.preview_available,
                        latest.created_at AS version_created_at,
                        (SELECT count(*) FROM research.file_versions all_versions
                         WHERE all_versions.file_id = f.id)::integer AS version_count
                 FROM research.files f
                 JOIN LATERAL (
-                  SELECT * FROM research.file_versions
+                  SELECT version, content_type, content_sha256, size_bytes, git_sha,
+                         created_at,
+                         (preview IS NOT NULL AND preview <> '{}'::jsonb) AS preview_available
+                  FROM research.file_versions
                   WHERE file_id = f.id ORDER BY version DESC LIMIT 1
                 ) latest ON true
                 WHERE f.project_id = :project_id AND f.status = 'active'
@@ -907,7 +911,11 @@ def project_detail(actor: ActorContext, project_ref: object) -> dict[str, object
             session.execute(
                 text(
                     """
-                SELECT v.* FROM research.file_versions v
+                SELECT v.id, v.file_id, v.version, v.original_filename,
+                       v.content_type, v.content_sha256, v.size_bytes, v.git_sha,
+                       v.commit_message, v.created_by, v.created_at,
+                       (v.preview IS NOT NULL AND v.preview <> '{}'::jsonb) AS preview_available
+                FROM research.file_versions v
                 WHERE v.project_id = :project_id
                 ORDER BY v.file_id, v.version DESC
                 """
@@ -936,7 +944,9 @@ def project_detail(actor: ActorContext, project_ref: object) -> dict[str, object
         )
     grouped: dict[str, list[dict[str, object]]] = {}
     for row in versions:
-        grouped.setdefault(str(row["file_id"]), []).append(_public_version(dict(row)))
+        grouped.setdefault(str(row["file_id"]), []).append(
+            _public_version(dict(row), include_preview=False)
+        )
     public_files = []
     for row in files:
         item = _public_file(dict(row))

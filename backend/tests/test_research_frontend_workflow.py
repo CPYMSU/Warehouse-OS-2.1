@@ -98,6 +98,10 @@ def test_research_index_restores_last_project_file_tab_and_reading_position() ->
     assert "saveResearchReadingPosition" in source
     assert "restoreResearchReadingPosition" in source
     assert "W2.tenant()" in source
+    assert "detailRequestSerial" in source
+    assert "request !== detailRequestSerial.current" in source
+    assert "setDetailBusy(Boolean(id))" in source
+    assert "READING RESEARCH INDEX…" in source
 
 
 def test_docx_reader_reuses_version_scoped_render_cache_across_navigation() -> None:

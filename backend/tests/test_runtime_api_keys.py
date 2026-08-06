@@ -419,12 +419,26 @@ def test_research_runtime_scope_streams_upload_and_exposes_git_lineage(
     assert len(upload["git"]["sha"]) == 40
     file_id = upload["file"]["id"]
 
+    detail_response = client.get(
+        f"/api/research/projects/{project['slug']}",
+        headers=headers,
+    )
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["files"][0]["id"] == file_id
+    assert detail["files"][0]["preview_available"] is True
+    assert "preview" not in detail["files"][0]
+    assert detail["files"][0]["versions"][0]["preview_available"] is True
+    assert "preview" not in detail["files"][0]["versions"][0]
+    assert len(detail_response.content) < 20_000
+
     versions = client.get(
         f"/api/research/projects/{project['slug']}/files/{file_id}/versions",
         headers=headers,
     )
     assert versions.status_code == 200
     assert versions.json()["total"] == 1
+    assert "preview" in versions.json()["versions"][0]
 
     downloaded = client.get(
         f"/api/research/projects/{project['slug']}/files/{file_id}/content",

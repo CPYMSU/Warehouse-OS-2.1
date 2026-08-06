@@ -732,7 +732,9 @@ const Viewer = ({ project, file, preview, diff, tab, onTab, blobUrl, busy, canAn
       save();
     };
   }, [clean(project && project.id), clean(file && file.id), tab, busy, clean(versionMarker)]);
-  if (!file) return <EmptyPanel title="選擇一份科研文件" copy="文件、版本與 Git 提交會在同一閱讀面板中保持同步。"/>;
+  if (!file) return busy
+    ? <div className="rv-loading block">READING RESEARCH INDEX…</div>
+    : <EmptyPanel title="選擇一份科研文件" copy="文件、版本與 Git 提交會在同一閱讀面板中保持同步。"/>;
   const version = preview && preview.version;
   const mode = preview && preview.mode;
   const html = preview && preview.html && window.DOMPurify
@@ -817,6 +819,7 @@ const Page = () => {
   const [diff, setDiff] = useState(null);
   const [tab, setTab] = useState("review");
   const [busy, setBusy] = useState(true);
+  const [detailBusy, setDetailBusy] = useState(false);
   const [viewerBusy, setViewerBusy] = useState(false);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
@@ -830,6 +833,7 @@ const Page = () => {
   const [executionInputFilter, setExecutionInputFilter] = useState("");
   const [executionEntrypoint, setExecutionEntrypoint] = useState("");
   const fileInput = useRef(null);
+  const detailRequestSerial = useRef(0);
 
   const canWrite = W2.hasPermission("research.write");
   const canReview = W2.hasPermission("research.review");
@@ -872,6 +876,7 @@ const Page = () => {
     setDetail(null);
     setWorkflow(null);
     setFileId("");
+    setDetailBusy(Boolean(id));
     setAssetFilter("all");
     setTab("review");
     rememberResearchSelection({ projectId: id, section });
@@ -891,21 +896,29 @@ const Page = () => {
     return next;
   };
   const loadDetail = async id => {
-    if (!id) { setDetail(null); setFileId(""); return; }
-    const data = await W2.json("/api/research/projects/" + encodeURIComponent(id));
-    setDetail(data);
-    const files = Array.isArray(data.files) ? data.files : [];
-    setFileId(current => {
-      const available = candidate => files.some(item => clean(item.id) === clean(candidate));
-      const selected = [current, rememberedResearchFile(id), (files[0] || {}).id]
-        .map(clean).find(available) || "";
-      const file = files.find(item => clean(item.id) === selected);
-      const fallbackTab = file && ["document", "pdf"].includes(file.file_kind) ? "review" : "preview";
-      const nextTab = rememberedResearchTab(id, selected, fallbackTab);
-      setTab(nextTab);
-      if (selected) rememberResearchSelection({ projectId: id, fileId: selected, tab: nextTab, section });
-      return selected;
-    });
+    const request = ++detailRequestSerial.current;
+    if (!id) { setDetail(null); setFileId(""); setDetailBusy(false); return null; }
+    setDetailBusy(true);
+    try {
+      const data = await W2.json("/api/research/projects/" + encodeURIComponent(id));
+      if (request !== detailRequestSerial.current) return null;
+      setDetail(data);
+      const files = Array.isArray(data.files) ? data.files : [];
+      setFileId(current => {
+        const available = candidate => files.some(item => clean(item.id) === clean(candidate));
+        const selected = [current, rememberedResearchFile(id), (files[0] || {}).id]
+          .map(clean).find(available) || "";
+        const file = files.find(item => clean(item.id) === selected);
+        const fallbackTab = file && ["document", "pdf"].includes(file.file_kind) ? "review" : "preview";
+        const nextTab = rememberedResearchTab(id, selected, fallbackTab);
+        setTab(nextTab);
+        if (selected) rememberResearchSelection({ projectId: id, fileId: selected, tab: nextTab, section });
+        return selected;
+      });
+      return data;
+    } finally {
+      if (request === detailRequestSerial.current) setDetailBusy(false);
+    }
   };
   const loadWorkflow = async id => {
     if (!id) { setWorkflow(null); return; }
@@ -936,7 +949,7 @@ const Page = () => {
     setError("");
     loadDetail(projectId).catch(reason => alive && setError(clean(reason.message || reason)));
     loadWorkflow(projectId).catch(reason => alive && setError(clean(reason.message || reason)));
-    return () => { alive = false; };
+    return () => { alive = false; detailRequestSerial.current += 1; };
   }, [projectId]);
   useEffect(() => {
     if (projectId && fileId) {
@@ -1669,7 +1682,7 @@ const Page = () => {
               </section>
 
               <Viewer project={selectedProject} file={selectedFile} preview={preview}
-                diff={diff} tab={tab} onTab={setTab} blobUrl={blobUrl} busy={viewerBusy}
+                diff={diff} tab={tab} onTab={setTab} blobUrl={blobUrl} busy={detailBusy || viewerBusy}
                 canAnnotate={canWrite || canReview} onError={setError}/>
             </div>
           )}
