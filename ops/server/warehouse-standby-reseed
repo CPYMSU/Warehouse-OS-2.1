@@ -202,6 +202,7 @@ sha256sum "${local_backup}" > "${local_backup}.sha256"
 chmod 0600 "${local_backup}.sha256"
 
 publisher_command pg_dump --schema-only --no-owner \
+  --no-publications --no-subscriptions \
   "${extension_excludes[@]}" > "${schema_dump}"
 [[ -s "${schema_dump}" ]] || fail "publisher schema dump is empty"
 
