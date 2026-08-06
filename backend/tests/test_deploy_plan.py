@@ -322,6 +322,7 @@ def test_standby_reseed_uses_the_prepared_candidate_action() -> None:
     assert "publisher_environment=(-e PGUSER -e PGPASSWORD -e PGDATABASE)" in reseed
     assert 'PGDATABASE="${conninfo}"' not in reseed
     assert 'publisher_command pg_dump --schema-only --no-owner' in reseed
+    assert "--no-publications --no-subscriptions" in reseed
     assert '--exclude-extension=${extension}' in reseed
     assert 'CREATE DATABASE ${DATABASE} OWNER warehouse_migrator' in reseed
     assert "CREATE EXTENSION IF NOT EXISTS" in reseed
