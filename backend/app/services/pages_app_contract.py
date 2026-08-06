@@ -319,7 +319,7 @@ def validate_pages_app_manifest(
             )
         source = None
         if runtime != "database_function":
-            source = _path(item.get("source"), f"{field}.source")
+            source = _path(item.get("source"), f"{field}.source", allow_dot=True)
             _require_tree(paths, source, f"{field}.source")
         handler = None
         if item.get("handler") not in (None, ""):
@@ -419,8 +419,16 @@ def synthesize_pages_app_manifest(
     *,
     name: str,
     version: str = "1.0.0",
+    legacy_runtime: str | None = None,
+    legacy_handler: str | None = None,
 ) -> dict[str, object]:
-    """Produce a conservative compatibility contract for a legacy source package."""
+    """Produce a conservative compatibility contract for a legacy source package.
+
+    A source tree that contains both a browser entry and a server entry must not
+    be presented as a fully static application.  It receives one explicit
+    scale-to-zero compatibility function until the individual routes are moved
+    to the platform Data API or smaller functions.
+    """
 
     normalized_paths = {str(item).replace("\\", "/").strip("/") for item in source_paths}
     lowered = {item.lower(): item for item in normalized_paths}
@@ -447,6 +455,27 @@ def synthesize_pages_app_manifest(
     design_roots = [
         root for root in ("design", "docs") if any(path.startswith(root + "/") for path in lowered)
     ]
+    runtime = str(legacy_runtime or "").strip().lower()
+    functions: list[dict[str, object]] = []
+    device: dict[str, object] = {"mode": "disabled", "capabilities": []}
+    if runtime in {"python", "node"}:
+        function: dict[str, object] = {
+            "name": "legacy.api",
+            "route": "/api/*",
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            "runtime": f"serverless_{runtime}",
+            "source": ".",
+            "auth": "session",
+            "secret_refs": [],
+            "timeout_seconds": 60,
+        }
+        if legacy_handler:
+            function["handler"] = legacy_handler
+        functions.append(function)
+        device = {
+            "mode": "optional",
+            "capabilities": [f"{runtime}.runtime"],
+        }
     return validate_pages_app_manifest(
         {
             "schema": PAGES_APP_SCHEMA,
@@ -459,8 +488,8 @@ def synthesize_pages_app_manifest(
                 "collections": [],
                 "sync": {"mode": "none", "offline_store": "indexeddb"},
             },
-            "functions": [],
-            "device": {"mode": "disabled", "capabilities": []},
+            "functions": functions,
+            "device": device,
             "design": {"roots": design_roots},
         },
         source_paths=normalized_paths,

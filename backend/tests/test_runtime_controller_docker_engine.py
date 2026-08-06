@@ -982,6 +982,28 @@ def test_runtime_lifecycle_stops_idle_container_and_wakes_same_container(
     ]
 
 
+def test_pages_scale_to_zero_runtime_uses_short_idle_window() -> None:
+    controller = runtime_controller.RuntimeController(
+        Settings(runtime_idle_timeout_seconds=30 * 60)
+    )
+
+    assert controller._runtime_idle_seconds({}) == 30 * 60
+    assert controller._runtime_idle_seconds(
+        {
+            "static_frontend": {
+                "enabled": True,
+                "backend_fallback": "scale_to_zero",
+            }
+        }
+    ) == 60
+    assert controller._runtime_idle_seconds(
+        {"runtime_policy": {"idle_timeout_seconds": 180}}
+    ) == 180
+    assert controller._runtime_idle_seconds(
+        {"runtime_policy": {"idle_timeout_seconds": 1}}
+    ) == 60
+
+
 def test_runtime_mounts_support_arbitrary_non_root_image_users(tmp_path: Path) -> None:
     source = tmp_path / "source"
     nested = source / "nested"

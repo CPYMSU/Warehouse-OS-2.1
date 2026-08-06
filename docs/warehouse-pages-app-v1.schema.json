@@ -73,7 +73,7 @@
           "runtime": {
             "enum": ["serverless_node", "serverless_python", "database_function"]
           },
-          "source": {"$ref": "#/$defs/path"},
+          "source": {"$ref": "#/$defs/pathOrDot"},
           "handler": {"type": "string", "minLength": 1, "maxLength": 200},
           "auth": {"enum": ["session", "owner", "workspace"]},
           "secret_refs": {

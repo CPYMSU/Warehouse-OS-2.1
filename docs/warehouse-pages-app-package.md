@@ -82,11 +82,14 @@ ordinary JavaScript, HTML or other source files.
 
 ## Legacy compatibility
 
-If an older static project has no `warehouse.pages.json`, Warehouse generates a
-conservative contract only when it can find `index.html`. Generated contracts
-declare browser compute, no database collections, no functions and no Local
-Agent. The result can be downloaded, reviewed and committed as an explicit
-manifest before adding data or privileged behavior.
+If an older project has no `warehouse.pages.json`, Warehouse generates a
+conservative contract only when it can find `index.html`. A browser-only source
+declares no database collections, functions or Local Agent. If the same source
+also contains a recognizable Python or Node server, the generated contract
+declares `/api/*` as one scale-to-zero compatibility function and marks the
+device runtime optional. This prevents a mixed legacy application from being
+misreported as fully static. The result can be downloaded, split into smaller
+Data API/functions boundaries and committed as an explicit manifest.
 
 ## Deterministic ZIP
 
