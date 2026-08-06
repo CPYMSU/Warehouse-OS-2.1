@@ -113,6 +113,24 @@
 - depends_on 不是健康證明；仍需服務級健康檢查。
 - Compose 不得自行開放宿主機管理埠。
 
+### 03A · 計算位置與減少雲端 Runtime
+
+平台與 AI 應先判斷「工作必須在哪裡執行」，再建議 Runtime。建議是唯讀設計證據，不得自動改寫源碼、移動 Secret、變更資料庫或啟用新發布。使用者確認後，任何修改仍須建立新的不可變 source、候選部署與健康驗收。
+
+| 工作類型 | 優先計算位置 | 設計邊界 |
+|---|---|---|
+| 畫面渲染、表單校驗、篩選、排序、非秘密的確定性計算 | 瀏覽器 JavaScript／TypeScript | 不需要雲端 Runtime；仍須量測低階手機的 CPU、記憶體與電量 |
+| 純函數 Python 小模組 | 改寫為 JavaScript／TypeScript，或評估 Pyodide／WebAssembly | 只有無 Secret、無特權 I/O、無共享寫入的部分適合移動；採用 Python/WASM 前須量測下載體積與首次啟動時間 |
+| Rust、C／C++、Go 的確定性重計算 | 瀏覽器 WebAssembly 或按需 Runtime | 檔案、網路、裝置與執行緒能力必須明確聲明，不因編譯為 WASM 自動取得權限 |
+| Java、Kotlin、Scala | 可選 Local Agent 或伺服器 Runtime | JavaScript 與 Java 是不同 Runtime；一般瀏覽器沒有 JVM，不得把 Java 誤稱為可直接在網頁執行 |
+| 共用記錄、權限、同步與持久資料 | Platform Database API | 瀏覽器只取得短效、精確 Origin、deny-by-default 的資料權限；不取得資料庫 DSN |
+| AI Key、支付、簽名、授權判斷、特權寫入 | Scale-to-zero Function | 保留伺服器信任邊界；空閒時不常駐工作區 Runtime |
+| WebSocket、持續 Worker、GPU、長任務 | Dedicated Runtime | 只有可觀測事實證明需要持續進程時才常駐 |
+
+`dm pages design --workspace <workspace>` 與對應 Pages Design API 應回傳 `warehouse.compute-placement-advice.v1`：來源語言與 Manifest 證據、推薦托管模式、每項工作建議位置、安全限制與信心等級。它必須顯式標示 `advisory_only=true`、`automatic_code_rewrite=false` 及 `confirmation_required_before_new_release=true`。
+
+建議的模式只分為三類：`pure_static`、`static_with_on_demand_api`、`on_demand_or_dedicated_runtime_review`。AI 可以提出檔案級修改建議，但不能把 Secret、授權、資料庫憑證或共享狀態移入瀏覽器，也不能用「節省雲端資源」取代安全與相容性驗證。
+
 ## 04 · HTTP 與反向代理
 
 應用必須接受 Host、X-Forwarded-Proto 與 X-Forwarded-Prefix。當應用部署在工作區子路徑時：
@@ -240,6 +258,7 @@ Warehouse OS 託管控制面必須：
 10. 只有通過必要 Job、健康、驗收與資料庫門檻才啟用；失敗時保留前一個健康版本。
 11. 回傳階段、證據、錯誤代碼和經遮罩的日誌，不用籠統的成功訊息取代事實。
 12. 健康檢查必須包含實際寫入探針；僅存在配置或資料列不等於儲存可用。
+13. 向使用者與 AI 提供有來源證據的計算位置建議；建議本身永不改寫程式、資料或活動發布。
 
 ## 10 · 上線前檢查表
 
@@ -250,6 +269,9 @@ Warehouse OS 託管控制面必須：
 - [ ] health_path 在未登入狀態返回 2xx
 - [ ] 持久寫入只進入 /workspace/data 或平台資料庫
 - [ ] Secret 未進入源碼、前端資產與日誌
+- [ ] 已區分 JavaScript、Java、Python/WASM 與伺服器信任邊界
+- [ ] 瀏覽器計算建議已量測下載體積、首次啟動時間及手機記憶體
+- [ ] 計算位置建議只讀；任何採納結果均建立新 source、候選與回滾點
 - [ ] migration 可重入，失敗不接流量
 - [ ] Runtime 與 migration 使用不同資料庫身份，Web 服務拿不到 owner DSN
 - [ ] 必要 lifecycle Job 的成功證據屬於本次 source 與 contract digest

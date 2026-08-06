@@ -68,21 +68,25 @@ def test_pages_site_key_and_hostname_are_single_dns_label() -> None:
     assert pages_runtime.pages_hostname("workspace-key", settings) == (
         "workspace-key.apps.bonfirework.org"
     )
-    assert pages_runtime.pages_hostname_site_key(
-        "workspace-key.apps.bonfirework.org:443", settings
-    ) == "workspace-key"
-    assert pages_runtime.pages_hostname_site_key(
-        "nested.workspace-key.apps.bonfirework.org", settings
-    ) is None
+    assert (
+        pages_runtime.pages_hostname_site_key("workspace-key.apps.bonfirework.org:443", settings)
+        == "workspace-key"
+    )
+    assert (
+        pages_runtime.pages_hostname_site_key("nested.workspace-key.apps.bonfirework.org", settings)
+        is None
+    )
     assert pages_runtime.pages_runtime_hostname("workspace-key", settings) == (
         "workspace-key.bonfirework.org"
     )
-    assert pages_runtime.pages_runtime_hostname_site_key(
-        "workspace-key.bonfirework.org:443", settings
-    ) == "workspace-key"
-    assert pages_runtime.pages_runtime_hostname_site_key(
-        "mac-origin.bonfirework.org", settings
-    ) is None
+    assert (
+        pages_runtime.pages_runtime_hostname_site_key("workspace-key.bonfirework.org:443", settings)
+        == "workspace-key"
+    )
+    assert (
+        pages_runtime.pages_runtime_hostname_site_key("mac-origin.bonfirework.org", settings)
+        is None
+    )
     assert pages_runtime.pages_entry_path("workspace-key") == "/apps/workspace-key/"
     assert pages_runtime.pages_entry_url("workspace-key", settings) == (
         "https://bonfirework.org/apps/workspace-key/"
@@ -100,9 +104,10 @@ def test_pages_root_domain_rejects_urls_and_normalizes_dns() -> None:
     )
     with pytest.raises(ValueError, match="bare DNS name"):
         Settings(pages_root_domain="https://apps.bonfirework.org")
-    assert Settings(
-        pages_runtime_root_domain="Bonfirework.org."
-    ).pages_runtime_root_domain == "bonfirework.org"
+    assert (
+        Settings(pages_runtime_root_domain="Bonfirework.org.").pages_runtime_root_domain
+        == "bonfirework.org"
+    )
     with pytest.raises(ValueError, match="bare DNS name"):
         Settings(pages_runtime_root_domain="https://bonfirework.org")
 
@@ -117,26 +122,26 @@ def test_runtime_hostname_resolves_the_same_pages_route(
         lambda site_key: expected if site_key == "design-lab" else None,
     )
 
-    assert pages_runtime.resolve_pages_hostname(
-        "design-lab.bonfirework.org", Settings()
-    ) == expected
-    assert pages_runtime.resolve_pages_hostname(
-        "design-lab.apps.bonfirework.org", Settings()
-    ) == expected
+    assert (
+        pages_runtime.resolve_pages_hostname("design-lab.bonfirework.org", Settings()) == expected
+    )
+    assert (
+        pages_runtime.resolve_pages_hostname("design-lab.apps.bonfirework.org", Settings())
+        == expected
+    )
 
 
 def test_pages_internal_path_preserves_platform_compatibility_path() -> None:
     route = {"tenant_slug": "acme", "workspace_key": "design-lab"}
 
-    assert pages_runtime.pages_internal_path(route, "/") == (
-        "/assets/acme/design-lab/"
-    )
+    assert pages_runtime.pages_internal_path(route, "/") == ("/assets/acme/design-lab/")
     assert pages_runtime.pages_internal_path(route, "/styles/app.css") == (
         "/assets/acme/design-lab/styles/app.css"
     )
-    assert pages_runtime.pages_internal_path(
-        route, "/assets/acme/design-lab/styles/app.css"
-    ) == "/assets/acme/design-lab/styles/app.css"
+    assert (
+        pages_runtime.pages_internal_path(route, "/assets/acme/design-lab/styles/app.css")
+        == "/assets/acme/design-lab/styles/app.css"
+    )
 
 
 def test_warehouse_pages_shell_keeps_the_short_url_and_isolates_runtime() -> None:
@@ -153,8 +158,7 @@ def test_warehouse_pages_shell_keeps_the_short_url_and_isolates_runtime() -> Non
     )
 
     assert frame_url == (
-        "https://design-lab.bonfirework.org/reports/today"
-        "?view=compact&name=%3Cunsafe%3E"
+        "https://design-lab.bonfirework.org/reports/today?view=compact&name=%3Cunsafe%3E"
     )
     assert 'sandbox="' in document
     assert "allow-same-origin" in document
@@ -342,12 +346,15 @@ def test_pages_static_frontend_leaves_api_misses_for_runtime_fallback(
         }
     )
 
-    assert _pages_static_response(
-        route,
-        "api/items",
-        request,
-        Settings(hosted_runtime_data_root=tmp_path),
-    ) is None
+    assert (
+        _pages_static_response(
+            route,
+            "api/items",
+            request,
+            Settings(hosted_runtime_data_root=tmp_path),
+        )
+        is None
+    )
 
 
 def test_browser_contract_routes_fetch_xhr_and_events_to_device_first() -> None:
@@ -360,7 +367,7 @@ def test_browser_contract_routes_fetch_xhr_and_events_to_device_first() -> None:
     assert "127.0.0.1:47821" in script
     assert "X-Warehouse-Device-Runtime" in script
     assert "deviceMap(u)" in script
-    assert "fallback\":\"scale_to_zero" in script
+    assert 'fallback":"scale_to_zero' in script
 
 
 def test_design_context_excludes_secrets_and_describes_immutable_changes(
@@ -382,9 +389,7 @@ def test_design_context_excludes_secrets_and_describes_immutable_changes(
         },
     )
 
-    result = pages_runtime.pages_design_context(
-        _Credential(), Settings(), source_ref=None
-    )
+    result = pages_runtime.pages_design_context(_Credential(), Settings(), source_ref=None)
 
     paths = {item["path"] for item in result["files"]}
     assert "index.html" in paths
@@ -392,18 +397,75 @@ def test_design_context_excludes_secrets_and_describes_immutable_changes(
     assert ".env.production" not in paths
     assert result["excluded_sensitive_files"] == 1
     assert result["source"]["active"] is True
-    assert result["application_package"]["schema"] == (
-        "warehouse.pages-application.v1"
-    )
+    assert result["application_package"]["schema"] == ("warehouse.pages-application.v1")
     assert result["application_package"]["download"].endswith(
         f"/pages/package/download?source_ref={descriptor['id']}"
     )
     assert result["change_policy"]["active_release_mutable"] is False
+    assert result["compute_placement"]["schema"] == ("warehouse.compute-placement-advice.v1")
+    assert result["compute_placement"]["advisory_only"] is True
+    assert result["compute_placement"]["automatic_code_rewrite"] is False
+    assert result["compute_placement"]["recommended_hosting_mode"] == "pure_static"
     assert any(
         item["id"] == "bind-exact-database-origin"
         and item["origin"] == "https://design-lab.bonfirework.org"
         for item in result["recommendations"]
     )
+
+
+def test_design_context_advises_python_jvm_and_platform_data_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "hybrid-pages.zip"
+    manifest = {
+        "web": {"compute": "browser"},
+        "data": {"mode": "platform_api"},
+        "functions": [{"name": "secure.operation"}],
+        "device": {"mode": "optional"},
+    }
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("project/frontend/index.html", "<main>Hybrid</main>")
+        package.writestr("project/frontend/app.ts", "export const app = true")
+        package.writestr("project/compute/report.py", "def total(values): return sum(values)")
+        package.writestr("project/compute/Worker.java", "final class Worker {}")
+        package.writestr("project/warehouse.pages.json", json.dumps(manifest))
+    descriptor = _source_descriptor()
+    monkeypatch.setattr(pages_runtime, "_source_descriptor", lambda *_args: descriptor)
+    monkeypatch.setattr(pages_runtime, "_source_path", lambda *_args: archive)
+    monkeypatch.setattr(
+        pages_runtime,
+        "get_pages_site",
+        lambda *_args: {
+            "site": {
+                "site_key": "hybrid-pages",
+                "database_origin": "https://hybrid-pages.bonfirework.org",
+            }
+        },
+    )
+
+    result = pages_runtime.pages_design_context(_Credential(), Settings())
+
+    advice = result["compute_placement"]
+    assert advice["recommended_hosting_mode"] == "static_with_on_demand_api"
+    assert advice["confidence"] == "high"
+    assert advice["confirmation_required_before_new_release"] is True
+    assert advice["detected"]["python_source_files"] == 1
+    assert advice["detected"]["jvm_source_files"] == 1
+    assert advice["detected"]["pages_manifest"] == {
+        "declared": True,
+        "readable": True,
+        "web_compute": "browser",
+        "data_mode": "platform_api",
+        "function_count": 1,
+        "device_mode": "optional",
+    }
+    item_ids = {item["id"] for item in advice["items"]}
+    assert "review-pure-python-for-browser" in item_ids
+    assert "retain-privileged-python-on-demand" in item_ids
+    assert "keep-jvm-out-of-ordinary-browser" in item_ids
+    assert "keep-shared-data-on-platform-api" in item_ids
+    assert "keep-declared-privileged-functions-on-demand" in item_ids
+    assert any("JavaScript and Java are different" in item for item in advice["guardrails"])
 
 
 def test_source_file_api_reads_code_but_never_environment_files(
@@ -415,17 +477,13 @@ def test_source_file_api_reads_code_but_never_environment_files(
     monkeypatch.setattr(pages_runtime, "_source_descriptor", lambda *_args: descriptor)
     monkeypatch.setattr(pages_runtime, "_source_path", lambda *_args: archive)
 
-    result = pages_runtime.pages_source_file(
-        _Credential(), Settings(), "components/app.js"
-    )
+    result = pages_runtime.pages_source_file(_Credential(), Settings(), "components/app.js")
 
     assert result["file"]["encoding"] == "utf-8"
     assert result["file"]["content"] == "export const app = true;"
     assert len(result["file"]["sha256"]) == 64
     with pytest.raises(HTTPException) as exc:
-        pages_runtime.pages_source_file(
-            _Credential(), Settings(), ".env.production"
-        )
+        pages_runtime.pages_source_file(_Credential(), Settings(), ".env.production")
     assert exc.value.status_code == 404
 
 
@@ -444,17 +502,13 @@ def test_secretary_contract_supports_pages_configuration_and_design_reads() -> N
     assert desired["pages"]["site_key"] == "customer-portal"
     assert desired["pages"]["public_alias_enabled"] is True
     assert manifest["version"] == "2.4"
-    assert manifest["pages_runtime"]["stable_url"] == (
-        "https://bonfirework.org/apps/{site_key}/"
-    )
+    assert manifest["pages_runtime"]["stable_url"] == ("https://bonfirework.org/apps/{site_key}/")
     assert manifest["pages_runtime"]["isolated_runtime_origin"] == (
         "https://{site_key}.bonfirework.org/"
     )
     assert manifest["pages_runtime"]["public_alias_default"] is False
     assert manifest["pages_runtime"]["active_release_editable_in_place"] is False
-    assert "/pages/design" in (
-        manifest["pages_runtime"]["hosting_session_api"]["design_context"]
-    )
+    assert "/pages/design" in (manifest["pages_runtime"]["hosting_session_api"]["design_context"])
     assert manifest["pages_runtime"]["workspace_key_api"]["read_file"].endswith(
         "/pages/files/{path}"
     )
@@ -629,10 +683,7 @@ def test_account_pages_console_aggregates_non_secret_release_state(
     assert api_result["hosting_classification"]["is_fully_static"] is False
     assert api_result["hosting_classification"]["pages_shell_is_static"] is True
     assert api_result["hosting_classification"]["application_requires_server_runtime"] is True
-    assert (
-        api_result["hosting_classification"]["resident_server_runtime_required"]
-        is False
-    )
+    assert api_result["hosting_classification"]["resident_server_runtime_required"] is False
 
 
 def test_pages_api_routes_are_registered_before_the_api_catch_all() -> None:
@@ -663,9 +714,7 @@ def test_pages_api_routes_are_registered_before_the_api_catch_all() -> None:
     assert "/api/workspaces/{workspace_ref}/pages/package" in paths
     assert "/api/workspaces/{workspace_ref}/pages/package/download" in paths
     assert "/api/workspaces/{workspace_ref}/pages/files/{file_path:path}" in paths
-    assert (
-        "/api/workspaces/{workspace_ref}/pages/releases/{deployment_id}/activate" in paths
-    )
+    assert "/api/workspaces/{workspace_ref}/pages/releases/{deployment_id}/activate" in paths
     assert "/api/workspaces/{workspace_ref}/pages-console" in paths
     assert "/apps/{site_key}/" in paths
     assert "/apps/{site_key}/{runtime_path:path}" in paths
@@ -673,8 +722,7 @@ def test_pages_api_routes_are_registered_before_the_api_catch_all() -> None:
 
 def test_pages_migration_keeps_a_global_site_key_and_active_pointer() -> None:
     migration = (
-        Path(__file__).resolve().parents[1]
-        / "alembic/versions/20260805_0077_pages_runtime.py"
+        Path(__file__).resolve().parents[1] / "alembic/versions/20260805_0077_pages_runtime.py"
     ).read_text(encoding="utf-8")
 
     assert "CREATE TABLE platform.pages_routes" in migration

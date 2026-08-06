@@ -63,20 +63,32 @@ _route_cache_lock = threading.Lock()
 _TEXT_EXTENSIONS = frozenset(
     {
         ".astro",
+        ".c",
+        ".cc",
         ".cjs",
+        ".cpp",
         ".css",
         ".csv",
+        ".go",
         ".graphql",
+        ".h",
+        ".hpp",
         ".htm",
         ".html",
         ".ini",
+        ".java",
         ".js",
         ".json",
         ".jsx",
+        ".kt",
+        ".kts",
         ".md",
         ".mdx",
         ".mjs",
         ".py",
+        ".pyi",
+        ".rs",
+        ".scala",
         ".scss",
         ".svg",
         ".toml",
@@ -90,6 +102,26 @@ _TEXT_EXTENSIONS = frozenset(
     }
 )
 _IMAGE_EXTENSIONS = frozenset({".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
+_BROWSER_SOURCE_EXTENSIONS = frozenset(
+    {
+        ".astro",
+        ".cjs",
+        ".html",
+        ".htm",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".ts",
+        ".tsx",
+        ".vue",
+    }
+)
+_PYTHON_SOURCE_EXTENSIONS = frozenset({".py", ".pyi"})
+_JVM_SOURCE_EXTENSIONS = frozenset({".java", ".kt", ".kts", ".scala"})
+_NATIVE_SOURCE_EXTENSIONS = frozenset({".c", ".cc", ".cpp", ".go", ".h", ".hpp", ".rs", ".wasm"})
+_COMPUTE_IGNORED_PARTS = frozenset(
+    {".git", ".venv", "build", "dist", "node_modules", "vendor", "venv"}
+)
 _SENSITIVE_SUFFIXES = frozenset({".jks", ".key", ".keystore", ".p12", ".pem", ".pfx"})
 _SENSITIVE_NAMES = frozenset(
     {
@@ -219,9 +251,7 @@ def _default_route_config() -> dict[str, object]:
     }
 
 
-def _workspace_identity(
-    session: Session, tenant_id: UUID, workspace_id: UUID
-) -> dict[str, object]:
+def _workspace_identity(session: Session, tenant_id: UUID, workspace_id: UUID) -> dict[str, object]:
     row = (
         session.execute(
             text(
@@ -243,9 +273,7 @@ def _workspace_identity(
     return dict(row)
 
 
-def ensure_pages_route(
-    session: Session, tenant_id: UUID, workspace_id: UUID
-) -> dict[str, object]:
+def ensure_pages_route(session: Session, tenant_id: UUID, workspace_id: UUID) -> dict[str, object]:
     existing = (
         session.execute(
             text(
@@ -263,9 +291,7 @@ def ensure_pages_route(
     for attempt in range(100):
         candidate = str(workspace["workspace_key"])
         if attempt:
-            suffix = hashlib.sha256(
-                f"{workspace_id}:{attempt}".encode()
-            ).hexdigest()[:8]
+            suffix = hashlib.sha256(f"{workspace_id}:{attempt}".encode()).hexdigest()[:8]
             candidate = f"{candidate[:53]}-{suffix}"
         if candidate in RESERVED_SITE_KEYS:
             continue
@@ -292,9 +318,7 @@ def ensure_pages_route(
                     "workspace_id": workspace_id,
                     "workspace_key": workspace["workspace_key"],
                     "active_deployment_id": workspace.get("active_deployment_id"),
-                    "status": (
-                        "active" if workspace.get("active_deployment_id") else "reserved"
-                    ),
+                    "status": ("active" if workspace.get("active_deployment_id") else "reserved"),
                     "config": json.dumps(_default_route_config()),
                 },
             )
@@ -410,14 +434,10 @@ def configure_pages_site(
     }
     try:
         with tenant_session(credential.tenant_id) as session:
-            route = ensure_pages_route(
-                session, credential.tenant_id, credential.workspace_id
-            )
+            route = ensure_pages_route(session, credential.tenant_id, credential.workspace_id)
             previous_key = str(route["site_key"])
             previous_alias = bool(route.get("public_alias_enabled", False))
-            alias_enabled = (
-                previous_alias if requested_alias is None else requested_alias
-            )
+            alias_enabled = previous_alias if requested_alias is None else requested_alias
             with session.begin_nested():
                 updated = (
                     session.execute(
@@ -462,8 +482,7 @@ def configure_pages_site(
                 origins_changed = False
                 if previous_key != requested and previous_origin in origins:
                     origins = [
-                        requested_origin if item == previous_origin else item
-                        for item in origins
+                        requested_origin if item == previous_origin else item for item in origins
                     ]
                     origins = list(dict.fromkeys(origins))
                     origins_changed = True
@@ -651,9 +670,7 @@ def workspace_pages_entry_fields(
             "hosting_url_status": "legacy",
             "public_path": fallback_path,
             "application_url": row.get("public_url"),
-            "entry_kind": (
-                "deployed_application" if row.get("public_url") else "workspace_status"
-            ),
+            "entry_kind": ("deployed_application" if row.get("public_url") else "workspace_status"),
         }
     public = _route_public(route, configured)
     return {
@@ -762,9 +779,7 @@ def _source_descriptor(
 
 
 def _source_path(descriptor: dict[str, object], settings: Settings) -> Path:
-    for store in object_store_read_candidates(
-        settings, str(descriptor["storage_provider"])
-    ):
+    for store in object_store_read_candidates(settings, str(descriptor["storage_provider"])):
         candidate = store.path_for(str(descriptor["object_key"]))
         if candidate.is_file():
             return candidate
@@ -831,8 +846,7 @@ def _is_sensitive(path: str) -> bool:
         or name == ".env"
         or name.startswith(".env.")
         or name in _SENSITIVE_NAMES
-        or parsed.stem.lower()
-        in {"credential", "credentials", "private-key", "secret", "secrets"}
+        or parsed.stem.lower() in {"credential", "credentials", "private-key", "secret", "secrets"}
         or parsed.suffix.lower() in _SENSITIVE_SUFFIXES
         or any(part in {"credentials", "private-keys", "secrets"} for part in lowered_parts)
     )
@@ -850,6 +864,10 @@ def _file_category(path: str) -> str:
         return "layout"
     if extension in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}:
         return "component"
+    if extension in (
+        _PYTHON_SOURCE_EXTENSIONS | _JVM_SOURCE_EXTENSIONS | _NATIVE_SOURCE_EXTENSIONS
+    ):
+        return "compute_source"
     if extension in {".json", ".yaml", ".yml", ".toml", ".ini"}:
         return "configuration"
     if extension in {".md", ".mdx", ".txt"}:
@@ -890,8 +908,223 @@ def _source_public(descriptor: dict[str, object]) -> dict[str, object]:
         "filename": descriptor["filename"],
         "size_bytes": int(descriptor["size_bytes"]),
         "sha256": descriptor["sha256"],
-        "active": str(descriptor.get("active_source_version_id") or "")
-        == str(descriptor["id"]),
+        "active": str(descriptor.get("active_source_version_id") or "") == str(descriptor["id"]),
+    }
+
+
+def _compute_members(
+    members: list[ArchiveMember], extensions: frozenset[str]
+) -> list[ArchiveMember]:
+    return [
+        member
+        for member in members
+        if PurePosixPath(member.path).suffix.lower() in extensions
+        and not _is_sensitive(member.path)
+        and not _COMPUTE_IGNORED_PARTS.intersection(
+            part.lower() for part in PurePosixPath(member.path).parts
+        )
+    ]
+
+
+def _pages_manifest_compute_facts(
+    archive_path: Path,
+    members: list[ArchiveMember],
+) -> dict[str, object]:
+    facts: dict[str, object] = {
+        "declared": False,
+        "readable": False,
+        "web_compute": None,
+        "data_mode": None,
+        "function_count": 0,
+        "device_mode": None,
+    }
+    member = next(
+        (
+            candidate
+            for candidate in members
+            if candidate.path.lower() == PAGES_APP_MANIFEST_FILENAME
+        ),
+        None,
+    )
+    if member is None:
+        return facts
+    facts["declared"] = True
+    try:
+        payload = json.loads(_read_archive_member(archive_path, member.raw_path))
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+        return facts
+    if not isinstance(payload, dict):
+        return facts
+    web = payload.get("web") if isinstance(payload.get("web"), dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    device = payload.get("device") if isinstance(payload.get("device"), dict) else {}
+    functions = payload.get("functions") if isinstance(payload.get("functions"), list) else []
+    facts.update(
+        {
+            "readable": True,
+            "web_compute": web.get("compute"),
+            "data_mode": data.get("mode"),
+            "function_count": len(functions),
+            "device_mode": device.get("mode"),
+        }
+    )
+    return facts
+
+
+def _compute_placement_advice(
+    archive_path: Path,
+    members: list[ArchiveMember],
+    *,
+    has_index: bool,
+) -> dict[str, object]:
+    """Return deterministic advice; never rewrite code or change a deployment."""
+
+    browser = _compute_members(members, _BROWSER_SOURCE_EXTENSIONS)
+    python = _compute_members(members, _PYTHON_SOURCE_EXTENSIONS)
+    jvm = _compute_members(members, _JVM_SOURCE_EXTENSIONS)
+    native = _compute_members(members, _NATIVE_SOURCE_EXTENSIONS)
+    manifest = _pages_manifest_compute_facts(archive_path, members)
+    function_count = int(manifest["function_count"])
+    server_signals = bool(python or jvm or native or function_count)
+    if has_index and not server_signals:
+        recommended_mode = "pure_static"
+    elif has_index:
+        recommended_mode = "static_with_on_demand_api"
+    else:
+        recommended_mode = "on_demand_or_dedicated_runtime_review"
+
+    def evidence(values: list[ArchiveMember]) -> list[str]:
+        return [item.path for item in values[:8]]
+
+    items: list[dict[str, object]] = []
+    if has_index:
+        items.append(
+            {
+                "id": "keep-browser-safe-work-client-side",
+                "recommended_plane": "browser_javascript_typescript",
+                "scope": (
+                    "rendering, validation, filtering, sorting and non-secret "
+                    "deterministic calculations"
+                ),
+                "reason": (
+                    "These operations can run on the user's device without reserving "
+                    "server Runtime memory"
+                ),
+                "evidence": evidence(browser),
+                "automatic_change": False,
+            }
+        )
+    if python:
+        items.extend(
+            [
+                {
+                    "id": "review-pure-python-for-browser",
+                    "recommended_plane": "browser_javascript_typescript_or_webassembly",
+                    "scope": "pure, stateless Python modules without secrets or privileged I/O",
+                    "reason": (
+                        "Small pure calculations can be rewritten in JavaScript/TypeScript; "
+                        "scientific code may use a measured Pyodide/WebAssembly build"
+                    ),
+                    "evidence": evidence(python),
+                    "constraints": [
+                        "measure initial download size and mobile memory",
+                        "do not move secrets, authorization or shared writes into the browser",
+                    ],
+                    "automatic_change": False,
+                },
+                {
+                    "id": "retain-privileged-python-on-demand",
+                    "recommended_plane": "scale_to_zero_function",
+                    "scope": "Python that uses secrets, authentication or privileged shared data",
+                    "reason": (
+                        "The server boundary protects credentials while scale-to-zero removes "
+                        "idle Runtime residency"
+                    ),
+                    "evidence": evidence(python),
+                    "automatic_change": False,
+                },
+            ]
+        )
+    if jvm:
+        items.append(
+            {
+                "id": "keep-jvm-out-of-ordinary-browser",
+                "recommended_plane": "optional_local_agent_or_on_demand_runtime",
+                "scope": "Java, Kotlin or Scala code requiring a JVM",
+                "reason": (
+                    "Ordinary browsers execute JavaScript, not Java; JVM code needs an "
+                    "installed local process or a server Runtime"
+                ),
+                "evidence": evidence(jvm),
+                "automatic_change": False,
+            }
+        )
+    if native:
+        items.append(
+            {
+                "id": "review-native-code-for-webassembly",
+                "recommended_plane": "browser_webassembly_or_on_demand_runtime",
+                "scope": "deterministic Rust, C/C++ or Go computations",
+                "reason": (
+                    "WebAssembly can move suitable CPU work to the user device, but file, "
+                    "network and device access still require an explicit capability boundary"
+                ),
+                "evidence": evidence(native),
+                "automatic_change": False,
+            }
+        )
+    if manifest.get("data_mode") == "platform_api":
+        items.append(
+            {
+                "id": "keep-shared-data-on-platform-api",
+                "recommended_plane": "platform_database_api",
+                "scope": "persistent shared records, authorization and synchronization",
+                "reason": "Browser clients must not receive database credentials",
+                "evidence": [PAGES_APP_MANIFEST_FILENAME],
+                "automatic_change": False,
+            }
+        )
+    if function_count:
+        items.append(
+            {
+                "id": "keep-declared-privileged-functions-on-demand",
+                "recommended_plane": "scale_to_zero_function",
+                "scope": f"{function_count} function declaration(s)",
+                "reason": (
+                    "Declared privileged operations retain a server trust boundary only on demand"
+                ),
+                "evidence": [PAGES_APP_MANIFEST_FILENAME],
+                "automatic_change": False,
+            }
+        )
+    return {
+        "schema": "warehouse.compute-placement-advice.v1",
+        "advisory_only": True,
+        "automatic_code_rewrite": False,
+        "confirmation_required_before_new_release": True,
+        "recommended_hosting_mode": recommended_mode,
+        "confidence": "high" if manifest["readable"] else "medium",
+        "detected": {
+            "browser_entry": has_index,
+            "browser_source_files": len(browser),
+            "python_source_files": len(python),
+            "jvm_source_files": len(jvm),
+            "native_or_wasm_source_files": len(native),
+            "pages_manifest": manifest,
+        },
+        "items": items,
+        "guardrails": [
+            "JavaScript and Java are different runtimes; an ordinary browser has no JVM",
+            (
+                "never move secrets, authorization decisions or database credentials "
+                "into browser assets"
+            ),
+            (
+                "measure bundle size, startup latency and mobile memory before adopting "
+                "Python/WASM in-browser"
+            ),
+            "publish accepted changes as a new immutable source and verified release",
+        ],
     }
 
 
@@ -966,6 +1199,19 @@ def pages_design_context(
             },
         ]
     )
+    compute_placement = _compute_placement_advice(path, members, has_index=has_index)
+    recommendations.append(
+        {
+            "id": "review-compute-placement",
+            "title": "Review where each workload should run",
+            "reason": (
+                "Prefer browser compute and the platform Data API when safe; retain "
+                "privileged work in scale-to-zero or dedicated Runtime boundaries"
+            ),
+            "recommended_hosting_mode": compute_placement["recommended_hosting_mode"],
+            "advisory_only": True,
+        }
+    )
     source_id = str(descriptor["id"])
     return {
         "ok": True,
@@ -976,26 +1222,19 @@ def pages_design_context(
         "file_count": len(visible),
         "truncated": len(members) > MAX_DESIGN_FILES,
         "excluded_sensitive_files": sensitive_count,
-        "read_file": (
-            "/api/workspaces/v1/pages/files/{path}?source_ref=" + source_id
-        ),
+        "read_file": ("/api/workspaces/v1/pages/files/{path}?source_ref=" + source_id),
         "application_package": {
             "schema": PAGES_APP_SCHEMA,
             "manifest_filename": PAGES_APP_MANIFEST_FILENAME,
-            "contract": (
-                "/api/workspaces/v1/pages/package?source_ref=" + source_id
-            ),
-            "download": (
-                "/api/workspaces/v1/pages/package/download?source_ref=" + source_id
-            ),
+            "contract": ("/api/workspaces/v1/pages/package?source_ref=" + source_id),
+            "download": ("/api/workspaces/v1/pages/package/download?source_ref=" + source_id),
         },
         "recommendations": recommendations,
+        "compute_placement": compute_placement,
         "change_policy": {
             "active_release_mutable": False,
             "workspace_upload": "POST /api/workspaces/v1/sources/upload",
-            "hosting_session_upload": (
-                "POST /api/hosting/v2/sessions/{session_id}/sources"
-            ),
+            "hosting_session_upload": ("POST /api/hosting/v2/sessions/{session_id}/sources"),
             "workflow": [
                 "read selected code/design files",
                 "create a modified source archive",
@@ -1018,7 +1257,8 @@ def pages_source_file(
     descriptor = _source_descriptor(credential, source_ref)
     archive_path = _source_path(descriptor, settings)
     member = next(
-        (item for item in _archive_members(archive_path) if item.path == requested), None
+        (item for item in _archive_members(archive_path) if item.path == requested),
+        None,
     )
     if member is None or _is_sensitive(member.path):
         raise HTTPException(status_code=404, detail="Source file not found")

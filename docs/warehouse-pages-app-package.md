@@ -91,6 +91,21 @@ device runtime optional. This prevents a mixed legacy application from being
 misreported as fully static. The result can be downloaded, split into smaller
 Data API/functions boundaries and committed as an explicit manifest.
 
+## Compute-placement advice
+
+The existing Pages design endpoint also returns
+`warehouse.compute-placement-advice.v1`. It classifies source evidence into
+three recommendations: `pure_static`, `static_with_on_demand_api`, or
+`on_demand_or_dedicated_runtime_review`. The report distinguishes browser
+JavaScript/TypeScript from JVM Java, identifies Python and native/WASM source,
+and explains which pure calculations may be moved to the user's device.
+
+Advice is read-only. It always reports `advisory_only=true`, never rewrites
+code, and never moves secrets, authorization decisions, database credentials or
+privileged shared writes into browser assets. A user or AI must confirm a
+proposal, create a new immutable source, verify a candidate and activate that
+release through the ordinary governed workflow.
+
 ## Deterministic ZIP
 
 The exported ZIP contains:
@@ -132,6 +147,8 @@ All four endpoints accept an optional `source_ref`. The JSON endpoint gives AI
 the normalized manifest, immutable source identity, design-file API and ZIP
 download address without returning source bytes or credentials. The shared
 terminal capability is `dm pages package --workspace <workspace>`.
+The linked design context includes the same compute-placement report used by
+the Warehouse OS AI design action.
 
 The Pages control console receives the same capability as the read-only
 `pages.package.download` action. The default public address remains

@@ -8950,7 +8950,11 @@ COMMANDS = [
     {
         "command": "dm pages design",
         "tool_name": "digital_market_pages_design",
-        "description": "讀取指定工作區目前活動或指定不可變源版本的 Pages design context、非秘密文件索引、設計證據與改造建議；不修改當前發布",
+        "description": (
+            "讀取指定工作區目前活動或指定不可變源版本的 Pages design context、"
+            "非秘密文件索引、計算位置證據與改造建議；區分瀏覽器 JavaScript/TypeScript、"
+            "Python/WASM、JVM、平台數據 API、按需函數與專用 Runtime，且不修改當前發布"
+        ),
         "api_method": "GET",
         "api_path": "/api/workspaces/{workspace_ref}/pages/design",
         "permission": "asset_mgmt.read",

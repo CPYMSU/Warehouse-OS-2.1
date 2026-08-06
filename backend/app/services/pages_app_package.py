@@ -102,8 +102,7 @@ def _package_inputs(
         legacy_handler = None
         if archive.signals.get("python_source") and (
             archive.signals.get("requirements_txt")
-            or {"app.py", "main.py", "server.py", "asgi.py", "wsgi.py"}
-            & candidate_names
+            or {"app.py", "main.py", "server.py", "asgi.py", "wsgi.py"} & candidate_names
         ):
             legacy_runtime = "python"
             for module in ("app", "main", "server", "asgi", "wsgi"):
@@ -184,6 +183,7 @@ def pages_app_package_contract(
             "file_count": design["file_count"],
             "excluded_sensitive_files": design["excluded_sensitive_files"],
             "read_file": design["read_file"],
+            "compute_placement": design["compute_placement"],
         },
     }
 

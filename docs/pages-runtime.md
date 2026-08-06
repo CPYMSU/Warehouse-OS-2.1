@@ -65,11 +65,14 @@ entry URLs stay stable.
 
 Static releases are served directly from immutable files and never reserve a
 workspace container. Dynamic Python, Node and Compose releases use
-request-driven scale-to-zero: after 30 minutes without routed traffic, the
-Runtime Controller stops their containers while retaining images, release files
-and persistent data on SSD/HDD. A later request changes the deployment state to
-`wake_requested`; the controller starts the same containers and the gateway
-holds the request until the application passes its health check.
+request-driven scale-to-zero. Dedicated dynamic releases use the platform idle
+default (30 minutes unless configured otherwise); Pages with a static frontend
+and scale-to-zero API fallback use `runtime_policy.idle_timeout_seconds`, which
+defaults to 60 seconds. The Runtime Controller stops idle containers while
+retaining images, release files and persistent data on SSD/HDD. A later request
+changes the deployment state to `wake_requested`; the controller starts the
+same containers and the gateway holds the request until the application passes
+its health check.
 
 The public lifecycle is `running → suspending → suspended → wake_requested →
 waking → running`. Stopped containers are intentional and therefore excluded
@@ -101,8 +104,10 @@ GET /api/workspaces/v1/pages/package/download
 Hosting sessions expose the same operations below
 `/api/hosting/v2/sessions/{session_id}/pages`. The design endpoint lists the
 active source's code and design files, excludes secret paths, and returns
-evidence-based recommendations. The file endpoint only returns bounded UTF-8
-code/design files or bounded base64 image assets.
+evidence-based recommendations, including read-only compute-placement advice
+for browser JavaScript/TypeScript, Python/WASM, JVM code, platform Data API,
+scale-to-zero functions and dedicated Runtime boundaries. The file endpoint
+only returns bounded UTF-8 code/design files or bounded base64 image assets.
 The package endpoint exposes the normalized `warehouse.pages-application.v1`
 contract to users and AI clients; its download endpoint builds a deterministic,
 secret-free ZIP from the same immutable source. This read-only operation never
