@@ -19,6 +19,35 @@ $$;
 ALTER ROLE warehouse_control_replica
   WITH LOGIN REPLICATION BYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE
   PASSWORD :'repl_password';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'warehouse_control_backup') THEN
+    CREATE ROLE warehouse_control_backup NOLOGIN BYPASSRLS;
+  END IF;
+END
+$$;
+ALTER ROLE warehouse_control_backup
+  WITH NOLOGIN INHERIT NOREPLICATION BYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE;
+GRANT pg_read_all_data TO warehouse_control_backup;
+GRANT warehouse_control_backup TO warehouse_migrator;
+DO $$
+DECLARE unexpected_member record;
+BEGIN
+  FOR unexpected_member IN
+    SELECT member.rolname
+    FROM pg_auth_members membership
+    JOIN pg_roles parent ON parent.oid = membership.roleid
+    JOIN pg_roles member ON member.oid = membership.member
+    WHERE parent.rolname = 'warehouse_control_backup'
+      AND member.rolname <> 'warehouse_migrator'
+  LOOP
+    EXECUTE format(
+      'REVOKE warehouse_control_backup FROM %I',
+      unexpected_member.rolname
+    );
+  END LOOP;
+END
+$$;
 SELECT format(
   'GRANT CONNECT ON DATABASE %I TO warehouse_control_replica',
   current_database()

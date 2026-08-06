@@ -48,6 +48,7 @@ ALLOWED_SCOPES = {"schema", "primary_data"}
 RELEASE_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,100}$")
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,128}$")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
+POSTGRES_ROLE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
 SQL_DML = re.compile(r"\b(?:INSERT|UPDATE|DELETE|MERGE|COPY)\b", re.IGNORECASE)
 SQL_DDL = re.compile(
     r"\b(?:CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|COMMENT|REINDEX|CLUSTER)\b",
@@ -385,8 +386,11 @@ def verified_backup(
     backup_dir: Path,
     release_id: str,
     *,
+    backup_role: str = "warehouse_control_backup",
     runner: Any = subprocess.run,
 ) -> tuple[str, str]:
+    if not POSTGRES_ROLE_PATTERN.fullmatch(backup_role):
+        raise ValueError("control backup role is invalid")
     backup_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(backup_dir, 0o700)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -401,6 +405,8 @@ def verified_backup(
                 "pg_dump",
                 "--dbname",
                 database,
+                "--role",
+                backup_role,
                 "--format",
                 "custom",
                 "--no-publications",
@@ -440,7 +446,6 @@ class DatabaseMigrationController:
         config_path: Path,
         backup_dir: Path,
         database_url: str,
-        backup_database_url: str | None = None,
         *,
         engine: Engine | None = None,
     ) -> None:
@@ -449,7 +454,6 @@ class DatabaseMigrationController:
         self.config_path = config_path
         self.backup_dir = backup_dir
         self.database_url = database_url
-        self.backup_database_url = backup_database_url or database_url
         self.engine = engine or create_engine(database_url, poolclass=NullPool, pool_pre_ping=True)
 
     def _alembic_config(self, connection: Connection, version_table: str) -> Config:
@@ -513,7 +517,7 @@ class DatabaseMigrationController:
             if self.request.node_role == "primary":
                 self.state.write("backing_up", current_revision=current, plan=plan_payload)
                 backup_name, backup_sha256 = verified_backup(
-                    self.backup_database_url,
+                    self.database_url,
                     self.backup_dir,
                     self.request.release_id,
                 )
@@ -581,14 +585,12 @@ def run_request(
         database_url = os.getenv("WAREHOUSE_MIGRATION_DATABASE_URL", "").strip()
         if not database_url:
             raise RuntimeError("WAREHOUSE_MIGRATION_DATABASE_URL is required")
-        backup_database_url = os.getenv("WAREHOUSE_BACKUP_DATABASE_URL", "").strip()
         DatabaseMigrationController(
             request,
             state,
             config_path,
             backup_dir,
             database_url,
-            backup_database_url,
         ).run()
         return 0
     except Exception as exc:
