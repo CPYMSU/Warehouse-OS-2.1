@@ -102,17 +102,17 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
     assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
-    assert 'core.css?v=20260806-login-swiss1' in index
+    assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260804-task-runtime1' in index
-    assert 'dist/app.bundle.js?v=20260806-pages-package1' in index
-    assert 'dist/personal.bundle.js?v=20260806-login-swiss1' in PERSONAL.read_text(
+    assert 'dist/app.bundle.js?v=20260806-login-farmer1' in index
+    assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
     assert 'core.jsx?v=20260806-pages-actions1' in PERSONAL.read_text(encoding="utf-8")
 
 
-def test_login_poster_uses_bonfire_platform_story_and_modular_motion():
+def test_login_poster_uses_bonfire_platform_identity_and_modular_motion():
     source = APP.read_text(encoding="utf-8")
     css = CORE_CSS.read_text(encoding="utf-8")
 
@@ -120,7 +120,7 @@ def test_login_poster_uses_bonfire_platform_story_and_modular_motion():
     assert "CONNECTED INTELLIGENCE" in source
     assert "LOGIN_MODULE_CELLS" in source
     assert 'className="login-module-field"' in source
-    assert "One entry.<br/>Every possibility" in source
+    assert "像農民一樣思考。" in source
     assert "Warehousing<br/>is a business" not in source
     assert ".login-module-field" in css
     assert "@keyframes login-module-rise" in css
@@ -187,15 +187,20 @@ def test_secretary_dock_exposes_lighthouse_pairing_and_read_only_runs():
     assert "height:min(78vh,960px);flex-basis:min(78vh,960px)" in source
 
 
-def test_login_poster_uses_platform_manifesto_beyond_warehousing():
+def test_login_poster_uses_farmer_manifesto():
     app = APP.read_text(encoding="utf-8")
     catalog = LANG.read_text(encoding="utf-8")
-    manifesto = (
-        "連接人與 AI、知識、代碼、數據與行動。讓每一個工作區成為共同創造的起點，"
-        "讓智能成為可以被調用的基礎設施。"
-    )
-    assert manifesto in app
-    assert manifesto in catalog
+    for line in ("像農民一樣思考。", "尊重規律，經營時間，", "讓每一份資源", "自然生長"):
+        assert line in app
+        assert line in catalog
+    assert 'className="login-manifesto-title"' in app
+    assert "Think like a farmer.<br/>Respect natural rhythms." in app
+    assert "Steward time.<br/>Let every resource" in app
+    assert "像农民一样思考。" in catalog
+    assert "尊重规律，经营时间，" in catalog
+    assert "一個入口，" not in app
+    assert "One entry.<br/>Every possibility" not in app
+    assert "連接人與 AI、知識、代碼、數據與行動。" not in app
     assert "倉儲," not in app
     assert "Warehousing<br/>is a business" not in app
 
