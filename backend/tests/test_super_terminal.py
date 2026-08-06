@@ -193,6 +193,71 @@ def test_failed_capability_exposes_optional_atomic_recovery(monkeypatch) -> None
     }.issubset({item["tool_name"] for item in recovery["available_capabilities"]})
 
 
+def test_auto_runtime_repairs_hosting_runtime_scalar_after_exact_422(monkeypatch) -> None:
+    observed_values: list[dict[str, object]] = []
+
+    def dispatch(_entry, _actor_value, values, *, origin):
+        assert origin == "auto_runtime"
+        observed_values.append(dict(values))
+        desired_state = values["body.desired_state"]
+        if desired_state["runtime"] == "static":
+            raise executor.CommandAdapterError(
+                422,
+                {"detail": "desired_state.runtime must be an object"},
+            )
+        return {"session": {"status": "planning", "desired_state": desired_state}}
+
+    monkeypatch.setattr(executor, "_dispatch", dispatch)
+    monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
+
+    result = executor.execute_runtime_tool_call(
+        _actor(),
+        "digital_market_hosting_start",
+        {
+            "workspace": "bonfire-qa",
+            "message": "convert to static hosting",
+            "desired-state": {"runtime": "static", "storage": {"code": "hdd"}},
+            "execute": False,
+        },
+    )
+
+    assert result["status"] == "succeeded"
+    assert len(observed_values) == 2
+    assert observed_values[1]["body.desired_state"] == {
+        "runtime": {"type": "static"},
+        "storage": {"code": "hdd"},
+    }
+    assert result["contract_recovery"]["corrected_fields"] == [
+        "body.desired_state.runtime"
+    ]
+    assert result["contract_recovery"]["retry_count"] == 1
+
+
+def test_auto_runtime_does_not_rewrite_an_unrelated_422(monkeypatch) -> None:
+    attempts = 0
+
+    def rejected(*_args: object, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise executor.CommandAdapterError(422, {"detail": "workspace is invalid"})
+
+    monkeypatch.setattr(executor, "_dispatch", rejected)
+    monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
+
+    result = executor.execute_runtime_tool_call(
+        _actor(),
+        "digital_market_hosting_start",
+        {
+            "workspace": "bonfire-qa",
+            "message": "convert to static hosting",
+            "desired-state": {"runtime": "static"},
+        },
+    )
+
+    assert result["status"] == "target_rejected"
+    assert attempts == 1
+
+
 def test_verified_inventory_adapter_executes_canonical_service(monkeypatch) -> None:
     monkeypatch.setattr(executor, "command_audit_writer", lambda: _AuditWriter())
     monkeypatch.setattr(

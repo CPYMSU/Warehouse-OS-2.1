@@ -1494,6 +1494,7 @@ def workspace_pages_console(
         releases=releases,
         can_manage=can_manage,
     )
+    site_runtime = site.get("runtime") if isinstance(site.get("runtime"), dict) else {}
     return {
         "ok": True,
         "schema": "warehouse.pages-console.v1",
@@ -1504,6 +1505,16 @@ def workspace_pages_console(
             "mode": "static_browser" if browser_compute else "dedicated_runtime",
             "compute_location": "browser" if browser_compute else "warehouse_runtime",
             "idle_server_memory": "near_zero" if browser_compute else "profile_managed",
+        },
+        "hosting_classification": {
+            "is_fully_static": browser_compute,
+            "pages_shell_is_static": site_runtime.get("delivery") == "static_assets",
+            "application_requires_server_runtime": not browser_compute,
+            "authoritative_runtime_field": "runtime.type",
+            "note": (
+                "site.runtime describes the Pages routing shell; runtime.type "
+                "describes the hosted application's actual compute contract."
+            ),
         },
         "database": database_public,
         "storage": info["usage"],

@@ -8822,7 +8822,7 @@ COMMANDS = [
             _p(
                 "desired-state",
                 "body.desired_state",
-                "可選 storage/runtime/deployment 目標 JSON",
+                "可選 storage/runtime/deployment 目標 JSON 物件；runtime 契約必須使用 {\"type\":\"static|web|api|worker|agent|container|compose|auto\"} 物件，不接受字串縮寫",
                 ptype="json",
             ),
             _p(
