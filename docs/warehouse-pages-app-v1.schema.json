@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bonfirework.org/schemas/warehouse-pages-app-v1.schema.json",
+  "title": "Warehouse Pages Application v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "web"],
+  "properties": {
+    "schema": {"const": "warehouse.pages-application.v1"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 120},
+    "version": {"type": "string", "minLength": 1, "maxLength": 80},
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "entry"],
+      "properties": {
+        "root": {"$ref": "#/$defs/pathOrDot"},
+        "entry": {"$ref": "#/$defs/path"},
+        "compute": {"const": "browser"},
+        "navigation_fallback": {"enum": ["index", "404"]},
+        "service_worker": {"$ref": "#/$defs/path"}
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["none", "platform_api"]},
+        "default_access": {"$ref": "#/$defs/denyAccess"},
+        "collections": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": {"$ref": "#/$defs/collectionName"},
+              "access": {"$ref": "#/$defs/access"},
+              "offline": {"type": "boolean"}
+            }
+          }
+        },
+        "sync": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["none", "cursor"]},
+            "offline_store": {"enum": ["indexeddb", "none"]},
+            "cursor_field": {"$ref": "#/$defs/collectionName"},
+            "pull_limit": {"type": "integer", "minimum": 1, "maximum": 5000}
+          }
+        }
+      }
+    },
+    "functions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "route", "runtime"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,62}$"},
+          "route": {"type": "string", "pattern": "^/api/", "maxLength": 200},
+          "methods": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]}
+          },
+          "runtime": {
+            "enum": ["serverless_node", "serverless_python", "database_function"]
+          },
+          "source": {"$ref": "#/$defs/path"},
+          "handler": {"type": "string", "minLength": 1, "maxLength": 200},
+          "auth": {"enum": ["session", "owner", "workspace"]},
+          "secret_refs": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,127}$"}
+          },
+          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60}
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["disabled", "optional"]},
+        "capabilities": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,79}$"}
+        }
+      }
+    },
+    "design": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "roots": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/pathOrDot"}
+        },
+        "api_schema": {"$ref": "#/$defs/path"},
+        "components": {"$ref": "#/$defs/path"}
+      }
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*//).+$"
+    },
+    "pathOrDot": {
+      "oneOf": [
+        {"const": "."},
+        {"$ref": "#/$defs/path"}
+      ]
+    },
+    "collectionName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read", "write"],
+      "properties": {
+        "read": {"enum": ["deny", "session", "owner"]},
+        "write": {"enum": ["deny", "session", "owner"]}
+      }
+    },
+    "denyAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read", "write"],
+      "properties": {
+        "read": {"const": "deny"},
+        "write": {"const": "deny"}
+      }
+    }
+  }
+}

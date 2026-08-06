@@ -392,6 +392,12 @@ def test_design_context_excludes_secrets_and_describes_immutable_changes(
     assert ".env.production" not in paths
     assert result["excluded_sensitive_files"] == 1
     assert result["source"]["active"] is True
+    assert result["application_package"]["schema"] == (
+        "warehouse.pages-application.v1"
+    )
+    assert result["application_package"]["download"].endswith(
+        f"/pages/package/download?source_ref={descriptor['id']}"
+    )
     assert result["change_policy"]["active_release_mutable"] is False
     assert any(
         item["id"] == "bind-exact-database-origin"
@@ -647,11 +653,15 @@ def test_pages_api_routes_are_registered_before_the_api_catch_all() -> None:
 
     assert "/api/workspaces/v1/pages" in paths
     assert "/api/workspaces/v1/pages/design" in paths
+    assert "/api/workspaces/v1/pages/package" in paths
+    assert "/api/workspaces/v1/pages/package/download" in paths
     assert "/api/workspaces/v1/pages/files/{file_path:path}" in paths
     assert "/api/hosting/v2/sessions/{session_id}/pages" in paths
     assert "/api/hosting/v2/sessions/{session_id}/pages/design" in paths
     assert "/api/workspaces/{workspace_ref}/pages" in paths
     assert "/api/workspaces/{workspace_ref}/pages/design" in paths
+    assert "/api/workspaces/{workspace_ref}/pages/package" in paths
+    assert "/api/workspaces/{workspace_ref}/pages/package/download" in paths
     assert "/api/workspaces/{workspace_ref}/pages/files/{file_path:path}" in paths
     assert (
         "/api/workspaces/{workspace_ref}/pages/releases/{deployment_id}/activate" in paths

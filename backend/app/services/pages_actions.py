@@ -180,6 +180,23 @@ def pages_action_catalog(
             ),
         ),
         _action(
+            "pages.package.download",
+            label="導出應用包",
+            description=(
+                "导出当前不可变源的静态网页、数据与同步契约、按需函数声明和 AI 设计文件；"
+                "包内不注入平台密钥。"
+            ),
+            icon="outbound",
+            placement="primary",
+            enabled=bool(releases),
+            disabled_reason="source_version_required",
+            invocation={
+                "mode": "client",
+                "client_action": "open_url",
+                "url": f"/api/workspaces/{workspace_ref}/pages/package/download",
+            },
+        ),
+        _action(
             "pages.release.publish",
             label="發布新版",
             description="通过托管会话创建、验证并预览新的不可变发布。",

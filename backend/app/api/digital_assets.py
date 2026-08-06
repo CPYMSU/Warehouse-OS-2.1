@@ -27,6 +27,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.background import BackgroundTask
 
 from app.api.deps import ActorContext, current_actor
 from app.core.config import Settings, get_settings
@@ -91,6 +92,10 @@ from app.services.object_storage import (
     object_store_read_candidates,
 )
 from app.services.pages_actions import pages_action_catalog
+from app.services.pages_app_package import (
+    materialize_pages_app_package,
+    pages_app_package_contract,
+)
 from app.services.pages_runtime import (
     get_pages_site,
     pages_design_context,
@@ -1344,6 +1349,46 @@ def account_pages_design(
         _account_pages_credential(actor, workspace_ref),
         settings,
         source_ref=source_ref,
+    )
+
+
+@router.get("/api/workspaces/{workspace_ref}/pages/package")
+def account_pages_application_package(
+    workspace_ref: str,
+    source_ref: str | None = Query(default=None),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return pages_app_package_contract(
+        _account_pages_credential(actor, workspace_ref),
+        settings,
+        source_ref=source_ref,
+        account_workspace_ref=workspace_ref,
+    )
+
+
+@router.get("/api/workspaces/{workspace_ref}/pages/package/download")
+def account_pages_application_package_download(
+    workspace_ref: str,
+    source_ref: str | None = Query(default=None),
+    actor: ActorContext = Depends(current_actor),
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    package = materialize_pages_app_package(
+        _account_pages_credential(actor, workspace_ref),
+        settings,
+        source_ref=source_ref,
+    )
+    return FileResponse(
+        package.path,
+        media_type="application/zip",
+        filename=package.filename,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-SHA256": package.sha256,
+            "X-Warehouse-Pages-Manifest": package.manifest_digest,
+        },
+        background=BackgroundTask(package.path.unlink, missing_ok=True),
     )
 
 

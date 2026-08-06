@@ -94,6 +94,8 @@ GET /api/workspaces/v1/pages
 PUT /api/workspaces/v1/pages
 GET /api/workspaces/v1/pages/design
 GET /api/workspaces/v1/pages/files/{path}
+GET /api/workspaces/v1/pages/package
+GET /api/workspaces/v1/pages/package/download
 ```
 
 Hosting sessions expose the same operations below
@@ -101,6 +103,11 @@ Hosting sessions expose the same operations below
 active source's code and design files, excludes secret paths, and returns
 evidence-based recommendations. The file endpoint only returns bounded UTF-8
 code/design files or bounded base64 image assets.
+The package endpoint exposes the normalized `warehouse.pages-application.v1`
+contract to users and AI clients; its download endpoint builds a deterministic,
+secret-free ZIP from the same immutable source. This read-only operation never
+runs a database migration. See
+[`warehouse-pages-app-package.md`](warehouse-pages-app-package.md).
 
 The signed-in Warehouse OS UI reads the non-secret control-plane aggregate at:
 
@@ -144,6 +151,7 @@ The matching terminal/external-AI contracts are:
 dm pages status
 dm pages configure
 dm pages design
+dm pages package
 dm pages file
 dm pages release activate
 ```

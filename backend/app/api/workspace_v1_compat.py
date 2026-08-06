@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.api.workspace_autonomy import autonomous_workspace_credential
 from app.core.config import Settings, get_settings
@@ -26,6 +27,10 @@ from app.services.hosting_fabric import (
     workspace_database_control,
 )
 from app.services.object_storage import object_store_read_candidates
+from app.services.pages_app_package import (
+    materialize_pages_app_package,
+    pages_app_package_contract,
+)
 from app.services.pages_runtime import (
     configure_pages_site,
     get_pages_site,
@@ -190,6 +195,43 @@ def customer_pages_design(
         credential,
         settings,
         source_ref=source_ref,
+    )
+
+
+@router.get("/api/workspaces/v1/pages/package")
+def customer_pages_application_package(
+    source_ref: str | None = Query(default=None),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return pages_app_package_contract(
+        credential,
+        settings,
+        source_ref=source_ref,
+    )
+
+
+@router.get("/api/workspaces/v1/pages/package/download")
+def customer_pages_application_package_download(
+    source_ref: str | None = Query(default=None),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    package = materialize_pages_app_package(
+        credential,
+        settings,
+        source_ref=source_ref,
+    )
+    return FileResponse(
+        package.path,
+        media_type="application/zip",
+        filename=package.filename,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-SHA256": package.sha256,
+            "X-Warehouse-Pages-Manifest": package.manifest_digest,
+        },
+        background=BackgroundTask(package.path.unlink, missing_ok=True),
     )
 
 

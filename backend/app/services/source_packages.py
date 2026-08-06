@@ -19,6 +19,11 @@ from app.services.hosting_compatibility import (
     MAX_MANIFEST_BYTES,
     validate_hosting_manifest,
 )
+from app.services.pages_app_contract import (
+    MAX_PAGES_APP_MANIFEST_BYTES,
+    PAGES_APP_MANIFEST_FILENAME,
+    validate_pages_app_manifest,
+)
 
 MAX_ARCHIVE_ENTRIES = 20_000
 MAX_COMPRESSION_RATIO = 200
@@ -68,6 +73,7 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
     top_level: set[str] = set()
     source_paths: set[str] = set()
     manifest_candidates: list[tuple[str, bytes]] = []
+    pages_manifest_candidates: list[tuple[str, bytes]] = []
     packed = max(path.stat().st_size, 1)
     archive_format: str
     if zipfile.is_zipfile(path):
@@ -105,6 +111,17 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
                                 },
                             )
                         manifest_candidates.append((member_path, archive.read(item)))
+                    if member.name == PAGES_APP_MANIFEST_FILENAME:
+                        if item.file_size > MAX_PAGES_APP_MANIFEST_BYTES:
+                            raise HTTPException(
+                                status_code=422,
+                                detail={
+                                    "reason": "pages_app_manifest_invalid",
+                                    "field": "manifest",
+                                    "message": "warehouse.pages.json exceeds 256 KiB",
+                                },
+                            )
+                        pages_manifest_candidates.append((member_path, archive.read(item)))
     elif tarfile.is_tarfile(path):
         archive_format = "tar"
         with tarfile.open(path, mode="r:*") as archive:
@@ -146,6 +163,23 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
                                 detail="Hosting manifest is unreadable",
                             )
                         manifest_candidates.append((member_path, stream.read()))
+                    if member.name == PAGES_APP_MANIFEST_FILENAME:
+                        if item.size > MAX_PAGES_APP_MANIFEST_BYTES:
+                            raise HTTPException(
+                                status_code=422,
+                                detail={
+                                    "reason": "pages_app_manifest_invalid",
+                                    "field": "manifest",
+                                    "message": "warehouse.pages.json exceeds 256 KiB",
+                                },
+                            )
+                        stream = archive.extractfile(item)
+                        if stream is None:
+                            raise HTTPException(
+                                status_code=422,
+                                detail="Pages application manifest is unreadable",
+                            )
+                        pages_manifest_candidates.append((member_path, stream.read()))
     else:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -201,6 +235,67 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
         hosting_contract = {
             "schema": hosting_manifest["schema"],
             "contract_digest": hosting_manifest["contract_digest"],
+            "manifest_sha256": hashlib.sha256(content).hexdigest(),
+            "path": manifest_path,
+            "declared": True,
+        }
+    allowed_pages_manifest_paths = {PAGES_APP_MANIFEST_FILENAME}
+    if single_root:
+        allowed_pages_manifest_paths.add(
+            f"{single_root}/{PAGES_APP_MANIFEST_FILENAME}"
+        )
+    misplaced_pages_manifests = [
+        name
+        for name, _content in pages_manifest_candidates
+        if name not in allowed_pages_manifest_paths
+    ]
+    selected_pages_manifests = [
+        (name, content)
+        for name, content in pages_manifest_candidates
+        if name in allowed_pages_manifest_paths
+    ]
+    if misplaced_pages_manifests or len(selected_pages_manifests) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": "pages_app_manifest_invalid",
+                "field": "manifest",
+                "message": (
+                    "provide exactly one warehouse.pages.json at the application root"
+                ),
+                "paths": sorted(name for name, _content in pages_manifest_candidates),
+            },
+        )
+    pages_manifest: dict[str, object] | None = None
+    pages_contract: dict[str, object] | None = None
+    if selected_pages_manifests:
+        manifest_path, content = selected_pages_manifests[0]
+        try:
+            decoded = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "reason": "pages_app_manifest_invalid",
+                    "field": "manifest",
+                    "message": "warehouse.pages.json must be valid UTF-8 JSON",
+                },
+            ) from exc
+        exposed_paths = {
+            (
+                PurePosixPath(*PurePosixPath(path).parts[1:]).as_posix()
+                if single_root and PurePosixPath(path).parts[0] == single_root
+                else path
+            ).lower()
+            for path in source_paths
+        }
+        pages_manifest = validate_pages_app_manifest(
+            decoded,
+            source_paths=exposed_paths,
+        )
+        pages_contract = {
+            "schema": pages_manifest["schema"],
+            "contract_digest": pages_manifest["contract_digest"],
             "manifest_sha256": hashlib.sha256(content).hexdigest(),
             "path": manifest_path,
             "declared": True,
@@ -274,6 +369,8 @@ def inspect_source_archive(path: Path, *, max_uncompressed_bytes: int) -> Source
             "candidate_entrypoints": candidate_entrypoints,
             "hosting_manifest": hosting_manifest,
             "hosting_contract": hosting_contract,
+            "pages_manifest": pages_manifest,
+            "pages_contract": pages_contract,
         },
     )
 

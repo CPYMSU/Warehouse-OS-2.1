@@ -23,6 +23,10 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import Settings, get_settings
 from app.db.session import system_session, tenant_session
 from app.services.object_storage import object_store_read_candidates
+from app.services.pages_app_contract import (
+    PAGES_APP_MANIFEST_FILENAME,
+    PAGES_APP_SCHEMA,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -975,6 +979,16 @@ def pages_design_context(
         "read_file": (
             "/api/workspaces/v1/pages/files/{path}?source_ref=" + source_id
         ),
+        "application_package": {
+            "schema": PAGES_APP_SCHEMA,
+            "manifest_filename": PAGES_APP_MANIFEST_FILENAME,
+            "contract": (
+                "/api/workspaces/v1/pages/package?source_ref=" + source_id
+            ),
+            "download": (
+                "/api/workspaces/v1/pages/package/download?source_ref=" + source_id
+            ),
+        },
         "recommendations": recommendations,
         "change_policy": {
             "active_release_mutable": False,

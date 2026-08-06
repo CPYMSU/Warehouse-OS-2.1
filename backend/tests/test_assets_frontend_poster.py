@@ -98,14 +98,14 @@ def test_digital_asset_drawer_exposes_the_pages_hosting_console():
 def test_assets_poster_styles_are_loaded_and_cache_busted():
     index = INDEX.read_text(encoding="utf-8")
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
-    assert 'pages/pages-assets.jsx?v=20260806-pages-runtime2' in index
+    assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
     assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
     assert 'core.css?v=20260806-login-swiss1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260804-task-runtime1' in index
-    assert 'dist/app.bundle.js?v=20260806-pages-runtime2' in index
+    assert 'dist/app.bundle.js?v=20260806-pages-package1' in index
     assert 'dist/personal.bundle.js?v=20260806-login-swiss1' in PERSONAL.read_text(
         encoding="utf-8"
     )

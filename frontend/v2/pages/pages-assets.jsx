@@ -137,7 +137,7 @@ window.W2_LANG.addEN({
   "尚未上傳源碼,可以直接切換;DATA 與數據庫仍固定在 HDD。": "No source uploaded; the binding can be switched directly. DATA and databases remain on HDD.",
   "已存在源碼或代碼工件,不能直接改綁定;請交給 AI 規劃校驗後遷移。": "Source or code artifacts already exist. The binding cannot be changed directly; ask AI to plan a verified migration.",
   "交給 AI 判斷": "Let AI decide",
-  "定制網址": "Customize URL", "網址與別名": "URL & alias", "AI 改設計": "AI redesign",
+  "定制網址": "Customize URL", "網址與別名": "URL & alias", "AI 改設計": "AI redesign", "導出應用包": "Export app package",
   "Pages 托管控制台": "Pages hosting console", "Warehouse OS 內訪問": "Open in Warehouse OS",
   "正式入口": "Canonical URL", "複製網址": "Copy URL", "網址已複製": "URL copied",
   "當前發布": "Current release", "發布新版": "Publish release", "發布歷史": "Release history",

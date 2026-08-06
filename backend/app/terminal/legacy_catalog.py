@@ -8964,6 +8964,28 @@ COMMANDS = [
         "examples": ["dm pages design --workspace mk7-workspace"],
     },
     {
+        "command": "dm pages package",
+        "tool_name": "digital_market_pages_package",
+        "description": "读取指定工作区当前或指定不可变源版本的 Warehouse Pages 应用包契约、静态入口、平台数据库 API 规则、按需函数、可选设备能力、AI 设计入口及确定性 ZIP 下载地址；只读且不执行数据库迁移",
+        "search_aliases": [
+            "Pages 应用包",
+            "Pages 應用包",
+            "导出静态应用",
+            "export pages application package",
+        ],
+        "api_method": "GET",
+        "api_path": "/api/workspaces/{workspace_ref}/pages/package",
+        "permission": "asset_mgmt.read",
+        "permission_any": ["assets.read", "assets.manage", "asset_mgmt.read", "asset_mgmt.manage"],
+        "writes": False,
+        "risk": "normal",
+        "params": [
+            _p("workspace", "path.workspace_ref", "工作区 UUID、数字 ID 或 workspace_key", required=True),
+            _p("source", "query.source_ref", "可选不可变 source version UUID 或数字 ID"),
+        ],
+        "examples": ["dm pages package --workspace mk7-workspace"],
+    },
+    {
         "command": "dm pages file",
         "tool_name": "digital_market_pages_design_file",
         "description": "從指定工作區的不可變源版本讀取一個 design context 已列出的非秘密代碼或設計文件；受大小、編碼和敏感路徑策略限制",
@@ -11542,6 +11564,7 @@ COMPOSITE_STORE_TOOL_NAMES = frozenset(
         "digital_market_pages_status",
         "digital_market_pages_configure",
         "digital_market_pages_design",
+        "digital_market_pages_package",
         "digital_market_pages_design_file",
         "digital_market_pages_release_activate",
         # Tenant-authenticated command whose business mutation is platform-only.
@@ -11620,6 +11643,7 @@ _TENANT_ASSET_SIDECAR_READ_TOOLS = frozenset(
         "digital_market_hosting_events",
         "digital_market_pages_status",
         "digital_market_pages_design",
+        "digital_market_pages_package",
         "digital_market_pages_design_file",
     }
 )
