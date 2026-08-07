@@ -89,9 +89,17 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert 'className="civ-mast-word"' in source
     assert 'className="civ-mast-word-bars"' in source
     assert "civ-word-color-pass 7.2s" in style
-    assert "civ-word-register 7.2s" in style
-    assert "civ-word-bar-pass 7.2s" in style
-    assert ".civ-mast-word::before, .civ-mast-word::after, .civ-mast-word-bars b { animation: none; opacity: 0; }" in style
+    assert 'className="civ-mast-word-layer civ-mast-word-offset is-red"' in source
+    assert 'className="civ-mast-word-layer civ-mast-word-offset is-blue"' in source
+    assert 'className="civ-mast-word-layer civ-mast-word-offset is-green"' in source
+    assert "animation-name: civ-word-register-red" in style
+    assert "animation-name: civ-word-register-blue" in style
+    assert "animation-name: civ-word-register-green" in style
+    assert "height: 7px" in style
+    assert "#DC2A20 0 18%, #F5D20A 18% 36%, #2161A9 36% 56%" in style
+    assert "font-size: .44em" in style
+    assert "max-width: 100%; font-size: .38em" in style
+    assert ".civ-mast-word-color, .civ-mast-word-offset, .civ-mast-word-bars b { animation: none; opacity: 0; }" in style
     assert "data-domain" in source
     for domain in ("judgement", "technology", "organization", "time", "ethics"):
         assert f".civ-poster-motion.is-{domain}" in style
@@ -103,10 +111,10 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260808-civilization11' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization12' in index
+    assert 'pages/pages-civilization.css?v=20260808-civilization13' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization13' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization12' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization13' in index
 
 
 def test_public_civilization_page_and_browser_postcard_are_static_assets() -> None:
