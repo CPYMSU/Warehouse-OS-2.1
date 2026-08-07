@@ -51,6 +51,10 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert "readingSections" in source
     assert "civ-article-section" in source
     assert "civilization_api_key_issue" in source
+    assert "civilization-notes-close" in source
+    assert "civilization-notes-open" in source
+    assert "notes_open" in source
+    assert ".civ-reader.is-notes-collapsed" in style
     assert "civ-lens-editor" in source
     assert "civ-poster-index" in source
     assert "12 COLUMN SYSTEM" in source
@@ -71,9 +75,9 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260808-civilization6' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization6' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization6' in index
+    assert 'pages/pages-civilization.css?v=20260808-civilization7' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization7' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization7' in index
 
 
 def test_civilization_content_is_tenant_data_with_database_isolation() -> None:

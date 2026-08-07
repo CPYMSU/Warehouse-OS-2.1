@@ -162,7 +162,10 @@
 
 /* C · POSTER READER */
 .civ-reader { min-height: 740px; display: grid; grid-template-columns: 96px minmax(0, 1fr) 350px; }
-.civ-reader-document { min-width: 0; }
+.civ-reader.is-notes-collapsed { grid-template-columns: 96px minmax(0, 1fr); }
+.civ-reader-document { min-width: 0; position: relative; }
+.civ-notes-reopen { min-height: 34px; margin: 12px 12px -46px auto; padding: 0 12px; display: block; position: sticky; top: 72px; z-index: 5; border: 1px solid var(--rule); color: #FFF; background: var(--civ-domain-ink); font: 800 8px var(--f-mono); letter-spacing: .08em; }
+.civ-notes-reopen:hover { color: var(--civ-domain-ink); background: var(--civ-accent); }
 .civ-reader-rail { display: flex; flex-direction: column; border-right: 1px solid var(--rule); }
 .civ-reader-rail button { min-height: 90px; flex: 1; border-bottom: 1px solid var(--rule); font: 850 8.5px/1.4 var(--f-mono); letter-spacing: .09em; writing-mode: vertical-rl; transform: rotate(180deg); }
 .civ-reader-rail button::after { content: ""; width: 3px; height: 28px; margin: 10px auto 0; display: block; background: var(--civ-signal); }
@@ -207,6 +210,9 @@
 .civ-poster-motion.is-ethics i:nth-child(3) { right: 54%; }
 .civ-poster-motion.is-ethics i:nth-child(4) { right: 4%; }
 .civ-reader-notes { min-height: 740px; max-height: calc(100vh - 62px); padding: 20px; display: flex; flex-direction: column; position: sticky; top: 58px; align-self: start; overflow: auto; color: #F5F2EB; background: var(--civ-domain-ink); }
+.civ-reader-notes-head { min-height: 28px; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.civ-reader-notes-head button { width: 30px; height: 30px; flex: 0 0 30px; border: 1px solid #706E68; color: #FFF; font: 400 20px/1 var(--f-sans); }
+.civ-reader-notes-head button:hover { color: var(--civ-domain-ink); background: var(--civ-accent); border-color: var(--civ-accent); }
 .civ-reader-notes h3 { margin: 46px 0 12px; font-size: 27px; line-height: .94; letter-spacing: -.05em; }
 .civ-reader-notes > p { color: #C7C4BC; font-size: 12px; line-height: 1.75; }
 .civ-publication-meta { margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr; border: 1px solid #5E5D58; }
@@ -310,6 +316,7 @@
   .civ-atlas-register { border-right: 0; }
   .civ-atlas-detail { min-height: 510px; position: relative; top: 0; }
   .civ-reader { grid-template-columns: 76px 1fr; }
+  .civ-reader.is-notes-collapsed { grid-template-columns: 76px 1fr; }
   .civ-reader-notes { grid-column: 1 / -1; min-height: 500px; max-height: none; position: relative; top: 0; }
   .civ-filters { grid-template-columns: 110px 1fr; }
   .civ-search { grid-column: 1 / -1; border-top: 1px solid var(--rule); border-left: 0; }
@@ -347,6 +354,7 @@
   .civ-timeline-node button { grid-template-columns: 34px 1fr; gap: 9px; }
   .civ-timeline-node aside { grid-column: 2; margin-top: 12px; padding: 10px 0 0; border-top: 1px solid var(--hair); border-left: 0; }
   .civ-reader { grid-template-columns: 1fr; }
+  .civ-reader.is-notes-collapsed { grid-template-columns: 1fr; }
   .civ-reader-rail { height: 54px; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
   .civ-reader-rail button { min-width: 58px; min-height: 0; border-right: 1px solid var(--rule); writing-mode: horizontal-tb; transform: none; }
   .civ-reader-poster { min-height: 620px; }
