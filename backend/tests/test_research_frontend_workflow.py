@@ -131,4 +131,13 @@ def test_manuscript_refinement_is_browser_local_recoverable_and_formally_version
     assert "block.type === \"table_row\"" in source
     assert ".rv-refinement-grid" in styles
     assert ".rv-refinement-table-row" in styles
+    assert "DOCUMENT TWIN" in source
+    assert "RefinementSemanticLayer" in source
+    assert "并行启动四项专业评审" in source
+    assert '"neutrality", "中立化"' in source
+    assert '"professional", "专业"' in source
+    assert '"chief", "主 AI"' in source
+    assert "RefinementEquation" in source
+    assert ".rv-refinement-agent-tabs" in styles
+    assert ".rv-refinement-semantic-layer" in styles
     assert "@media(max-width:680px)" in styles

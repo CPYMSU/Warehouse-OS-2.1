@@ -50,6 +50,13 @@ from app.services.research_review import (
     queue_document_index,
     set_annotation_status,
 )
+from app.services.research_semantic_refinement import (
+    agent_chat,
+    queue_semantic_run,
+    resolve_finding,
+    run_semantic_ai,
+    semantic_workspace,
+)
 from app.services.research_vault import (
     add_file_version,
     content_descriptor,
@@ -331,6 +338,71 @@ def research_manuscript_refinement_media(
         media_type=content_type,
         headers={"Cache-Control": "private, max-age=300"},
     )
+
+
+@router.get(
+    "/api/research/projects/{project_ref}/files/{file_ref}/refinement/semantic"
+)
+def research_manuscript_semantic_workspace(
+    project_ref: str,
+    file_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+) -> dict[str, object]:
+    """Read paragraph-aligned translation, distillation, and reviewer threads."""
+
+    return semantic_workspace(actor, project_ref, file_ref)
+
+
+@router.post(
+    "/api/research/projects/{project_ref}/files/{file_ref}/refinement/semantic/refresh",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def research_manuscript_semantic_refresh(
+    project_ref: str,
+    file_ref: str,
+    background_tasks: BackgroundTasks,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    """Queue one shared-runtime semantic pass; no manuscript Runtime is created."""
+
+    result = queue_semantic_run(actor, project_ref, file_ref, payload)
+    if result.get("status") == "queued":
+        background_tasks.add_task(run_semantic_ai, actor, result["run_id"], settings)
+    return result
+
+
+@router.post(
+    "/api/research/projects/{project_ref}/files/{file_ref}/refinement/agents/"
+    "{agent_type}/messages",
+    status_code=status.HTTP_201_CREATED,
+)
+def research_manuscript_agent_message(
+    project_ref: str,
+    file_ref: str,
+    agent_type: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    return agent_chat(actor, project_ref, file_ref, agent_type, payload, settings)
+
+
+@router.post("/api/research/manuscript-findings/{finding_id}/accept")
+def research_manuscript_finding_accept(
+    finding_id: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+) -> dict[str, object]:
+    return resolve_finding(actor, finding_id, accept=True)
+
+
+@router.post("/api/research/manuscript-findings/{finding_id}/reject")
+def research_manuscript_finding_reject(
+    finding_id: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+) -> dict[str, object]:
+    return resolve_finding(actor, finding_id, accept=False)
 
 
 @router.post(

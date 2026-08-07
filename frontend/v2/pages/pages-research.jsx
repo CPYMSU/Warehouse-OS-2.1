@@ -814,6 +814,42 @@ const writeRefinementLocal = (fileId, value) => {
   catch (_error) { return false; }
 };
 
+const REFINEMENT_AGENTS = [
+  ["neutrality", "中立化"], ["logic", "逻辑"], ["clarity", "易懂"],
+  ["professional", "专业"], ["chief", "主 AI"],
+];
+
+const RefinementEquation = ({ latex, fallback }) => {
+  const node = useRef(null);
+  useEffect(() => {
+    let disposed = false;
+    let timer = null;
+    const render = attempts => {
+      if (disposed || !node.current) return;
+      if (window.katex && clean(latex)) {
+        try { window.katex.render(clean(latex), node.current, { displayMode: true, throwOnError: false, strict: false }); return; }
+        catch (_error) {}
+      }
+      node.current.textContent = clean(latex || fallback) || "—";
+      if (attempts > 0) timer = window.setTimeout(() => render(attempts - 1), 500);
+    };
+    render(4);
+    return () => { disposed = true; if (timer) window.clearTimeout(timer); };
+  }, [latex, fallback]);
+  return <div ref={node} className="rv-refinement-equation-preview" aria-label="论文公式"/>;
+};
+
+const RefinementSemanticLayer = ({ artifact, layer }) => {
+  const content = artifact && artifact.content || {};
+  if (!artifact || artifact.stale || layer === "original") return null;
+  const showTranslation = layer === "all" || layer === "translation";
+  const showDistillation = layer === "all" || layer === "distillation";
+  return <div className="rv-refinement-semantic-layer">
+    {showTranslation && <article><b>简体中文</b><p>{content.translation_zh_cn || "等待翻译"}</p></article>}
+    {showDistillation && <article><b>段落蒸馏</b><p>{content.distillation || "等待蒸馏"}</p>{content.argument_role && <small>{content.argument_role}</small>}</article>}
+  </div>;
+};
+
 const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onError }) => {
   const activeFile = files.find(item => clean(item.id) === clean(fileId)) || files[0] || null;
   const [workspace, setWorkspace] = useState(null);
@@ -822,6 +858,12 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const [commitMessage, setCommitMessage] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [localWarning, setLocalWarning] = useState("");
+  const [semantic, setSemantic] = useState(null);
+  const [semanticBusy, setSemanticBusy] = useState(false);
+  const [semanticLayer, setSemanticLayer] = useState("all");
+  const [agentType, setAgentType] = useState("neutrality");
+  const [agentMessage, setAgentMessage] = useState("");
+  const [agentBusy, setAgentBusy] = useState("");
   const blocksRef = useRef([]);
   const revisionRef = useRef(0);
   const editSerial = useRef(0);
@@ -830,6 +872,31 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const base = project && activeFile
     ? "/api/research/projects/" + encodeURIComponent(project.id) + "/files/" + encodeURIComponent(activeFile.id) + "/refinement"
     : "";
+  const semanticBase = base ? base + "/semantic" : "";
+
+  const loadSemantic = async (quiet = false) => {
+    if (!semanticBase) return null;
+    try {
+      const data = await W2.json(semanticBase);
+      setSemantic(data);
+      return data;
+    } catch (reason) {
+      if (!quiet) onError(clean(reason.message || reason));
+      return null;
+    }
+  };
+  const queueSemantic = async payload => {
+    if (!semanticBase) return null;
+    setSemanticBusy(true);
+    try {
+      const result = await W2.post(semanticBase + "/refresh", payload || {});
+      await loadSemantic(true);
+      return result;
+    } catch (reason) {
+      onError(clean(reason.message || reason));
+      return null;
+    } finally { setSemanticBusy(false); }
+  };
 
   const cache = (nextBlocks, dirty) => {
     if (!activeFile || !workspace) return;
@@ -849,7 +916,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   useEffect(() => {
     let alive = true;
     setWorkspace(null); setBlocks([]); setState(base ? "loading" : "empty");
-    setCommitMessage(""); setLocalWarning("");
+    setCommitMessage(""); setLocalWarning(""); setSemantic(null); setAgentMessage("");
     editSerial.current = 0; savedSerial.current = 0; revisionRef.current = 0;
     if (!base) return () => { alive = false; };
     W2.post(base, {}).then(data => {
@@ -872,6 +939,23 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     });
     return () => { alive = false; };
   }, [base]);
+  useEffect(() => {
+    if (!workspace || !semanticBase) return () => {};
+    let disposed = false;
+    loadSemantic(true).then(data => {
+      if (disposed || !data) return;
+      if (!(data.artifacts || []).length && !data.latest_run) {
+        queueSemantic({ modes: ["translate", "distill"] });
+      }
+    });
+    return () => { disposed = true; };
+  }, [semanticBase, workspace && workspace.draft && workspace.draft.id]);
+  useEffect(() => {
+    const run = semantic && semantic.latest_run;
+    if (!run || !["queued", "processing"].includes(run.status)) return () => {};
+    const timer = window.setTimeout(() => loadSemantic(true), 1800);
+    return () => window.clearTimeout(timer);
+  }, [semantic && semantic.latest_run]);
 
   const syncDraft = async () => {
     if (!workspace || savingRef.current || editSerial.current <= savedSerial.current) return !savingRef.current;
@@ -893,6 +977,10 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       } else {
         setState("local"); cache(blocksRef.current, true);
       }
+      queueSemantic({
+        modes: ["translate", "distill"],
+        block_ids: snapshot.map(item => clean(item.id)).filter(Boolean),
+      });
       return true;
     } catch (reason) {
       const conflict = reason && reason.status === 409;
@@ -950,6 +1038,61 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     finally { setPublishing(false); }
   };
 
+  const startReviews = async () => {
+    setAgentBusy("review");
+    await queueSemantic({
+      modes: ["translate", "distill", "review:neutrality", "review:logic",
+        "review:clarity", "review:professional"],
+    });
+    setAgentBusy("");
+  };
+  const sendAgentMessage = async () => {
+    const message = agentMessage.trim();
+    if (!message || agentBusy) return;
+    setAgentBusy("message");
+    try {
+      await W2.post(base + "/agents/" + encodeURIComponent(agentType) + "/messages", { message });
+      setAgentMessage("");
+      await loadSemantic(true);
+    } catch (reason) { onError(clean(reason.message || reason)); }
+    finally { setAgentBusy(""); }
+  };
+  const decideFinding = async (finding, accept) => {
+    if (!finding || agentBusy) return;
+    setAgentBusy(clean(finding.id));
+    try {
+      const result = await W2.post(
+        "/api/research/manuscript-findings/" + encodeURIComponent(finding.id) +
+          (accept ? "/accept" : "/reject"), {}
+      );
+      if (accept && result.block) {
+        const next = blocksRef.current.map(item => clean(item.id) === clean(result.block.id)
+          ? { ...item, ...result.block } : item);
+        blocksRef.current = next; setBlocks(next);
+        revisionRef.current = Number(result.draft_revision) || revisionRef.current + 1;
+        editSerial.current += 1; savedSerial.current = editSerial.current;
+        setState("saved"); cache(next, false);
+        queueSemantic({ modes: ["translate", "distill"], block_ids: [clean(result.block.id)] });
+      }
+      await loadSemantic(true);
+    } catch (reason) { onError(clean(reason.message || reason)); }
+    finally { setAgentBusy(""); }
+  };
+
+  const semanticByBlock = useMemo(() => {
+    const result = {};
+    ((semantic && semantic.artifacts) || []).forEach(item => {
+      if (item.artifact_kind === "block_semantics" && !item.stale) result[clean(item.block_id)] = item;
+    });
+    return result;
+  }, [semantic]);
+  const documentDigest = useMemo(() => ((semantic && semantic.artifacts) || []).find(item =>
+    item.artifact_kind === "document_digest" && !item.stale) || null, [semantic]);
+  const activeThread = useMemo(() => ((semantic && semantic.threads) || []).find(item =>
+    item.agent_type === agentType) || null, [semantic, agentType]);
+  const activeFindings = useMemo(() => ((semantic && semantic.findings) || []).filter(item =>
+    item.agent_type === agentType), [semantic, agentType]);
+
   if (!project) return <EmptyPanel title="先選擇研究課題" copy="論文精修只處理當前課題中的真實 DOCX 主稿。"/>;
   if (!files.length) return <EmptyPanel title="尚無可精修的 Word 論文" copy="先在課題庫上傳 DOCX；系統會自動提取正文、圖像與表格。"/>;
   if (!workspace || state === "loading") return <div className="rv-loading block">EXTRACTING MANUSCRIPT CONTENT…</div>;
@@ -960,6 +1103,10 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     : state === "local" ? "本機草稿已保存"
     : state === "conflict" ? "等待合併衝突"
     : state === "submitted" ? "正式版本已提交" : "平台草稿已同步";
+  const semanticRun = semantic && semantic.latest_run;
+  const semanticStatus = semanticRun && ["queued", "processing"].includes(semanticRun.status)
+    ? "多线程 Agent 正在工作" : semanticRun && semanticRun.status === "failed"
+      ? "AI 任务需要重试" : "语义资源已同步";
   return <div className="rv-refinement" data-testid="research-refinement-workspace">
     <header className="rv-refinement-head">
       <label><span>MANUSCRIPT / 選擇主稿</span><select value={clean(activeFile.id)} onChange={event => onFile(clean(event.target.value))}>
@@ -968,31 +1115,56 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       <div><span>BASE VERSION</span><strong>V{(workspace.base_version || {}).version} · {shortSha((workspace.base_version || {}).git_sha)}</strong></div>
       <div className={"rv-refinement-sync " + state}><i/><span>{statusLabel}</span><small>REV {revisionRef.current}</small></div>
     </header>
+    <nav className="rv-refinement-layers" aria-label="论文语义显示层">
+      <span>DOCUMENT TWIN</span>
+      {[['original','原文'],['translation','简中'],['distillation','蒸馏'],['all','三层对照']].map(item =>
+        <button key={item[0]} className={semanticLayer === item[0] ? "active" : ""} onClick={() => setSemanticLayer(item[0])}>{item[1]}</button>)}
+      <small>{semanticStatus}</small>
+    </nav>
     {workspace.source_changed && <div className="rv-refinement-conflict">課題庫已有較新的正式版本。這份草稿仍保留，但提交前需要重新基準化。</div>}
     {localWarning && <div className="rv-refinement-conflict">{localWarning}</div>}
     <div className="rv-refinement-grid">
       <main className="rv-refinement-paper">
         <div className="rv-refinement-ledger"><span>CONTENT BLOCKS · {blocks.length}</span><b>{characters.toLocaleString()} CHAR</b><b>{figures} FIG</b><b>{tables} TABLE</b></div>
+        {documentDigest && semanticLayer !== "original" && <section className="rv-refinement-document-digest">
+          <b>全文蒸馏</b><p>{documentDigest.content.summary}</p>
+          <dl><div><dt>研究问题</dt><dd>{documentDigest.content.research_question || "—"}</dd></div><div><dt>方法</dt><dd>{documentDigest.content.method || "—"}</dd></div><div><dt>局限</dt><dd>{documentDigest.content.limitations || "—"}</dd></div></dl>
+        </section>}
         <article>
           {blocks.map((block, index) => <section key={block.id} className={"rv-refinement-block " + block.type}>
             <aside><b>{String(index + 1).padStart(3, "0")}</b><span>{clean(block.type).toUpperCase()}</span><button disabled={index === 0} onClick={() => moveBlock(index, -1)}>↑</button><button disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)}>↓</button>{block.type !== "image" && <button onClick={() => removeBlock(block.id)}>×</button>}</aside>
-            {block.type === "image" ? <figure><img src={block.media_url} alt={block.text || "Research figure"}/><textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="圖題或替代文字"/></figure>
-            : block.type === "table_row" ? <div className="rv-refinement-table-row">{(block.cells || []).map((cell, cellIndex) => <textarea key={cellIndex} value={cell} onChange={event => {
-              const cells = [...(block.cells || [])]; cells[cellIndex] = event.target.value; updateBlock(block.id, { cells, text: cells.join(" | ") });
-            }}/>)}</div>
-            : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
-              <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
-            </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="輸入論文內容…"/></div>}
+            <div className="rv-refinement-block-content">
+              {block.type === "image" ? <figure><img src={block.media_url} alt={block.text || "Research figure"}/><textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="圖題或替代文字"/></figure>
+              : block.type === "table_row" ? <div className="rv-refinement-table-row" role="row">{(block.cells || []).map((cell, cellIndex) => <textarea key={cellIndex} role="cell" style={{ gridColumn: "span " + Math.max(1, Number((((block.cell_spans || [])[cellIndex] || {}).colspan) || 1)) }} value={cell} onChange={event => {
+                const cells = [...(block.cells || [])]; cells[cellIndex] = event.target.value; updateBlock(block.id, { cells, text: cells.join(" | ") });
+              }}/>)}</div>
+              : block.type === "equation" ? <div className="rv-refinement-equation"><RefinementEquation latex={block.latex} fallback={block.text}/><textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} aria-label="公式语义文本"/></div>
+              : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
+                <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
+              </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
+              <RefinementSemanticLayer artifact={semanticByBlock[clean(block.id)]} layer={semanticLayer}/>
+            </div>
           </section>)}
           <button className="rv-refinement-add" onClick={addParagraph}>＋ 新增內容段落</button>
         </article>
       </main>
       <aside className="rv-refinement-inspector">
-        <header><span>CONTENT-FIRST / 內容優先</span><strong>不啟動 Office Runtime</strong></header>
-        <div className="rv-refinement-principles"><article><b>01</b><strong>ARGUMENT</strong><p>每一段先回答：本段主張是什麼，它服務哪個研究問題？</p></article><article><b>02</b><strong>EVIDENCE</strong><p>圖表不是裝飾；正文必須精確解釋資料版本、觀察與不確定性。</p></article><article><b>03</b><strong>REVISION</strong><p>草稿持續覆寫，正式提交才形成不可變 DOCX、SHA-256 與 Git commit。</p></article></div>
+        <header><span>AGENT BUS / 共享上下文</span><strong>主系统按需服务 · 无专属 Runtime</strong></header>
+        <button className="rv-refinement-review-all" disabled={Boolean(agentBusy) || semanticBusy} onClick={startReviews}>{agentBusy === "review" ? "四位评审正在并行工作…" : "并行启动四项专业评审"}</button>
+        <nav className="rv-refinement-agent-tabs">{REFINEMENT_AGENTS.map(item => <button key={item[0]} className={agentType === item[0] ? "active" : ""} onClick={() => setAgentType(item[0])}>{item[1]}<b>{((semantic && semantic.findings) || []).filter(finding => finding.agent_type === item[0] && finding.status === "open").length}</b></button>)}</nav>
+        <div className="rv-refinement-agent-stream">
+          {activeThread && (activeThread.messages || []).map(message => <article key={message.id} className={message.role}><b>{message.role === "user" ? "YOU" : REFINEMENT_AGENTS.find(item => item[0] === agentType)[1]}</b><p>{message.body}</p><small>REV {message.context_revision} · {stamp(message.created_at)}</small></article>)}
+          {!activeThread && <p className="rv-refinement-agent-empty">尚未建立对话。可以先启动专业评审，或直接向当前 Agent 提问。</p>}
+          {activeFindings.map(finding => <article key={finding.id} className={"rv-refinement-finding " + finding.status}>
+            <header><b>{clean(finding.severity).toUpperCase()} · {finding.category || "REVIEW"}</b><span>{finding.block_id}</span></header>
+            {finding.quote && <q>{finding.quote}</q>}<p>{finding.rationale}</p>{finding.suggestion && <blockquote>{finding.suggestion}</blockquote>}
+            <footer><button disabled={finding.status !== "open" || Boolean(agentBusy)} onClick={() => decideFinding(finding, true)}>接受修改</button><button disabled={finding.status !== "open" || Boolean(agentBusy)} onClick={() => decideFinding(finding, false)}>拒绝</button></footer>
+          </article>)}
+        </div>
+        <label className="rv-refinement-agent-composer"><span>与{REFINEMENT_AGENTS.find(item => item[0] === agentType)[1]}对话</span><textarea value={agentMessage} onChange={event => setAgentMessage(event.target.value)} placeholder={agentType === "chief" ? "综合四位评审，解释冲突并给出统一方案" : "追问理由、要求保留结论强度，或指定目标读者"}/><button disabled={!agentMessage.trim() || Boolean(agentBusy)} onClick={sendAgentMessage}>{agentBusy === "message" ? "正在思考…" : "发送"}</button></label>
         <label className="rv-refinement-commit"><span>VERSION NOTE / 本次修改說明</span><textarea value={commitMessage} onChange={event => setCommitMessage(event.target.value)} placeholder="例如：重寫方法與結果銜接，統一三張圖的論證口徑"/></label>
         <button className="rv-refinement-submit" disabled={publishing || state === "saving" || state === "conflict" || workspace.source_changed} onClick={submit}>{publishing ? "ASSEMBLING DOCX…" : "提交正式 DOCX 版本"}</button>
-        <small>瀏覽器負責編輯計算；平台只保存可恢復草稿。提交時才組裝 DOCX 並進入課題版本譜系。</small>
+        <small>浏览器负责编辑与公式渲染；平台保存可恢复草稿、语义资源和审计记录。提交时才生成正式 DOCX。</small>
       </aside>
     </div>
   </div>;

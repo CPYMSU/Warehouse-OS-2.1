@@ -10312,6 +10312,111 @@ COMMANDS = [
         ],
     },
     {
+        "command": "research manuscript semantic show",
+        "tool_name": "research_manuscript_semantic_show",
+        "description": "讀取逐段簡中翻譯、可見蒸餾、全文摘要、四類評審執行緒與主 AI 上下文",
+        "api_method": "GET",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement/semantic",
+        "permission": "research.write",
+        "writes": False,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+        ],
+        "examples": [
+            "research manuscript semantic show --project MK51 --file manuscript/paper.docx",
+        ],
+    },
+    {
+        "command": "research manuscript semantic refresh",
+        "tool_name": "research_manuscript_semantic_refresh",
+        "description": "按內容雜湊增量排程逐段翻譯、蒸餾或四類並行評審；使用主系統共享按需服務",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement/semantic/refresh",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+            _p(
+                "modes",
+                "body.modes",
+                "任務 JSON 陣列：translate、distill、review:neutrality、review:logic、review:clarity、review:professional",
+                required=True,
+                ptype="json",
+            ),
+            _p(
+                "blocks",
+                "body.block_ids",
+                "可選的內容塊 ID JSON 陣列；省略時處理全文",
+                ptype="json",
+            ),
+        ],
+        "examples": [
+            "research manuscript semantic refresh --project MK51 --file manuscript/paper.docx "
+            "--modes '[\"translate\",\"distill\",\"review:logic\"]'",
+        ],
+    },
+    {
+        "command": "research manuscript agent chat",
+        "tool_name": "research_manuscript_agent_chat",
+        "description": "與中立化、邏輯、易懂、專業化評審或主 AI 對話；執行緒彼此隔離，主 AI 可讀全部結論",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement/agents/{agent_type}/messages",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+            _p(
+                "agent",
+                "path.agent_type",
+                "neutrality、logic、clarity、professional 或 chief",
+                required=True,
+            ),
+            _p("message", "body.message", "發給評審 Agent 的訊息", required=True),
+        ],
+        "examples": [
+            "research manuscript agent chat --project MK51 --file manuscript/paper.docx "
+            "--agent logic --message '檢查第二節到第三節的推理跳躍'",
+        ],
+    },
+    {
+        "command": "research manuscript finding accept",
+        "tool_name": "research_manuscript_finding_accept",
+        "description": "在來源雜湊仍一致時接受一項評審建議並安全寫入精修草稿",
+        "api_method": "POST",
+        "api_path": "/api/research/manuscript-findings/{finding_id}/accept",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("finding", "path.finding_id", "評審發現 UUID", required=True),
+        ],
+        "examples": [
+            "research manuscript finding accept --finding 00000000-0000-0000-0000-000000000000",
+        ],
+    },
+    {
+        "command": "research manuscript finding reject",
+        "tool_name": "research_manuscript_finding_reject",
+        "description": "拒絕一項評審建議並保留可審計的決策記錄",
+        "api_method": "POST",
+        "api_path": "/api/research/manuscript-findings/{finding_id}/reject",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("finding", "path.finding_id", "評審發現 UUID", required=True),
+        ],
+        "examples": [
+            "research manuscript finding reject --finding 00000000-0000-0000-0000-000000000000",
+        ],
+    },
+    {
         "command": "research manuscript draft save",
         "tool_name": "research_manuscript_draft_save",
         "description": "以 revision 樂觀鎖同步結構化論文內容塊；只覆寫可恢復草稿，不生成文件版本或 Git commit",

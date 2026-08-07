@@ -174,6 +174,10 @@ def _public_blocks(
         source = dict(raw.get("source") or {})
         if raw.get("type") == "table_row" and source.get("table_index") is not None:
             item["table_key"] = int(source["table_index"])
+            item["cell_spans"] = source.get("cell_spans") or []
+        if source.get("contains_math"):
+            item["contains_math"] = True
+            item["latex"] = str(source.get("latex") or "")
         if raw.get("type") == "image" and source.get("relationship_id"):
             item["media_url"] = (
                 f"/api/research/projects/{quote(str(project_id), safe='')}/files/"
@@ -229,6 +233,13 @@ def _draft_payload(
             "text_blocks": True,
             "editable_tables": True,
             "source_figures": True,
+            "formula_latex": True,
+            "formula_source_fallback": True,
+            "structured_table_spans": True,
+            "paragraph_translation_zh_cn": True,
+            "visible_distillation": True,
+            "parallel_reviewers": True,
+            "chief_context_bus": True,
             "formal_docx_version": Path(str(version["original_filename"])).suffix.lower()
             == ".docx",
             "office_runtime_required": False,
@@ -462,8 +473,18 @@ def _assemble_docx(path: Path, blocks: list[dict[str, object]]) -> io.BytesIO:
                 index += 1
             body.append(_table(rows))
             continue
+        source = dict(block.get("source") or {})
+        body_index = source.get("body_index")
+        if (
+            source.get("contains_math")
+            and str(block.get("text") or "") == str(source.get("source_text") or "")
+            and isinstance(body_index, int)
+            and 0 <= body_index < len(original_children)
+        ):
+            body.append(deepcopy(original_children[body_index]))
+            index += 1
+            continue
         if block.get("type") == "image":
-            body_index = (block.get("source") or {}).get("body_index")
             if isinstance(body_index, int) and 0 <= body_index < len(original_children):
                 image_paragraph = deepcopy(original_children[body_index])
                 for text_node in image_paragraph.findall(f".//{_tag(W_NS, 't')}"):

@@ -15,7 +15,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import hash_password
 from app.db.session import system_session
 from app.main import app
-from app.services import research_review
+from app.services import research_review, research_semantic_refinement
 from app.services.integrations import ModelConnection
 from app.services.research_refinement import _assemble_docx, _normalized_blocks
 from app.services.research_review import parse_document_blocks, resolve_anchor
@@ -251,6 +251,71 @@ def test_document_review_annotation_and_grounded_question_round_trip(
             '"citations":[{"block":"B0002","quote":"Calibrated response"}]}'
         ),
     )
+
+    def semantic_completion(_connection: object, **kwargs: object) -> str:
+        system_prompt = str(kwargs.get("system_prompt") or "")
+        user_prompt = str(kwargs.get("user_prompt") or "")
+        if "段落语义处理器" in system_prompt:
+            source = __import__("json").loads(user_prompt)
+            return __import__("json").dumps(
+                {
+                    "items": [
+                        {
+                            "block_id": item["block_id"],
+                            "translation_zh_cn": "简中：" + str(item.get("text") or ""),
+                            "distillation": "蒸馏：" + str(item.get("text") or ""),
+                            "argument_role": "evidence",
+                            "keywords": ["calibration"],
+                        }
+                        for item in source
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "语义孪生总索引员" in system_prompt:
+            return (
+                '{"summary":"全文蒸馏","research_question":"如何校准？",'
+                '"method":"校准实验","findings":"响应稳定","limitations":"样本有限",'
+                '"argument_outline":["方法","结果"],"glossary":[]}'
+            )
+        if kwargs.get("json_mode"):
+            marker = "【原始区块 "
+            start = user_prompt.find(marker)
+            block_id = user_prompt[start + len(marker) :].split(" ·", 1)[0]
+            return __import__("json").dumps(
+                {
+                    "summary": "评审完成",
+                    "findings": [
+                        {
+                            "block_id": block_id,
+                            "severity": "medium",
+                            "category": "wording",
+                            "quote": "MK51 Paper",
+                            "rationale": "需要更明确的学术表达。",
+                            "suggestion": "MK51 Calibration Study",
+                            "evidence": [block_id],
+                            "confidence": 0.8,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        return "主 AI 已综合各评审，并保留原文证据区块。"
+
+    monkeypatch.setattr(
+        research_semantic_refinement,
+        "connected_deepseek",
+        lambda *_args: ModelConnection(
+            base_url="https://model.invalid",
+            model="test-research-model",
+            api_key="test-only",
+        ),
+    )
+    monkeypatch.setattr(
+        research_semantic_refinement,
+        "chat_completion",
+        semantic_completion,
+    )
     app.dependency_overrides[current_actor] = lambda: actor
     app.dependency_overrides[get_settings] = lambda: settings
     client = TestClient(app)
@@ -332,12 +397,68 @@ def test_document_review_annotation_and_grounded_question_round_trip(
             block for block in refinement["draft"]["blocks"] if block["type"] == "image"
         )
         assert figure["media_url"].endswith("?version=1")
+        equation = next(
+            block for block in refinement["draft"]["blocks"] if block["type"] == "equation"
+        )
+        assert equation["latex"] == r"\frac{a}{b}"
         media_response = client.get(figure["media_url"])
         assert media_response.status_code == 200
         assert media_response.headers["content-type"] == "image/png"
-
         draft_blocks = refinement["draft"]["blocks"]
         paragraph = next(block for block in draft_blocks if block["type"] == "paragraph")
+
+        semantic_path = (
+            f"/api/research/projects/{project_id}/files/{file_id}/refinement/semantic"
+        )
+        semantic_before = client.get(semantic_path)
+        assert semantic_before.status_code == 200
+        assert semantic_before.json()["capabilities"]["dedicated_runtime_required"] is False
+        semantic_refresh = client.post(
+            semantic_path + "/refresh",
+            json={"modes": ["translate", "distill"]},
+        )
+        assert semantic_refresh.status_code == 202
+        semantic_ready = client.get(semantic_path).json()
+        assert semantic_ready["latest_run"]["status"] == "ready"
+        assert any(
+            item["artifact_kind"] == "document_digest"
+            for item in semantic_ready["artifacts"]
+        )
+        paragraph_semantic = next(
+            item
+            for item in semantic_ready["artifacts"]
+            if item["block_id"] == paragraph["id"]
+        )
+        assert paragraph_semantic["content"]["translation_zh_cn"].startswith("简中：")
+
+        review_refresh = client.post(
+            semantic_path + "/refresh",
+            json={
+                "modes": [
+                    "review:neutrality",
+                    "review:logic",
+                    "review:clarity",
+                    "review:professional",
+                ]
+            },
+        )
+        assert review_refresh.status_code == 202
+        reviewed = client.get(semantic_path).json()
+        assert reviewed["latest_run"]["status"] == "ready"
+        assert {item["agent_type"] for item in reviewed["threads"]} == {
+            "neutrality",
+            "logic",
+            "clarity",
+            "professional",
+        }
+        assert len(reviewed["findings"]) == 4
+        chief_chat = client.post(
+            semantic_path.rsplit("/semantic", 1)[0] + "/agents/chief/messages",
+            json={"message": "请综合四位评审。"},
+        )
+        assert chief_chat.status_code == 201
+        assert "综合各评审" in chief_chat.json()["message"]["body"]
+
         paragraph["text"] = "Rewritten calibrated response"
         save_response = client.put(
             f"/api/research/projects/{project_id}/files/{file_id}/refinement",
