@@ -33,17 +33,16 @@ SCOPE_PERMISSIONS = {
     "assistant": ("ai.use",),
     "terminal": ("terminal.use",),
     "research": ("research.read", "research.write", "research.review"),
+    # Civilization uses its domain service for creator/admin write checks. The
+    # key only opens this API audience and never snapshots or expands authority.
+    "civilization": ("overview.read",),
 }
 # Compatibility projection for callers and documentation that need one
 # representative permission name. Authorization uses ``SCOPE_PERMISSIONS``.
-SCOPE_PERMISSION = {
-    scope: permissions[0] for scope, permissions in SCOPE_PERMISSIONS.items()
-}
+SCOPE_PERMISSION = {scope: permissions[0] for scope, permissions in SCOPE_PERMISSIONS.items()}
 SCOPE_ORDER = tuple(SCOPE_PERMISSION)
 _TENANT_PATTERN = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-_KEY_RE = re.compile(
-    rf"^{KEY_PREFIX}_({_TENANT_PATTERN})_([a-f0-9]{{12}})_([A-Za-z0-9_-]{{32,}})$"
-)
+_KEY_RE = re.compile(rf"^{KEY_PREFIX}_({_TENANT_PATTERN})_([a-f0-9]{{12}})_([A-Za-z0-9_-]{{32,}})$")
 
 
 class RuntimeApiKeyError(ValueError):
@@ -72,10 +71,7 @@ def _allowed_scopes(actor: ActorContext) -> list[str]:
     return [
         scope
         for scope in SCOPE_ORDER
-        if any(
-            permission in actor.permissions
-            for permission in SCOPE_PERMISSIONS[scope]
-        )
+        if any(permission in actor.permissions for permission in SCOPE_PERMISSIONS[scope])
     ]
 
 
@@ -246,6 +242,7 @@ def issue_runtime_api_key(
             "terminal_execute": "/api/cli/exec",
             "research_api": "/api/research/projects",
             "research_upload": "/api/research/projects/{project_ref}/files",
+            "civilization_api": "/api/civilization/thoughts",
             "identity": "/api/auth/me",
         },
         "note": "The plaintext API Key is shown once. Store it now and revoke it when unused.",
@@ -259,13 +256,9 @@ def issue_research_api_key(
 ) -> dict[str, object]:
     """Issue a current-user/current-tenant credential fixed to research only."""
     _require_interactive_manager(actor, required_scope="research")
-    unknown = set(payload).difference(
-        {"label", "name", "expires_in_days", "days"}
-    )
+    unknown = set(payload).difference({"label", "name", "expires_in_days", "days"})
     if unknown:
-        raise RuntimeApiKeyError(
-            f"Unknown Research API Key fields: {', '.join(sorted(unknown))}"
-        )
+        raise RuntimeApiKeyError(f"Unknown Research API Key fields: {', '.join(sorted(unknown))}")
     result = issue_runtime_api_key(
         actor,
         settings,
@@ -275,6 +268,36 @@ def issue_research_api_key(
         "manifest": "/api/research/cli/manifest",
         "download": "/api/research/cli/download",
         "credential_environment": "WAREHOUSE_RESEARCH_KEY",
+        "note": (
+            "Pass this key through the environment or a chmod 600 key file; "
+            "do not place it in shell history or command-line arguments."
+        ),
+    }
+    return result
+
+
+def issue_civilization_api_key(
+    actor: ActorContext,
+    settings: Settings,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Issue a current-user/current-tenant credential fixed to Civilization."""
+    _require_interactive_manager(actor, required_scope="civilization")
+    unknown = set(payload).difference({"label", "name", "expires_in_days", "days"})
+    if unknown:
+        raise RuntimeApiKeyError(
+            f"Unknown Civilization API Key fields: {', '.join(sorted(unknown))}"
+        )
+    result = issue_runtime_api_key(
+        actor,
+        settings,
+        {**payload, "scopes": ["civilization"]},
+    )
+    result["civilization_cli"] = {
+        "manifest": "/api/civilization/cli/manifest",
+        "download": "/api/civilization/cli/download",
+        "credential_environment": "WAREHOUSE_CIVILIZATION_KEY",
+        "template_key": "swiss_b_longform_v1",
         "note": (
             "Pass this key through the environment or a chmod 600 key file; "
             "do not place it in shell history or command-line arguments."
@@ -425,9 +448,7 @@ def authenticate_runtime_api_key(
             .mappings()
             .one_or_none()
         )
-        if row is None or not hmac.compare_digest(
-            str(row["key_hash"]), _hash_key(plain, settings)
-        ):
+        if row is None or not hmac.compare_digest(str(row["key_hash"]), _hash_key(plain, settings)):
             raise RuntimeApiKeyError("Invalid Runtime API Key", 401)
         if row["revoked_at"] is not None:
             raise RuntimeApiKeyError("Runtime API Key has been revoked", 401)

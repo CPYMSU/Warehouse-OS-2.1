@@ -17,6 +17,13 @@ SCHEMA_MIGRATION = (
 EMPTY_DATA_MIGRATION = (
     ROOT / "backend" / "alembic" / "versions" / "20260807_0084_civilization_empty_data.py"
 )
+PUBLISHING_MIGRATION = (
+    ROOT
+    / "backend"
+    / "alembic"
+    / "versions"
+    / "20260808_0085_civilization_publishing.py"
+)
 
 
 def test_civilization_navigation_sits_between_records_and_settings() -> None:
@@ -36,8 +43,14 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert "w2_civilization:v1:" in source
     assert 'W2.json("/api/civilization/thoughts"' in source
     assert 'W2.post("/api/civilization/thoughts"' in source
-    assert 'method: "PUT"' in source
+    assert 'method: "PATCH"' in source
     assert "expected_revision" in source
+    assert '"/draft"' in source
+    assert '"/publish"' in source
+    assert "contentLocale" in source
+    assert "readingSections" in source
+    assert "civ-article-section" in source
+    assert "civilization_api_key_issue" in source
     assert "civ-lens-editor" in source
     assert "civ-poster-index" in source
     assert "12 COLUMN SYSTEM" in source
@@ -58,14 +71,15 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260808-civilization5' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization5' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization5' in index
+    assert 'pages/pages-civilization.css?v=20260808-civilization6' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization6' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization6' in index
 
 
 def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
     schema_migration = SCHEMA_MIGRATION.read_text(encoding="utf-8")
     empty_data_migration = EMPTY_DATA_MIGRATION.read_text(encoding="utf-8")
+    publishing_migration = PUBLISHING_MIGRATION.read_text(encoding="utf-8")
 
     assert 'warehouse_scope = "schema"' in schema_migration
     assert "CREATE TABLE civilization.thoughts" in schema_migration
@@ -77,3 +91,8 @@ def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
     assert "INSERT" not in empty_data_migration
     assert "DELETE" not in empty_data_migration
     assert "No application rows are written" in empty_data_migration
+    assert 'warehouse_scope = "schema"' in publishing_migration
+    assert "CREATE TABLE civilization.thought_revisions" in publishing_migration
+    assert "published_content jsonb" in publishing_migration
+    assert "draft_content jsonb" in publishing_migration
+    assert "UPDATE civilization.thoughts" not in publishing_migration

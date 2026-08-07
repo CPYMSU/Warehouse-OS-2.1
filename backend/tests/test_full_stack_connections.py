@@ -1507,7 +1507,7 @@ def test_auto_runtime_distils_all_company_authority_and_capability_genes(monkeyp
         result.observations["context_strategy"]
         == "domain_then_family_then_exact_tool_then_live_data"
     )
-    assert result.observations["capability_genes"] == 537
+    assert result.observations["capability_genes"] == 555
     assert result.observations["authority_world"]["positions"] >= 1
     assert result.distillation["selected_tool_names"] == ["warehouse_list"]
     assert result.decisions[0]["judgment"] == "ask_person"

@@ -316,6 +316,8 @@ def _runtime_api_scope(request: Request) -> str | None:
         return "assistant"
     if path.startswith("/api/research/"):
         return "research"
+    if path.startswith("/api/civilization/"):
+        return "civilization"
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Runtime API Key audience does not include this endpoint",
@@ -361,15 +363,11 @@ def current_actor(
         actor = _load_actor(credential.user_id, credential.tenant_id)
         if required_scope is not None:
             required_permissions = SCOPE_PERMISSIONS[required_scope]
-            if not any(
-                permission in actor.permissions
-                for permission in required_permissions
-            ):
+            if not any(permission in actor.permissions for permission in required_permissions):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=(
-                        "Runtime API access was withdrawn with "
-                        + " or ".join(required_permissions)
+                        "Runtime API access was withdrawn with " + " or ".join(required_permissions)
                     ),
                 )
         return replace(

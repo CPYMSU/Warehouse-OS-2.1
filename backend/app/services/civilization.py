@@ -1,4 +1,4 @@
-"""Tenant-owned content service for the Civilization module."""
+"""Tenant-owned, fixed-template publishing service for Civilization."""
 
 from __future__ import annotations
 
@@ -13,7 +13,15 @@ from sqlalchemy.orm import Session
 from app.api.deps import ActorContext
 from app.db.session import tenant_session
 
+TEMPLATE_KEY = "swiss_b_longform_v1"
+CONTENT_SCHEMA = "warehouse.civilization.content.v1"
 _DOMAINS = frozenset({"judgement", "technology", "organization", "time", "ethics"})
+_THOUGHT_COLUMNS = """
+id, stable_key, domain, title, prompt, thesis, relations, lenses,
+occurred_on, display_order, source, created_by, created_at, updated_at,
+revision, template_key, published_content, draft_content,
+publication_status, published_revision, published_at
+"""
 
 
 def _can_manage(actor: ActorContext, created_by: UUID | None) -> bool:
@@ -28,9 +36,12 @@ def _can_delete(actor: ActorContext, created_by: UUID | None) -> bool:
     return _can_manage(actor, created_by)
 
 
+def _language(locale: str) -> str:
+    return "en" if locale.lower().startswith("en") else "zh"
+
+
 def _localized(value: str, locale: str) -> dict[str, str]:
-    language = "en" if locale.lower().startswith("en") else "zh"
-    return {language: value}
+    return {_language(locale): value}
 
 
 def _clean_text(
@@ -39,8 +50,9 @@ def _clean_text(
     *,
     maximum: int,
     required: bool = True,
+    default: str = "",
 ) -> str:
-    value = str(payload.get(key) or "").strip()
+    value = str(payload.get(key) if payload.get(key) is not None else default).strip()
     if required and not value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -52,6 +64,16 @@ def _clean_text(
             detail=f"{key} is too long",
         )
     return value
+
+
+def _clean_domain(value: object, *, default: str = "judgement") -> str:
+    domain = str(value or default).strip().lower()
+    if domain not in _DOMAINS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="domain is not supported",
+        )
+    return domain
 
 
 def _clean_lenses(payload: dict[str, object], locale: str) -> list[dict[str, object]]:
@@ -74,11 +96,168 @@ def _clean_lenses(payload: dict[str, object], locale: str) -> list[dict[str, obj
                 detail=f"lenses[{index}] must be an object",
             )
         name = _clean_text(item, "name", maximum=80)
-        lens_text = _clean_text(item, "text", maximum=500)
-        lenses.append(
-            {"name": _localized(name, locale), "text": _localized(lens_text, locale)}
-        )
+        lens_text = _clean_text(item, "text", maximum=2000)
+        lenses.append({"name": _localized(name, locale), "text": _localized(lens_text, locale)})
     return lenses
+
+
+def _clean_sections(value: object) -> list[dict[str, object]]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=422, detail="content.sections must be an array")
+    if len(value) > 24:
+        raise HTTPException(status_code=422, detail="content.sections allows at most 24 sections")
+    sections: list[dict[str, object]] = []
+    total = 0
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422, detail=f"content.sections[{index}] must be an object"
+            )
+        marker = _clean_text(raw, "marker", maximum=20, required=False)
+        kicker = _clean_text(raw, "kicker", maximum=80, required=False)
+        heading = _clean_text(raw, "heading", maximum=300)
+        paragraphs_raw = raw.get("paragraphs") or []
+        if isinstance(paragraphs_raw, str):
+            paragraphs_raw = [part.strip() for part in paragraphs_raw.split("\n\n") if part.strip()]
+        if not isinstance(paragraphs_raw, list) or not paragraphs_raw:
+            raise HTTPException(
+                status_code=422, detail=f"content.sections[{index}].paragraphs is required"
+            )
+        if len(paragraphs_raw) > 16:
+            raise HTTPException(
+                status_code=422, detail=f"content.sections[{index}] has too many paragraphs"
+            )
+        paragraphs = []
+        for paragraph_index, raw_paragraph in enumerate(paragraphs_raw):
+            paragraph = str(raw_paragraph or "").strip()
+            if not paragraph:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"content.sections[{index}].paragraphs[{paragraph_index}] is empty",
+                )
+            if len(paragraph) > 5000:
+                raise HTTPException(status_code=422, detail="a Civilization paragraph is too long")
+            total += len(paragraph)
+            paragraphs.append(paragraph)
+        sections.append(
+            {"marker": marker, "kicker": kicker, "heading": heading, "paragraphs": paragraphs}
+        )
+    if total > 60000:
+        raise HTTPException(status_code=422, detail="Civilization article body is too long")
+    return sections
+
+
+def _clean_content(
+    raw: object,
+    *,
+    domain: str,
+    fallback: dict[str, object] | None = None,
+) -> dict[str, object]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail="content must be an object")
+    candidate = {**(fallback or {}), **raw}
+    title = _clean_text(candidate, "title", maximum=400)
+    short = _clean_text(candidate, "short", maximum=800)
+    thesis = _clean_text(candidate, "thesis", maximum=60000)
+    return {
+        "eyebrow": _clean_text(
+            candidate,
+            "eyebrow",
+            maximum=100,
+            required=False,
+            default="CIVILIZATION · QUESTION",
+        ),
+        "category_label": _clean_text(
+            candidate,
+            "category_label",
+            maximum=80,
+            required=False,
+            default=domain.upper(),
+        ),
+        "title": title,
+        "short": short,
+        "thesis": thesis,
+        "quote": _clean_text(candidate, "quote", maximum=1200, required=False, default=short),
+        "sections": _clean_sections(candidate.get("sections")),
+        "footer_left": _clean_text(
+            candidate,
+            "footer_left",
+            maximum=120,
+            required=False,
+            default="12 COLUMN SYSTEM · ONE QUESTION / MANY LENSES",
+        ),
+        "footer_right": _clean_text(
+            candidate,
+            "footer_right",
+            maximum=120,
+            required=False,
+            default="INFORMATION BEFORE DECORATION",
+        ),
+    }
+
+
+def _content_locale(content: object, locale: str) -> dict[str, object]:
+    if not isinstance(content, dict):
+        return {}
+    locales = content.get("locales")
+    if not isinstance(locales, dict):
+        return {}
+    language = _language(locale)
+    selected = locales.get(language) or locales.get("zh") or locales.get("en") or {}
+    return dict(selected) if isinstance(selected, dict) else {}
+
+
+def _merge_content(
+    existing: object,
+    replacement: dict[str, object],
+    locale: str,
+) -> dict[str, object]:
+    current = dict(existing) if isinstance(existing, dict) else {}
+    raw_locales = current.get("locales")
+    locales = dict(raw_locales) if isinstance(raw_locales, dict) else {}
+    locales[_language(locale)] = replacement
+    return {
+        "schema": CONTENT_SCHEMA,
+        "template_key": TEMPLATE_KEY,
+        "locales": locales,
+    }
+
+
+def _legacy_content(row: dict[str, object]) -> dict[str, object]:
+    title = row.get("title") if isinstance(row.get("title"), dict) else {}
+    prompt = row.get("prompt") if isinstance(row.get("prompt"), dict) else {}
+    thesis = row.get("thesis") if isinstance(row.get("thesis"), dict) else {}
+    languages = set(title) | set(prompt) | set(thesis) or {"zh"}
+    locales: dict[str, object] = {}
+    for language in languages:
+        localized_title = str(title.get(language) or title.get("zh") or title.get("en") or "")
+        localized_short = str(prompt.get(language) or prompt.get("zh") or prompt.get("en") or "")
+        localized_thesis = str(thesis.get(language) or thesis.get("zh") or thesis.get("en") or "")
+        locales[str(language)] = {
+            "eyebrow": "CIVILIZATION · QUESTION",
+            "category_label": str(row.get("domain") or "judgement").upper(),
+            "title": localized_title,
+            "short": localized_short,
+            "thesis": localized_thesis,
+            "quote": localized_short,
+            "sections": [],
+            "footer_left": "12 COLUMN SYSTEM · ONE QUESTION / MANY LENSES",
+            "footer_right": "INFORMATION BEFORE DECORATION",
+        }
+    return {"schema": CONTENT_SCHEMA, "template_key": TEMPLATE_KEY, "locales": locales}
+
+
+def _effective_content(
+    row: dict[str, object], field: str = "published_content"
+) -> dict[str, object]:
+    value = row.get(field)
+    if isinstance(value, dict) and isinstance(value.get("locales"), dict):
+        return value
+    return _legacy_content(row)
 
 
 def _merged_localized(existing: object, value: str, locale: str) -> dict[str, str]:
@@ -104,6 +283,16 @@ def _merged_lenses(
     return merged
 
 
+def _expected_revision(payload: dict[str, object]) -> int:
+    try:
+        value = int(payload.get("expected_revision") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="expected_revision must be an integer") from exc
+    if value < 1:
+        raise HTTPException(status_code=422, detail="expected_revision is required")
+    return value
+
+
 def _audit(
     session: Session,
     actor: ActorContext,
@@ -126,17 +315,17 @@ def _audit(
     )
 
 
-def _serialize(
-    row: dict[str, object], actor: ActorContext, *, number: int
-) -> dict[str, object]:
+def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> dict[str, object]:
     occurred_on = row["occurred_on"]
     created_at = row["created_at"]
     updated_at = row["updated_at"]
     created_by = row.get("created_by")
+    published_at = row.get("published_at")
     assert isinstance(occurred_on, date)
     assert isinstance(created_at, datetime)
     assert isinstance(updated_at, datetime)
     assert created_by is None or isinstance(created_by, UUID)
+    can_manage = _can_manage(actor, created_by)
     return {
         "id": str(row["id"]),
         "stable_key": str(row["stable_key"]),
@@ -154,8 +343,85 @@ def _serialize(
         "created_at": created_at.isoformat(),
         "updated_at": updated_at.isoformat(),
         "revision": int(row["revision"]),
-        "can_edit": _can_manage(actor, created_by),
+        "template_key": str(row.get("template_key") or TEMPLATE_KEY),
+        "content": _effective_content(row),
+        "draft_content": (
+            row.get("draft_content") if can_manage and row.get("draft_content") else None
+        ),
+        "publication_status": str(row.get("publication_status") or "published"),
+        "published_revision": int(row.get("published_revision") or 0),
+        "published_at": published_at.isoformat() if isinstance(published_at, datetime) else None,
+        "has_draft": bool(row.get("draft_content")),
+        "can_edit": can_manage,
+        "can_publish": can_manage,
         "can_delete": _can_delete(actor, created_by),
+    }
+
+
+def _snapshot(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema": "warehouse.civilization.revision.v1",
+        "domain": str(row["domain"]),
+        "title": row["title"],
+        "prompt": row["prompt"],
+        "thesis": row["thesis"],
+        "relations": row["relations"] or [],
+        "lenses": row["lenses"] or [],
+        "template_key": str(row.get("template_key") or TEMPLATE_KEY),
+        "content": _effective_content(row),
+    }
+
+
+def _insert_revision(session: Session, actor: ActorContext, row: dict[str, object]) -> None:
+    session.execute(
+        text(
+            """
+            INSERT INTO civilization.thought_revisions(
+              id, tenant_id, thought_id, revision_no, template_key, snapshot, published_by
+            ) VALUES (
+              :id, :tenant_id, :thought_id, :revision_no, :template_key,
+              CAST(:snapshot AS jsonb), :published_by
+            )
+            """
+        ),
+        {
+            "id": uuid4(),
+            "tenant_id": actor.tenant_id,
+            "thought_id": row["id"],
+            "revision_no": int(row["published_revision"]),
+            "template_key": TEMPLATE_KEY,
+            "snapshot": json.dumps(_snapshot(row), ensure_ascii=False),
+            "published_by": actor.user_id,
+        },
+    )
+
+
+def template_catalog(actor: ActorContext) -> dict[str, object]:
+    return {
+        "templates": [
+            {
+                "key": TEMPLATE_KEY,
+                "name": "Swiss B · International Grid Longform",
+                "version": 1,
+                "layout_locked": True,
+                "editable_slots": [
+                    "eyebrow",
+                    "category_label",
+                    "title",
+                    "short",
+                    "thesis",
+                    "quote",
+                    "sections[].marker",
+                    "sections[].kicker",
+                    "sections[].heading",
+                    "sections[].paragraphs[]",
+                    "footer_left",
+                    "footer_right",
+                ],
+                "responsive": ["desktop", "tablet", "mobile"],
+            }
+        ],
+        "tenant": actor.tenant_slug,
     }
 
 
@@ -164,10 +430,8 @@ def list_thoughts(actor: ActorContext) -> dict[str, object]:
         rows = (
             session.execute(
                 text(
-                    """
-                    SELECT id, stable_key, domain, title, prompt, thesis, relations,
-                           lenses, occurred_on, display_order, source, created_by,
-                           created_at, updated_at, revision
+                    f"""
+                    SELECT {_THOUGHT_COLUMNS}
                     FROM civilization.thoughts
                     ORDER BY occurred_on, display_order, id
                     """
@@ -176,32 +440,65 @@ def list_thoughts(actor: ActorContext) -> dict[str, object]:
             .mappings()
             .all()
         )
+    visible = [
+        dict(row)
+        for row in rows
+        if str(row["publication_status"]) == "published"
+        or _can_manage(actor, row.get("created_by"))
+    ]
     return {
-        "thoughts": [
-            _serialize(dict(row), actor, number=index)
-            for index, row in enumerate(rows, start=1)
-        ],
+        "thoughts": [_serialize(row, actor, number=int(row["display_order"])) for row in visible],
         "can_create": True,
+        "template_key": TEMPLATE_KEY,
     }
 
 
-def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
-    domain = str(payload.get("domain") or "judgement").strip().lower()
-    if domain not in _DOMAINS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="domain is not supported",
+def get_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
+    with tenant_session(actor.tenant_id) as session:
+        row = (
+            session.execute(
+                text(
+                    f"SELECT {_THOUGHT_COLUMNS} FROM civilization.thoughts WHERE id = :thought_id"
+                ),
+                {"thought_id": thought_id},
+            )
+            .mappings()
+            .one_or_none()
         )
-    title = _clean_text(payload, "title", maximum=160)
-    prompt = _clean_text(payload, "short", maximum=180)
-    thesis = _clean_text(payload, "thesis", maximum=1200)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Thought not found")
+    data = dict(row)
+    if data["publication_status"] != "published" and not _can_manage(actor, data.get("created_by")):
+        raise HTTPException(status_code=404, detail="Thought not found")
+    return {"thought": _serialize(data, actor, number=int(data["display_order"]))}
+
+
+def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
+    domain = _clean_domain(payload.get("domain"))
     locale = str(payload.get("locale") or "zh")
+    raw_content = payload.get("content")
+    if not isinstance(raw_content, dict):
+        raw_content = {
+            key: payload.get(key)
+            for key in (
+                "title",
+                "short",
+                "thesis",
+                "eyebrow",
+                "category_label",
+                "quote",
+                "sections",
+                "footer_left",
+                "footer_right",
+            )
+            if key in payload
+        }
+    normalized = _clean_content(raw_content, domain=domain)
     lenses = _clean_lenses(payload, locale)
+    publish = payload.get("publish", True) is not False
     thought_id = uuid4()
     stable_key = f"thought-{thought_id.hex}"
-    localized_title = _localized(title, locale)
-    localized_prompt = _localized(prompt, locale)
-    localized_thesis = _localized(thesis, locale)
+    content = _merge_content({}, normalized, locale)
     with tenant_session(actor.tenant_id) as session:
         session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
@@ -209,27 +506,26 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
         )
         display_order = int(
             session.execute(
-                text(
-                    "SELECT COALESCE(MAX(display_order), 0) + 1 "
-                    "FROM civilization.thoughts"
-                )
+                text("SELECT COALESCE(MAX(display_order), 0) + 1 FROM civilization.thoughts")
             ).scalar_one()
         )
-        row = (
+        row = dict(
             session.execute(
                 text(
-                    """
+                    f"""
                     INSERT INTO civilization.thoughts(
                       id, tenant_id, stable_key, domain, title, prompt, thesis,
-                      relations, lenses, occurred_on, display_order, source, created_by
+                      relations, lenses, occurred_on, display_order, source, created_by,
+                      template_key, published_content, draft_content, publication_status,
+                      published_revision, published_at
                     ) VALUES (
                       :id, :tenant_id, :stable_key, :domain, CAST(:title AS jsonb),
                       CAST(:prompt AS jsonb), CAST(:thesis AS jsonb), '[]'::jsonb,
-                      CAST(:lenses AS jsonb), CURRENT_DATE, :display_order, 'member', :created_by
-                    )
-                    RETURNING id, stable_key, domain, title, prompt, thesis, relations,
-                              lenses, occurred_on, display_order, source, created_by,
-                              created_at, updated_at, revision
+                      CAST(:lenses AS jsonb), CURRENT_DATE, :display_order, 'member', :created_by,
+                      :template_key, CAST(:published_content AS jsonb),
+                      CAST(:draft_content AS jsonb),
+                      :publication_status, :published_revision, :published_at
+                    ) RETURNING {_THOUGHT_COLUMNS}
                     """
                 ),
                 {
@@ -237,61 +533,72 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                     "tenant_id": actor.tenant_id,
                     "stable_key": stable_key,
                     "domain": domain,
-                    "title": json.dumps(localized_title, ensure_ascii=False),
-                    "prompt": json.dumps(localized_prompt, ensure_ascii=False),
-                    "thesis": json.dumps(localized_thesis, ensure_ascii=False),
+                    "title": json.dumps(
+                        _localized(str(normalized["title"]), locale), ensure_ascii=False
+                    ),
+                    "prompt": json.dumps(
+                        _localized(str(normalized["short"]), locale), ensure_ascii=False
+                    ),
+                    "thesis": json.dumps(
+                        _localized(str(normalized["thesis"]), locale), ensure_ascii=False
+                    ),
                     "lenses": json.dumps(lenses, ensure_ascii=False),
                     "display_order": display_order,
                     "created_by": actor.user_id,
+                    "template_key": TEMPLATE_KEY,
+                    "published_content": json.dumps(content if publish else {}, ensure_ascii=False),
+                    "draft_content": json.dumps(None if publish else content, ensure_ascii=False),
+                    "publication_status": "published" if publish else "draft",
+                    "published_revision": 1 if publish else 0,
+                    "published_at": datetime.now().astimezone() if publish else None,
                 },
             )
             .mappings()
             .one()
         )
+        if publish:
+            _insert_revision(session, actor, row)
         _audit(
             session,
             actor,
-            "civilization.thought.created",
-            {"thought_id": str(thought_id), "stable_key": stable_key},
+            "civilization.thought.published" if publish else "civilization.thought.draft_created",
+            {"thought_id": str(thought_id), "stable_key": stable_key, "template_key": TEMPLATE_KEY},
         )
-    return {"ok": True, "thought": _serialize(dict(row), actor, number=display_order)}
+    return {"ok": True, "thought": _serialize(row, actor, number=display_order)}
 
 
 def update_thought(
     actor: ActorContext, thought_id: UUID, payload: dict[str, object]
 ) -> dict[str, object]:
-    domain = str(payload.get("domain") or "judgement").strip().lower()
-    if domain not in _DOMAINS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="domain is not supported",
-        )
-    title = _clean_text(payload, "title", maximum=160)
-    prompt = _clean_text(payload, "short", maximum=180)
-    thesis = _clean_text(payload, "thesis", maximum=1200)
-    locale = str(payload.get("locale") or "zh")
-    lenses = _clean_lenses(payload, locale)
-    try:
-        expected_revision = int(payload.get("expected_revision") or 0)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="expected_revision must be an integer",
-        ) from exc
-    if expected_revision < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="expected_revision is required",
-        )
+    """Compatibility PUT: validate a complete payload and publish it atomically."""
+    save_draft(actor, thought_id, payload)
+    return publish_thought(
+        actor, thought_id, {"expected_revision": _latest_revision(actor, thought_id)}
+    )
 
+
+def _latest_revision(actor: ActorContext, thought_id: UUID) -> int:
+    with tenant_session(actor.tenant_id) as session:
+        value = session.execute(
+            text("SELECT revision FROM civilization.thoughts WHERE id = :thought_id"),
+            {"thought_id": thought_id},
+        ).scalar_one_or_none()
+    if value is None:
+        raise HTTPException(status_code=404, detail="Thought not found")
+    return int(value)
+
+
+def save_draft(
+    actor: ActorContext, thought_id: UUID, payload: dict[str, object]
+) -> dict[str, object]:
+    expected_revision = _expected_revision(payload)
+    locale = str(payload.get("locale") or "zh")
     with tenant_session(actor.tenant_id) as session:
         current = (
             session.execute(
                 text(
-                    """
-                    SELECT id, stable_key, domain, title, prompt, thesis, relations,
-                           lenses, occurred_on, display_order, source, created_by,
-                           created_at, updated_at, revision
+                    f"""
+                    SELECT {_THOUGHT_COLUMNS}
                     FROM civilization.thoughts
                     WHERE id = :thought_id
                     FOR UPDATE
@@ -303,61 +610,66 @@ def update_thought(
             .one_or_none()
         )
         if current is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thought not found")
-        current_data = dict(current)
-        if not _can_manage(actor, current_data.get("created_by")):
+            raise HTTPException(status_code=404, detail="Thought not found")
+        data = dict(current)
+        if not _can_manage(actor, data.get("created_by")):
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=403,
                 detail="Only the creator or a company administrator can edit this thought",
             )
-        current_revision = int(current_data["revision"])
-        if current_revision != expected_revision:
+        if int(data["revision"]) != expected_revision:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
+                status_code=409,
                 detail={
                     "reason": "revision_conflict",
                     "expected_revision": expected_revision,
-                    "current_revision": current_revision,
+                    "current_revision": int(data["revision"]),
                 },
             )
-        row = (
+        domain = _clean_domain(payload.get("domain"), default=str(data["domain"]))
+        base_content = data.get("draft_content") or _effective_content(data)
+        base_locale = _content_locale(base_content, locale)
+        raw_content = payload.get("content")
+        if not isinstance(raw_content, dict):
+            raw_content = {
+                key: payload.get(key)
+                for key in (
+                    "title",
+                    "short",
+                    "thesis",
+                    "eyebrow",
+                    "category_label",
+                    "quote",
+                    "sections",
+                    "footer_left",
+                    "footer_right",
+                )
+                if key in payload
+            }
+        normalized = _clean_content(raw_content, domain=domain, fallback=base_locale)
+        draft_content = _merge_content(base_content, normalized, locale)
+        lenses = (
+            _merged_lenses(data["lenses"], _clean_lenses(payload, locale))
+            if "lenses" in payload
+            else data["lenses"]
+        )
+        row = dict(
             session.execute(
                 text(
-                    """
+                    f"""
                     UPDATE civilization.thoughts
-                    SET domain = :domain,
-                        title = CAST(:title AS jsonb),
-                        prompt = CAST(:prompt AS jsonb),
-                        thesis = CAST(:thesis AS jsonb),
-                        lenses = CAST(:lenses AS jsonb),
-                        updated_at = now(),
-                        revision = revision + 1
+                    SET domain = :domain, draft_content = CAST(:draft_content AS jsonb),
+                        lenses = CAST(:lenses AS jsonb), updated_at = now(), revision = revision + 1
                     WHERE id = :thought_id AND revision = :expected_revision
-                    RETURNING id, stable_key, domain, title, prompt, thesis, relations,
-                              lenses, occurred_on, display_order, source, created_by,
-                              created_at, updated_at, revision
+                    RETURNING {_THOUGHT_COLUMNS}
                     """
                 ),
                 {
+                    "domain": domain,
+                    "draft_content": json.dumps(draft_content, ensure_ascii=False),
+                    "lenses": json.dumps(lenses, ensure_ascii=False),
                     "thought_id": thought_id,
                     "expected_revision": expected_revision,
-                    "domain": domain,
-                    "title": json.dumps(
-                        _merged_localized(current_data["title"], title, locale),
-                        ensure_ascii=False,
-                    ),
-                    "prompt": json.dumps(
-                        _merged_localized(current_data["prompt"], prompt, locale),
-                        ensure_ascii=False,
-                    ),
-                    "thesis": json.dumps(
-                        _merged_localized(current_data["thesis"], thesis, locale),
-                        ensure_ascii=False,
-                    ),
-                    "lenses": json.dumps(
-                        _merged_lenses(current_data["lenses"], lenses),
-                        ensure_ascii=False,
-                    ),
                 },
             )
             .mappings()
@@ -366,18 +678,337 @@ def update_thought(
         _audit(
             session,
             actor,
-            "civilization.thought.updated",
+            "civilization.thought.draft_saved",
             {
                 "thought_id": str(thought_id),
-                "stable_key": str(current_data["stable_key"]),
                 "revision": int(row["revision"]),
-                "lens_count": len(lenses),
+                "template_key": TEMPLATE_KEY,
             },
         )
     return {
         "ok": True,
-        "thought": _serialize(dict(row), actor, number=int(row["display_order"])),
+        "status": "draft_saved",
+        "thought": _serialize(row, actor, number=int(row["display_order"])),
     }
+
+
+def preview_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
+    result = get_thought(actor, thought_id)["thought"]
+    assert isinstance(result, dict)
+    content = (
+        result.get("draft_content")
+        if result.get("can_edit") and result.get("draft_content")
+        else result.get("content")
+    )
+    return {
+        "ok": True,
+        "template_key": TEMPLATE_KEY,
+        "layout_locked": True,
+        "preview_source": "draft" if result.get("draft_content") else "published",
+        "content": content,
+        "thought": result,
+    }
+
+
+def _localized_projection(
+    content: dict[str, object], fallback: dict[str, object]
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    raw_locales = content.get("locales")
+    locales = raw_locales if isinstance(raw_locales, dict) else {}
+    title = dict(fallback.get("title") or {})
+    prompt = dict(fallback.get("prompt") or {})
+    thesis = dict(fallback.get("thesis") or {})
+    for language, raw in locales.items():
+        if not isinstance(raw, dict):
+            continue
+        title[str(language)] = str(raw.get("title") or "")
+        prompt[str(language)] = str(raw.get("short") or "")
+        thesis[str(language)] = str(raw.get("thesis") or "")
+    return title, prompt, thesis
+
+
+def publish_thought(
+    actor: ActorContext, thought_id: UUID, payload: dict[str, object]
+) -> dict[str, object]:
+    expected_revision = _expected_revision(payload)
+    with tenant_session(actor.tenant_id) as session:
+        current = (
+            session.execute(
+                text(
+                    f"""
+                    SELECT {_THOUGHT_COLUMNS}
+                    FROM civilization.thoughts
+                    WHERE id = :thought_id
+                    FOR UPDATE
+                    """
+                ),
+                {"thought_id": thought_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Thought not found")
+        data = dict(current)
+        if not _can_manage(actor, data.get("created_by")):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the creator or a company administrator can publish this thought",
+            )
+        if int(data["revision"]) != expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "revision_conflict",
+                    "expected_revision": expected_revision,
+                    "current_revision": int(data["revision"]),
+                },
+            )
+        content = data.get("draft_content") or _effective_content(data)
+        assert isinstance(content, dict)
+        title, prompt, thesis = _localized_projection(content, data)
+        published_revision = int(data.get("published_revision") or 0) + 1
+        row = dict(
+            session.execute(
+                text(
+                    f"""
+                    UPDATE civilization.thoughts
+                    SET title = CAST(:title AS jsonb), prompt = CAST(:prompt AS jsonb),
+                        thesis = CAST(:thesis AS jsonb),
+                        published_content = CAST(:content AS jsonb),
+                        draft_content = NULL, publication_status = 'published',
+                        published_revision = :published_revision, published_at = now(),
+                        updated_at = now(), revision = revision + 1
+                    WHERE id = :thought_id AND revision = :expected_revision
+                    RETURNING {_THOUGHT_COLUMNS}
+                    """
+                ),
+                {
+                    "title": json.dumps(title, ensure_ascii=False),
+                    "prompt": json.dumps(prompt, ensure_ascii=False),
+                    "thesis": json.dumps(thesis, ensure_ascii=False),
+                    "content": json.dumps(content, ensure_ascii=False),
+                    "published_revision": published_revision,
+                    "thought_id": thought_id,
+                    "expected_revision": expected_revision,
+                },
+            )
+            .mappings()
+            .one()
+        )
+        _insert_revision(session, actor, row)
+        _audit(
+            session,
+            actor,
+            "civilization.thought.published",
+            {
+                "thought_id": str(thought_id),
+                "published_revision": published_revision,
+                "template_key": TEMPLATE_KEY,
+            },
+        )
+    return {
+        "ok": True,
+        "status": "published",
+        "thought": _serialize(row, actor, number=int(row["display_order"])),
+    }
+
+
+def list_revisions(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
+    thought = get_thought(actor, thought_id)["thought"]
+    assert isinstance(thought, dict)
+    with tenant_session(actor.tenant_id) as session:
+        rows = (
+            session.execute(
+                text(
+                    """
+                    SELECT revision_no, template_key, published_by, published_at
+                    FROM civilization.thought_revisions
+                    WHERE thought_id = :thought_id
+                    ORDER BY revision_no DESC
+                    """
+                ),
+                {"thought_id": thought_id},
+            )
+            .mappings()
+            .all()
+        )
+    return {
+        "thought_id": str(thought_id),
+        "current_published_revision": thought["published_revision"],
+        "revisions": [
+            {
+                "revision_no": int(row["revision_no"]),
+                "template_key": str(row["template_key"]),
+                "published_by": str(row["published_by"]) if row["published_by"] else None,
+                "published_at": row["published_at"].isoformat(),
+            }
+            for row in rows
+        ],
+    }
+
+
+def restore_revision(
+    actor: ActorContext,
+    thought_id: UUID,
+    revision_no: int,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    expected_revision = _expected_revision(payload)
+    with tenant_session(actor.tenant_id) as session:
+        current = (
+            session.execute(
+                text(
+                    f"""
+                    SELECT {_THOUGHT_COLUMNS}
+                    FROM civilization.thoughts
+                    WHERE id = :thought_id
+                    FOR UPDATE
+                    """
+                ),
+                {"thought_id": thought_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Thought not found")
+        data = dict(current)
+        if not _can_manage(actor, data.get("created_by")):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the creator or a company administrator can restore this thought",
+            )
+        if int(data["revision"]) != expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "revision_conflict", "current_revision": int(data["revision"])},
+            )
+        snapshot = session.execute(
+            text(
+                """
+                SELECT snapshot
+                FROM civilization.thought_revisions
+                WHERE thought_id = :thought_id AND revision_no = :revision_no
+                """
+            ),
+            {"thought_id": thought_id, "revision_no": revision_no},
+        ).scalar_one_or_none()
+        if not isinstance(snapshot, dict):
+            raise HTTPException(status_code=404, detail="Civilization revision not found")
+        restored = snapshot.get("content")
+        if not isinstance(restored, dict):
+            raise HTTPException(
+                status_code=409, detail="Civilization revision has no restorable content"
+            )
+        row = dict(
+            session.execute(
+                text(
+                    f"""
+                    UPDATE civilization.thoughts
+                    SET draft_content = CAST(:content AS jsonb),
+                        updated_at = now(), revision = revision + 1
+                    WHERE id = :thought_id AND revision = :expected_revision
+                    RETURNING {_THOUGHT_COLUMNS}
+                    """
+                ),
+                {
+                    "content": json.dumps(restored, ensure_ascii=False),
+                    "thought_id": thought_id,
+                    "expected_revision": expected_revision,
+                },
+            )
+            .mappings()
+            .one()
+        )
+        _audit(
+            session,
+            actor,
+            "civilization.thought.revision_restored_to_draft",
+            {"thought_id": str(thought_id), "revision_no": revision_no},
+        )
+    return {
+        "ok": True,
+        "status": "restored_to_draft",
+        "source_revision": revision_no,
+        "thought": _serialize(row, actor, number=int(row["display_order"])),
+    }
+
+
+def upsert_lens(
+    actor: ActorContext,
+    thought_id: UUID,
+    lens_index: int,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    if not 0 <= lens_index < 12:
+        raise HTTPException(status_code=422, detail="lens_index must be between 0 and 11")
+    expected_revision = _expected_revision(payload)
+    locale = str(payload.get("locale") or "zh")
+    replacement = _clean_lenses({"lenses": [payload]}, locale)[0]
+    with tenant_session(actor.tenant_id) as session:
+        current = (
+            session.execute(
+                text(
+                    f"""
+                    SELECT {_THOUGHT_COLUMNS}
+                    FROM civilization.thoughts
+                    WHERE id = :thought_id
+                    FOR UPDATE
+                    """
+                ),
+                {"thought_id": thought_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Thought not found")
+        data = dict(current)
+        if not _can_manage(actor, data.get("created_by")):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the creator or a company administrator can edit lenses",
+            )
+        if int(data["revision"]) != expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "revision_conflict", "current_revision": int(data["revision"])},
+            )
+        lenses = list(data.get("lenses") or [])
+        if lens_index > len(lenses):
+            raise HTTPException(status_code=422, detail="lenses must be added without gaps")
+        if lens_index == len(lenses):
+            lenses.append(replacement)
+        else:
+            lenses[lens_index] = _merged_lenses([lenses[lens_index]], [replacement])[0]
+        row = dict(
+            session.execute(
+                text(
+                    f"""
+                    UPDATE civilization.thoughts
+                    SET lenses = CAST(:lenses AS jsonb),
+                        updated_at = now(), revision = revision + 1
+                    WHERE id = :thought_id AND revision = :expected_revision
+                    RETURNING {_THOUGHT_COLUMNS}
+                    """
+                ),
+                {
+                    "lenses": json.dumps(lenses, ensure_ascii=False),
+                    "thought_id": thought_id,
+                    "expected_revision": expected_revision,
+                },
+            )
+            .mappings()
+            .one()
+        )
+        _audit(
+            session,
+            actor,
+            "civilization.thought.lens_upserted",
+            {"thought_id": str(thought_id), "lens_index": lens_index},
+        )
+    return {"ok": True, "thought": _serialize(row, actor, number=int(row["display_order"]))}
 
 
 def delete_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
@@ -397,11 +1028,10 @@ def delete_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
             .one_or_none()
         )
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thought not found")
-        created_by = row["created_by"]
-        if not _can_delete(actor, created_by):
+            raise HTTPException(status_code=404, detail="Thought not found")
+        if not _can_delete(actor, row["created_by"]):
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=403,
                 detail="Only the creator or a company administrator can delete this thought",
             )
         session.execute(
