@@ -15,6 +15,7 @@ from app.api import intelligent_hosting as intelligent_hosting_module
 from app.api.browser_runtime import router as browser_runtime_router
 from app.api.capability_gateway import router as capability_gateway_router
 from app.api.cluster_status import router as cluster_status_router
+from app.api.civilization import router as civilization_router
 from app.api.compat import router as compatibility_router
 from app.api.confirmation_actions import router as confirmation_actions_router
 from app.api.database_browser_gateway import router as database_browser_gateway_router
@@ -199,6 +200,7 @@ app.include_router(generic_data_router)
 app.include_router(research_router)
 app.include_router(task_collaboration_router)
 app.include_router(cluster_status_router)
+app.include_router(civilization_router)
 # Capability discovery remains complete, but executable readiness is derived
 # only from concrete routes mounted up to this point.  The catch-all gateway
 # below is a transport compatibility surface and must never activate a gene.

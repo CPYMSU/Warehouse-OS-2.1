@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.jsx"
 STYLE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.css"
 INDEX = ROOT / "frontend" / "v2" / "index.html"
+MIGRATION = ROOT / "backend" / "alembic" / "versions" / "20260807_0083_civilization_thoughts.py"
 
 
 def test_civilization_navigation_sits_between_records_and_settings() -> None:
@@ -24,6 +25,10 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert 'window.W2.PAGES["civilization"] = Page' in source
     assert '[["a", "問題拓撲"], ["b", "思想時間軸"], ["c", "閱讀海報"]]' in source
     assert "w2_civilization:v1:" in source
+    assert 'W2.json("/api/civilization/thoughts"' in source
+    assert 'W2.post("/api/civilization/thoughts"' in source
+    assert "BUILTIN_THOUGHTS" not in source
+    assert "drafts" not in source
     assert ".civ-atlas-layout" in style
     assert ".civ-chronology" in style
     assert ".civ-reader" in style
@@ -32,6 +37,16 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260807-civilization1' in index
-    assert 'pages/pages-civilization.jsx?v=20260807-civilization1' in index
-    assert 'dist/app.bundle.js?v=20260807-civilization1' in index
+    assert 'pages/pages-civilization.css?v=20260807-civilization2' in index
+    assert 'pages/pages-civilization.jsx?v=20260807-civilization2' in index
+    assert 'dist/app.bundle.js?v=20260807-civilization2' in index
+
+
+def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
+    migration = MIGRATION.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE civilization.thoughts" in migration
+    assert "ENABLE ROW LEVEL SECURITY" in migration
+    assert "FORCE ROW LEVEL SECURITY" in migration
+    assert "tenant_id = app.current_tenant_id()" in migration
+    assert "ON CONFLICT (tenant_id, stable_key) DO NOTHING" in migration

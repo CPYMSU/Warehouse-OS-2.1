@@ -27,6 +27,9 @@ EXPECTED_CONTRACTS = {
     ("GET", "/api/digital-assets/revenue"),
     ("GET", "/api/research/projects"),
     ("POST", "/api/research/projects"),
+    ("GET", "/api/civilization/thoughts"),
+    ("POST", "/api/civilization/thoughts"),
+    ("DELETE", "/api/civilization/thoughts/00000000-0000-0000-0000-000000000001"),
     ("GET", "/api/tasks/meta"),
     ("GET", "/api/tasks"),
     ("POST", "/api/tasks"),
@@ -97,6 +100,8 @@ EXPECTED_CONTRACTS = {
 def _contract_template(path: str) -> str:
     if path.startswith("/api/integrations/"):
         return "/api/integrations/{provider}"
+    if path.startswith("/api/civilization/thoughts/"):
+        return "/api/civilization/thoughts/{thought_id}"
     return path
 
 

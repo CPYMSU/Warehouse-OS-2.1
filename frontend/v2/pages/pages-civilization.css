@@ -55,6 +55,8 @@
 
 .civ-view { border: 1px solid var(--rule); border-top: 0; animation: civ-enter .35s cubic-bezier(.2,.8,.2,1) both; }
 .civ-empty { min-height: 280px; padding: 54px 24px; color: var(--ink-3); font: 700 11px var(--f-mono); }
+.civ-load-error { min-height: 48px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--red); border-top: 0; color: var(--red); font: 750 9px/1.4 var(--f-mono); }
+.civ-load-error button { min-height: 30px; padding: 0 11px; color: var(--on-red); background: var(--red); font: 750 8px var(--f-mono); }
 
 /* A · LIST TOPOLOGY */
 .civ-atlas-layout { min-height: 680px; display: grid; grid-template-columns: minmax(0, 1fr) 370px; }
@@ -145,8 +147,10 @@
 .civ-composer-body label.is-wide { grid-column: 1 / -1; }
 .civ-composer-body input, .civ-composer-body select, .civ-composer-body textarea { width: 100%; margin-top: 7px; padding: 10px; border: 1px solid var(--rule); border-radius: 0; background: var(--civ-surface); }
 .civ-composer-body textarea { min-height: 112px; resize: vertical; }
+.civ-composer-error { padding: 10px; color: var(--red); border: 1px solid var(--red); font: 700 9px/1.5 var(--f-mono); }
 .civ-composer-foot { min-height: 68px; padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--rule); color: var(--ink-3); font: 700 8px/1.5 var(--f-mono); }
 .civ-composer-foot button { min-height: 40px; padding: 0 18px; color: var(--paper); background: var(--ink); font: 750 9px var(--f-mono); }
+.civ-composer button:disabled { opacity: .55; cursor: wait; }
 
 @keyframes civ-enter { from { opacity: 0; transform: translateY(10px); } }
 @keyframes civ-axis { to { transform: translate(-18px, 18px); } }
