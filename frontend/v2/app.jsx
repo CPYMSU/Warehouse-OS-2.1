@@ -410,6 +410,7 @@ const NAV2 = [
   { idx: "15", id: "perms", label: "權限" },
   { idx: "16", id: "logs", label: "審計" },
   { idx: "17", id: "cases", label: "檔案" },
+  { idx: "C1", id: "civilization", label: "文明" },
   { idx: "18", id: "settings", label: "設置" },
 ];
 const BIU_TEMPLATE_KEY = "biu_legal_ethics_case_lab";
@@ -629,6 +630,7 @@ const NAV_PERMISSION_RULES = {
   alerts: { all: ["alerts.read"] },
   stocktake: { all: ["inventory.read"] },
   cases: { any: ["cases.read", "records.read"] },
+  civilization: { all: ["overview.read"] },
   erp: { all: ["erp.read"] },
   finance: { all: ["finance.read"] },
   assets: { any: ["assets.read", "asset_mgmt.read"] },

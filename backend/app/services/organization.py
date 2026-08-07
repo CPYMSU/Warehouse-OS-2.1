@@ -55,6 +55,7 @@ NAVIGATION_CATALOG: tuple[dict[str, object], ...] = (
     {"id": "perms", "idx": "15", "label": "權限", "group": "治理"},
     {"id": "logs", "idx": "16", "label": "審計", "group": "治理"},
     {"id": "cases", "idx": "17", "label": "檔案", "group": "治理"},
+    {"id": "civilization", "idx": "C1", "label": "文明", "group": "治理"},
     {"id": "settings", "idx": "18", "label": "設置", "group": "治理"},
     {"id": "terminal", "idx": "19", "label": "終端", "group": "治理"},
 )
@@ -76,6 +77,7 @@ NAV_PERMISSION_RULES: dict[str, tuple[str, ...]] = {
     "gis": ("gis.read",),
     "reports": ("reports.read",),
     "logs": ("audit.read",),
+    "civilization": ("overview.read",),
     "settings": ("settings.manage",),
     "terminal": ("terminal.use",),
 }

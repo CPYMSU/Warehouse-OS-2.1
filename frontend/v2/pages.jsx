@@ -1193,6 +1193,7 @@ const BRIDGE_META = {
   perms: ["13", "ACCESS", "權限", "角色 · 審批 · 成員管理"],
   logs: ["16", "AUDIT", "審計日誌", "全平台操作留痕回放"],
   cases: ["17", "RECORDS", "檔案管理", "人員 · 會議 · 培訓 · 安全 · 事務檔案"],
+  civilization: ["C1", "CIVILIZATION", "文明", "問題 · 視角 · 方法 · 思想譜系"],
   settings: ["18", "SETTINGS", "設置", "系統與 AI 配置"],
   legal: ["—", "LEGAL", "法務", "合同 · 鋼印鏈 · 爭議"],
   companies: ["—", "COMPANIES", "公司", "多公司開通 · 租戶管理"],

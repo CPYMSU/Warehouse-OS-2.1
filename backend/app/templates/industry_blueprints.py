@@ -641,6 +641,7 @@ V2_NAV_MODULE_RULES = (
     ),
     ("logs", ("audit.read",), ()),
     ("cases", (), ("cases.read", "records.read")),
+    ("civilization", ("overview.read",), ()),
     ("settings", ("settings.manage",), ()),
     ("terminal", ("terminal.use",), ()),
 )
