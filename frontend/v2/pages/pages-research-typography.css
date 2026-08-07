@@ -1,0 +1,12 @@
+/* Swiss reading controls · content-sized manuscript fields and synchronized semantic type. */
+.rv-refinement-layers{grid-template-columns:minmax(120px,1fr) repeat(4,auto) auto minmax(140px,.65fr)}
+.rv-refinement-font-controls{display:grid;grid-template-columns:36px 56px 36px;height:44px;border-left:1px solid var(--ink)}
+.rv-refinement-layers .rv-refinement-font-controls button{width:auto;height:44px;padding:0;border:0;border-right:1px solid var(--ink);background:#fff;color:var(--ink);font:900 15px/1 var(--rv-mono)}
+.rv-refinement-layers .rv-refinement-font-controls button:last-child{border-right:0}.rv-refinement-layers .rv-refinement-font-controls button.reset{font-size:8px;letter-spacing:.04em}.rv-refinement-layers .rv-refinement-font-controls button:hover:not(:disabled){background:var(--ink);color:var(--paper)}.rv-refinement-layers .rv-refinement-font-controls button:disabled{opacity:.28;cursor:not-allowed}
+.rv-refinement textarea[data-refinement-autosize="true"]{box-sizing:border-box;overflow:hidden;resize:none}
+.rv-refinement-text textarea[data-refinement-autosize="true"]{font-size:var(--rv-refinement-body-size,14px)}
+.rv-refinement-block.title textarea[data-refinement-autosize="true"]{font-size:var(--rv-refinement-title-size,25px)}
+.rv-refinement-block.heading textarea[data-refinement-autosize="true"]{font-size:var(--rv-refinement-heading-size,19px)}
+.rv-refinement-block.caption textarea[data-refinement-autosize="true"],.rv-refinement-table-row textarea[data-refinement-autosize="true"],.rv-refinement-block figure textarea[data-refinement-autosize="true"],.rv-refinement-equation textarea[data-refinement-autosize="true"]{font-size:var(--rv-refinement-support-size,11px)}
+.rv-refinement-semantic-layer p{font-size:var(--rv-refinement-body-size,14px);line-height:1.65}
+@media(max-width:680px){.rv-refinement-layers{grid-template-columns:repeat(4,1fr)}.rv-refinement-font-controls{grid-column:1/-1;justify-content:end;border-top:1px solid var(--ink)}.rv-refinement-layers>small{border-top:1px solid var(--ink)}}

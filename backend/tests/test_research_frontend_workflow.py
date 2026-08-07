@@ -7,6 +7,7 @@ RESEARCH_PAGE = ROOT / "frontend/v2/pages/pages-research.jsx"
 RESEARCH_STYLE = ROOT / "frontend/v2/pages/pages-research.css"
 RESEARCH_SELECTION_STYLE = ROOT / "frontend/v2/pages/pages-research-selection.css"
 RESEARCH_CONTINUITY_STYLE = ROOT / "frontend/v2/pages/pages-research-continuity.css"
+RESEARCH_TYPOGRAPHY_STYLE = ROOT / "frontend/v2/pages/pages-research-typography.css"
 INDEX_HTML = ROOT / "frontend/v2/index.html"
 
 
@@ -126,6 +127,7 @@ def test_manuscript_refinement_is_browser_local_recoverable_and_formally_version
     styles = RESEARCH_STYLE.read_text(encoding="utf-8")
     selection_styles = RESEARCH_SELECTION_STYLE.read_text(encoding="utf-8")
     continuity_styles = RESEARCH_CONTINUITY_STYLE.read_text(encoding="utf-8")
+    typography_styles = RESEARCH_TYPOGRAPHY_STYLE.read_text(encoding="utf-8")
 
     assert '["refinement", "論文精修"]' in source
     assert 'data-testid="research-refinement-workspace"' in source
@@ -166,4 +168,20 @@ def test_manuscript_refinement_is_browser_local_recoverable_and_formally_version
     assert ".rv-refinement-image-state" in continuity_styles
     assert "position:sticky" in continuity_styles
     assert "max-height:calc(100vh - 118px)" in continuity_styles
+    assert "RefinementAutoTextarea" in source
+    assert "resizeRefinementTextarea" in source
+    assert "node.scrollHeight" in source
+    assert "window.ResizeObserver" in source
+    assert 'data-refinement-autosize="true"' in source
+    assert "REFINEMENT_FONT_MIN = 10" in source
+    assert "REFINEMENT_FONT_MAX = 22" in source
+    assert "font_size: fontSize" in source
+    assert "同步调整原文、翻译和蒸馏字号" in source
+    assert "减小文本" in source
+    assert "还原文本大小" in source
+    assert "增大文本" in source
+    assert 'data-refinement-autosize="true"' in typography_styles
+    assert "--rv-refinement-body-size" in typography_styles
+    assert ".rv-refinement-semantic-layer p" in typography_styles
+    assert ".rv-refinement-font-controls" in typography_styles
     assert "@media(max-width:680px)" in styles

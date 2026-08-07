@@ -2,7 +2,7 @@
    Swiss data workspace: native Git commits, inline previews and semantic diffs. */
 (() => {
 const W2 = window.W2;
-const { useState, useEffect, useMemo, useRef } = React;
+const { useState, useEffect, useLayoutEffect, useMemo, useRef } = React;
 const { Folio, Band } = W2;
 
 const clean = value => value == null ? "" : String(value);
@@ -1001,6 +1001,35 @@ const RefinementEquation = ({ latex, fallback }) => {
   return <div ref={node} className="rv-refinement-equation-preview" aria-label="论文公式"/>;
 };
 
+const REFINEMENT_FONT_DEFAULT = 14;
+const REFINEMENT_FONT_MIN = 10;
+const REFINEMENT_FONT_MAX = 22;
+const normalizedRefinementFontSize = value => Math.min(
+  REFINEMENT_FONT_MAX,
+  Math.max(REFINEMENT_FONT_MIN, Math.round(Number(value) || REFINEMENT_FONT_DEFAULT))
+);
+const resizeRefinementTextarea = node => {
+  if (!node) return;
+  node.style.height = "0px";
+  const style = window.getComputedStyle(node);
+  const minimum = Number.parseFloat(style.minHeight) || 0;
+  const borders = style.boxSizing === "border-box"
+    ? (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0)
+    : 0;
+  node.style.height = Math.ceil(Math.max(minimum, node.scrollHeight + borders)) + "px";
+};
+const RefinementAutoTextarea = ({ register, fontSize, value, ...props }) => {
+  const node = useRef(null);
+  const assign = current => {
+    node.current = current;
+    if (register) register(current);
+    if (current) resizeRefinementTextarea(current);
+  };
+  useLayoutEffect(() => { resizeRefinementTextarea(node.current); }, [value, fontSize]);
+  return <textarea {...props} ref={assign} value={value == null ? "" : value}
+    rows={1} data-refinement-autosize="true"/>;
+};
+
 const RefinementSemanticLayer = ({ artifact, layer }) => {
   const content = artifact && artifact.content || {};
   if (!artifact || artifact.stale || layer === "original") return null;
@@ -1065,6 +1094,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const [semantic, setSemantic] = useState(null);
   const [semanticBusy, setSemanticBusy] = useState(false);
   const [semanticLayer, setSemanticLayer] = useState("all");
+  const [fontSize, setFontSize] = useState(REFINEMENT_FONT_DEFAULT);
   const [agentType, setAgentType] = useState("neutrality");
   const [agentMessage, setAgentMessage] = useState("");
   const [agentBusy, setAgentBusy] = useState("");
@@ -1082,6 +1112,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const paperScrollRef = useRef(null);
   const inspectorScrollRef = useRef(null);
   const continuityScrollTimer = useRef(null);
+  const textareaResizeFrame = useRef(null);
   const base = project && activeFile
     ? "/api/research/projects/" + encodeURIComponent(project.id) + "/files/" + encodeURIComponent(activeFile.id) + "/refinement"
     : "";
@@ -1134,6 +1165,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     setCommitMessage(clean(ui.commit_message).slice(0, 20000));
     setLocalWarning(""); setSemantic(null);
     setSemanticLayer(["all", "original", "translation", "distillation"].includes(ui.semantic_layer) ? ui.semantic_layer : "all");
+    setFontSize(normalizedRefinementFontSize(ui.font_size));
     setAgentType(REFINEMENT_AGENTS.some(item => item[0] === ui.agent_type) ? ui.agent_type : "neutrality");
     setAgentMessage(clean(ui.agent_message).slice(0, 30000));
     setSelection(null);
@@ -1189,6 +1221,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     const timer = window.setTimeout(() => {
       writeRefinementLocal(activeFile.id, { ui: {
         semantic_layer: semanticLayer,
+        font_size: fontSize,
         agent_type: agentType,
         agent_message: agentMessage.slice(0, 30000),
         commit_message: commitMessage.slice(0, 20000),
@@ -1198,7 +1231,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       }});
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [clean(refinementMarker), semanticLayer, agentType, agentMessage, commitMessage,
+  }, [clean(refinementMarker), semanticLayer, fontSize, agentType, agentMessage, commitMessage,
     selection, annotationBody, selectionQuestion]);
   useEffect(() => {
     if (!workspace || !activeFile || !paperScrollRef.current || !inspectorScrollRef.current) {
@@ -1254,6 +1287,34 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       save();
     };
   }, [clean(refinementMarker), clean(activeFile && activeFile.id)]);
+  useEffect(() => {
+    const paper = paperScrollRef.current;
+    if (!workspace || !paper) return () => {};
+    const resizeAll = () => {
+      Object.values(selectionNodes.current).forEach(resizeRefinementTextarea);
+    };
+    const schedule = () => {
+      if (textareaResizeFrame.current != null) {
+        window.cancelAnimationFrame(textareaResizeFrame.current);
+      }
+      textareaResizeFrame.current = window.requestAnimationFrame(() => {
+        textareaResizeFrame.current = null;
+        resizeAll();
+      });
+    };
+    const observer = window.ResizeObserver ? new window.ResizeObserver(schedule) : null;
+    if (observer) observer.observe(paper);
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      if (observer) observer.disconnect();
+      window.removeEventListener("resize", schedule);
+      if (textareaResizeFrame.current != null) {
+        window.cancelAnimationFrame(textareaResizeFrame.current);
+        textareaResizeFrame.current = null;
+      }
+    };
+  }, [clean(refinementMarker), fontSize]);
 
   const syncDraft = async () => {
     if (!workspace || savingRef.current || editSerial.current <= savedSerial.current) return !savingRef.current;
@@ -1485,7 +1546,13 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const semanticStatus = semanticRun && ["queued", "processing"].includes(semanticRun.status)
     ? "多线程 Agent 正在工作" : semanticRun && semanticRun.status === "failed"
       ? "AI 任务需要重试" : "语义资源已同步";
-  return <div className="rv-refinement" data-testid="research-refinement-workspace">
+  return <div className="rv-refinement" data-testid="research-refinement-workspace"
+    data-font-size={fontSize} style={{
+      "--rv-refinement-body-size": fontSize + "px",
+      "--rv-refinement-title-size": (fontSize * 1.78).toFixed(2) + "px",
+      "--rv-refinement-heading-size": (fontSize * 1.36).toFixed(2) + "px",
+      "--rv-refinement-support-size": (fontSize * .82).toFixed(2) + "px",
+    }}>
     <header className="rv-refinement-head">
       <label><span>MANUSCRIPT / 選擇主稿</span><select value={clean(activeFile.id)} onChange={event => onFile(clean(event.target.value))}>
         {files.map((item, index) => <option key={item.id} value={clean(item.id)}>{String(index + 1).padStart(2, "0")} · {item.logical_path}</option>)}
@@ -1497,6 +1564,14 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       <span>DOCUMENT TWIN</span>
       {[['original','原文'],['translation','简中'],['distillation','蒸馏'],['all','三层对照']].map(item =>
         <button key={item[0]} className={semanticLayer === item[0] ? "active" : ""} onClick={() => setSemanticLayer(item[0])}>{item[1]}</button>)}
+      <div className="rv-refinement-font-controls" role="group" aria-label="同步调整原文、翻译和蒸馏字号">
+        <button type="button" aria-label="减小文本" title="减小文本" disabled={fontSize <= REFINEMENT_FONT_MIN}
+          onClick={() => setFontSize(value => normalizedRefinementFontSize(value - 1))}>−</button>
+        <button type="button" className="reset" aria-label="还原文本大小" title={"还原文本大小 · 当前 " + fontSize + "px"}
+          onClick={() => setFontSize(REFINEMENT_FONT_DEFAULT)}>还原</button>
+        <button type="button" aria-label="增大文本" title="增大文本" disabled={fontSize >= REFINEMENT_FONT_MAX}
+          onClick={() => setFontSize(value => normalizedRefinementFontSize(value + 1))}>＋</button>
+      </div>
       <small>{semanticStatus}</small>
     </nav>
     {workspace.source_changed && <div className="rv-refinement-conflict">課題庫已有較新的正式版本。這份草稿仍保留，但提交前需要重新基準化。</div>}
@@ -1519,14 +1594,14 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
           {blocks.map((block, index) => <section key={block.id} className={"rv-refinement-block " + block.type}>
             <aside><b>{String(index + 1).padStart(3, "0")}</b><span>{clean(block.type).toUpperCase()}</span><button disabled={index === 0} onClick={() => moveBlock(index, -1)}>↑</button><button disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)}>↓</button>{block.type !== "image" && <button onClick={() => removeBlock(block.id)}>×</button>}</aside>
             <div className="rv-refinement-block-content">
-              {block.type === "image" ? <figure><AuthenticatedResearchImage src={block.media_url} contentType={block.content_type} alt={block.text || "Research figure"}/><textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="圖題或替代文字"/></figure>
-              : block.type === "table_row" ? <div className="rv-refinement-table-row" role="row">{(block.cells || []).map((cell, cellIndex) => <textarea ref={node => { const key = clean(block.id) + ":cell:" + cellIndex; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} key={cellIndex} role="cell" style={{ gridColumn: "span " + Math.max(1, Number((((block.cell_spans || [])[cellIndex] || {}).colspan) || 1)) }} value={cell} onMouseUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onChange={event => {
+              {block.type === "image" ? <figure><AuthenticatedResearchImage src={block.media_url} contentType={block.content_type} alt={block.text || "Research figure"}/><RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="圖題或替代文字"/></figure>
+              : block.type === "table_row" ? <div className="rv-refinement-table-row" role="row">{(block.cells || []).map((cell, cellIndex) => <RefinementAutoTextarea register={node => { const key = clean(block.id) + ":cell:" + cellIndex; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} key={cellIndex} role="cell" style={{ gridColumn: "span " + Math.max(1, Number((((block.cell_spans || [])[cellIndex] || {}).colspan) || 1)) }} value={cell} onMouseUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onChange={event => {
                 const cells = [...(block.cells || [])]; cells[cellIndex] = event.target.value; updateBlock(block.id, { cells, text: cells.join(" | ") });
               }}/>)}</div>
-              : block.type === "equation" ? <div className="rv-refinement-equation"><RefinementEquation latex={block.latex} fallback={block.text}/><textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} aria-label="公式语义文本"/></div>
+              : block.type === "equation" ? <div className="rv-refinement-equation"><RefinementEquation latex={block.latex} fallback={block.text}/><RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} aria-label="公式语义文本"/></div>
               : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
                 <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
-              </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
+              </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
               <RefinementSemanticLayer artifact={semanticByBlock[clean(block.id)]} layer={semanticLayer}/>
               {(annotationsByBlock[clean(block.id)] || []).length > 0 && <div className="rv-refinement-block-annotations">{annotationsByBlock[clean(block.id)].map(item => <button key={item.id} className={item.status + " " + item.color} onClick={() => focusRefinementSelection(item)}><span>{item.annotation_type === "highlight" ? "MARK" : "NOTE"}</span><q>{item.quote.slice(0, 90)}</q></button>)}</div>}
             </div>
