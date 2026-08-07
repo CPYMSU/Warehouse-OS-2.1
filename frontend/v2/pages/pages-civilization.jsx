@@ -47,12 +47,12 @@ window.W2_LANG.addEN({
   "收起閱讀工具欄": "Collapse reading tools", "展開閱讀工具欄": "Open reading tools",
   "分享": "Share", "公開網頁": "Public page", "私有": "Private", "已公開": "Public",
   "開啟公開分享": "Enable public sharing", "關閉公開分享": "Disable public sharing",
-  "複製公開鏈接": "Copy public link", "打開公開網頁": "Open public page", "PNG 明信片": "PNG postcard",
+  "複製公開鏈接": "Copy public link", "打開公開網頁": "Open public page", "PNG 手機長圖": "PNG mobile long poster",
   "只有正式發布的內容會公開；草稿永遠不會進入公開頁。": "Only published content is public; drafts never enter the public page.",
   "關閉後，原公開鏈接會立即失效。": "After disabling it, the existing public link stops working immediately.",
   "分享設定已更新": "Sharing settings updated", "分享設定失敗": "Could not update sharing settings",
   "公開鏈接已複製": "Public link copied", "請先發布這篇文章，再開啟公開分享。": "Publish this post before enabling public sharing.",
-  "生成明信片不會上傳內容，由瀏覽器直接產生 PNG。": "The postcard is generated directly in your browser without uploading its content.",
+  "生成長圖不會上傳內容，由瀏覽器直接產生完整正文 PNG。": "The full-text long poster is generated directly in your browser without uploading its content.",
   "公開分享狀態": "Public sharing status", "系統分享": "System share",
 });
 
@@ -211,9 +211,9 @@ const CivilizationSharePanel = ({ thought, busy, error, onClose, onToggle, onToa
     try { await navigator.clipboard.writeText(publicUrl); onToast(t("公開鏈接已複製")); }
     catch (_error) { onToast(t("無法自動複製，請從地址欄複製")); }
   };
-  const downloadPostcard = () => {
+  const downloadLongPoster = () => {
     if (!window.CivilizationPostcard) return onToast(t("分享設定失敗"));
-    window.CivilizationPostcard.download(thought, publicUrl, lang());
+    window.CivilizationPostcard.downloadLong(thought, publicUrl, lang());
   };
   const systemShare = () => {
     if (!navigator.share || !publicUrl) return;
@@ -222,7 +222,7 @@ const CivilizationSharePanel = ({ thought, busy, error, onClose, onToggle, onToa
   const published = thought.publication_status === "published";
   return <div className="civ-share" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section className="civ-share-card" role="dialog" aria-modal="true" aria-labelledby="civ-share-title" data-domain={domain.key} style={domainStyle(domain)}>
-      <header className="civ-share-head"><b>S1</b><div><span className="civ-eyebrow">PUBLIC PAGE / BROWSER POSTCARD</span><h2 id="civ-share-title">{t("分享")}</h2></div><button type="button" disabled={busy} onClick={onClose} aria-label={t("取消")}>×</button></header>
+      <header className="civ-share-head"><b>S1</b><div><span className="civ-eyebrow">PUBLIC PAGE / MOBILE LONG POSTER</span><h2 id="civ-share-title">{t("分享")}</h2></div><button type="button" disabled={busy} onClick={onClose} aria-label={t("取消")}>×</button></header>
       <div className="civ-share-body">
         <div className="civ-share-status"><span>{t("公開分享狀態")}</span><strong className={thought.public_share_enabled ? "is-public" : ""}>{t(thought.public_share_enabled ? "已公開" : "私有")}</strong><i aria-hidden="true"/></div>
         <div className="civ-share-title"><span>{String(thought.no || "00")} · {domain.en.toUpperCase()}</span><h3>{content.title || thoughtText(thought, "title")}</h3><p>{t("只有正式發布的內容會公開；草稿永遠不會進入公開頁。")}</p></div>
@@ -230,13 +230,13 @@ const CivilizationSharePanel = ({ thought, busy, error, onClose, onToggle, onToa
         <div className="civ-share-actions">
           {publicUrl && <button type="button" onClick={copyPublicUrl}>{t("複製公開鏈接")} ↗</button>}
           {publicUrl && <button type="button" onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}>{t("打開公開網頁")} ↗</button>}
-          <button type="button" className="is-postcard" onClick={downloadPostcard}>{t("PNG 明信片")} ↓</button>
+          <button type="button" className="is-postcard" onClick={downloadLongPoster}>{t("PNG 手機長圖")} ↓</button>
           {publicUrl && navigator.share && <button type="button" onClick={systemShare}>{t("系統分享")} ↗</button>}
         </div>
-        <p className="civ-share-note">{t("生成明信片不會上傳內容，由瀏覽器直接產生 PNG。")} {thought.public_share_enabled && t("關閉後，原公開鏈接會立即失效。")}</p>
+        <p className="civ-share-note">{t("生成長圖不會上傳內容，由瀏覽器直接產生完整正文 PNG。")} {thought.public_share_enabled && t("關閉後，原公開鏈接會立即失效。")}</p>
         {error && <div className="civ-share-error" role="alert">{error}</div>}
       </div>
-      <footer className="civ-share-foot"><span>SWISS B / SHARE CONTRACT V1</span>{thought.can_edit ? <button type="button" className={thought.public_share_enabled ? "is-disable" : "is-enable"} disabled={busy || (!published && !thought.public_share_enabled)} onClick={() => onToggle(!thought.public_share_enabled)}>{busy ? t("正在保存") : t(thought.public_share_enabled ? "關閉公開分享" : "開啟公開分享")}</button> : <button type="button" onClick={onClose}>{t("取消")}</button>}</footer>
+      <footer className="civ-share-foot"><span>SWISS B / SHARE CONTRACT V2</span>{thought.can_edit ? <button type="button" className={thought.public_share_enabled ? "is-disable" : "is-enable"} disabled={busy || (!published && !thought.public_share_enabled)} onClick={() => onToggle(!thought.public_share_enabled)}>{busy ? t("正在保存") : t(thought.public_share_enabled ? "關閉公開分享" : "開啟公開分享")}</button> : <button type="button" onClick={onClose}>{t("取消")}</button>}</footer>
     </section>
   </div>;
 };

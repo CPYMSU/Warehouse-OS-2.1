@@ -37,7 +37,7 @@
     const topbar=el("header","cp-topbar"), brand=el("div","cp-brand"), actions=el("div","cp-actions");
     brand.append(el("i"),el("span","","BONFIRE PLATFORM · CIVILIZATION"));
     const publicUrl=location.origin+post.public_path;
-    actions.append(button(locale==="en"?"COPY LINK":"复制链接",async()=>{ await navigator.clipboard.writeText(publicUrl); }),button(locale==="en"?"PNG POSTCARD":"PNG 明信片",()=>window.CivilizationPostcard.download(post,publicUrl,locale),true));
+    actions.append(button(locale==="en"?"COPY LINK":"复制链接",async()=>{ await navigator.clipboard.writeText(publicUrl); }),button(locale==="en"?"PNG LONG POSTER":"PNG 手机长图",()=>window.CivilizationPostcard.downloadLong(post,publicUrl,locale),true));
     if (navigator.share) actions.append(button(locale==="en"?"SHARE":"系统分享",()=>navigator.share({title:String(content.title||"Civilization"),text:String(content.short||""),url:publicUrl}).catch(()=>{})));
     topbar.append(brand,actions);
     const poster=el("article","cp-poster"), main=el("div","cp-poster-main"), kicker=el("div","cp-kicker"), side=el("aside","cp-side");

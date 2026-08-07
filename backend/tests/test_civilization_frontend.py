@@ -67,7 +67,7 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert "notes_open" in source
     assert '"/share"' in source
     assert "public_share_enabled" in source
-    assert "CivilizationPostcard.download" in source
+    assert "CivilizationPostcard.downloadLong" in source
     assert "civ-share-card" in source
     assert ".civ-reader.is-notes-collapsed" in style
     assert "civ-lens-editor" in source
@@ -94,9 +94,9 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
     assert 'pages/pages-civilization.css?v=20260808-civilization9' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization9' in index
-    assert 'pages/civilization-postcard.js?v=20260808-share1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization9' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization10' in index
+    assert 'pages/civilization-postcard.js?v=20260808-share2' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization10' in index
 
 
 def test_public_civilization_page_and_browser_postcard_are_static_assets() -> None:
@@ -107,13 +107,18 @@ def test_public_civilization_page_and_browser_postcard_are_static_assets() -> No
 
     assert "__PAGE_TITLE__" in page
     assert "/pages/pages-civilization-public.css?v=20260808-share1" in page
-    assert "/pages/civilization-postcard.js?v=20260808-share1" in page
+    assert "/pages/civilization-postcard.js?v=20260808-share2" in page
+    assert "/pages/pages-civilization-public.js?v=20260808-share2" in page
     assert "/api/public/civilization/" in script
     assert 'credentials:"omit"' in script
     assert "navigator.share" in script
     assert "window.CivilizationPostcard" in postcard
     assert 'document.createElement("canvas")' in postcard
     assert 'canvas.toBlob' in postcard
+    assert "canvas.width = WIDTH" in postcard
+    assert "const WIDTH = 1080" in postcard
+    assert "downloadLong" in postcard
+    assert "MAX_HEIGHT = 14000" in postcard
     assert "html2canvas" not in postcard
     assert "fetch(" not in postcard
     assert ".cp-poster" in style
