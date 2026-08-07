@@ -106,6 +106,62 @@ def test_docx_review_parser_preserves_structure_math_images_and_tables(tmp_path:
     assert blocks[-1].end_offset > blocks[-1].start_offset
 
 
+def test_docx_review_parser_recovers_legacy_vml_desktop_screenshot(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-screenshot.docx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="png" ContentType="image/png"/>
+            </Types>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <w:document
+              xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+              xmlns:v="urn:schemas-microsoft-com:vml"
+              xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <w:body><w:p><w:pict><v:shape>
+                <v:imagedata r:id="rIdLegacy"/>
+              </v:shape></w:pict></w:p></w:body>
+            </w:document>""",
+        )
+        archive.writestr(
+            "word/_rels/document.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rIdLegacy"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+                Target="media/desktop%20shot.png"/>
+            </Relationships>""",
+        )
+        archive.writestr(
+            "word/media/desktop shot.png",
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ),
+        )
+
+    blocks = parse_document_blocks(
+        path,
+        {
+            "original_filename": path.name,
+            "content_type": (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "size_bytes": path.stat().st_size,
+        },
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0].block_type == "image"
+    assert blocks[0].locator["relationship_id"] == "rIdLegacy"
+    assert blocks[0].locator["archive_path"] == "word/media/desktop shot.png"
+    assert blocks[0].locator["content_type"] == "image/png"
+
+
 def test_character_anchor_uses_context_to_disambiguate_duplicate_text() -> None:
     blocks = [
         {
