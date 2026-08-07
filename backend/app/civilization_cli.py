@@ -25,6 +25,7 @@ CLI_COMMANDS = (
     "draft save",
     "preview",
     "publish",
+    "share enable|disable",
     "revisions",
     "restore",
     "lens upsert",
@@ -186,6 +187,11 @@ def build_parser() -> argparse.ArgumentParser:
     publish = groups.add_parser("publish")
     publish.add_argument("--post", required=True)
     publish.add_argument("--revision", required=True, type=int)
+    share = groups.add_parser("share").add_subparsers(dest="action", required=True)
+    for share_action in ("enable", "disable"):
+        share_parser = share.add_parser(share_action)
+        share_parser.add_argument("--post", required=True)
+        share_parser.add_argument("--revision", required=True, type=int)
     revisions = groups.add_parser("revisions")
     revisions.add_argument("--post", required=True)
     restore = groups.add_parser("restore")
@@ -241,6 +247,12 @@ def dispatch(client: Client, args: argparse.Namespace) -> object:
         return client.request("GET", f"{post_path}/preview")
     if args.group == "publish":
         return client.request("POST", f"{post_path}/publish", {"expected_revision": args.revision})
+    if args.group == "share":
+        return client.request(
+            "PUT",
+            f"{post_path}/share",
+            {"expected_revision": args.revision, "enabled": args.action == "enable"},
+        )
     if args.group == "revisions":
         return client.request("GET", f"{post_path}/revisions")
     if args.group == "restore":

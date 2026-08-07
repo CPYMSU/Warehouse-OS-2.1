@@ -347,7 +347,7 @@ def test_controller_noop_primary_and_standby_jobs_use_independent_cursors(
                     "schema": REQUEST_SCHEMA,
                     "release_id": f"20260805T15000{name[-1]}Z-abcdef123456-{role}-smart",
                     "git_sha": "abcdef123456",
-                    "target_revision": "20260807_0084",
+                    "target_revision": "20260808_0086",
                     "node_role": role,
                     "requested_at": "2026-08-05T15:00:00Z",
                 }
@@ -371,7 +371,7 @@ def test_controller_noop_primary_and_standby_jobs_use_independent_cursors(
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM app.alembic_version_standby")
-            ).scalar_one() == "20260807_0084"
+            ).scalar_one() == "20260808_0086"
         engine.dispose()
     finally:
         engine = create_engine(migration_url)

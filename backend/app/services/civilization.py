@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from uuid import UUID, uuid4
 
@@ -11,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.deps import ActorContext
-from app.db.session import tenant_session
+from app.db.session import system_session, tenant_session
 
 TEMPLATE_KEY = "swiss_b_longform_v1"
 CONTENT_SCHEMA = "warehouse.civilization.content.v1"
@@ -20,8 +21,10 @@ _THOUGHT_COLUMNS = """
 id, stable_key, domain, title, prompt, thesis, relations, lenses,
 occurred_on, display_order, source, created_by, created_at, updated_at,
 revision, template_key, published_content, draft_content,
-publication_status, published_revision, published_at
+publication_status, published_revision, published_at,
+public_share_enabled, public_share_key, public_shared_at
 """
+_PUBLIC_SHARE_RE = re.compile(r"^[a-z0-9_-]{12,64}$")
 
 
 def _can_manage(actor: ActorContext, created_by: UUID | None) -> bool:
@@ -321,11 +324,14 @@ def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> d
     updated_at = row["updated_at"]
     created_by = row.get("created_by")
     published_at = row.get("published_at")
+    public_shared_at = row.get("public_shared_at")
     assert isinstance(occurred_on, date)
     assert isinstance(created_at, datetime)
     assert isinstance(updated_at, datetime)
     assert created_by is None or isinstance(created_by, UUID)
     can_manage = _can_manage(actor, created_by)
+    public_share_enabled = bool(row.get("public_share_enabled"))
+    public_share_key = str(row.get("public_share_key") or "")
     return {
         "id": str(row["id"]),
         "stable_key": str(row["stable_key"]),
@@ -355,6 +361,16 @@ def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> d
         "can_edit": can_manage,
         "can_publish": can_manage,
         "can_delete": _can_delete(actor, created_by),
+        "public_share_enabled": public_share_enabled,
+        "public_path": (
+            f"/civilization/p/{public_share_key}"
+            if public_share_enabled and public_share_key
+            else None
+        ),
+        "public_share_key": public_share_key if can_manage and public_share_key else None,
+        "public_shared_at": (
+            public_shared_at.isoformat() if isinstance(public_shared_at, datetime) else None
+        ),
     }
 
 
@@ -392,6 +408,53 @@ def _insert_revision(session: Session, actor: ActorContext, row: dict[str, objec
             "template_key": TEMPLATE_KEY,
             "snapshot": json.dumps(_snapshot(row), ensure_ascii=False),
             "published_by": actor.user_id,
+        },
+    )
+
+
+def _write_public_snapshot(
+    session: Session,
+    actor: ActorContext,
+    row: dict[str, object],
+) -> None:
+    """Copy only the current published representation into the public boundary."""
+
+    share_key = str(row.get("public_share_key") or "")
+    if not bool(row.get("public_share_enabled")) or not _PUBLIC_SHARE_RE.fullmatch(share_key):
+        return
+    content = _effective_content(row)
+    session.execute(
+        text(
+            """
+            INSERT INTO civilization.public_shares(
+              share_key, tenant_id, thought_id, domain, content, lenses,
+              occurred_on, published_revision, shared_by
+            ) VALUES (
+              :share_key, :tenant_id, :thought_id, :domain,
+              CAST(:content AS jsonb), CAST(:lenses AS jsonb),
+              :occurred_on, :published_revision, :shared_by
+            )
+            ON CONFLICT (thought_id) DO UPDATE
+            SET share_key = EXCLUDED.share_key,
+                domain = EXCLUDED.domain,
+                content = EXCLUDED.content,
+                lenses = EXCLUDED.lenses,
+                occurred_on = EXCLUDED.occurred_on,
+                published_revision = EXCLUDED.published_revision,
+                shared_by = EXCLUDED.shared_by,
+                updated_at = now()
+            """
+        ),
+        {
+            "share_key": share_key,
+            "tenant_id": actor.tenant_id,
+            "thought_id": row["id"],
+            "domain": str(row["domain"]),
+            "content": json.dumps(content, ensure_ascii=False),
+            "lenses": json.dumps(row.get("lenses") or [], ensure_ascii=False),
+            "occurred_on": row["occurred_on"],
+            "published_revision": int(row.get("published_revision") or 0),
+            "shared_by": actor.user_id,
         },
     )
 
@@ -797,6 +860,7 @@ def publish_thought(
             .one()
         )
         _insert_revision(session, actor, row)
+        _write_public_snapshot(session, actor, row)
         _audit(
             session,
             actor,
@@ -1009,6 +1073,174 @@ def upsert_lens(
             {"thought_id": str(thought_id), "lens_index": lens_index},
         )
     return {"ok": True, "thought": _serialize(row, actor, number=int(row["display_order"]))}
+
+
+def configure_public_share(
+    actor: ActorContext,
+    thought_id: UUID,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    expected_revision = _expected_revision(payload)
+    enabled_value = payload.get("enabled")
+    if not isinstance(enabled_value, bool):
+        raise HTTPException(status_code=422, detail="enabled must be a boolean")
+    with tenant_session(actor.tenant_id) as session:
+        current = (
+            session.execute(
+                text(
+                    f"""
+                    SELECT {_THOUGHT_COLUMNS}
+                    FROM civilization.thoughts
+                    WHERE id = :thought_id
+                    FOR UPDATE
+                    """
+                ),
+                {"thought_id": thought_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Thought not found")
+        data = dict(current)
+        if not _can_manage(actor, data.get("created_by")):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the creator or a company administrator can configure sharing",
+            )
+        if int(data["revision"]) != expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "revision_conflict",
+                    "expected_revision": expected_revision,
+                    "current_revision": int(data["revision"]),
+                },
+            )
+        if enabled_value and str(data.get("publication_status")) != "published":
+            raise HTTPException(
+                status_code=409,
+                detail="Publish the thought before enabling its public page",
+            )
+        if bool(data.get("public_share_enabled")) == enabled_value:
+            if enabled_value:
+                _write_public_snapshot(session, actor, data)
+            else:
+                session.execute(
+                    text(
+                        """
+                        DELETE FROM civilization.public_shares
+                        WHERE tenant_id = :tenant_id AND thought_id = :thought_id
+                        """
+                    ),
+                    {"tenant_id": actor.tenant_id, "thought_id": thought_id},
+                )
+            return {
+                "ok": True,
+                "status": "public" if enabled_value else "private",
+                "unchanged": True,
+                "thought": _serialize(data, actor, number=int(data["display_order"])),
+            }
+        share_key = str(data.get("public_share_key") or "")
+        if enabled_value and not share_key:
+            share_key = uuid4().hex[:16]
+        row = dict(
+            session.execute(
+                text(
+                    f"""
+                    UPDATE civilization.thoughts
+                    SET public_share_enabled = :enabled,
+                        public_share_key = CASE
+                          WHEN :share_key = '' THEN public_share_key
+                          ELSE :share_key
+                        END,
+                        public_shared_at = CASE
+                          WHEN :enabled THEN COALESCE(public_shared_at, now())
+                          ELSE public_shared_at
+                        END,
+                        updated_at = now(), revision = revision + 1
+                    WHERE id = :thought_id AND revision = :expected_revision
+                    RETURNING {_THOUGHT_COLUMNS}
+                    """
+                ),
+                {
+                    "enabled": enabled_value,
+                    "share_key": share_key,
+                    "thought_id": thought_id,
+                    "expected_revision": expected_revision,
+                },
+            )
+            .mappings()
+            .one()
+        )
+        if enabled_value:
+            _write_public_snapshot(session, actor, row)
+        else:
+            session.execute(
+                text(
+                    """
+                    DELETE FROM civilization.public_shares
+                    WHERE tenant_id = :tenant_id AND thought_id = :thought_id
+                    """
+                ),
+                {"tenant_id": actor.tenant_id, "thought_id": thought_id},
+            )
+        _audit(
+            session,
+            actor,
+            (
+                "civilization.thought.public_share_enabled"
+                if enabled_value
+                else "civilization.thought.public_share_disabled"
+            ),
+            {
+                "thought_id": str(thought_id),
+                "share_key": share_key if enabled_value else None,
+            },
+        )
+    return {
+        "ok": True,
+        "status": "public" if enabled_value else "private",
+        "thought": _serialize(row, actor, number=int(row["display_order"])),
+    }
+
+
+def get_public_thought(share_key: str) -> dict[str, object]:
+    normalized = str(share_key or "").strip().lower()
+    if not _PUBLIC_SHARE_RE.fullmatch(normalized):
+        raise HTTPException(status_code=404, detail="Public Civilization post not found")
+    with system_session() as session:
+        row = (
+            session.execute(
+                text(
+                    """
+                    SELECT share_key, domain, content, lenses, occurred_on,
+                           published_revision, shared_at, updated_at
+                    FROM civilization.public_shares
+                    WHERE share_key = :share_key
+                    """
+                ),
+                {"share_key": normalized},
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Public Civilization post not found")
+    occurred_on = row["occurred_on"]
+    assert isinstance(occurred_on, date)
+    return {
+        "schema": "warehouse.civilization.public-post.v1",
+        "share_key": str(row["share_key"]),
+        "domain": str(row["domain"]),
+        "content": row["content"],
+        "lenses": row["lenses"] or [],
+        "date": f"{occurred_on.year:04d}—{occurred_on.month:02d}",
+        "published_revision": int(row["published_revision"]),
+        "shared_at": row["shared_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+        "public_path": f"/civilization/p/{normalized}",
+    }
 
 
 def delete_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:

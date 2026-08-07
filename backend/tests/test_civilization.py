@@ -102,8 +102,11 @@ def test_civilization_openapi_exposes_draft_publish_cli_and_revision_lifecycle()
     assert "/api/civilization/thoughts/{thought_id}/draft" in route_paths
     assert "/api/civilization/thoughts/{thought_id}/preview" in route_paths
     assert "/api/civilization/thoughts/{thought_id}/publish" in route_paths
+    assert "/api/civilization/thoughts/{thought_id}/share" in route_paths
     assert "/api/civilization/thoughts/{thought_id}/revisions" in route_paths
     assert "/api/civilization/thoughts/{thought_id}/revisions/{revision_no}/restore" in route_paths
+    assert "/api/public/civilization/{share_key}" in route_paths
+    assert "/civilization/p/{share_key}" in route_paths
 
 
 def test_civilization_auto_runtime_genes_are_backed_by_native_routes() -> None:
@@ -120,6 +123,7 @@ def test_civilization_auto_runtime_genes_are_backed_by_native_routes() -> None:
         "civilization_post_draft_update",
         "civilization_post_preview",
         "civilization_post_publish",
+        "civilization_public_share_configure",
         "civilization_revisions_list",
         "civilization_post_restore",
         "civilization_lens_upsert",
@@ -164,6 +168,14 @@ def test_civilization_routes_delegate_to_one_tenant_service(monkeypatch) -> None
             or {"ok": True, "thought": {"id": str(received_id), "revision": 2}}
         ),
     )
+    monkeypatch.setattr(
+        civilization_api,
+        "configure_public_share",
+        lambda received, received_id, payload: (
+            calls.append(("share", (received, received_id, payload)))
+            or {"ok": True, "thought": {"id": str(received_id), "revision": 3}}
+        ),
+    )
     app.dependency_overrides[current_actor] = lambda: actor
     client = TestClient(app)
     try:
@@ -184,12 +196,59 @@ def test_civilization_routes_delegate_to_one_tenant_service(monkeypatch) -> None
             },
         )
         assert updated.status_code == 200
+        shared = client.put(
+            f"/api/civilization/thoughts/{thought_id}/share",
+            json={"expected_revision": 2, "enabled": True},
+        )
+        assert shared.status_code == 200
         assert client.delete(f"/api/civilization/thoughts/{thought_id}").status_code == 200
     finally:
         app.dependency_overrides.clear()
 
-    assert [call[0] for call in calls] == ["list", "create", "update", "delete"]
+    assert [call[0] for call in calls] == ["list", "create", "update", "share", "delete"]
     assert calls[0][1] is actor
     assert calls[1][1][0] is actor
     assert calls[2][1][0:2] == (actor, thought_id)
-    assert calls[3][1] == (actor, thought_id)
+    assert calls[3][1][0:2] == (actor, thought_id)
+    assert calls[3][1][2] == {"expected_revision": 2, "enabled": True}
+    assert calls[4][1] == (actor, thought_id)
+
+
+def test_public_civilization_page_is_auth_free_validated_and_metadata_safe(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def public_post(share_key: str) -> dict[str, object]:
+        calls.append(share_key)
+        return {
+            "schema": "warehouse.civilization.public-post.v1",
+            "share_key": share_key,
+            "domain": "judgement",
+            "content": {
+                "locales": {
+                    "zh": {
+                        "title": '<script>alert("unsafe")</script>',
+                        "short": '秩序與連接 "公開"',
+                    }
+                }
+            },
+            "lenses": [],
+            "date": "2026—08",
+            "published_revision": 2,
+            "shared_at": "2026-08-08T00:00:00+00:00",
+            "updated_at": "2026-08-08T00:00:00+00:00",
+            "public_path": f"/civilization/p/{share_key}",
+        }
+
+    monkeypatch.setattr(civilization_api, "get_public_thought", public_post)
+    client = TestClient(app)
+
+    api_response = client.get("/api/public/civilization/sharekey1234")
+    page_response = client.get("/civilization/p/sharekey1234")
+
+    assert api_response.status_code == 200
+    assert api_response.json()["schema"] == "warehouse.civilization.public-post.v1"
+    assert page_response.status_code == 200
+    assert "<script>alert" not in page_response.text
+    assert "&lt;script&gt;alert" in page_response.text
+    assert "__SHARE_KEY__" not in page_response.text
+    assert calls == ["sharekey1234", "sharekey1234"]

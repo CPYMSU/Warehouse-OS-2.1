@@ -80,7 +80,7 @@ try {
 <link rel="stylesheet" href="pages/pages-research-continuity.css?v=20260807-continuity1"/>
 <link rel="stylesheet" href="pages/pages-research-typography.css?v=20260807-autosize1"/>
 <link rel="stylesheet" href="pages/pages-assets.css?v=20260805-pages-console1"/>
-<link rel="stylesheet" href="pages/pages-civilization.css?v=20260808-civilization7"/>
+<link rel="stylesheet" href="pages/pages-civilization.css?v=20260808-civilization8"/>
 <!-- 秘書塢富文本:marked(GFM Markdown)+ DOMPurify(消毒)+ KaTeX(公式) -->
 <!-- 內置交互地圖(GIS 模塊,與 1.0 同版本) -->
 </head>
@@ -124,7 +124,7 @@ try {
 <script type="application/x-warehouse-source" src="pages/pages-cases.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-tasks.jsx?v=20260804-task-actions1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-records.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="pages/pages-civilization.jsx?v=20260808-civilization7"></script>
+<script type="application/x-warehouse-source" src="pages/pages-civilization.jsx?v=20260808-civilization8"></script>
 <script type="application/x-warehouse-source" src="pages/pages-legal.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-companies.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-optimizer.jsx?v=20260723semantic1"></script>
@@ -137,7 +137,8 @@ try {
 <!-- JSX 在 CI／部署前以同源 Babel 工具確定性預編譯；生產瀏覽器只執行普通 JavaScript。 -->
 <!-- Feature 23 語義拓撲是普通 JavaScript；先註冊重試鉤子，再讓主 bundle 註冊原頁面。 -->
 <script src="pages/pages-optimizer-topology.js?v=20260723mermaid1"></script>
-<script src="dist/app.bundle.js?v=20260808-civilization7"></script>
+<script src="pages/civilization-postcard.js?v=20260808-share1"></script>
+<script src="dist/app.bundle.js?v=20260808-civilization8"></script>
 <script>
 /* 非关键增强资源在首屏启动之后异步加载，不阻塞主 bundle 的 DOMContentLoaded。 */
 (function () {

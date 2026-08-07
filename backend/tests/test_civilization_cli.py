@@ -9,6 +9,7 @@ def test_civilization_cli_is_content_first_and_never_accepts_a_key_argument() ->
     assert "post list|show|create|delete" in CLI_COMMANDS
     assert "draft save" in CLI_COMMANDS
     assert "publish" in CLI_COMMANDS
+    assert "share enable|disable" in CLI_COMMANDS
     assert "restore" in CLI_COMMANDS
     assert "--key-file" in help_text
     assert "--key " not in help_text
@@ -33,3 +34,20 @@ def test_civilization_cli_draft_contract_carries_revision_and_content() -> None:
     assert args.action == "save"
     assert args.revision == 4
     assert args.content == "@content.json"
+
+
+def test_civilization_cli_share_contract_requires_post_and_revision() -> None:
+    args = build_parser().parse_args(
+        [
+            "share",
+            "enable",
+            "--post",
+            "00000000-0000-0000-0000-000000000001",
+            "--revision",
+            "7",
+        ]
+    )
+
+    assert args.group == "share"
+    assert args.action == "enable"
+    assert args.revision == 7

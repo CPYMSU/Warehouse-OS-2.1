@@ -42,6 +42,15 @@ window.W2_LANG.addEN({
   "文明 CLI / API": "Civilization CLI / API", "草稿": "Draft", "已發布": "Published",
   "發布版本": "Published revision", "固定版面": "Locked layout", "正在發布": "Publishing",
   "收起閱讀工具欄": "Collapse reading tools", "展開閱讀工具欄": "Open reading tools",
+  "分享": "Share", "公開網頁": "Public page", "私有": "Private", "已公開": "Public",
+  "開啟公開分享": "Enable public sharing", "關閉公開分享": "Disable public sharing",
+  "複製公開鏈接": "Copy public link", "打開公開網頁": "Open public page", "PNG 明信片": "PNG postcard",
+  "只有正式發布的內容會公開；草稿永遠不會進入公開頁。": "Only published content is public; drafts never enter the public page.",
+  "關閉後，原公開鏈接會立即失效。": "After disabling it, the existing public link stops working immediately.",
+  "分享設定已更新": "Sharing settings updated", "分享設定失敗": "Could not update sharing settings",
+  "公開鏈接已複製": "Public link copied", "請先發布這篇文章，再開啟公開分享。": "Publish this post before enabling public sharing.",
+  "生成明信片不會上傳內容，由瀏覽器直接產生 PNG。": "The postcard is generated directly in your browser without uploading its content.",
+  "公開分享狀態": "Public sharing status", "系統分享": "System share",
 });
 
 const DOMAINS = [
@@ -181,6 +190,50 @@ const CivilizationComposer = ({ busy, error, initial, onClose, onSave }) => {
   </div>;
 };
 
+const CivilizationSharePanel = ({ thought, busy, error, onClose, onToggle, onToast }) => {
+  const domain = domainOf(thought.domain);
+  const content = contentLocale(thought);
+  const publicUrl = thought.public_path ? location.origin + thought.public_path : "";
+  useEffect(() => {
+    const close = event => { if (event.key === "Escape" && !busy) onClose(); };
+    document.addEventListener("keydown", close);
+    return () => document.removeEventListener("keydown", close);
+  }, [busy, onClose]);
+  const copyPublicUrl = async () => {
+    if (!publicUrl) return;
+    try { await navigator.clipboard.writeText(publicUrl); onToast(t("公開鏈接已複製")); }
+    catch (_error) { onToast(t("無法自動複製，請從地址欄複製")); }
+  };
+  const downloadPostcard = () => {
+    if (!window.CivilizationPostcard) return onToast(t("分享設定失敗"));
+    window.CivilizationPostcard.download(thought, publicUrl, lang());
+  };
+  const systemShare = () => {
+    if (!navigator.share || !publicUrl) return;
+    navigator.share({ title: String(content.title || thoughtText(thought, "title") || "Civilization"), text: String(content.short || ""), url: publicUrl }).catch(() => {});
+  };
+  const published = thought.publication_status === "published";
+  return <div className="civ-share" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+    <section className="civ-share-card" role="dialog" aria-modal="true" aria-labelledby="civ-share-title" data-domain={domain.key} style={domainStyle(domain)}>
+      <header className="civ-share-head"><b>S1</b><div><span className="civ-eyebrow">PUBLIC PAGE / BROWSER POSTCARD</span><h2 id="civ-share-title">{t("分享")}</h2></div><button type="button" disabled={busy} onClick={onClose} aria-label={t("取消")}>×</button></header>
+      <div className="civ-share-body">
+        <div className="civ-share-status"><span>{t("公開分享狀態")}</span><strong className={thought.public_share_enabled ? "is-public" : ""}>{t(thought.public_share_enabled ? "已公開" : "私有")}</strong><i aria-hidden="true"/></div>
+        <div className="civ-share-title"><span>{String(thought.no || "00")} · {domain.en.toUpperCase()}</span><h3>{content.title || thoughtText(thought, "title")}</h3><p>{t("只有正式發布的內容會公開；草稿永遠不會進入公開頁。")}</p></div>
+        {publicUrl ? <div className="civ-share-url"><span>{t("公開網頁")}</span><code>{publicUrl}</code></div> : <div className="civ-share-private"><b>PRIVATE / NOT INDEXED</b><span>{published ? t("開啟公開分享") : t("請先發布這篇文章，再開啟公開分享。")}</span></div>}
+        <div className="civ-share-actions">
+          {publicUrl && <button type="button" onClick={copyPublicUrl}>{t("複製公開鏈接")} ↗</button>}
+          {publicUrl && <button type="button" onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}>{t("打開公開網頁")} ↗</button>}
+          <button type="button" className="is-postcard" onClick={downloadPostcard}>{t("PNG 明信片")} ↓</button>
+          {publicUrl && navigator.share && <button type="button" onClick={systemShare}>{t("系統分享")} ↗</button>}
+        </div>
+        <p className="civ-share-note">{t("生成明信片不會上傳內容，由瀏覽器直接產生 PNG。")} {thought.public_share_enabled && t("關閉後，原公開鏈接會立即失效。")}</p>
+        {error && <div className="civ-share-error" role="alert">{error}</div>}
+      </div>
+      <footer className="civ-share-foot"><span>SWISS B / SHARE CONTRACT V1</span>{thought.can_edit ? <button type="button" className={thought.public_share_enabled ? "is-disable" : "is-enable"} disabled={busy || (!published && !thought.public_share_enabled)} onClick={() => onToggle(!thought.public_share_enabled)}>{busy ? t("正在保存") : t(thought.public_share_enabled ? "關閉公開分享" : "開啟公開分享")}</button> : <button type="button" onClick={onClose}>{t("取消")}</button>}</footer>
+    </section>
+  </div>;
+};
+
 const Page = () => {
   const initialMemory = useMemo(readMemory, []);
   const params = useMemo(routeParams, []);
@@ -195,6 +248,9 @@ const Page = () => {
   const [composer, setComposer] = useState(null);
   const [composerBusy, setComposerBusy] = useState(false);
   const [composerError, setComposerError] = useState("");
+  const [shareId, setShareId] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState("");
   const [toast, setToast] = useState("");
 
   const loadThoughts = async () => {
@@ -225,6 +281,7 @@ const Page = () => {
   const selectedLenses = thoughtLenses(selected);
   const selectedContent = contentLocale(selected);
   const selectedReadingSections = readingSections(selectedContent);
+  const shareThought = allThoughts.find(item => item.id === shareId) || null;
 
   useEffect(() => {
     if (visible.length && !visible.some(item => item.id === selectedId)) setSelectedId(visible[0].id);
@@ -238,6 +295,7 @@ const Page = () => {
   }, [toast]);
 
   const selectThought = (id, nextView) => { setSelectedId(id); if (nextView) setView(nextView); };
+  const openShare = thought => { setShareError(""); setShareId(thought.id); };
   const copyLink = async thought => {
     const link = location.href.split("#", 1)[0] + "#/civilization?view=" + encodeURIComponent(view) + "&thought=" + encodeURIComponent(thought.id);
     try { await navigator.clipboard.writeText(link); setToast(t("思想鏈接已複製")); }
@@ -268,8 +326,23 @@ const Page = () => {
     try {
       await W2.json("/api/civilization/thoughts/" + encodeURIComponent(thought.id), { method: "DELETE" });
       setThoughts(current => (current || []).filter(item => item.id !== thought.id));
-      setSelectedId(""); setToast(t("思想已刪除"));
+      setSelectedId(""); if (shareId === thought.id) setShareId(""); setToast(t("思想已刪除"));
     } catch (error) { setToast((error.message || t("刪除失敗"))); }
+  };
+  const togglePublicShare = async enabled => {
+    if (!shareThought) return;
+    setShareBusy(true); setShareError("");
+    try {
+      const result = await W2.json("/api/civilization/thoughts/" + encodeURIComponent(shareThought.id) + "/share", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_revision: shareThought.revision, enabled }),
+      });
+      setThoughts(current => (current || []).map(item => item.id === shareThought.id ? result.thought : item));
+      setToast(t("分享設定已更新"));
+    } catch (error) {
+      setShareError(error.status === 409 ? t("內容已被其他人更新，請重新打開後再編輯。") : (error.message || t("分享設定失敗")));
+    } finally { setShareBusy(false); }
   };
 
   if (thoughts === null) return <div className="civilization-page"><div className="civ-empty">{t("正在讀取文明資料")}…</div></div>;
@@ -292,7 +365,7 @@ const Page = () => {
       <div className="civ-detail-meta"><span>{selectedDomain.en.toUpperCase()} / {selected.date}</span><span>{t("選中").toUpperCase()}</span></div>
       <div className="civ-detail-figure"><div className="civ-detail-no">{selected.no}</div><DomainGlyph domain={selectedDomain} large/></div><span className="civ-micro">{t("當前問題")}</span>
       <h2>{thoughtText(selected, "title")}</h2><p>{thoughtText(selected, "thesis")}</p>
-      <div className="civ-detail-actions"><button type="button" onClick={() => setView("c")}>{t("海報閱讀")} →</button>{selected.can_edit && <button type="button" onClick={() => { setComposerError(""); setComposer({ initial: selected }); }}>{t("編輯")} ↗</button>}<button type="button" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製分享")} ↗</button></div>
+      <div className="civ-detail-actions"><button type="button" onClick={() => setView("c")}>{t("海報閱讀")} →</button><button type="button" onClick={() => openShare(selected)}>{t("分享")} ↗</button>{selected.can_edit && <button type="button" onClick={() => { setComposerError(""); setComposer({ initial: selected }); }}>{t("編輯")} ↗</button>}<button type="button" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製分享")} ↗</button></div>
     </aside>}
   </div>;
 
@@ -306,7 +379,7 @@ const Page = () => {
   const reader = !selected ? <div className="civ-empty">{t("沒有符合條件的思考對象")}</div> : <div className={"civ-reader" + (notesOpen ? "" : " is-notes-collapsed")} data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}>
     <nav className="civ-reader-rail" aria-label={t("問題")}>{visible.map(thought => { const domain = domainOf(thought.domain); return <button type="button" key={thought.id} data-domain={domain.key} style={domainStyle(domain)} className={thought.id === selected.id ? "is-active" : ""} onClick={() => selectThought(thought.id)}>{thought.no} · {domain.en.toUpperCase()}</button>; })}</nav>
     <div className="civ-reader-document">{!notesOpen && <button type="button" className="civ-notes-reopen" data-testid="civilization-notes-open" aria-label={t("展開閱讀工具欄")} onClick={() => setNotesOpen(true)}>TOOLS / {t("視角")} ←</button>}<article className="civ-reader-poster" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><PosterMotion domain={selectedDomain}/><div className="civ-poster-label"><span>{selectedContent.eyebrow || "CIVILIZATION · QUESTION"} {selected.no}</span><span>{selectedContent.category_label || selectedDomain.en.toUpperCase()}</span></div><h2 className="civ-poster-question"><PosterQuestion>{selectedContent.title || thoughtText(selected, "title")}</PosterQuestion></h2><p className="civ-poster-thesis">{selectedContent.short || thoughtText(selected, "short")}</p><aside className="civ-poster-index"><span className="civ-micro">LENS INDEX / {String(selectedLenses.length).padStart(2, "0")}</span>{selectedLenses.length ? selectedLenses.slice(0, 3).map((item, index) => <span key={index}><b>{String(index + 1).padStart(2, "0")}</b>{localText(item.name)}</span>) : <span><b>00</b>{t("尚未添加視角")}</span>}</aside><footer className="civ-poster-foot"><span>{selectedContent.footer_left || "12 COLUMN SYSTEM · ONE QUESTION / MANY LENSES"}</span><span>{selected.date}</span></footer></article><article className="civ-article-body">{selectedReadingSections.map((section, index) => <section className="civ-article-section" key={index}><div className="civ-article-marker"><strong>{section.marker || String(index).padStart(2, "0")}</strong><small>{section.kicker || "SECTION / THOUGHT"}</small></div><div className="civ-article-copy"><span className="civ-micro">{section.kicker || `SECTION ${String(index + 1).padStart(2, "0")}`}</span><h3>{section.heading}</h3>{(Array.isArray(section.paragraphs) ? section.paragraphs : proseParagraphs(section.paragraphs)).map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}</div></section>)}<footer><span>{selectedContent.footer_right || "INFORMATION BEFORE DECORATION"}</span><span>{selected.date}</span></footer></article></div>
-    {notesOpen && <aside className="civ-reader-notes" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><div className="civ-reader-notes-head"><span className="civ-micro">CHANGE THE LENS / {t("換一個角度")}</span><button type="button" data-testid="civilization-notes-close" aria-label={t("收起閱讀工具欄")} title={t("收起閱讀工具欄")} onClick={() => setNotesOpen(false)}>×</button></div><h3>{selectedContent.title || thoughtText(selected, "title")}</h3><p>{selectedContent.quote || selectedContent.short || thoughtText(selected, "short")}</p><div className="civ-publication-meta"><span><b>{t("固定版面")}</b>SWISS B / V1</span><span><b>{t("發布版本")}</b>{String(selected.published_revision || 0).padStart(2, "0")}{selected.has_draft ? ` · ${t("草稿")}` : ` · ${t("已發布")}`}</span></div><div className="civ-lens-list">{selectedLenses.length ? selectedLenses.map((item, index) => <button type="button" key={index} className={lens === index ? "is-active" : ""} onClick={() => setLens(index)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{localText(item.name)}</strong><br/>{localText(item.text)}</span></button>) : <div className="civ-empty civ-lens-empty">{t("尚未添加視角")}</div>}</div><div className="civ-read-actions">{selected.can_edit && <button type="button" className="civ-read-action" onClick={() => { setComposerError(""); setComposer({ initial: selected }); }}>{t(selectedLenses.length ? "編輯" : "添加視角")} →</button>}<button type="button" className="civ-read-action" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製這個思考的鏈接")} →</button></div></aside>}
+    {notesOpen && <aside className="civ-reader-notes" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><div className="civ-reader-notes-head"><span className="civ-micro">CHANGE THE LENS / {t("換一個角度")}</span><button type="button" data-testid="civilization-notes-close" aria-label={t("收起閱讀工具欄")} title={t("收起閱讀工具欄")} onClick={() => setNotesOpen(false)}>×</button></div><h3>{selectedContent.title || thoughtText(selected, "title")}</h3><p>{selectedContent.quote || selectedContent.short || thoughtText(selected, "short")}</p><div className="civ-publication-meta"><span><b>{t("固定版面")}</b>SWISS B / V1</span><span><b>{t("發布版本")}</b>{String(selected.published_revision || 0).padStart(2, "0")}{selected.has_draft ? ` · ${t("草稿")}` : ` · ${t("已發布")}`}</span></div><div className="civ-lens-list">{selectedLenses.length ? selectedLenses.map((item, index) => <button type="button" key={index} className={lens === index ? "is-active" : ""} onClick={() => setLens(index)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{localText(item.name)}</strong><br/>{localText(item.text)}</span></button>) : <div className="civ-empty civ-lens-empty">{t("尚未添加視角")}</div>}</div><div className="civ-read-actions"><button type="button" className="civ-read-action" onClick={() => openShare(selected)}>{t("分享")} →</button>{selected.can_edit && <button type="button" className="civ-read-action" onClick={() => { setComposerError(""); setComposer({ initial: selected }); }}>{t(selectedLenses.length ? "編輯" : "添加視角")} →</button>}<button type="button" className="civ-read-action" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製這個思考的鏈接")} →</button></div></aside>}
   </div>;
 
   return <div className="civilization-page" data-domain={activeDomain.key} style={domainStyle(activeDomain)}>
@@ -316,7 +389,7 @@ const Page = () => {
     {loadError && <div className="civ-load-error" role="alert"><span>{t("文明資料讀取失敗")}: {loadError}</span><button type="button" onClick={loadThoughts}>{t("重新讀取")}</button></div>}
     <main className="civ-view">{view === "a" ? atlas : view === "b" ? chronology : reader}</main>
     <footer className="civ-footer"><span>INFORMATION BEFORE DECORATION</span><span>LIST ↔ LINEAGE ↔ READING</span></footer>
-    {composer && <CivilizationComposer busy={composerBusy} error={composerError} initial={composer.initial} onClose={() => setComposer(null)} onSave={saveThought}/>} {toast && <div className="civ-toast" role="status">{toast}</div>}
+    {composer && <CivilizationComposer busy={composerBusy} error={composerError} initial={composer.initial} onClose={() => setComposer(null)} onSave={saveThought}/>} {shareThought && <CivilizationSharePanel thought={shareThought} busy={shareBusy} error={shareError} onClose={() => setShareId("")} onToggle={togglePublicShare} onToast={setToast}/>} {toast && <div className="civ-toast" role="status">{toast}</div>}
   </div>;
 };
 

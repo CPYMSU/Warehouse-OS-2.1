@@ -197,6 +197,7 @@ def test_runtime_api_key_calls_the_same_secretary_and_terminal_backends(monkeypa
         "terminal_execute": "/api/cli/exec",
         "research_api": "/api/research/projects",
         "research_upload": "/api/research/projects/{project_ref}/files",
+        "civilization_api": "/api/civilization/thoughts",
         "identity": "/api/auth/me",
     }
 

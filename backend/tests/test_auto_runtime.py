@@ -1348,8 +1348,8 @@ def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> N
     atlas = ai_capability_atlas()
     genes = ai_capability_gene_index()
 
-    assert len(genes) == 555
-    assert sum(int(domain["gene_count"]) for domain in atlas) == 555
+    assert len(genes) == 556
+    assert sum(int(domain["gene_count"]) for domain in atlas) == 556
     assert {gene["scope"] for gene in genes} == {"tenant", "platform"}
     assert all("permission_any" in gene and "availability" in gene for gene in genes)
     observe_gene = next(gene for gene in genes if gene["tool_name"] == "generic_data_observe")
@@ -1369,7 +1369,7 @@ def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> N
     assert any(
         domain["domain"] == "civilization"
         and domain["scope"] == "tenant"
-        and domain["gene_count"] == 15
+        and domain["gene_count"] == 16
         for domain in atlas
     )
 

@@ -585,6 +585,7 @@ def test_document_review_annotation_and_grounded_question_round_trip(
         reviewed = client.get(semantic_path).json()
         assert reviewed["latest_run"]["status"] == "ready"
         assert {item["agent_type"] for item in reviewed["threads"]} == {
+            "chief",
             "neutrality",
             "logic",
             "clarity",

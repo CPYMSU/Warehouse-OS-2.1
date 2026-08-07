@@ -11718,6 +11718,22 @@ COMMANDS = [
         "examples": ["civilization publish --post 00000000-0000-0000-0000-000000000001 --revision 3"],
     },
     {
+        "command": "civilization share configure",
+        "tool_name": "civilization_public_share_configure",
+        "description": "顯式開啟或關閉一篇已發布文明文章的公開短鏈接；公開邊界只同步正式內容，從不暴露草稿",
+        "api_method": "PUT",
+        "api_path": "/api/civilization/thoughts/{thought_id}/share",
+        "permission": "overview.read",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("post", "path.thought_id", "文明文章 UUID", required=True),
+            _p("revision", "body.expected_revision", "當前資料 revision", required=True, ptype="int"),
+            _p("enabled", "body.enabled", "開啟或關閉公開分享", required=True, ptype="bool"),
+        ],
+        "examples": ["civilization share configure --post 00000000-0000-0000-0000-000000000001 --revision 3 --enabled true"],
+    },
+    {
         "command": "civilization revisions list",
         "tool_name": "civilization_revisions_list",
         "description": "列出一篇文明文章的不可變發布版本譜系",
