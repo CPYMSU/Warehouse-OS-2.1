@@ -41,14 +41,19 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert ".civ-atlas-layout" in style
     assert ".civ-chronology" in style
     assert ".civ-reader" in style
+    assert "civ-poster-motion" in source
+    assert "data-domain" in source
+    for domain in ("judgement", "technology", "organization", "time", "ethics"):
+        assert f".civ-poster-motion.is-{domain}" in style
+    assert "@media (prefers-reduced-motion: reduce)" in style
 
 
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260807-civilization2' in index
-    assert 'pages/pages-civilization.jsx?v=20260807-civilization2' in index
-    assert 'dist/app.bundle.js?v=20260807-civilization2' in index
+    assert 'pages/pages-civilization.css?v=20260808-civilization3' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization3' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization3' in index
 
 
 def test_civilization_content_is_tenant_data_with_database_isolation() -> None:

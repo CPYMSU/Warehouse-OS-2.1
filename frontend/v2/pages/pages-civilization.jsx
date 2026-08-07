@@ -32,14 +32,20 @@ window.W2_LANG.addEN({
 });
 
 const DOMAINS = [
-  { key: "all", zh: "全部", en: "All", color: "var(--red)" },
-  { key: "judgement", zh: "判斷", en: "Judgement", color: "#D62B20" },
-  { key: "technology", zh: "技術", en: "Technology", color: "#174A96" },
-  { key: "organization", zh: "組織", en: "Organization", color: "#1F654B" },
-  { key: "time", zh: "時間", en: "Time", color: "#9B4F1B" },
-  { key: "ethics", zh: "倫理", en: "Ethics", color: "#6B3C78" },
+  { key: "all", zh: "全部", en: "All", color: "#D62B20", accent: "#F3CE1D", ink: "#141414", pale: "#F4F0E7" },
+  { key: "judgement", zh: "判斷", en: "Judgement", color: "#D62B20", accent: "#F3CE1D", ink: "#211A17", pale: "#F7E8D8" },
+  { key: "technology", zh: "技術", en: "Technology", color: "#1656A3", accent: "#64D1D4", ink: "#092840", pale: "#DDEDF2" },
+  { key: "organization", zh: "組織", en: "Organization", color: "#17694E", accent: "#F1C928", ink: "#102B22", pale: "#DCEBE1" },
+  { key: "time", zh: "時間", en: "Time", color: "#B45418", accent: "#F1CF75", ink: "#3A2416", pale: "#F4E8D8" },
+  { key: "ethics", zh: "倫理", en: "Ethics", color: "#6C3D8E", accent: "#F0A4C2", ink: "#28172E", pale: "#EDE1F0" },
 ];
 const domainOf = key => DOMAINS.find(item => item.key === key) || DOMAINS[1];
+const domainStyle = domain => ({
+  "--civ-signal": domain.color,
+  "--civ-accent": domain.accent,
+  "--civ-domain-ink": domain.ink,
+  "--civ-domain-pale": domain.pale,
+});
 const localText = value => {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -67,8 +73,12 @@ const routeParams = () => {
   return new URLSearchParams(query);
 };
 const PosterQuestion = ({ children }) => <>{String(children || "").split(/([，,？?])/).map((part, index) => /[，,？?]/.test(part) ? <em key={index}>{part}</em> : <React.Fragment key={index}>{part}</React.Fragment>)}</>;
+const DomainGlyph = ({ domain, large = false }) => <span className={`civ-domain-glyph is-${domain.key}${large ? " is-large" : ""}`} style={domainStyle(domain)} aria-hidden="true"><i/><i/><i/><i/></span>;
+const PosterMotion = ({ domain }) => <div className={`civ-poster-motion is-${domain.key}`} style={domainStyle(domain)} aria-hidden="true"><i/><i/><i/><i/><b>{domain.en.slice(0, 3).toUpperCase()}</b></div>;
 
 const CivilizationComposer = ({ busy, error, onClose, onSave }) => {
+  const [domainKey, setDomainKey] = useState("judgement");
+  const composerDomain = domainOf(domainKey);
   useEffect(() => {
     const close = event => { if (event.key === "Escape" && !busy) onClose(); };
     document.addEventListener("keydown", close);
@@ -89,7 +99,8 @@ const CivilizationComposer = ({ busy, error, onClose, onSave }) => {
     <form className="civ-composer-card" role="dialog" aria-modal="true" aria-labelledby="civ-composer-title" onSubmit={submit}>
       <header className="civ-composer-head"><b>C1</b><div><span className="civ-eyebrow">NEW THOUGHT OBJECT</span><h2 id="civ-composer-title">{t("記錄問題")}</h2></div><button type="button" disabled={busy} className="civ-composer-close" onClick={onClose} aria-label={t("取消")}>×</button></header>
       <div className="civ-composer-body">
-        <label>{t("領域")}<select name="domain" defaultValue="judgement">{DOMAINS.slice(1).map(domain => <option key={domain.key} value={domain.key}>{lang() === "en" ? domain.en : t(domain.zh)}</option>)}</select></label>
+        <label>{t("領域")}<select name="domain" value={domainKey} onChange={event => setDomainKey(event.target.value)}>{DOMAINS.slice(1).map(domain => <option key={domain.key} value={domain.key}>{lang() === "en" ? domain.en : t(domain.zh)}</option>)}</select></label>
+        <div className="civ-composer-domain" data-domain={composerDomain.key} style={domainStyle(composerDomain)}><DomainGlyph domain={composerDomain}/><span><b>{lang() === "en" ? composerDomain.en : t(composerDomain.zh)}</b><small>{composerDomain.en.toUpperCase()} POSTER SYSTEM</small></span></div>
         <label>{t("一句引子")}<input name="short" maxLength="180" required/></label>
         <label className="is-wide">{t("問題")}<input name="title" maxLength="160" autoFocus required/></label>
         <label className="is-wide">{t("核心判斷")}<textarea name="thesis" maxLength="1200" required/></label>
@@ -139,6 +150,7 @@ const Page = () => {
   }, [allThoughts, filter, query]);
   const selected = allThoughts.find(item => item.id === selectedId) || visible[0] || allThoughts[0] || null;
   const selectedDomain = domainOf(selected && selected.domain);
+  const activeDomain = selected || filter === "all" ? selectedDomain : domainOf(filter);
   const selectedLenses = thoughtLenses(selected);
 
   useEffect(() => {
@@ -184,18 +196,18 @@ const Page = () => {
       <div className="civ-register-head"><span>NO.</span><span>DOMAIN</span><span>QUESTION / OBJECT</span><span>RELATION</span><span>TIME</span></div>
       {!visible.length ? <div className="civ-empty">{t("沒有符合條件的思考對象")}</div> : visible.map(thought => {
         const domain = domainOf(thought.domain);
-        return <button type="button" className="civ-thought-row" key={thought.id} aria-selected={selected && thought.id === selected.id} onClick={() => selectThought(thought.id)}>
+        return <button type="button" className="civ-thought-row" data-domain={domain.key} style={domainStyle(domain)} key={thought.id} aria-selected={selected && thought.id === selected.id} onClick={() => selectThought(thought.id)}>
           <span className="civ-row-no">{thought.no}</span>
-          <span className="civ-row-domain" style={{ "--civ-signal": domain.color }}><i/>{lang() === "en" ? domain.en : t(domain.zh)}<br/>{domain.en.toUpperCase()}</span>
+          <span className="civ-row-domain"><DomainGlyph domain={domain}/>{lang() === "en" ? domain.en : t(domain.zh)}<br/>{domain.en.toUpperCase()}</span>
           <span className="civ-row-copy"><small>QUESTION OBJECT</small><h2>{thoughtText(thought, "title")}</h2><p>{thoughtText(thought, "short")}</p></span>
           <span className="civ-row-links"><small>{t("連接到").toUpperCase()}</small><b>{thoughtRelations(thought).map((item, index) => <React.Fragment key={index}>↳ {localText(item)}{index < thoughtRelations(thought).length - 1 && <br/>}</React.Fragment>)}</b></span>
           <span className="civ-row-year">{thought.year}</span>
         </button>;
       })}
     </div>
-    {selected && <aside className="civ-atlas-detail" style={{ "--civ-signal": selectedDomain.color }}>
+    {selected && <aside className="civ-atlas-detail" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}>
       <div className="civ-detail-meta"><span>{selectedDomain.en.toUpperCase()} / {selected.date}</span><span>{t("選中").toUpperCase()}</span></div>
-      <div className="civ-detail-no">{selected.no}</div><span className="civ-micro">{t("當前問題")}</span>
+      <div className="civ-detail-figure"><div className="civ-detail-no">{selected.no}</div><DomainGlyph domain={selectedDomain} large/></div><span className="civ-micro">{t("當前問題")}</span>
       <h2>{thoughtText(selected, "title")}</h2><p>{thoughtText(selected, "thesis")}</p>
       <div className="civ-detail-actions"><button type="button" onClick={() => setView("c")}>{t("海報閱讀")} →</button><button type="button" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製分享")} ↗</button></div>
     </aside>}
@@ -204,20 +216,20 @@ const Page = () => {
   const chronology = <div className="civ-chronology">
     <aside className="civ-chronology-side"><span className="civ-micro">CHRONOLOGY / {t("思想形成")}</span><strong>{visible.length}×</strong><p>{t("時間軸不表示思想越來越正確，而是保留問題如何被重新提出、修正和連接。")}</p><div className="civ-chronology-legend">○ FIRST QUESTION<br/>□ REVISED LENS<br/>— RELATED THOUGHT<br/>● CURRENT READING</div></aside>
     <div className="civ-timeline"><div className="civ-timeline-axis">{["2021", "2022", "2023", "2024", "2025", "2026"].map(year => <span key={year}>{year}</span>)}</div>
-      {!visible.length ? <div className="civ-empty">{t("沒有符合條件的思考對象")}</div> : <ol className="civ-timeline-list">{visible.map(thought => <li className="civ-timeline-item" key={thought.id}><time className="civ-timeline-date">{thought.date}</time><div className="civ-timeline-node"><button type="button" aria-selected={selected && thought.id === selected.id} onClick={() => selectThought(thought.id)}><span><span className="civ-eyebrow">{domainOf(thought.domain).en.toUpperCase()} · QUESTION OBJECT</span><h2>{thoughtText(thought, "title")}</h2><p>{thoughtText(thought, "short")}</p></span><aside>{thoughtRelations(thought).map((item, index) => <React.Fragment key={index}>↳ {localText(item)}{index < thoughtRelations(thought).length - 1 && <br/>}</React.Fragment>)}</aside></button></div></li>)}</ol>}
+      {!visible.length ? <div className="civ-empty">{t("沒有符合條件的思考對象")}</div> : <ol className="civ-timeline-list">{visible.map(thought => { const domain = domainOf(thought.domain); return <li className="civ-timeline-item" key={thought.id} data-domain={domain.key} style={domainStyle(domain)}><time className="civ-timeline-date">{thought.date}</time><div className="civ-timeline-node"><button type="button" aria-selected={selected && thought.id === selected.id} onClick={() => selectThought(thought.id)}><DomainGlyph domain={domain}/><span><span className="civ-eyebrow">{domain.en.toUpperCase()} · QUESTION OBJECT</span><h2>{thoughtText(thought, "title")}</h2><p>{thoughtText(thought, "short")}</p></span><aside>{thoughtRelations(thought).map((item, index) => <React.Fragment key={index}>↳ {localText(item)}{index < thoughtRelations(thought).length - 1 && <br/>}</React.Fragment>)}</aside></button></div></li>; })}</ol>}
     </div>
   </div>;
 
-  const reader = !selected ? <div className="civ-empty">{t("沒有符合條件的思考對象")}</div> : <div className="civ-reader">
-    <nav className="civ-reader-rail" aria-label={t("問題")}>{visible.map(thought => <button type="button" key={thought.id} className={thought.id === selected.id ? "is-active" : ""} onClick={() => selectThought(thought.id)}>{thought.no} · {domainOf(thought.domain).en.toUpperCase()}</button>)}</nav>
-    <article className="civ-reader-poster"><div className="civ-poster-label"><span>CIVILIZATION · QUESTION {selected.no}</span><span>{selectedDomain.en.toUpperCase()}</span></div><h2 className="civ-poster-question"><PosterQuestion>{thoughtText(selected, "title")}</PosterQuestion></h2><p className="civ-poster-thesis">{thoughtText(selected, "thesis")}</p><footer className="civ-poster-foot"><span>ONE QUESTION · MANY LENSES</span><span>{selected.date}</span></footer></article>
-    <aside className="civ-reader-notes"><span className="civ-micro">CHANGE THE LENS / {t("換一個角度")}</span><h3>{thoughtText(selected, "title")}</h3><p>{thoughtText(selected, "short")}</p><div className="civ-lens-list">{selectedLenses.length ? selectedLenses.map((item, index) => <button type="button" key={index} className={lens === index ? "is-active" : ""} onClick={() => setLens(index)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{localText(item.name)}</strong><br/>{localText(item.text)}</span></button>) : <div className="civ-empty">{t("尚未添加視角")}</div>}</div><button type="button" className="civ-read-action" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製這個思考的鏈接")} →</button></aside>
+  const reader = !selected ? <div className="civ-empty">{t("沒有符合條件的思考對象")}</div> : <div className="civ-reader" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}>
+    <nav className="civ-reader-rail" aria-label={t("問題")}>{visible.map(thought => { const domain = domainOf(thought.domain); return <button type="button" key={thought.id} data-domain={domain.key} style={domainStyle(domain)} className={thought.id === selected.id ? "is-active" : ""} onClick={() => selectThought(thought.id)}>{thought.no} · {domain.en.toUpperCase()}</button>; })}</nav>
+    <article className="civ-reader-poster" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><PosterMotion domain={selectedDomain}/><div className="civ-poster-label"><span>CIVILIZATION · QUESTION {selected.no}</span><span>{selectedDomain.en.toUpperCase()}</span></div><h2 className="civ-poster-question"><PosterQuestion>{thoughtText(selected, "title")}</PosterQuestion></h2><p className="civ-poster-thesis">{thoughtText(selected, "thesis")}</p><footer className="civ-poster-foot"><span>ONE QUESTION · MANY LENSES</span><span>{selected.date}</span></footer></article>
+    <aside className="civ-reader-notes" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><span className="civ-micro">CHANGE THE LENS / {t("換一個角度")}</span><h3>{thoughtText(selected, "title")}</h3><p>{thoughtText(selected, "short")}</p><div className="civ-lens-list">{selectedLenses.length ? selectedLenses.map((item, index) => <button type="button" key={index} className={lens === index ? "is-active" : ""} onClick={() => setLens(index)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{localText(item.name)}</strong><br/>{localText(item.text)}</span></button>) : <div className="civ-empty">{t("尚未添加視角")}</div>}</div><button type="button" className="civ-read-action" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製這個思考的鏈接")} →</button></aside>
   </div>;
 
-  return <div className="civilization-page">
+  return <div className="civilization-page" data-domain={activeDomain.key} style={domainStyle(activeDomain)}>
     <header className="civ-toolbar"><div className="civ-toolbar-brand"><span className="civ-toolbar-mark" aria-hidden="true"/><span>BONFIRE PLATFORM<br/>CIVILIZATION / {t("文明")}</span></div><nav className="civ-view-switch" aria-label={t("閱讀海報")}>{[["a", "問題拓撲"], ["b", "思想時間軸"], ["c", "閱讀海報"]].map(([id, label]) => <button type="button" key={id} aria-selected={view === id} onClick={() => setView(id)}>{id.toUpperCase()} {t(label)}</button>)}</nav><div className="civ-toolbar-right"><span>{String(allThoughts.length).padStart(2, "0")} QUESTIONS · {String(allThoughts.reduce((sum, item) => sum + thoughtLenses(item).length, 0)).padStart(2, "0")} LENSES</span><button type="button" className="civ-new-button" onClick={() => { setComposerError(""); setComposer(true); }}>＋ {t("記錄一個問題")}</button></div></header>
-    <section className="civ-masthead"><div className="civ-mast-copy"><span className="civ-kicker">MODULE C1 · {t("共享觀看方式").toUpperCase()}</span><h1 className="civ-mast-title">{t("文明")}<span>CIVILIZATION</span></h1><p className="civ-mast-lead">{t("分享答案之前，先分享我們如何提出問題。")} {t("這裡保存觀察世界的方法、判斷事物的尺度，以及思想彼此連接和變化的過程。")}</p></div><aside className="civ-mast-index"><span className="civ-micro">LIVE INDEX / {new Date().getFullYear()}</span><strong>C1</strong><p>{t("提問").toUpperCase()}<br/>{t("視角").toUpperCase()}<br/>{t("方法").toUpperCase()}<br/>{t("譜系").toUpperCase()}</p></aside></section>
-    <section className="civ-filters"><div className="civ-filter-label"><b>FILTER / {t("篩選")}</b><small>{String(visible.length).padStart(2, "0")} {t("個對象").toUpperCase()}</small></div><div className="civ-filter-buttons" role="group" aria-label={t("篩選")}>{DOMAINS.map(domain => <button type="button" key={domain.key} className={filter === domain.key ? "is-active" : ""} onClick={() => setFilter(domain.key)}>{lang() === "en" ? domain.en : t(domain.zh)}</button>)}</div><label className="civ-search"><span>⌕</span><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索問題、方法或角度")}/></label></section>
+    <section className="civ-masthead"><div className="civ-mast-copy"><span className="civ-kicker">MODULE C1 · {t("共享觀看方式").toUpperCase()}</span><h1 className="civ-mast-title">{t("文明")}<span>CIVILIZATION</span></h1><p className="civ-mast-lead">{t("分享答案之前，先分享我們如何提出問題。")} {t("這裡保存觀察世界的方法、判斷事物的尺度，以及思想彼此連接和變化的過程。")}</p></div><aside className="civ-mast-index"><span className="civ-micro">LIVE INDEX / {new Date().getFullYear()}</span><strong>C1</strong><div className="civ-domain-spectrum" aria-hidden="true">{DOMAINS.slice(1).map(domain => <i key={domain.key} style={domainStyle(domain)}/>)}</div><p>{t("提問").toUpperCase()}<br/>{t("視角").toUpperCase()}<br/>{t("方法").toUpperCase()}<br/>{t("譜系").toUpperCase()}</p></aside></section>
+    <section className="civ-filters"><div className="civ-filter-label"><b>FILTER / {t("篩選")}</b><small>{String(visible.length).padStart(2, "0")} {t("個對象").toUpperCase()}</small></div><div className="civ-filter-buttons" role="group" aria-label={t("篩選")}>{DOMAINS.map(domain => <button type="button" key={domain.key} data-domain={domain.key} style={domainStyle(domain)} className={filter === domain.key ? "is-active" : ""} onClick={() => setFilter(domain.key)}>{lang() === "en" ? domain.en : t(domain.zh)}</button>)}</div><label className="civ-search"><span>⌕</span><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索問題、方法或角度")}/></label></section>
     {loadError && <div className="civ-load-error" role="alert"><span>{t("文明資料讀取失敗")}: {loadError}</span><button type="button" onClick={loadThoughts}>{t("重新讀取")}</button></div>}
     <main className="civ-view">{view === "a" ? atlas : view === "b" ? chronology : reader}</main>
     <footer className="civ-footer"><span>INFORMATION BEFORE DECORATION</span><span>LIST ↔ LINEAGE ↔ READING</span></footer>
