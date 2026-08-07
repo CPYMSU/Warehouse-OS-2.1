@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -133,6 +134,52 @@ def test_character_anchor_uses_context_to_disambiguate_duplicate_text() -> None:
     assert anchor["start_block_ordinal"] == 1
     assert anchor["quote"] == "repeats concept"
     assert len(anchor["anchor_sha256"]) == 64
+
+
+def test_refinement_selection_anchor_is_verified_against_the_live_draft() -> None:
+    draft = {
+        "blocks": [
+            {
+                "id": "paragraph-1",
+                "block_type": "paragraph",
+                "text": "Calibrated response remains stable.",
+            },
+            {
+                "id": "table-1",
+                "block_type": "table",
+                "cells": ["Sample", "Value"],
+            },
+        ]
+    }
+
+    anchor = research_semantic_refinement._validated_selection(
+        draft,
+        {
+            "block_id": "paragraph-1",
+            "field_name": "text",
+            "start_offset": 0,
+            "end_offset": 10,
+            "quote": "Calibrated",
+        },
+    )
+
+    assert anchor["quote"] == "Calibrated"
+    assert anchor["source_sha256"]
+    assert anchor["suffix"].startswith(" response")
+
+    with pytest.raises(HTTPException) as error:
+        research_semantic_refinement._validated_selection(
+            draft,
+            {
+                "block_id": "table-1",
+                "field_name": "cell",
+                "cell_index": 1,
+                "start_offset": 0,
+                "end_offset": 5,
+                "quote": "Wrong",
+            },
+        )
+    assert error.value.status_code == 409
 
 
 def test_content_refinement_reassembles_docx_text_figures_and_tables(tmp_path: Path) -> None:
@@ -431,6 +478,42 @@ def test_document_review_annotation_and_grounded_question_round_trip(
         )
         assert paragraph_semantic["content"]["translation_zh_cn"].startswith("简中：")
 
+        selection = {
+            "block_id": paragraph["id"],
+            "field_name": "text",
+            "cell_index": None,
+            "start_offset": 0,
+            "end_offset": len("Calibrated"),
+            "quote": "Calibrated",
+        }
+        draft_annotation = client.post(
+            semantic_path.rsplit("/semantic", 1)[0] + "/annotations",
+            json={
+                "selection": selection,
+                "annotation_type": "note",
+                "color": "yellow",
+                "body": "Explain the calibration boundary.",
+            },
+        )
+        assert draft_annotation.status_code == 201
+        annotation_id = draft_annotation.json()["annotation"]["id"]
+        selected_chat = client.post(
+            semantic_path.rsplit("/semantic", 1)[0] + "/agents/chief/messages",
+            json={"message": "解释这个选区。", "selection": selection},
+        )
+        assert selected_chat.status_code == 201
+        assert selected_chat.json()["message"]["citations"][0]["quote"] == "Calibrated"
+        with_annotation = client.get(semantic_path).json()
+        assert with_annotation["annotations"][0]["body"] == (
+            "Explain the calibration boundary."
+        )
+        resolved_annotation = client.post(
+            f"/api/research/manuscript-annotations/{annotation_id}/status",
+            json={"resolved": True},
+        )
+        assert resolved_annotation.status_code == 200
+        assert resolved_annotation.json()["status"] == "resolved"
+
         review_refresh = client.post(
             semantic_path + "/refresh",
             json={
@@ -469,6 +552,8 @@ def test_document_review_annotation_and_grounded_question_round_trip(
         )
         assert save_response.status_code == 200
         assert save_response.json()["draft"]["revision"] == 1
+        stale_annotation = client.get(semantic_path).json()["annotations"][0]
+        assert stale_annotation["status"] == "stale"
         stale_response = client.put(
             f"/api/research/projects/{project_id}/files/{file_id}/refinement",
             json={"expected_revision": 0, "blocks": draft_blocks},

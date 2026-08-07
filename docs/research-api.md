@@ -204,6 +204,10 @@ research manuscript semantic refresh --project PROJECT_ID --file FILE_ID \
 "review:clarity","review:professional"]'
 research manuscript agent chat --project PROJECT_ID --file FILE_ID \
   --agent logic --message "Check the transition between Methods and Results"
+research manuscript annotate --project PROJECT_ID --file FILE_ID \
+  --selection '{"block_id":"p-1","field_name":"text","start_offset":0,\
+"end_offset":10,"quote":"Calibrated"}' \
+  --type note --body "Define the calibration boundary"
 ```
 
 The refresh endpoint returns `202 Accepted` and a durable run ID. Clients read
@@ -228,6 +232,34 @@ and recorded user decisions without merging the reviewers' private dialogue
 histories. Accepting a finding checks the original content SHA-256 before
 writing to the draft; rejecting it records the decision without changing the
 manuscript.
+
+The refinement editor can also pin a character range in ordinary text, an
+equation, a figure caption, or an individual table cell. The server verifies
+the quote and offsets against the live draft, calculates the source block
+SHA-256, and stores either a highlight or a note. If that block later changes,
+the annotation is returned as `stale` instead of being attached to unrelated
+text. Sending the same `selection` object to an agent message makes the agent
+answer that passage first while still receiving its chapter and document
+context. The `chief` agent additionally receives the shared reviewer findings.
+
+```sh
+curl --fail-with-body -X POST \
+  "$WAREHOUSE_BASE_URL/api/research/projects/PROJECT_ID/files/FILE_ID/refinement/annotations" \
+  -H "Authorization: Bearer $WAREHOUSE_RESEARCH_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"selection":{"block_id":"p-1","field_name":"text",\
+"start_offset":0,"end_offset":10,"quote":"Calibrated"},\
+"annotation_type":"note","color":"yellow",\
+"body":"Define the calibration boundary"}'
+
+curl --fail-with-body -X POST \
+  "$WAREHOUSE_BASE_URL/api/research/projects/PROJECT_ID/files/FILE_ID/refinement/agents/chief/messages" \
+  -H "Authorization: Bearer $WAREHOUSE_RESEARCH_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Explain and assess this passage",\
+"selection":{"block_id":"p-1","field_name":"text",\
+"start_offset":0,"end_offset":10,"quote":"Calibrated"}}'
+```
 
 Common Word equations are converted from OMML into displayable LaTeX while the
 original OpenXML remains available for lossless export. Figures keep their

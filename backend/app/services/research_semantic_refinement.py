@@ -107,6 +107,67 @@ def _document_hash(blocks: list[dict[str, object]]) -> str:
     return digest.hexdigest()
 
 
+def _validated_selection(
+    draft: dict[str, object],
+    raw_selection: object,
+) -> dict[str, object]:
+    selection = _json(raw_selection)
+    if not isinstance(selection, dict):
+        raise HTTPException(status_code=422, detail="selection must be an object")
+    block_id = str(selection.get("block_id") or "").strip()
+    block = next(
+        (
+            item
+            for item in _blocks(draft.get("blocks"))
+            if str(item.get("id") or "") == block_id
+        ),
+        None,
+    )
+    if block is None:
+        raise HTTPException(status_code=409, detail="Selected manuscript block no longer exists")
+    field_name = str(selection.get("field_name") or "text").strip().lower()
+    cell_index: int | None = None
+    if field_name == "cell":
+        try:
+            cell_index = int(selection.get("cell_index"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="cell_index is required") from None
+        cells = block.get("cells") if isinstance(block.get("cells"), list) else []
+        if cell_index < 0 or cell_index >= len(cells):
+            raise HTTPException(status_code=409, detail="Selected table cell no longer exists")
+        source = str(cells[cell_index] or "")
+    elif field_name == "text":
+        source = str(block.get("text") or "")
+    else:
+        raise HTTPException(status_code=422, detail="Unsupported selection field")
+    try:
+        start = int(selection.get("start_offset"))
+        end = int(selection.get("end_offset"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="selection offsets are required") from None
+    if start < 0 or end <= start or end > len(source) or end - start > 12_000:
+        raise HTTPException(status_code=422, detail="selection offsets are invalid")
+    quote = source[start:end]
+    supplied_quote = str(selection.get("quote") or "")
+    if not quote.strip() or (supplied_quote and supplied_quote != quote):
+        raise HTTPException(status_code=409, detail="Selected manuscript text has changed")
+    supplied_hash = str(selection.get("source_sha256") or "")
+    source_sha256 = _block_hash(block)
+    if supplied_hash and supplied_hash != source_sha256:
+        raise HTTPException(status_code=409, detail="Selected manuscript block has changed")
+    return {
+        "block_id": block_id,
+        "field_name": field_name,
+        "cell_index": cell_index,
+        "start_offset": start,
+        "end_offset": end,
+        "quote": quote,
+        "prefix": source[max(0, start - 240) : start],
+        "suffix": source[end : end + 240],
+        "source_sha256": source_sha256,
+    }
+
+
 def _draft_target(
     actor: ActorContext,
     project_ref: object,
@@ -268,6 +329,153 @@ def _finding_rows(
     return result
 
 
+def _annotation_rows(
+    actor: ActorContext,
+    draft: dict[str, object],
+) -> list[dict[str, object]]:
+    blocks = {
+        str(item.get("id") or ""): item for item in _blocks(draft.get("blocks"))
+    }
+    with tenant_session(actor.tenant_id) as session:
+        rows = (
+            session.execute(
+                text(
+                    """
+                    SELECT a.*, u.display_name AS author_name
+                    FROM research.manuscript_annotations a
+                    LEFT JOIN iam.users u ON u.id=a.created_by
+                    WHERE a.draft_id=:draft_id
+                    ORDER BY CASE a.status WHEN 'open' THEN 0 ELSE 1 END,
+                             a.created_at DESC
+                    LIMIT 300
+                    """
+                ),
+                {"draft_id": draft["id"]},
+            )
+            .mappings()
+            .all()
+        )
+    result: list[dict[str, object]] = []
+    for raw in rows:
+        item = dict(raw)
+        block = blocks.get(str(item["block_id"]))
+        if block is None or _block_hash(block) != str(item["source_sha256"]):
+            item["status"] = "stale"
+        for key in ("id", "draft_id", "created_by", "resolved_by"):
+            if item.get(key) is not None:
+                item[key] = str(item[key])
+        for key in ("created_at", "updated_at", "resolved_at"):
+            item[key] = str(item[key]) if item.get(key) else None
+        result.append(item)
+    return result
+
+
+def create_manuscript_annotation(
+    actor: ActorContext,
+    project_ref: object,
+    file_ref: object,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    _require_write(actor)
+    project, file_row, draft = _draft_target(actor, project_ref, file_ref)
+    selection = _validated_selection(draft, payload.get("selection"))
+    annotation_type = str(payload.get("annotation_type") or "note").strip().lower()
+    if annotation_type not in {"highlight", "note"}:
+        raise HTTPException(status_code=422, detail="Unsupported annotation type")
+    color = str(payload.get("color") or "yellow").strip().lower()
+    if color not in {"yellow", "mint", "blue", "rose"}:
+        raise HTTPException(status_code=422, detail="Unsupported annotation color")
+    body = str(payload.get("body") or "").strip()
+    if len(body) > 20_000 or (annotation_type == "note" and not body):
+        raise HTTPException(
+            status_code=422,
+            detail="note body must contain 1–20000 characters",
+        )
+    annotation_id = uuid4()
+    with tenant_session(actor.tenant_id) as session:
+        row = (
+            session.execute(
+                text(
+                    """
+                    INSERT INTO research.manuscript_annotations(
+                      id, tenant_id, project_id, file_id, draft_id, block_id,
+                      source_sha256, field_name, cell_index, start_offset, end_offset,
+                      quote, prefix, suffix, annotation_type, color, body, created_by
+                    ) VALUES (
+                      :id, :tenant_id, :project_id, :file_id, :draft_id, :block_id,
+                      :source_sha256, :field_name, :cell_index, :start_offset, :end_offset,
+                      :quote, :prefix, :suffix, :annotation_type, :color, :body, :created_by
+                    ) RETURNING *
+                    """
+                ),
+                {
+                    "id": annotation_id,
+                    "tenant_id": actor.tenant_id,
+                    "project_id": project["id"],
+                    "file_id": file_row["id"],
+                    "draft_id": draft["id"],
+                    **selection,
+                    "annotation_type": annotation_type,
+                    "color": color,
+                    "body": body,
+                    "created_by": actor.user_id,
+                },
+            )
+            .mappings()
+            .one()
+        )
+    item = dict(row)
+    for key in ("id", "draft_id", "created_by", "resolved_by"):
+        if item.get(key) is not None:
+            item[key] = str(item[key])
+    for key in ("created_at", "updated_at", "resolved_at"):
+        item[key] = str(item[key]) if item.get(key) else None
+    return {"ok": True, "annotation": item}
+
+
+def set_manuscript_annotation_status(
+    actor: ActorContext,
+    annotation_id: object,
+    *,
+    resolved: bool,
+) -> dict[str, object]:
+    _require_write(actor)
+    try:
+        parsed_id = UUID(str(annotation_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Manuscript annotation not found") from None
+    with tenant_session(actor.tenant_id) as session:
+        row = (
+            session.execute(
+                text(
+                    """
+                    UPDATE research.manuscript_annotations
+                    SET status=:status, resolved_by=:resolved_by,
+                        resolved_at=CASE WHEN :resolved THEN now() ELSE NULL END,
+                        updated_at=now()
+                    WHERE id=:id
+                    RETURNING *
+                    """
+                ),
+                {
+                    "id": parsed_id,
+                    "status": "resolved" if resolved else "open",
+                    "resolved_by": actor.user_id if resolved else None,
+                    "resolved": resolved,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Manuscript annotation not found")
+    return {
+        "ok": True,
+        "annotation_id": str(parsed_id),
+        "status": str(row["status"]),
+    }
+
+
 def semantic_workspace(
     actor: ActorContext,
     project_ref: object,
@@ -313,6 +521,7 @@ def semantic_workspace(
         "artifacts": artifacts,
         "threads": _thread_rows(actor, draft["id"]),
         "findings": _finding_rows(actor, draft["id"], blocks),
+        "annotations": _annotation_rows(actor, draft),
         "agents": [
             {"type": key, "label": AGENT_LABELS[key], "independent": key != "chief"}
             for key in ("neutrality", "logic", "clarity", "professional", "chief")
@@ -324,6 +533,8 @@ def semantic_workspace(
             "chief_context_bus": True,
             "dedicated_runtime_required": False,
             "incremental_by_content_hash": True,
+            "draft_selection_annotations": True,
+            "selection_grounded_ai": True,
         },
     }
 
@@ -925,6 +1136,12 @@ def agent_chat(
         raise HTTPException(status_code=422, detail="message must contain 1–30000 characters")
     _project, _file, draft = _draft_target(actor, project_ref, file_ref)
     blocks = _blocks(draft.get("blocks"))
+    selection = (
+        _validated_selection(draft, payload.get("selection"))
+        if payload.get("selection") is not None
+        else None
+    )
+    citations = [selection] if selection else []
     thread_id = _thread(actor, draft, normalized_agent)
     with tenant_session(actor.tenant_id) as session:
         session.execute(
@@ -932,10 +1149,10 @@ def agent_chat(
                 """
                 INSERT INTO research.manuscript_agent_messages(
                   id, tenant_id, project_id, file_id, draft_id, thread_id,
-                  role, body, context_revision, created_by
+                  role, body, citations, context_revision, created_by
                 ) VALUES (
                   :id, :tenant_id, :project_id, :file_id, :draft_id, :thread_id,
-                  'user', :body, :revision, :created_by
+                  'user', :body, CAST(:citations AS jsonb), :revision, :created_by
                 )
                 """
             ),
@@ -947,6 +1164,7 @@ def agent_chat(
                 "draft_id": draft["id"],
                 "thread_id": thread_id,
                 "body": message,
+                "citations": json.dumps(citations, ensure_ascii=False),
                 "revision": int(draft["revision"]),
                 "created_by": actor.user_id,
             },
@@ -967,6 +1185,15 @@ def agent_chat(
     history_text = "\n".join(
         f"{str(role).upper()}: {body}" for role, body in reversed(history)
     )
+    selection_text = ""
+    if selection:
+        selection_text = (
+            "\n\n【用户当前选区 · 必须优先回答】\n"
+            f"区块：{selection['block_id']}\n"
+            f"原文：{selection['quote']}\n"
+            f"前文：{selection['prefix']}\n"
+            f"后文：{selection['suffix']}"
+        )
     connection = _connection(
         actor,
         settings,
@@ -977,9 +1204,13 @@ def agent_chat(
         system_prompt=(
             f"你是{AGENT_LABELS[normalized_agent]}。{AGENT_INSTRUCTIONS[normalized_agent]}"
             "回答必须基于提供的论文区块和已有评审；引用证据时写出区块 ID。"
+            "如提供用户当前选区，必须先解释或评审该选区，再结合章节与全文上下文。"
             "你只能提出建议，不能声称已经修改正文。"
         ),
-        user_prompt=f"{context}\n\n【本线程最近对话】\n{history_text}\n\n【用户问题】\n{message}",
+        user_prompt=(
+            f"{context}{selection_text}\n\n【本线程最近对话】\n{history_text}"
+            f"\n\n【用户问题】\n{message}"
+        ),
         thinking=normalized_agent in {"professional", "chief"},
         max_tokens=3_000,
     )
@@ -990,10 +1221,11 @@ def agent_chat(
                 """
                 INSERT INTO research.manuscript_agent_messages(
                   id, tenant_id, project_id, file_id, draft_id, thread_id,
-                  role, body, context_revision, model, created_by
+                  role, body, citations, context_revision, model, created_by
                 ) VALUES (
                   :id, :tenant_id, :project_id, :file_id, :draft_id, :thread_id,
-                  'assistant', :body, :revision, :model, :created_by
+                  'assistant', :body, CAST(:citations AS jsonb),
+                  :revision, :model, :created_by
                 )
                 """
             ),
@@ -1005,6 +1237,7 @@ def agent_chat(
                 "draft_id": draft["id"],
                 "thread_id": thread_id,
                 "body": answer[:30_000],
+                "citations": json.dumps(citations, ensure_ascii=False),
                 "revision": int(draft["revision"]),
                 "model": connection.model,
                 "created_by": actor.user_id,
@@ -1017,6 +1250,7 @@ def agent_chat(
             "id": str(message_id),
             "role": "assistant",
             "body": answer[:30_000],
+            "citations": citations,
             "context_revision": int(draft["revision"]),
             "model": connection.model,
             "created_at": datetime.now(UTC).isoformat(),

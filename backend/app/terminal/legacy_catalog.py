@@ -10378,10 +10378,64 @@ COMMANDS = [
                 required=True,
             ),
             _p("message", "body.message", "發給評審 Agent 的訊息", required=True),
+            _p(
+                "selection",
+                "body.selection",
+                "可選草稿字符錨點 JSON；提供時 Agent 必須優先回答選中內容",
+                ptype="json",
+            ),
         ],
         "examples": [
             "research manuscript agent chat --project MK51 --file manuscript/paper.docx "
             "--agent logic --message '檢查第二節到第三節的推理跳躍'",
+        ],
+    },
+    {
+        "command": "research manuscript annotate",
+        "tool_name": "research_manuscript_annotate",
+        "description": "把精修草稿選區保存為內容雜湊固定的高亮或批注；原文變化後自動失效",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement/annotations",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+            _p(
+                "selection",
+                "body.selection",
+                "草稿字符錨點 JSON：block_id、field_name、偏移與 quote",
+                required=True,
+                ptype="json",
+            ),
+            _p("type", "body.annotation_type", "highlight 或 note"),
+            _p("color", "body.color", "yellow、mint、blue 或 rose"),
+            _p("body", "body.body", "批注正文；note 類型必填"),
+        ],
+        "examples": [
+            "research manuscript annotate --project MK51 --file manuscript/paper.docx "
+            "--selection '{\"block_id\":\"p-1\",\"field_name\":\"text\","
+            "\"start_offset\":0,\"end_offset\":4,\"quote\":\"研究问题\"}' "
+            "--type note --body '需要界定研究边界'",
+        ],
+    },
+    {
+        "command": "research manuscript annotation status",
+        "tool_name": "research_manuscript_annotation_status",
+        "description": "完成或重新開啟一項精修草稿批注，保留原字符錨點與審計身份",
+        "api_method": "POST",
+        "api_path": "/api/research/manuscript-annotations/{annotation_id}/status",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("annotation", "path.annotation_id", "草稿批注 UUID", required=True),
+            _p("resolved", "body.resolved", "是否標記完成", required=True, ptype="bool"),
+        ],
+        "examples": [
+            "research manuscript annotation status "
+            "--annotation 00000000-0000-0000-0000-000000000000 --resolved true",
         ],
     },
     {
