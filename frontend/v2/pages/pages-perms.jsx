@@ -81,8 +81,12 @@ window.W2_LANG.addEN({
   "操作成功,組織拓撲已刷新。": "Saved successfully; the organisation topology has been refreshed.", "操作失敗": "Operation failed",
   "確認封存部門「{name}」?封存前必須先遷移其人員、崗位、下級部門及業務引用。": "Archive department “{name}”? Its people, positions, child departments and business references must be moved first.",
   "確認封存崗位「{name}」?封存前必須先將崗位內人員移走。": "Archive position “{name}”? Its members must be reassigned first.",
-  "基本資料": "Basic details", "部門類型": "Department type", "選擇上級部門": "Choose parent department", "選擇角色": "Choose role",
+  "基本資料": "Basic details", "部門類型": "Department type", "選擇上級部門": "Choose parent department", "上級組織": "Parent organisation", "選擇角色": "Choose role",
   "自動生成": "Generated automatically", "公司直屬": "Reports to company", "無預設角色": "No default role", "主管崗位標記": "Manager position",
+  "部門身份": "Department identity", "組織位置": "Organisation placement", "部門職責": "Department purpose", "建立規則": "Creation rules",
+  "長期組織單元": "Long-term organisation unit", "小型執行單元": "Small delivery unit", "圍繞專案建立": "Project-based unit", "自定義組織形式": "Custom organisation form",
+  "公司或現有部門": "Company or existing department", "位置預覽": "Placement preview", "繼承上級權限邊界": "Inherit parent access ceiling", "繼承上級導航範圍": "Inherit parent navigation scope",
+  "部門代碼留空時由系統自動生成；建立後保持穩定。": "Leave the code blank to generate it automatically; it remains stable after creation.",
   "工作流節點職責": "Workflow node responsibilities",
   "按節點類型與階段顯示；責任綁定以採購工作流節點設定為唯一事實來源，本頁不另存副本。": "Grouped by node type and stage. Procurement workflow node settings are the single source of truth for responsibility bindings; this page stores no duplicate copy.",
   "暫無已綁定的工作流節點": "No workflow nodes are currently assigned",
@@ -93,6 +97,7 @@ window.W2_LANG.addEN({
   "請選擇所屬部門": "Choose a department",
   "目前沒有可用部門。請先返回並新增或啟用部門，再建立崗位。": "No active department is available. Go back and add or enable a department before creating a position.",
   "請填寫部門名稱。": "Enter a department name.", "請填寫崗位名稱。": "Enter a position name.",
+  "請選擇上級組織。": "Choose a parent organisation.", "團隊": "Team", "項目組": "Project group", "其他": "Other",
   "請選擇有效的所屬部門。": "Choose a valid active department.",
   "職級必須是 1 至 10 的整數。": "Level must be an integer from 1 to 10.",
   "部門權限上限": "Department permission ceiling", "啟用權限上限": "Enable permission ceiling",
@@ -136,6 +141,11 @@ window.W2_LANG.addEN({
   "目標平台身份映射不完整，已安全停用調崗；請重新載入或先修復身份映射。": "The target platform identity mapping is incomplete, so reassignment is safely disabled. Reload or repair the identity mapping first.",
   "此受保護身份目前沒有安全的組織調整路由。": "This protected identity currently has no safe organisation-management route.",
   "您正在調整另一位 L11 的公司崗位；此操作將由平台身份流程完成並保留雙重審計記錄。": "You are changing another L11's company position through the platform identity workflow with dual audit trails.",
+  "平台擁有者": "Platform Owner", "任職關係": "Appointments", "主職": "Primary appointment", "兼職": "Concurrent appointments",
+  "新增兼職": "Add concurrent appointment", "編輯兼職": "Edit concurrent appointment", "移除兼職": "Remove concurrent appointment", "設為主職": "Make primary", "調整主職": "Change primary", "編輯": "Edit", "移除": "Remove",
+  "選擇兼職崗位": "Choose concurrent position", "提交兼職設定": "Submit appointment", "取消編輯": "Cancel editing",
+  "目前沒有兼職": "No concurrent appointments", "角色與有效職級會由全部有效任職自動彙總。": "Roles and effective level are derived from all active appointments.",
+  "按鈕與 AI 使用同一 tool_name、參數 Schema、權限、確認與審計。": "Buttons and AI use the same tool_name, parameter schema, permissions, confirmations and audit trail.",
   "沒有實際可見的導航項": "No navigation items are effectively visible", "導航來源部門": "Navigation source departments",
   "設定已儲存,但畫面重新整理失敗;請手動刷新確認最新狀態。": "Settings were saved, but the page refresh failed. Refresh manually to confirm the latest state.",
   "新增成員": "Add member",
@@ -235,6 +245,20 @@ window.W2_LANG.addEN({
 const { useState: _s, useEffect: _e, useRef: _r } = React;
 const { Icon: I, Btn: B, Tag: T, Label: LB, Empty: EM, Kpi, Folio, Band, pad2, num } = W2;
 const ask = (p, options = {}) => W2.openSecretary(p, options);
+const openOrgAction = (toolName, argumentsValue = {}) => W2.openBusinessAction({
+  tool_name: toolName,
+  arguments: Object.fromEntries(Object.entries(argumentsValue).filter(([, value]) => value !== undefined && value !== null && value !== "")),
+  query: toolName,
+  filter: "authorized",
+});
+const cleanLevelTitle = value => String(value || "").replace(/^L\d+\s*(?:[·:\-]\s*)?/i, "").trim();
+const governanceLevelOf = value => orgFlag(value && value.is_platform_owner)
+  ? 11
+  : Math.max(1, Number(value && value.governance_level) || Number(value && value.topology_level) || Number(value && value.role_level) || 1);
+const governanceTitleOf = value => orgFlag(value && value.is_platform_owner)
+  ? t("平台擁有者")
+  : cleanLevelTitle(value && (value.governance_title || value.topology_title));
+const governanceLabelOf = value => "L" + governanceLevelOf(value) + (governanceTitleOf(value) ? " · " + governanceTitleOf(value) : "");
 
 const PERMS_BIU_COPY = Object.freeze({
   "權限": "機構與職位",
@@ -645,6 +669,13 @@ const OrgTopologyStyles = () => <style>{`
   .org-form label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:750;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
   .org-form .field{font-size:12.5px;text-transform:none;letter-spacing:normal;color:var(--ink);min-height:38px}
   .org-form textarea.field{padding:9px;min-height:78px;resize:vertical}
+  .org-create-section{display:grid;grid-template-columns:34px minmax(0,1fr);gap:11px;border-top:1px solid var(--hair);padding-top:13px}
+  .org-create-no{font:800 11px/1 var(--mono,monospace);color:var(--red);padding-top:2px}.org-create-body{min-width:0}
+  .org-type-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}.org-type-grid button{appearance:none;border:1px solid var(--hair);background:var(--paper);padding:9px;text-align:left;cursor:pointer}.org-type-grid button.on{border-color:var(--ink);box-shadow:inset 3px 0 0 var(--red)}.org-type-grid b{display:block;font-size:11.5px}.org-type-grid span{display:block;font-size:9.5px;color:var(--ink-3);margin-top:3px}
+  .org-placement-preview{border:1px solid var(--hair);background:var(--paper-2);padding:10px;margin-top:9px}.org-placement-preview>div{display:flex;flex-direction:column;gap:4px;font:600 10.5px/1.4 var(--mono,monospace);margin-top:8px}
+  .org-inherit-summary{display:flex;flex-direction:column;gap:6px;font-size:11.5px;margin-top:8px}
+  .org-appointment-list{display:flex;flex-direction:column;border:1px solid var(--hair);margin-top:9px}.org-appointment-row{padding:9px;border-bottom:1px solid var(--hair-soft)}.org-appointment-row:last-child{border-bottom:0}.org-appointment-meta{font-size:10px;color:var(--ink-3);margin-top:3px}
+  .org-appointment-editor{border:1px solid var(--hair);background:var(--paper-2);padding:10px;margin-top:9px}
   .org-perm-box{border-top:2px solid var(--rule);padding-top:13px;margin-top:18px}
   .org-perm-list{max-height:270px;overflow:auto;border:1px solid var(--hair);margin-top:9px}
   .org-perm-row{display:grid;grid-template-columns:22px minmax(0,1fr);gap:7px;align-items:start;padding:8px 9px;border-bottom:1px solid var(--hair-soft);font-size:11.5px;cursor:pointer}
@@ -664,7 +695,7 @@ const OrgTopologyStyles = () => <style>{`
   .org-person-list{display:flex;flex-direction:column;border-top:1px solid var(--hair);margin-top:8px}.org-person-link{appearance:none;border:0;border-bottom:1px solid var(--hair-soft);background:transparent;padding:9px 2px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;gap:9px;font-size:12px}.org-person-link:hover{color:var(--red)}
   .org-notice{padding:9px 11px;border-left:3px solid var(--ink);font-size:11.5px;line-height:1.5;margin:10px 0}.org-notice.error{border-color:var(--red);color:var(--red);background:var(--red-soft)}
   @media(max-width:980px){.org-topology-layout{grid-template-columns:1fr}.org-inspector{border-left:0;border-top:2px solid var(--rule);padding-left:0;max-height:none}.org-map-pane{padding-right:0}.org-map-viewport{height:560px}}
-  @media(max-width:620px){.org-form-grid,.org-inspector-grid,.org-action-grid{grid-template-columns:1fr}.org-topology-toolbar .field{width:100%!important}.org-topology-layout{display:block}.org-nav-policy-row{grid-template-columns:minmax(0,1fr) repeat(3,46px)}.org-nav-state{font-size:9px}}
+  @media(max-width:620px){.org-form-grid,.org-inspector-grid,.org-action-grid,.org-type-grid{grid-template-columns:1fr}.org-topology-toolbar .field{width:100%!important}.org-topology-layout{display:block}.org-nav-policy-row{grid-template-columns:minmax(0,1fr) repeat(3,46px)}.org-nav-state{font-size:9px}}
   @media(max-width:420px){.org-nav-policy-row{grid-template-columns:repeat(3,1fr)}.org-nav-policy-row>div:first-child{grid-column:1/-1}.org-nav-state{min-width:0}}
 `}</style>;
 
@@ -948,11 +979,49 @@ const OrgEntityForm = ({ mode, entity, seedParentId, units, memberships, roles, 
   });
   const departmentIds = new Set(departmentUnits.map(u => String(u.id)));
   const managerChoices = isCreate || !entity ? [] : (memberships || []).filter(m => String(m.org_unit_id) === String(entity.id));
+  const activeUnits = (units || []).filter(u => {
+    const active = !(u && (u.active === false || u.active === 0 || u.active === "0" || String(u.active).toLowerCase() === "false"));
+    return active && String(u && u.id || "") !== String(entity && entity.id || "");
+  }).sort((a, b) => {
+    const aCompany = String(a && a.unit_type || "").toLowerCase() === "company";
+    const bCompany = String(b && b.unit_type || "").toLowerCase() === "company";
+    if (aCompany !== bCompany) return aCompany ? -1 : 1;
+    return String(a && (a.unit_name || a.unit_code) || "").localeCompare(String(b && (b.unit_name || b.unit_code) || ""), "zh-Hans");
+  });
+  const unitById = new Map(activeUnits.map(u => [String(u.id), u]));
+  const unitPath = (unit) => {
+    const path = []; const seen = new Set(); let current = unit;
+    while (current && !seen.has(String(current.id))) {
+      seen.add(String(current.id)); path.unshift(current.unit_name || current.unit_code || "—");
+      current = unitById.get(String(current.parent_id));
+    }
+    return path;
+  };
+  const selectedParent = unitById.get(String(form.parent_id));
+  const placementPath = selectedParent ? unitPath(selectedParent).concat(form.name.trim() || t("新增部門")) : [form.name.trim() || t("新增部門")];
+  const typeOptions = [
+    ["department", "部門", "長期組織單元"],
+    ["team", "團隊", "小型執行單元"],
+    ["project", "項目組", "圍繞專案建立"],
+    ["other", "其他", "自定義組織形式"],
+  ];
   const submit = async (e) => {
     e.preventDefault(); let path; let body;
     const name = form.name.trim();
     if (!name) { setFormError(t(isDepartment ? "請填寫部門名稱。" : "請填寫崗位名稱。")); return; }
     if (isDepartment) {
+      if (isCreate && !form.parent_id) { setFormError(t("請選擇上級組織。")); return; }
+      if (isCreate) {
+        openOrgAction("organization_department_create", {
+          name,
+          code: form.code.trim(),
+          type: form.type,
+          parent: form.parent_id,
+          desc: form.description,
+        });
+        onCancel();
+        return;
+      }
       path = isCreate ? "/api/org/departments" : "/api/org/departments/" + entity.id;
       body = { unit_name: name, unit_type: form.type, parent_id: form.parent_id || null, description: form.description };
       if (isCreate && form.code.trim()) body.unit_code = form.code.trim();
@@ -967,6 +1036,15 @@ const OrgEntityForm = ({ mode, entity, seedParentId, units, memberships, roles, 
     }
     const ok = await onSubmit(path, body); if (ok) onCancel();
   };
+  if (isDepartment && isCreate) return <form className="org-form org-department-create" onSubmit={submit}>
+    <div className="row spread g8"><div><LB red>{t("新增部門")}</LB><div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{t("按鈕與 AI 使用同一 tool_name、參數 Schema、權限、確認與審計。")}</div></div><button className="btn ghost sm" type="button" onClick={onCancel}>{t("返回詳情")}</button></div>
+    <section className="org-create-section"><div className="org-create-no">01</div><div className="org-create-body"><LB dim>{t("部門身份")}</LB><div className="org-form-grid" style={{ marginTop: 8 }}><label>{t("部門名稱")}<input className="field boxed" autoFocus required maxLength="120" value={form.name} onChange={e => set("name", e.target.value)}/></label><label>{t("部門代碼")}<input className="field boxed mono" maxLength="80" value={form.code} placeholder={t("自動生成")} onChange={e => set("code", e.target.value)}/><span className="muted" style={{ fontSize: 9.5, lineHeight: 1.45 }}>{t("部門代碼留空時由系統自動生成；建立後保持穩定。")}</span></label></div><div className="org-type-grid">{typeOptions.map(([value, label, note]) => <button key={value} type="button" className={form.type === value ? "on" : ""} onClick={() => set("type", value)}><b>{t(label)}</b><span>{t(note)}</span></button>)}</div></div></section>
+    <section className="org-create-section"><div className="org-create-no">02</div><div className="org-create-body"><LB dim>{t("組織位置")}</LB><label style={{ marginTop: 8 }}>{t("上級組織")}<select className="field boxed" required value={form.parent_id} onChange={e => set("parent_id", e.target.value)}><option value="">{t("公司或現有部門")}</option>{activeUnits.map(u => <option key={u.id} value={u.id}>{String(u.unit_type) === "company" ? "▣ " : "└ "}{unitPath(u).join(" / ")}</option>)}</select></label><div className="org-placement-preview"><LB red>{t("位置預覽")}</LB><div>{placementPath.map((part, index) => <span key={index} style={{ paddingLeft: index * 12 }}>{index ? "└─ " : "▣ "}{part}</span>)}</div></div></div></section>
+    <section className="org-create-section"><div className="org-create-no">03</div><div className="org-create-body"><LB dim>{t("部門職責")}</LB><label style={{ marginTop: 8 }}>{t("說明")}<textarea className="field boxed" maxLength="800" rows="4" value={form.description} onChange={e => set("description", e.target.value)}/></label></div></section>
+    <section className="org-create-section"><div className="org-create-no">04</div><div className="org-create-body"><LB dim>{t("建立規則")}</LB><div className="org-inherit-summary"><span>✓ {t("繼承上級權限邊界")}</span><span>✓ {t("繼承上級導航範圍")}</span></div></div></section>
+    {formError && <div className="org-notice error" role="alert">{formError}</div>}
+    <button className="btn primary" type="submit" disabled={busy}><I name="check" size={13}/>{t("建立部門")}</button>
+  </form>;
   return <form className="org-form" onSubmit={submit}>
     <div className="row spread g8"><LB red>{t(isCreate ? (isDepartment ? "新增部門" : "新增崗位") : (isDepartment ? "編輯部門" : "編輯崗位"))}</LB><button className="btn ghost sm" type="button" onClick={onCancel}>{t("返回詳情")}</button></div>
     <div className="org-form-grid"><label>{t(isDepartment ? "部門名稱" : "崗位名稱")}<input className="field boxed" required maxLength="120" value={form.name} onChange={e => set("name", e.target.value)}/></label><label>{t(isDepartment ? "部門代碼" : "崗位代碼")}<input className="field boxed mono" disabled={!isCreate} maxLength="80" value={form.code} placeholder={t("自動生成")} onChange={e => set("code", e.target.value)}/></label></div>
@@ -1079,6 +1157,44 @@ const OrgTopologyCanvas = ({ root, selectedKey, collapsed, zoom, query, onSelect
   </div></div>;
 };
 
+const MemberAppointmentEditor = ({ person, membership, positions, unitById, disabled }) => {
+  const userId = person && (person.id || person.user_id) || membership && membership.user_id;
+  const identities = Array.isArray(person && person.identities) ? person.identities : [];
+  const activeCodes = new Set(identities.map(item => String(item.position_code || "")));
+  const primary = identities.find(item => item.appointment_type === "primary") || null;
+  const concurrent = identities.filter(item => item.appointment_type === "concurrent");
+  const [editor, setEditor] = _s(null);
+  const [selectedCode, setSelectedCode] = _s("");
+  _e(() => { setEditor(null); setSelectedCode(""); }, [userId]);
+  const begin = (kind, identity = null) => {
+    setEditor({ kind, current: identity && identity.position_code || "" });
+    setSelectedCode(identity && identity.position_code || primary && primary.position_code || "");
+  };
+  const submit = () => {
+    if (!userId || !selectedCode || !editor) return;
+    if (editor.kind === "primary") openOrgAction("organization_user_assign", { user: String(userId), position: selectedCode });
+    else if (editor.kind === "add") openOrgAction("organization_user_appointment_add", { user: String(userId), position: selectedCode });
+    else openOrgAction("organization_user_appointment_update", { user: String(userId), position: editor.current, "new-position": selectedCode });
+    setEditor(null); setSelectedCode("");
+  };
+  const choices = (positions || []).filter(position => position.active !== false && (
+    !activeCodes.has(String(position.position_code)) || String(position.position_code) === String(editor && editor.current)
+  ));
+  const row = (identity, isPrimary) => {
+    const unit = unitById.get(String(identity.department_id || identity.org_unit_id));
+    const unitName = identity.department_name || identity.org_unit_name || unit && unit.unit_name || "—";
+    return <div className="org-appointment-row" key={identity.position_code}>
+      <div className="row spread g8"><div style={{ minWidth: 0 }}><div className="row g5 wrap"><b style={{ fontSize: 12 }}>{identity.position_name || identity.name || identity.position_code}</b><T tone={isPrimary ? "inv" : "plain"}>{t(isPrimary ? "主職" : "兼職")}</T></div><div className="org-appointment-meta">{unitName} · {identity.role_name || "—"} · L{identity.role_level || 1}</div></div>{!disabled && <div className="row g4">{isPrimary ? <button type="button" className="btn sm" onClick={() => begin("primary", identity)}><I name="swap" size={11}/>{t("調整主職")}</button> : <><button type="button" className="btn sm" onClick={() => begin("edit", identity)}>{t("編輯")}</button><button type="button" className="btn sm" onClick={() => openOrgAction("organization_user_assign", { user: String(userId), position: identity.position_code })}>{t("設為主職")}</button><button type="button" className="btn sm red" onClick={() => openOrgAction("organization_user_appointment_remove", { user: String(userId), position: identity.position_code })}>{t("移除")}</button></>}</div>}</div>
+    </div>;
+  };
+  return <div className="org-perm-box">
+    <div className="row spread g8 wrap"><div><LB red>{t("任職關係")}</LB><div className="muted" style={{ fontSize: 11, lineHeight: 1.5, marginTop: 4 }}>{t("角色與有效職級會由全部有效任職自動彙總。")}</div></div>{!disabled && <button type="button" className="btn sm" onClick={() => begin("add")}><I name="plus" size={11}/>{t("新增兼職")}</button>}</div>
+    <div className="org-appointment-list">{primary && row(primary, true)}{concurrent.map(identity => row(identity, false))}{!concurrent.length && <div className="muted" style={{ padding: 10, fontSize: 11 }}>{t("目前沒有兼職")}</div>}</div>
+    {editor && <div className="org-appointment-editor"><LB dim>{t(editor.kind === "primary" ? "調整主職" : editor.kind === "edit" ? "編輯兼職" : "新增兼職")}</LB><select className="field boxed" value={selectedCode} onChange={event => setSelectedCode(event.target.value)} style={{ width: "100%", marginTop: 8 }}><option value="">{t(editor.kind === "primary" ? "選擇目標崗位" : "選擇兼職崗位")}</option>{choices.map(position => <option key={position.id} value={position.position_code}>{(unitById.get(String(position.org_unit_id)) || {}).unit_name || "—"} / {position.position_name} · {position.role_name || "—"} · L{position.level || 1}</option>)}</select><div className="row g6" style={{ marginTop: 8 }}><button className="btn primary sm" type="button" disabled={!selectedCode} onClick={submit}>{t(editor.kind === "primary" ? "確認移動" : "提交兼職設定")}</button><button className="btn ghost sm" type="button" onClick={() => setEditor(null)}>{t("取消編輯")}</button></div></div>}
+    <div className="muted" style={{ fontSize: 9.5, lineHeight: 1.5, marginTop: 8 }}>{t("按鈕與 AI 使用同一 tool_name、參數 Schema、權限、確認與審計。")}</div>
+  </div>;
+};
+
 const OrgInspector = ({ node, mode, setMode, model, topology, biu = false, canManageOrganization, canManagePermissions, busy, mutate, onSelect, ask }) => {
   const units = model.allUnits; const positions = model.positions; const memberships = model.memberships;
   const navigationCatalog = biuNavCatalog(model.navigationCatalog || [], biu);
@@ -1091,11 +1207,6 @@ const OrgInspector = ({ node, mode, setMode, model, topology, biu = false, canMa
   const unitById = new Map(units.map(u => [String(u.id), u]));
   const posById = new Map(positions.map(p => [String(p.id), p]));
   const formEntity = node && node.entity ? node.entity : {};
-  const currentMembership = node && (node.membership || node.entity) || {};
-  const currentPosition = posById.get(String(currentMembership.position_id));
-  const currentUserId = node && node.entity && (node.entity.id || node.entity.user_id);
-  const [targetPosition, setTargetPosition] = _s((currentPosition && currentPosition.position_code) || currentMembership.position_code || "");
-  _e(() => setTargetPosition((currentPosition && currentPosition.position_code) || currentMembership.position_code || ""), [currentUserId, currentMembership.position_id]);
   const seedParent = mode === "department-create" ? (node && node.kind === "department" ? formEntity.id : model.company.id) : mode === "position-create" ? (node && node.kind === "department" ? formEntity.id : "") : "";
   const archive = async (kind, entity) => {
     const prompt = kind === "department" ? t("確認封存部門「{name}」?封存前必須先遷移其人員、崗位、下級部門及業務引用。", { name: entity.unit_name || entity.unit_code }) : t("確認封存崗位「{name}」?封存前必須先將崗位內人員移走。", { name: entity.position_name || entity.position_code });
@@ -1140,15 +1251,7 @@ const OrgInspector = ({ node, mode, setMode, model, topology, biu = false, canMa
   const allRoleNames = Array.isArray(person.role_names) ? person.role_names : (Array.isArray(person.roles) ? person.roles.map(r => r && (r.role_name || r)).filter(Boolean) : orgArray(person.role_names));
   const roleNames = allRoleNames.filter(roleName => !biu || allowedRoleNames.has(String(roleName)));
   const membershipRoleName = visibleRoleName(membership.role_name);
-  const currentActor = window.W2_USER || {};
   const governanceActor = topology && topology.actor || {};
-  const selectedUsername = String(person.username || membership.username || (node.user && node.user.username) || "").trim();
-  const currentUsername = String(currentActor.username || "").trim();
-  const selectedTenantUserId = person.id != null ? person.id : (person.user_id != null ? person.user_id : membership.user_id);
-  const currentTenantUserId = currentActor.id != null ? currentActor.id : currentActor.user_id;
-  const usernameIdentityMatch = !!selectedUsername && !!currentUsername && selectedUsername.toLowerCase() === currentUsername.toLowerCase();
-  const idIdentityMatch = selectedTenantUserId != null && currentTenantUserId != null && String(selectedTenantUserId) === String(currentTenantUserId);
-  const selectedIsCurrentActor = usernameIdentityMatch || ((!selectedUsername || !currentUsername) && idIdentityMatch);
   const selectedRoleLevel = Math.max(0, ...(Array.isArray(person.roles) ? person.roles.map(r => Number(r && r.level) || 0) : []));
   const selectedOwnerFlag = orgFlag(person.is_platform_owner) || orgFlag(membership.is_platform_owner);
   const selectedGovernanceLevel = Math.max(
@@ -1157,8 +1260,6 @@ const OrgInspector = ({ node, mode, setMode, model, topology, biu = false, canMa
     selectedRoleLevel,
     Number(person.topology_level || person.role_level || 0),
   );
-  const selectedIsPlatformOwner = selectedOwnerFlag || selectedGovernanceLevel >= 11
-    || allRoleNames.some(name => String(name).toLowerCase() === "平台擁有者");
   const actorGovernanceLevel = Math.max(
     Number(governanceActor.governance_level || governanceActor.level || 0),
     window.W2_IS_OWNER ? 11 : 0,
@@ -1166,54 +1267,19 @@ const OrgInspector = ({ node, mode, setMode, model, topology, biu = false, canMa
   const canGovernSelected = actorGovernanceLevel >= 11
     || (actorGovernanceLevel >= 10 && selectedGovernanceLevel <= 10);
   const governanceBlocked = selectedGovernanceLevel >= 10 && !canGovernSelected;
-  const platformOwnerSelf = !!window.W2_IS_OWNER && selectedIsPlatformOwner && selectedIsCurrentActor;
-  const currentActorGid = currentActor.gid != null ? currentActor.gid : currentActor.global_user_id;
-  const selectedGlobalUserId = person.global_user_id != null
-    ? person.global_user_id
-    : membership.global_user_id != null
-    ? membership.global_user_id
-    : selectedIsCurrentActor
-    ? currentActorGid
-    : null;
-  const organizationManagementRoute = String(
-    person.organization_management_route || membership.organization_management_route || (selectedIsPlatformOwner ? "" : "tenant"),
-  ).trim().toLowerCase();
-  const platformOrganizationRoute = ["platform", "platform_identity", "platform_identity_route"].includes(organizationManagementRoute)
-    || organizationManagementRoute.startsWith("/api/platform/");
-  const targetNeedsPlatformRoute = selectedIsPlatformOwner || platformOrganizationRoute;
-  const currentTenantSlug = String((W2.tenant && W2.tenant()) || "").trim();
-  const platformIdentityReady = actorGovernanceLevel >= 11 && !!selectedUsername
-    && selectedGlobalUserId != null && !!currentTenantSlug && platformOrganizationRoute;
-  const platformTargetBlocked = platformOrganizationRoute && actorGovernanceLevel < 11;
-  const organizationRouteBlocked = governanceBlocked || platformTargetBlocked || organizationManagementRoute === "blocked"
-    || (targetNeedsPlatformRoute && !platformIdentityReady);
-  const personalConfigurationBlocked = governanceBlocked || platformTargetBlocked || organizationManagementRoute === "blocked";
-  const assignPosition = () => {
-    if (organizationRouteBlocked) return false;
-    if (targetNeedsPlatformRoute) {
-      if (!platformIdentityReady) return false;
-      return mutate(
-        "/api/platform/tenants/" + encodeURIComponent(currentTenantSlug) + "/members/" + encodeURIComponent(String(selectedGlobalUserId)) + "/organization",
-        {
-          username: selectedUsername,
-          confirm: selectedUsername,
-          reason: t(platformOwnerSelf ? "平台擁有者本人於組織權限拓撲調整崗位" : "L11 治理者於組織權限拓撲調整同級平台擁有者崗位"),
-          position_code: targetPosition,
-        },
-      );
-    }
-    return mutate("/api/org/users/" + userId + "/assign", { position_code: targetPosition });
-  };
+  const personalConfigurationBlocked = governanceBlocked;
   const inferredRolePermissions = Array.from(new Set(roles.filter(r => roleNames.includes(r.role_name)).reduce((acc, r) => acc.concat(biuPermissionValues(r.permissions, biu)), [])));
   const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
   const effectiveProvided = hasOwn(person, "effective_permissions") || hasOwn(person, "permissions") || hasOwn(membership, "effective_permissions");
   const effectiveSource = hasOwn(person, "effective_permissions") ? person.effective_permissions : hasOwn(person, "permissions") ? person.permissions : membership.effective_permissions;
   const effective = effectiveProvided ? biuPermissionValues(effectiveSource, biu) : inferredRolePermissions;
   const effectiveNav = biuNavValues(person.navigation_policy && person.navigation_policy.effective_modules || person.allowed_nav, biu);
+  const governanceIdentity = { ...membership, ...person, is_platform_owner: selectedOwnerFlag, governance_level: selectedGovernanceLevel };
   return <>
     <div className="org-inspector-head"><div className="row g6 wrap"><T tone={person.active === false || person.active === 0 ? "plain" : "ok"} dot={person.active !== false && person.active !== 0}>{t(person.active === false || person.active === 0 ? "停用" : "啟用")}</T>{orgFlag(membership.is_primary) && <T tone="plain">{t("主要歸屬")}</T>}</div><div className="org-inspector-title">{person.display_name || person.username || node.label}</div><div className="mono muted" style={{ fontSize: 10.5, marginTop: 6 }}>{person.username ? "@" + person.username : "USER #" + userId}</div></div>
-    <div className="org-inspector-grid">{[[t("所屬部門"), (dept && dept.unit_name) || membership.unit_name || t("未分配")], [t("崗位"), (pos && pos.position_name) || membership.position_name || t("未分配")], [t("角色"), roleNames.join("、") || membershipRoleName || t("(無角色)")], [t("職級"), "L" + (person.topology_level || person.role_level || (pos && pos.level) || 1) + (person.topology_title ? " · " + person.topology_title : "")], [t("導航"), effectiveNav.length], [t("建立時間"), person.created_at || membership.created_at || "—"], ["USER ID", userId ? "#" + userId : "—"]].map(([k, v]) => <div className="org-inspector-stat" key={k}><LB dim>{k}</LB><div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 4, wordBreak: "break-word" }}>{v}</div></div>)}</div>
-    {canManageOrganization && <div className="org-perm-box" style={{ marginTop: 8 }}><LB red>{t("移動人員 / 調整崗位")}</LB><div className="muted" style={{ fontSize: 11, lineHeight: 1.55, marginTop: 5 }}>{t("切換崗位會同步更新部門、崗位預設角色與職級。")}</div>{governanceBlocked && <div className="org-notice" role="status">{t("L11 僅可由 L11 治理者管理；L10 可由其他 L10 或 L11 管理。")}</div>}{targetNeedsPlatformRoute && canGovernSelected && organizationManagementRoute !== "blocked" && !platformIdentityReady && <div className="org-notice error" role="alert">{t("目標平台身份映射不完整，已安全停用調崗；請重新載入或先修復身份映射。")}</div>}{organizationManagementRoute === "blocked" && !governanceBlocked && <div className="org-notice" role="status">{t("此受保護身份目前沒有安全的組織調整路由。")}</div>}{targetNeedsPlatformRoute && platformIdentityReady && <div className="org-notice" role="status">{t(platformOwnerSelf ? "您正在設定自己的公司崗位；此操作將由平台身份流程完成並保留審計記錄。" : "您正在調整另一位 L11 的公司崗位；此操作將由平台身份流程完成並保留雙重審計記錄。")}</div>}<select className="field boxed" value={targetPosition} disabled={busy || organizationRouteBlocked} onChange={e => setTargetPosition(e.target.value)} style={{ width: "100%", height: 38, marginTop: 10, fontSize: 12 }}><option value="">{t("選擇目標崗位")}</option>{positions.map(p => <option key={p.id} value={p.position_code}>{(unitById.get(String(p.org_unit_id)) || {}).unit_name || "—"} / {p.position_name} · {visibleRoleName(p.role_name) || "—"}</option>)}</select><button className="btn primary" type="button" style={{ width: "100%", marginTop: 8 }} disabled={busy || !targetPosition || organizationRouteBlocked || (!targetNeedsPlatformRoute && !userId)} onClick={assignPosition}><I name="swap" size={13}/>{busy ? t("載入中…") : t("確認移動")}</button></div>}
+    <div className="org-inspector-grid">{[[t("所屬部門"), (dept && dept.unit_name) || membership.unit_name || t("未分配")], [t("崗位"), (pos && pos.position_name) || membership.position_name || t("未分配")], [t("角色"), roleNames.join("、") || membershipRoleName || t("(無角色)")], [t("職級"), governanceLabelOf(governanceIdentity)], [t("導航"), effectiveNav.length], [t("建立時間"), person.created_at || membership.created_at || "—"], ["USER ID", userId ? "#" + userId : "—"]].map(([k, v]) => <div className="org-inspector-stat" key={k}><LB dim>{k}</LB><div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 4, wordBreak: "break-word" }}>{v}</div></div>)}</div>
+    {governanceBlocked && <div className="org-notice" role="status">{t("L11 僅可由 L11 治理者管理；L10 可由其他 L10 或 L11 管理。")}</div>}
+    <MemberAppointmentEditor person={person} membership={membership} positions={positions} unitById={unitById} disabled={!canManageOrganization || governanceBlocked}/>
     <NavigationVisibilityEditor scope="person" entity={person} catalog={navigationCatalog} manageableModules={actorNavigationModules} biu={biu} disabled={!canManagePermissions || personalConfigurationBlocked} allowProtectedEdit={selectedGovernanceLevel >= 10 && canGovernSelected && !personalConfigurationBlocked} busy={busy} onSave={body => mutate("/api/org/users/" + userId + "/navigation", body)}/>
     <div className="org-perm-box"><div className="row spread"><LB red>{t("有效權限")}</LB><T tone="plain">{effective.length}</T></div>{effective.length ? <div className="row g4 wrap" style={{ marginTop: 9 }}>{effective.slice(0, 28).map(key => <T key={key} tone="plain">{key}</T>)}{effective.length > 28 && <T tone="inv">+{effective.length - 28}</T>}</div> : <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>{t("沒有有效權限")}</div>}</div>
     <UserPermissionEditor person={person} permissions={permissions} biu={biu} disabled={!canManagePermissions || personalConfigurationBlocked} busy={busy} onSave={body => mutate("/api/org/users/" + userId + "/permissions", body)}/>
@@ -1330,8 +1396,8 @@ const Page = ({ boot, reload, templateKey = "" }) => {
         username: u.username || "",
         roles: visibleMemberRoles(Array.isArray(u.roles) ? u.roles.map(r => r && r.role_name).filter(Boolean)
           : (Array.isArray(u.role_names) ? u.role_names : [])),
-        level: Math.max(1, Math.min(10, num(u.topology_level) || num(u.role_level) || 1)),
-        title: u.topology_title || "",
+        level: Math.max(1, Math.min(11, governanceLevelOf(u))),
+        title: governanceTitleOf(u),
         active: !(u.active === 0 || u.active === false),
         created: u.created_at || "",
       }))
@@ -1551,7 +1617,6 @@ const Page = ({ boot, reload, templateKey = "" }) => {
                         <td>
                           <div className="col g2">
                             <span style={{ fontWeight: 650 }}>{m.name}</span>
-                            {m.title && <span className="muted" style={{ fontSize: 11 }}>{m.title}</span>}
                           </div>
                         </td>
                         <td className="num muted">{m.username ? "@" + m.username : "—"}</td>
@@ -1560,7 +1625,7 @@ const Page = ({ boot, reload, templateKey = "" }) => {
                             {m.roles.length ? m.roles.map(r => <T key={r} tone="plain">{r}</T>) : <span className="muted" style={{ fontSize: 12 }}>{t("(無角色)")}</span>}
                           </div>
                         </td>
-                        <td><span className="num" style={{ fontWeight: 700 }}>L{m.level}</span></td>
+                        <td><span className="num" style={{ fontWeight: 700 }}>L{m.level}{m.title ? " · " + m.title : ""}</span></td>
                         <td>{m.active ? <T tone="ok" dot>{t("啟用")}</T> : <T tone="plain">{t("停用")}</T>}</td>
                         <td onClick={e => e.stopPropagation()}>
                           <div className="row g4">

@@ -222,7 +222,8 @@ def _snapshot(session: Session) -> dict[str, object]:
             text("""
         SELECT m.user_id, m.position_code, m.active AS membership_active, m.role_level,
                m.topology_level, m.topology_title, m.created_at AS membership_created_at,
-               u.username, u.display_name, u.active AS user_active, u.created_at
+               u.username, u.display_name, u.active AS user_active,
+               u.is_platform_owner, u.created_at
         FROM iam.memberships AS m JOIN iam.users AS u ON u.id = m.user_id
         ORDER BY m.topology_level DESC, u.display_name, u.username
     """)
@@ -362,12 +363,19 @@ def _projection(snapshot: dict[str, object]) -> dict[str, object]:
                     "active": True,
                 }
             ]
-        return [
+        active_identities = [
             identity
             for identity in identities
             if position_by_code.get(str(identity["position_code"]))
             and position_by_code[str(identity["position_code"])].get("active")
         ]
+        return sorted(
+            active_identities,
+            key=lambda identity: (
+                0 if identity.get("appointment_type") == "primary" else 1,
+                str(identity.get("position_code") or ""),
+            ),
+        )
 
     def authority_for(
         member: dict[str, object],
@@ -402,8 +410,16 @@ def _projection(snapshot: dict[str, object]) -> dict[str, object]:
             nav_modules.update(defaults)
             identity_rows.append(
                 {
+                    "position_id": str(position["id"]),
                     "position_code": position["position_code"],
                     "name": position["name"],
+                    "position_name": position["name"],
+                    "department_id": unit_id,
+                    "department_code": position["department_code"],
+                    "department_name": (
+                        unit_by_id[unit_id]["name"] if unit_id and unit_id in unit_by_id else None
+                    ),
+                    "role_name": position["role_name"],
                     "role_level": int(position["role_level"]),
                     "appointment_type": identity["appointment_type"],
                 }
@@ -462,6 +478,11 @@ def _projection(snapshot: dict[str, object]) -> dict[str, object]:
         )
         override = permission_overrides.get(user_id, {})
         nav_override = navigation_overrides.get(user_id, {})
+        is_platform_owner = bool(member.get("is_platform_owner"))
+        governance_level = 11 if is_platform_owner else max(
+            int(member["topology_level"]), int(member["role_level"])
+        )
+        governance_title = "平台擁有者" if is_platform_owner else member["topology_title"]
         user_rows.append(
             {
                 "id": user_id,
@@ -471,6 +492,10 @@ def _projection(snapshot: dict[str, object]) -> dict[str, object]:
                 "role_level": int(member["role_level"]),
                 "topology_level": int(member["topology_level"]),
                 "topology_title": member["topology_title"],
+                "is_platform_owner": is_platform_owner,
+                "governance_level": governance_level,
+                "governance_title": governance_title,
+                "organization_management_route": "appointment_capability",
                 "created_at": _iso(member["created_at"]),
                 "role_names": role_names,
                 "roles": [{"role_name": name} for name in role_names],
@@ -511,6 +536,10 @@ def _projection(snapshot: dict[str, object]) -> dict[str, object]:
                 "position_name": primary_position["name"] if primary_position else None,
                 "role_name": primary_position["role_name"] if primary_position else None,
                 "role_names": role_names,
+                "is_platform_owner": is_platform_owner,
+                "governance_level": governance_level,
+                "governance_title": governance_title,
+                "organization_management_route": "appointment_capability",
                 "created_at": _iso(member["membership_created_at"]),
             }
         )
@@ -688,6 +717,10 @@ def topology_payload(actor: ActorContext) -> dict[str, object]:
         projection = _projection(_snapshot(session))
     can_manage_org = _can_manage_organization(actor)
     can_manage_permissions = _can_manage_permissions(actor)
+    actor_row = next(
+        (row for row in projection["users"] if str(row["id"]) == str(actor.user_id)),
+        {},
+    )
     return {
         "scope": "current_tenant_only",
         "users": projection["users"],
@@ -697,6 +730,10 @@ def topology_payload(actor: ActorContext) -> dict[str, object]:
         "protected_permissions": ["settings.manage", "users.manage", "permissions.topology.manage"],
         "actor": {
             "id": str(actor.user_id),
+            "is_platform_owner": bool(actor_row.get("is_platform_owner")),
+            "governance_level": int(
+                actor_row.get("governance_level") or max(actor.topology_level, actor.role_level)
+            ),
             "can_manage": can_manage_org or can_manage_permissions,
             "can_edit_organization": can_manage_org,
             "can_edit_permissions": can_manage_permissions,
@@ -1325,7 +1362,8 @@ def _member(session: Session, user_id: str) -> dict[str, object]:
     member = (
         session.execute(
             text("""
-        SELECT m.user_id, m.role_level, m.topology_level, m.topology_title, u.username
+        SELECT m.user_id, m.position_code, m.role_level, m.topology_level, m.topology_title,
+               u.username, u.display_name, u.is_platform_owner
         FROM iam.memberships AS m JOIN iam.users AS u ON u.id = m.user_id
         WHERE m.user_id = :user_id AND m.active AND u.active
     """),
@@ -1341,39 +1379,252 @@ def _member(session: Session, user_id: str) -> dict[str, object]:
     return dict(member)
 
 
+def _position_by_code(session: Session, position_code: object) -> dict[str, object]:
+    code = str(position_code or "").strip()
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Position code is required",
+        )
+    row = (
+        session.execute(
+            text("""
+                SELECT pp.id, pp.position_code, pp.name AS position_name,
+                       pp.department_code, pp.role_name, pp.role_level,
+                       ou.id AS org_unit_id, ou.name AS org_unit_name
+                FROM iam.position_profiles AS pp
+                JOIN iam.organizational_units AS ou
+                  ON ou.unit_code = pp.department_code AND ou.active
+                WHERE pp.position_code = :position_code AND pp.active
+            """),
+            {"position_code": code},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Target position is unavailable",
+        )
+    return dict(row)
+
+
+def _assert_member_governance(
+    session: Session,
+    actor: ActorContext,
+    member: dict[str, object],
+) -> None:
+    actor_is_owner = bool(
+        session.execute(
+            text("SELECT is_platform_owner FROM iam.users WHERE id = :user_id"),
+            {"user_id": actor.user_id},
+        ).scalar_one_or_none()
+    )
+    actor_level = 11 if actor_is_owner else max(actor.role_level, actor.topology_level)
+    member_level = (
+        11
+        if bool(member.get("is_platform_owner"))
+        else max(int(member["role_level"]), int(member["topology_level"]))
+    )
+    if member_level >= 10 and actor_level < member_level:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Protected management identities require a peer governance level",
+        )
+
+
+def _ensure_primary_appointment(
+    session: Session,
+    actor: ActorContext,
+    member: dict[str, object],
+) -> None:
+    """Materialize the legacy membership projection before editing appointments."""
+    primary_exists = session.execute(
+        text("""
+            SELECT 1 FROM iam.membership_positions
+            WHERE user_id = :user_id AND appointment_type = 'primary' AND active
+        """),
+        {"user_id": member["user_id"]},
+    ).scalar_one_or_none()
+    if primary_exists is not None:
+        return
+    legacy_code = str(member.get("position_code") or "").strip()
+    if not legacy_code:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The member has no primary position to initialize appointments from",
+        )
+    _position_by_code(session, legacy_code)
+    session.execute(
+        text("""
+            INSERT INTO iam.membership_positions(
+              tenant_id, user_id, position_code, appointment_type, active
+            ) VALUES (:tenant_id, :user_id, :position_code, 'primary', true)
+            ON CONFLICT (tenant_id, user_id, position_code)
+            DO UPDATE SET appointment_type = 'primary', active = true
+        """),
+        {
+            "tenant_id": actor.tenant_id,
+            "user_id": member["user_id"],
+            "position_code": legacy_code,
+        },
+    )
+
+
+def _sync_membership_appointment_projection(session: Session, user_id: object) -> None:
+    rows = (
+        session.execute(
+            text("""
+                SELECT mp.position_code, mp.appointment_type, pp.role_level
+                FROM iam.membership_positions AS mp
+                JOIN iam.position_profiles AS pp
+                  ON pp.tenant_id = mp.tenant_id
+                 AND pp.position_code = mp.position_code
+                WHERE mp.user_id = :user_id AND mp.active AND pp.active
+                ORDER BY CASE mp.appointment_type WHEN 'primary' THEN 0 ELSE 1 END,
+                         pp.role_level DESC, mp.position_code
+            """),
+            {"user_id": user_id},
+        )
+        .mappings()
+        .all()
+    )
+    primary = next((row for row in rows if row["appointment_type"] == "primary"), None)
+    if primary is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Every active member must retain one primary appointment",
+        )
+    effective_level = max(int(row["role_level"]) for row in rows)
+    session.execute(
+        text("""
+            UPDATE iam.memberships
+            SET position_code = :position_code, role_level = :role_level
+            WHERE user_id = :user_id
+        """),
+        {
+            "user_id": user_id,
+            "position_code": primary["position_code"],
+            "role_level": effective_level,
+        },
+    )
+
+
+def _appointment_result(
+    session: Session,
+    member: dict[str, object],
+    *,
+    operation: str,
+    changed_position_code: str,
+    already_processed: bool = False,
+) -> dict[str, object]:
+    rows = [
+        dict(row)
+        for row in session.execute(
+            text("""
+                SELECT mp.position_code, mp.appointment_type,
+                       pp.id AS position_id, pp.name AS position_name,
+                       pp.role_name, pp.role_level,
+                       ou.id AS org_unit_id, ou.unit_code AS org_unit_code,
+                       ou.name AS org_unit_name
+                FROM iam.membership_positions AS mp
+                JOIN iam.position_profiles AS pp
+                  ON pp.tenant_id = mp.tenant_id
+                 AND pp.position_code = mp.position_code
+                JOIN iam.organizational_units AS ou
+                  ON ou.tenant_id = pp.tenant_id
+                 AND ou.unit_code = pp.department_code
+                WHERE mp.user_id = :user_id AND mp.active AND pp.active AND ou.active
+                ORDER BY CASE mp.appointment_type WHEN 'primary' THEN 0 ELSE 1 END,
+                         pp.role_level DESC, pp.position_code
+            """),
+            {"user_id": member["user_id"]},
+        )
+        .mappings()
+        .all()
+    ]
+    primary = next(row for row in rows if row["appointment_type"] == "primary")
+    role_names = list(dict.fromkeys(str(row["role_name"]) for row in rows))
+    effective_level = max(int(row["role_level"]) for row in rows)
+    is_platform_owner = bool(member.get("is_platform_owner"))
+    governance_level = 11 if is_platform_owner else max(
+        int(member["topology_level"]), effective_level
+    )
+    governance_title = "平台擁有者" if is_platform_owner else member.get("topology_title")
+    readback = {
+        "user_id": str(member["user_id"]),
+        "username": member["username"],
+        "display_name": member["display_name"],
+        "primary_position_code": primary["position_code"],
+        "role_level": effective_level,
+        "role_names": role_names,
+        "appointments": [
+            {
+                **row,
+                "position_id": str(row["position_id"]),
+                "org_unit_id": str(row["org_unit_id"]),
+                "role_level": int(row["role_level"]),
+                "is_primary": row["appointment_type"] == "primary",
+            }
+            for row in rows
+        ],
+        "is_platform_owner": is_platform_owner,
+        "governance_level": governance_level,
+        "governance_title": governance_title,
+    }
+    observation = {
+        "schema": "warehouse.world-observation.v1",
+        "operation": operation,
+        "effect": "member_appointments_updated",
+        "primary_entity": {
+            "resource": "iam.member",
+            "id": str(member["user_id"]),
+            "ref": str(member["username"]),
+            "facts": readback,
+        },
+        "verified_facts": {
+            "appointment_count": len(rows),
+            "primary_position_code": primary["position_code"],
+            "changed_position_code": changed_position_code,
+            "role_names": role_names,
+            "governance_level": governance_level,
+        },
+        "uncertainties": [],
+        "affordances": [],
+        "decision_owner": "auto_runtime",
+        "workflow_prescribed": False,
+    }
+    return {
+        "ok": True,
+        "member": readback,
+        "verification": {
+            "schema": "warehouse.domain-readback.v1",
+            "verified": True,
+            "source": "tenant_member_appointment_readback",
+        },
+        "world_observation": observation,
+        **({"already_processed": True} if already_processed else {}),
+    }
+
+
 def assign_user_position(
     actor: ActorContext, user_id: str, payload: dict[str, object]
 ) -> dict[str, object]:
     _require(actor, "users.manage", "settings.manage")
-    code = str(payload.get("position_code") or "").strip()
-    if not code:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Position code is required"
-        )
     with tenant_session(actor.tenant_id) as session:
         member = _member(session, user_id)
-        target = (
-            session.execute(
-                text("""
-            SELECT position_code, role_level FROM iam.position_profiles
-            WHERE position_code = :position_code AND active
-        """),
-                {"position_code": code},
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if target is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Target position is unavailable",
-            )
+        _assert_member_governance(session, actor, member)
+        _ensure_primary_appointment(session, actor, member)
+        target = _position_by_code(session, payload.get("position_code"))
+        code = str(target["position_code"])
         session.execute(
             text("""
-            UPDATE iam.membership_positions SET active = false
+            UPDATE iam.membership_positions SET appointment_type = 'concurrent'
             WHERE user_id = :user_id AND appointment_type = 'primary' AND active
+              AND position_code <> :position_code
         """),
-            {"user_id": member["user_id"]},
+            {"user_id": member["user_id"], "position_code": code},
         )
         session.execute(
             text("""
@@ -1383,28 +1634,221 @@ def assign_user_position(
         """),
             {"tenant_id": actor.tenant_id, "user_id": member["user_id"], "position_code": code},
         )
-        max_level = session.execute(
-            text("""
-            SELECT COALESCE(MAX(pp.role_level), 1) FROM iam.membership_positions AS mp
-            JOIN iam.position_profiles AS pp ON pp.tenant_id = mp.tenant_id AND pp.position_code = mp.position_code
-            WHERE mp.user_id = :user_id AND mp.active AND pp.active
-        """),
-            {"user_id": member["user_id"]},
-        ).scalar_one()
-        session.execute(
-            text("""
-            UPDATE iam.memberships SET position_code = :position_code, role_level = :level, topology_level = GREATEST(topology_level, :level)
-            WHERE user_id = :user_id
-        """),
-            {"position_code": code, "level": int(max_level), "user_id": member["user_id"]},
-        )
+        _sync_membership_appointment_projection(session, member["user_id"])
         _audit(
             session,
             actor,
             "organization.user_position_assigned",
             {"user_id": str(member["user_id"]), "position_code": code},
         )
-    return {"ok": True, "user_id": str(member["user_id"]), "position_code": code}
+        return _appointment_result(
+            session,
+            member,
+            operation="organization.user_position_assigned",
+            changed_position_code=code,
+        )
+
+
+def add_user_appointment(
+    actor: ActorContext, user_id: str, payload: dict[str, object]
+) -> dict[str, object]:
+    _require(actor, "users.manage", "settings.manage")
+    with tenant_session(actor.tenant_id) as session:
+        member = _member(session, user_id)
+        _assert_member_governance(session, actor, member)
+        _ensure_primary_appointment(session, actor, member)
+        target = _position_by_code(session, payload.get("position_code"))
+        code = str(target["position_code"])
+        existing = (
+            session.execute(
+                text("""
+                    SELECT appointment_type FROM iam.membership_positions
+                    WHERE user_id = :user_id AND position_code = :position_code AND active
+                """),
+                {"user_id": member["user_id"], "position_code": code},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing["appointment_type"] == "primary":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="The selected position is already the primary appointment",
+                )
+            return _appointment_result(
+                session,
+                member,
+                operation="organization.user_appointment_added",
+                changed_position_code=code,
+                already_processed=True,
+            )
+        session.execute(
+            text("""
+                INSERT INTO iam.membership_positions(
+                  tenant_id, user_id, position_code, appointment_type, active
+                ) VALUES (:tenant_id, :user_id, :position_code, 'concurrent', true)
+                ON CONFLICT (tenant_id, user_id, position_code)
+                DO UPDATE SET appointment_type = 'concurrent', active = true
+            """),
+            {"tenant_id": actor.tenant_id, "user_id": member["user_id"], "position_code": code},
+        )
+        _sync_membership_appointment_projection(session, member["user_id"])
+        _audit(
+            session,
+            actor,
+            "organization.user_appointment_added",
+            {"user_id": str(member["user_id"]), "position_code": code},
+        )
+        return _appointment_result(
+            session,
+            member,
+            operation="organization.user_appointment_added",
+            changed_position_code=code,
+        )
+
+
+def update_user_appointment(
+    actor: ActorContext,
+    user_id: str,
+    current_position_code: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    _require(actor, "users.manage", "settings.manage")
+    current_code = str(current_position_code or "").strip()
+    with tenant_session(actor.tenant_id) as session:
+        member = _member(session, user_id)
+        _assert_member_governance(session, actor, member)
+        _ensure_primary_appointment(session, actor, member)
+        current = (
+            session.execute(
+                text("""
+                    SELECT appointment_type FROM iam.membership_positions
+                    WHERE user_id = :user_id AND position_code = :position_code AND active
+                """),
+                {"user_id": member["user_id"], "position_code": current_code},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Concurrent appointment not found")
+        if current["appointment_type"] != "concurrent":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Use the primary-position capability to change the primary appointment",
+            )
+        target = _position_by_code(session, payload.get("new_position_code"))
+        new_code = str(target["position_code"])
+        if new_code == current_code:
+            return _appointment_result(
+                session,
+                member,
+                operation="organization.user_appointment_updated",
+                changed_position_code=new_code,
+                already_processed=True,
+            )
+        duplicate = session.execute(
+            text("""
+                SELECT 1 FROM iam.membership_positions
+                WHERE user_id = :user_id AND position_code = :position_code AND active
+            """),
+            {"user_id": member["user_id"], "position_code": new_code},
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The selected position is already an active appointment",
+            )
+        session.execute(
+            text("""
+                UPDATE iam.membership_positions SET active = false
+                WHERE user_id = :user_id AND position_code = :position_code
+            """),
+            {"user_id": member["user_id"], "position_code": current_code},
+        )
+        session.execute(
+            text("""
+                INSERT INTO iam.membership_positions(
+                  tenant_id, user_id, position_code, appointment_type, active
+                ) VALUES (:tenant_id, :user_id, :position_code, 'concurrent', true)
+                ON CONFLICT (tenant_id, user_id, position_code)
+                DO UPDATE SET appointment_type = 'concurrent', active = true
+            """),
+            {
+                "tenant_id": actor.tenant_id,
+                "user_id": member["user_id"],
+                "position_code": new_code,
+            },
+        )
+        _sync_membership_appointment_projection(session, member["user_id"])
+        _audit(
+            session,
+            actor,
+            "organization.user_appointment_updated",
+            {
+                "user_id": str(member["user_id"]),
+                "previous_position_code": current_code,
+                "position_code": new_code,
+            },
+        )
+        return _appointment_result(
+            session,
+            member,
+            operation="organization.user_appointment_updated",
+            changed_position_code=new_code,
+        )
+
+
+def remove_user_appointment(
+    actor: ActorContext, user_id: str, position_code: str
+) -> dict[str, object]:
+    _require(actor, "users.manage", "settings.manage")
+    code = str(position_code or "").strip()
+    with tenant_session(actor.tenant_id) as session:
+        member = _member(session, user_id)
+        _assert_member_governance(session, actor, member)
+        _ensure_primary_appointment(session, actor, member)
+        appointment_type = session.execute(
+            text("""
+                SELECT appointment_type FROM iam.membership_positions
+                WHERE user_id = :user_id AND position_code = :position_code AND active
+            """),
+            {"user_id": member["user_id"], "position_code": code},
+        ).scalar_one_or_none()
+        if appointment_type is None:
+            return _appointment_result(
+                session,
+                member,
+                operation="organization.user_appointment_removed",
+                changed_position_code=code,
+                already_processed=True,
+            )
+        if appointment_type == "primary":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Set another primary appointment before removing this position",
+            )
+        session.execute(
+            text("""
+                UPDATE iam.membership_positions SET active = false
+                WHERE user_id = :user_id AND position_code = :position_code
+            """),
+            {"user_id": member["user_id"], "position_code": code},
+        )
+        _sync_membership_appointment_projection(session, member["user_id"])
+        _audit(
+            session,
+            actor,
+            "organization.user_appointment_removed",
+            {"user_id": str(member["user_id"]), "position_code": code},
+        )
+        return _appointment_result(
+            session,
+            member,
+            operation="organization.user_appointment_removed",
+            changed_position_code=code,
+        )
 
 
 def set_user_permissions(

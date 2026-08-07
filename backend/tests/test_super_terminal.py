@@ -697,6 +697,9 @@ def test_organization_v2_routes_are_governed_api_contracts() -> None:
         "/api/org/positions/{position_id}/archive",
         "/api/org/positions/{position_id}/navigation",
         "/api/org/users/{user_id}/assign",
+        "/api/org/users/{user_id}/appointments",
+        "/api/org/users/{user_id}/appointments/{position_code}",
+        "/api/org/users/{user_id}/appointments/{position_code}/remove",
         "/api/org/users/{user_id}/permissions",
         "/api/org/users/{user_id}/navigation",
     }

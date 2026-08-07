@@ -4416,17 +4416,101 @@ COMMANDS = [
     {
         "command": "org assign",
         "tool_name": "organization_user_assign",
-        "description": "把人員分配到預設崗位並自動同步角色權限",
+        "description": "設定人員主職；原主職保留為兼職，並原子同步角色、有效職級及任職回讀",
         "api_method": "POST",
         "api_path": "/api/org/users/{id}/assign",
         "permission": "users.manage",
+        "permission_any": ["users.manage", "settings.manage"],
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.member",
+            "effect": "set_primary_appointment",
+            "identity_invariant": "platform_owner_is_never_inferred_from_tenant_position",
+            "success_evidence": "complete_member_appointment_readback_and_world_observation",
+            "workflow_prescribed": False,
+        },
         "params": [
-            _p("user", "path.id", "用戶 id", required=True, ptype="int"),
+            _p("user", "path.id", "用戶 UUID", required=True),
             _p("position", "body.position_code", "崗位代碼", required=True),
         ],
-        "examples": ["org assign --user 12 --position hotel_accountant"],
+        "examples": ["org assign --user 9df76d85-bd5a-4ab2-8c3a-bb6af950af45 --position hotel_accountant"],
+    },
+    {
+        "command": "org appointment add",
+        "tool_name": "organization_user_appointment_add",
+        "description": "為人員新增兼職崗位；不改主職，原子同步角色、有效職級及任職回讀",
+        "api_method": "POST",
+        "api_path": "/api/org/users/{id}/appointments",
+        "permission": "users.manage",
+        "permission_any": ["users.manage", "settings.manage"],
+        "writes": True,
+        "risk": "normal",
+        "semantic_contract": {
+            "resource": "iam.member",
+            "effect": "add_concurrent_appointment",
+            "identity_invariant": "platform_owner_is_never_inferred_from_tenant_position",
+            "success_evidence": "complete_member_appointment_readback_and_world_observation",
+            "workflow_prescribed": False,
+        },
+        "params": [
+            _p("user", "path.id", "用戶 UUID", required=True),
+            _p("position", "body.position_code", "新增兼職的崗位代碼", required=True),
+        ],
+        "examples": [
+            "org appointment add --user 9df76d85-bd5a-4ab2-8c3a-bb6af950af45 --position research_director"
+        ],
+    },
+    {
+        "command": "org appointment update",
+        "tool_name": "organization_user_appointment_update",
+        "description": "把一項現有兼職原子替換為另一個崗位；主職不受影響",
+        "api_method": "POST",
+        "api_path": "/api/org/users/{id}/appointments/{position_code}",
+        "permission": "users.manage",
+        "permission_any": ["users.manage", "settings.manage"],
+        "writes": True,
+        "risk": "normal",
+        "semantic_contract": {
+            "resource": "iam.member",
+            "effect": "replace_concurrent_appointment",
+            "identity_invariant": "primary_appointment_remains_active",
+            "success_evidence": "complete_member_appointment_readback_and_world_observation",
+            "workflow_prescribed": False,
+        },
+        "params": [
+            _p("user", "path.id", "用戶 UUID", required=True),
+            _p("position", "path.position_code", "目前兼職崗位代碼", required=True),
+            _p("new-position", "body.new_position_code", "新的兼職崗位代碼", required=True),
+        ],
+        "examples": [
+            "org appointment update --user 9df76d85-bd5a-4ab2-8c3a-bb6af950af45 --position lab_deputy --new-position research_director"
+        ],
+    },
+    {
+        "command": "org appointment remove",
+        "tool_name": "organization_user_appointment_remove",
+        "description": "移除一項兼職並重新計算角色及有效職級；主職不能由此能力移除",
+        "api_method": "POST",
+        "api_path": "/api/org/users/{id}/appointments/{position_code}/remove",
+        "permission": "users.manage",
+        "permission_any": ["users.manage", "settings.manage"],
+        "writes": True,
+        "risk": "normal",
+        "semantic_contract": {
+            "resource": "iam.member",
+            "effect": "remove_concurrent_appointment",
+            "identity_invariant": "primary_appointment_remains_active",
+            "success_evidence": "complete_member_appointment_readback_and_world_observation",
+            "workflow_prescribed": False,
+        },
+        "params": [
+            _p("user", "path.id", "用戶 UUID", required=True),
+            _p("position", "path.position_code", "要移除的兼職崗位代碼", required=True),
+        ],
+        "examples": [
+            "org appointment remove --user 9df76d85-bd5a-4ab2-8c3a-bb6af950af45 --position research_director"
+        ],
     },
     {
         "command": "platform org assign",
@@ -4456,13 +4540,14 @@ COMMANDS = [
         "api_method": "POST",
         "api_path": "/api/org/departments",
         "permission": "users.manage",
+        "permission_any": ["users.manage", "settings.manage"],
         "writes": True,
         "risk": "normal",
         "params": [
             _p("name", "body.unit_name", "部門名稱", required=True),
             _p("code", "body.unit_code", "唯一部門代碼(省略則自動生成)"),
             _p("type", "body.unit_type", "department/team/project/other(默認 department)"),
-            _p("parent", "body.parent_id", "上級組織 id", ptype="int"),
+            _p("parent", "body.parent_id", "上級組織 UUID"),
             _p("desc", "body.description", "說明"),
         ],
         "examples": ["org department create --name 前臺 --code HOTEL-FRONT --type department"],
@@ -11983,8 +12068,13 @@ COMPOSITE_STORE_TOOL_NAMES = frozenset(
         "company_join_request",
         # Tenant organization writes coupled to platform membership/identity state.
         "user_add",
+        "users_list",
+        "organization_structure",
         "organization_template_apply",
         "organization_user_assign",
+        "organization_user_appointment_add",
+        "organization_user_appointment_update",
+        "organization_user_appointment_remove",
         "organization_department_update",
         "organization_position_update",
         "user_role_set",
@@ -12111,6 +12201,10 @@ _TENANT_PLATFORM_GOVERNANCE_WRITE_TOOLS = frozenset(
         "permission_share",
         "permission_share_revoke",
         "permission_level_set",
+        "organization_user_assign",
+        "organization_user_appointment_add",
+        "organization_user_appointment_update",
+        "organization_user_appointment_remove",
     }
 )
 _TENANT_PLATFORM_GOVERNANCE_READ_TOOLS = frozenset(
@@ -12118,6 +12212,8 @@ _TENANT_PLATFORM_GOVERNANCE_READ_TOOLS = frozenset(
         # The topology is tenant-owned but decorates each person with their exact
         # platform identity and governance boundary.
         "permission_topology",
+        "users_list",
+        "organization_structure",
     }
 )
 _TENANT_PLATFORM_WORKFLOW_REPAIR_WRITE_TOOLS = frozenset(
@@ -12180,7 +12276,6 @@ _HUMAN_ONLY_PLATFORM_MUTATION_ROUTE_TOOLS = frozenset(
     {
         "user_add",
         "organization_template_apply",
-        "organization_user_assign",
         "organization_department_update",
         "organization_position_update",
         "user_role_set",

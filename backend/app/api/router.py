@@ -57,6 +57,7 @@ from app.services.memory_fabric import (
     run_background_memory_steward,
 )
 from app.services.organization import (
+    add_user_appointment,
     apply_template,
     archive_department,
     archive_position,
@@ -64,6 +65,7 @@ from app.services.organization import (
     create_department,
     create_position,
     organization_structure,
+    remove_user_appointment,
     set_department_navigation,
     set_department_permissions,
     set_position_navigation,
@@ -74,6 +76,7 @@ from app.services.organization import (
     topology_payload,
     update_department,
     update_position,
+    update_user_appointment,
     users_payload,
 )
 from app.services.overview import executive_overview_payload
@@ -638,6 +641,34 @@ def org_user_assign(
     user_id: str, payload: dict[str, object], actor: ActorContext = Depends(current_actor)
 ) -> dict[str, object]:
     return assign_user_position(actor, user_id, payload)
+
+
+@router.post("/api/org/users/{user_id}/appointments")
+def org_user_appointment_add(
+    user_id: str,
+    payload: dict[str, object],
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return add_user_appointment(actor, user_id, payload)
+
+
+@router.post("/api/org/users/{user_id}/appointments/{position_code}")
+def org_user_appointment_update(
+    user_id: str,
+    position_code: str,
+    payload: dict[str, object],
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return update_user_appointment(actor, user_id, position_code, payload)
+
+
+@router.post("/api/org/users/{user_id}/appointments/{position_code}/remove")
+def org_user_appointment_remove(
+    user_id: str,
+    position_code: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return remove_user_appointment(actor, user_id, position_code)
 
 
 @router.post("/api/org/users/{user_id}/permissions")

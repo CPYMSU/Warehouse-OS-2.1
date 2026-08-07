@@ -21,3 +21,15 @@ def test_secretary_accepts_pages_and_generic_resource_action_contexts() -> None:
     assert "warehouse.pages-action-context.v1" in source
     assert "warehouse.resource-action-context.v1" in source
     assert "related_resources" in source
+
+
+def test_department_and_appointment_buttons_use_shared_capability_contracts() -> None:
+    source = (ROOT / "frontend/v2/pages/pages-perms.jsx").read_text(encoding="utf-8")
+
+    assert 'openOrgAction("organization_department_create"' in source
+    assert 'openOrgAction("organization_user_assign"' in source
+    assert 'openOrgAction("organization_user_appointment_add"' in source
+    assert 'openOrgAction("organization_user_appointment_update"' in source
+    assert 'openOrgAction("organization_user_appointment_remove"' in source
+    assert "governanceLabelOf(governanceIdentity)" in source
+    assert "Math.min(11, governanceLevelOf(u))" in source

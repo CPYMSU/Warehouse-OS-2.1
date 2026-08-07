@@ -1238,6 +1238,123 @@ def test_organization_topology_edit_buttons_round_trip() -> None:
         app.dependency_overrides.clear()
 
 
+def test_member_appointments_share_button_ai_contract_and_project_l11() -> None:
+    actor = _actor()
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        structure = client.get("/api/org/structure").json()
+        positions = [row for row in structure["positions"] if row["active"]]
+        assert len(positions) >= 3
+        primary, first_concurrent, second_concurrent = positions[:3]
+
+        seeded_primary = client.post(
+            f"/api/org/users/{actor.user_id}/assign",
+            json={"position_code": primary["position_code"]},
+        )
+        assert seeded_primary.status_code == 200
+        assert seeded_primary.json()["member"]["governance_level"] == 11
+        assert seeded_primary.json()["member"]["governance_title"] == "平台擁有者"
+
+        action_rows = {
+            row["tool_name"]: row for row in client.get("/api/business/actions").json()["actions"]
+        }
+        for tool_name in (
+            "organization_user_appointment_add",
+            "organization_user_appointment_update",
+            "organization_user_appointment_remove",
+        ):
+            assert action_rows[tool_name]["available"] is True
+            assert action_rows[tool_name]["authorized"] is True
+            assert action_rows[tool_name]["manual_execution"] == "execute"
+        assert action_rows["organization_user_assign"]["manual_execution"] == (
+            "governed_confirmation"
+        )
+
+        ai_tool_names = {
+            row["function"]["name"] for row in client.get("/api/ai/tools").json()["tools"]
+        }
+        assert {
+            "organization_user_assign",
+            "organization_user_appointment_add",
+            "organization_user_appointment_update",
+            "organization_user_appointment_remove",
+        }.issubset(ai_tool_names)
+
+        added = client.post(
+            "/api/business/actions/organization_user_appointment_add/execute",
+            json={
+                "arguments": {
+                    "user": str(actor.user_id),
+                    "position": first_concurrent["position_code"],
+                }
+            },
+        )
+        assert added.status_code == 200
+        assert added.json()["status"] == "succeeded"
+        added_data = added.json()["data"]
+        assert added_data["verification"]["source"] == (
+            "tenant_member_appointment_readback"
+        )
+        assert len(added_data["member"]["appointments"]) == 2
+        assert added_data["world_observation"]["verified_facts"]["appointment_count"] == 2
+
+        updated = client.post(
+            "/api/business/actions/organization_user_appointment_update/execute",
+            json={
+                "arguments": {
+                    "user": str(actor.user_id),
+                    "position": first_concurrent["position_code"],
+                    "new-position": second_concurrent["position_code"],
+                }
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["status"] == "succeeded"
+        updated_codes = {
+            row["position_code"] for row in updated.json()["data"]["member"]["appointments"]
+        }
+        assert updated_codes == {primary["position_code"], second_concurrent["position_code"]}
+
+        promoted = client.post(
+            f"/api/org/users/{actor.user_id}/assign",
+            json={"position_code": second_concurrent["position_code"]},
+        ).json()
+        appointment_types = {
+            row["position_code"]: row["appointment_type"]
+            for row in promoted["member"]["appointments"]
+        }
+        assert appointment_types[second_concurrent["position_code"]] == "primary"
+        assert appointment_types[primary["position_code"]] == "concurrent"
+
+        removed = client.post(
+            "/api/business/actions/organization_user_appointment_remove/execute",
+            json={
+                "arguments": {
+                    "user": str(actor.user_id),
+                    "position": primary["position_code"],
+                }
+            },
+        )
+        assert removed.status_code == 200
+        assert removed.json()["status"] == "succeeded"
+        assert [
+            row["position_code"]
+            for row in removed.json()["data"]["member"]["appointments"]
+        ] == [second_concurrent["position_code"]]
+
+        owner = next(
+            row for row in client.get("/api/users").json()["users"]
+            if row["id"] == str(actor.user_id)
+        )
+        assert owner["is_platform_owner"] is True
+        assert owner["governance_level"] == 11
+        assert owner["governance_title"] == "平台擁有者"
+        assert client.get("/api/permissions/topology").json()["actor"]["governance_level"] == 11
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_auto_runtime_distils_all_company_authority_and_capability_genes(monkeypatch) -> None:
     actor = _actor()
     replies = iter(
