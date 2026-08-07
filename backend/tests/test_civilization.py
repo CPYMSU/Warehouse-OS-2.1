@@ -1,9 +1,13 @@
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.api import civilization as civilization_api
 from app.api.deps import ActorContext, current_actor
+from app.core.security import hash_password
+from app.db.session import system_session, tenant_session
 from app.main import app
 from app.services.civilization import (
     _can_delete,
@@ -34,6 +38,39 @@ def _actor(*, role_level: int = 5, permissions: frozenset[str] = frozenset()) ->
         topology_title=None,
         permissions=permissions,
     )
+
+
+def _database_actor() -> ActorContext:
+    actor = _actor(role_level=10, permissions=frozenset({"settings.manage"}))
+    with system_session() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO iam.tenants(id, slug, name, industry_template_key)
+                VALUES (:id, :slug, :name, 'generic_warehouse')
+                """
+            ),
+            {
+                "id": actor.tenant_id,
+                "slug": actor.tenant_slug,
+                "name": actor.tenant_name,
+            },
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO iam.users(id, username, display_name, password_hash)
+                VALUES (:id, :username, :display_name, :password_hash)
+                """
+            ),
+            {
+                "id": actor.user_id,
+                "username": actor.username,
+                "display_name": actor.display_name,
+                "password_hash": hash_password("test-password"),
+            },
+        )
+    return actor
 
 
 def test_delete_policy_allows_creator_and_company_administrator() -> None:
@@ -236,6 +273,63 @@ def test_civilization_routes_delegate_to_one_tenant_service(monkeypatch) -> None
     assert calls[3][1][0:2] == (actor, thought_id)
     assert calls[3][1][2] == {"expected_revision": 2, "enabled": True}
     assert calls[4][1] == (actor, thought_id)
+
+
+@pytest.mark.integration
+def test_direct_publish_stores_sql_null_draft_and_creates_revision() -> None:
+    actor = _database_actor()
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/civilization/thoughts",
+            json={
+                "domain": "organization",
+                "title": "关系与组织",
+                "short": "直接发布不应留下草稿。",
+                "thesis": "发布内容和草稿状态必须保持一致。",
+                "publish": True,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 201, response.text
+    created = response.json()["thought"]
+    assert created["publication_status"] == "published"
+    assert created["published_revision"] == 1
+    assert created["has_draft"] is False
+
+    with tenant_session(actor.tenant_id) as session:
+        stored = session.execute(
+            text(
+                """
+                SELECT draft_content,
+                       jsonb_typeof(published_content) AS published_type,
+                       publication_status,
+                       published_revision
+                FROM civilization.thoughts
+                WHERE id = :thought_id
+                """
+            ),
+            {"thought_id": created["id"]},
+        ).mappings().one()
+        revision_count = session.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM civilization.thought_revisions
+                WHERE thought_id = :thought_id
+                """
+            ),
+            {"thought_id": created["id"]},
+        ).scalar_one()
+
+    assert stored["draft_content"] is None
+    assert stored["published_type"] == "object"
+    assert stored["publication_status"] == "published"
+    assert stored["published_revision"] == 1
+    assert revision_count == 1
 
 
 def test_public_civilization_page_is_auth_free_validated_and_metadata_safe(monkeypatch) -> None:

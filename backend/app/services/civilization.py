@@ -657,7 +657,9 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                     "created_by": actor.user_id,
                     "template_key": TEMPLATE_KEY,
                     "published_content": json.dumps(content if publish else {}, ensure_ascii=False),
-                    "draft_content": json.dumps(None if publish else content, ensure_ascii=False),
+                    "draft_content": (
+                        None if publish else json.dumps(content, ensure_ascii=False)
+                    ),
                     "publication_status": "published" if publish else "draft",
                     "published_revision": 1 if publish else 0,
                     "published_at": datetime.now().astimezone() if publish else None,
