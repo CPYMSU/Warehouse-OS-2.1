@@ -41,7 +41,16 @@
 .civ-kicker, .civ-micro, .civ-eyebrow { font: 750 8.5px/1.35 var(--f-mono); letter-spacing: .13em; text-transform: uppercase; }
 .civ-kicker { color: var(--civ-signal); }
 .civ-mast-title { position: relative; z-index: 2; margin: auto 0 10px; font-size: clamp(68px, 9vw, 136px); line-height: .71; letter-spacing: -.095em; font-weight: 820; }
-.civ-mast-title span { margin-left: 14px; color: transparent; font-size: .38em; letter-spacing: -.05em; -webkit-text-stroke: 1.5px var(--ink); }
+.civ-mast-word { margin-left: 14px; display: inline-grid; position: relative; isolation: isolate; color: transparent; font-size: .38em; line-height: 1; letter-spacing: -.05em; vertical-align: baseline; }
+.civ-mast-word-base { grid-area: 1 / 1; position: relative; z-index: 4; color: transparent; -webkit-text-stroke: 1.5px var(--ink); }
+.civ-mast-word::before, .civ-mast-word::after { content: attr(data-word); grid-area: 1 / 1; position: absolute; inset: 0; line-height: inherit; letter-spacing: inherit; pointer-events: none; }
+.civ-mast-word::before { z-index: 3; color: transparent; background: linear-gradient(90deg, #D62B20 0 18%, #F3CE1D 18% 36%, #1656A3 36% 56%, #17694E 56% 76%, #B45418 76% 90%, #6C3D8E 90% 100%); -webkit-background-clip: text; background-clip: text; -webkit-clip-path: inset(0 100% 0 0); clip-path: inset(0 100% 0 0); will-change: clip-path, opacity; animation: civ-word-color-pass 7.2s cubic-bezier(.2,.72,.2,1) infinite; }
+.civ-mast-word::after { z-index: 2; color: transparent; -webkit-text-stroke: 1.2px var(--civ-signal); text-shadow: -6px 4px 0 #D62B20, 7px -3px 0 #1656A3, 3px 6px 0 #17694E; opacity: 0; will-change: transform, opacity; animation: civ-word-register 7.2s ease infinite; }
+.civ-mast-word-bars { position: absolute; inset: -10% 0 -8%; z-index: 1; overflow: hidden; pointer-events: none; }
+.civ-mast-word-bars b { height: 4px; position: absolute; left: 0; right: 0; display: block; transform: scaleX(0); transform-origin: left; opacity: 0; will-change: transform, opacity; animation: civ-word-bar-pass 7.2s ease infinite; }
+.civ-mast-word-bars b:nth-child(1) { top: 17%; background: #D62B20; }
+.civ-mast-word-bars b:nth-child(2) { top: 50%; background: #1656A3; animation-delay: .12s; }
+.civ-mast-word-bars b:nth-child(3) { top: 80%; background: #17694E; animation-delay: .24s; }
 .civ-mast-lead { position: relative; z-index: 2; max-width: 720px; margin: 18px 0 0; color: var(--ink-2); font-size: 14px; line-height: 1.75; }
 .civ-mast-index { padding: 20px; display: flex; flex-direction: column; color: #F5F2EB; background: #141414; }
 .civ-mast-index strong { margin: auto 0 12px; color: var(--civ-accent); font: 900 108px/.72 var(--f-mono); letter-spacing: -.13em; }
@@ -348,6 +357,23 @@
 @keyframes civ-axis { to { transform: translate(-18px, 18px); } }
 @keyframes civ-toast { from { opacity: 0; transform: translateY(14px); } }
 @keyframes civ-spectrum { from { transform: scaleY(.35); } to { transform: scaleY(1); } }
+@keyframes civ-word-color-pass {
+  0%, 3% { -webkit-clip-path: inset(0 100% 0 0); clip-path: inset(0 100% 0 0); opacity: 1; }
+  23%, 37% { -webkit-clip-path: inset(0 0 0 0); clip-path: inset(0 0 0 0); opacity: 1; }
+  46%, 100% { -webkit-clip-path: inset(0 0 0 0); clip-path: inset(0 0 0 0); opacity: 0; }
+}
+@keyframes civ-word-register {
+  0%, 5% { opacity: 0; transform: translate(-7px, 4px); }
+  14%, 34% { opacity: .7; transform: translate(-7px, 4px); }
+  46%, 100% { opacity: 0; transform: translate(0, 0); }
+}
+@keyframes civ-word-bar-pass {
+  0%, 2% { transform: scaleX(0); transform-origin: left; opacity: 0; }
+  6% { opacity: .78; }
+  20% { transform: scaleX(1); transform-origin: left; opacity: .78; }
+  20.1% { transform-origin: right; }
+  35%, 100% { transform: scaleX(0); transform-origin: right; opacity: 0; }
+}
 @keyframes civ-judge-left { to { transform: translateY(25%); } }
 @keyframes civ-judge-right { to { transform: translateY(-25%); } }
 @keyframes civ-tech-scan { to { transform: translateY(1050%); } }
@@ -380,7 +406,7 @@
   .civ-mast-copy { min-height: 390px; }
   .civ-mast-copy::after { opacity: .4; }
   .civ-mast-title { font-size: clamp(62px, 20vw, 92px); }
-  .civ-mast-title span { display: block; margin: 20px 0 0; font-size: .34em; }
+  .civ-mast-word { margin: 20px 0 0; display: grid; width: max-content; font-size: .34em; }
   .civ-mast-index { min-height: 170px; }
   .civ-mast-index strong { font-size: 80px; }
   .civ-filters { grid-template-columns: 1fr; }
@@ -442,4 +468,5 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .civ-view, .civ-mast-copy::after, .civ-toast, .civ-domain-spectrum i, .civ-domain-glyph i, .civ-atlas-detail::after, .civ-poster-motion i { animation: none; }
+  .civ-mast-word::before, .civ-mast-word::after, .civ-mast-word-bars b { animation: none; opacity: 0; }
 }
