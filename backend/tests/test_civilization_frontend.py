@@ -95,7 +95,7 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
 
     assert 'pages/pages-civilization.css?v=20260808-civilization9' in index
     assert 'pages/pages-civilization.jsx?v=20260808-civilization10' in index
-    assert 'pages/civilization-postcard.js?v=20260808-share2' in index
+    assert 'pages/civilization-postcard.js?v=20260808-share3' in index
     assert 'dist/app.bundle.js?v=20260808-civilization10' in index
 
 
@@ -107,7 +107,7 @@ def test_public_civilization_page_and_browser_postcard_are_static_assets() -> No
 
     assert "__PAGE_TITLE__" in page
     assert "/pages/pages-civilization-public.css?v=20260808-share1" in page
-    assert "/pages/civilization-postcard.js?v=20260808-share2" in page
+    assert "/pages/civilization-postcard.js?v=20260808-share3" in page
     assert "/pages/pages-civilization-public.js?v=20260808-share2" in page
     assert "/api/public/civilization/" in script
     assert 'credentials:"omit"' in script
@@ -119,6 +119,15 @@ def test_public_civilization_page_and_browser_postcard_are_static_assets() -> No
     assert "const WIDTH = 1080" in postcard
     assert "downloadLong" in postcard
     assert "MAX_HEIGHT = 14000" in postcard
+    assert "drawDomainGeometry(context, domainKey, palette)" in postcard
+    for domain, renderer in (
+        ("judgement", "drawJudgementGeometry"),
+        ("technology", "drawTechnologyGeometry"),
+        ("organization", "drawOrganizationGeometry"),
+        ("time", "drawTimeGeometry"),
+        ("ethics", "drawEthicsGeometry"),
+    ):
+        assert f"{domain}: {renderer}" in postcard
     assert "html2canvas" not in postcard
     assert "fetch(" not in postcard
     assert ".cp-poster" in style

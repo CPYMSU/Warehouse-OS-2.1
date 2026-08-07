@@ -145,25 +145,75 @@
     context.lineWidth = width;
     context.stroke();
   };
-  const drawHero = (context, post, locale, palette, plan) => {
-    const date = String(post && post.date || new Date().toISOString().slice(0, 10));
-    const month = date.slice(0, 7).replace("-", "—");
-    const domain = String(post && post.domain || "judgement").toUpperCase();
-    const number = String(post && (post.no || post.published_revision) || 1).padStart(2, "0");
-    context.fillStyle = palette.ink;
-    context.fillRect(0, 0, WIDTH, plan.height);
-
+  const drawJudgementGeometry = (context, palette) => {
+    context.save();
+    context.globalAlpha = .88;
+    context.fillStyle = palette.signal;
+    context.fillRect(820, 116, 230, 208);
+    context.fillStyle = palette.accent;
+    context.fillRect(650, 274, 244, 196);
+    context.globalAlpha = .48;
+    context.strokeStyle = palette.pale;
+    context.lineWidth = 2;
+    context.beginPath(); context.moveTo(758, 74); context.lineTo(758, 526); context.stroke();
+    context.beginPath(); context.moveTo(604, 362); context.lineTo(1060, 362); context.stroke();
+    context.restore();
+  };
+  const drawTechnologyGeometry = (context, palette) => {
+    context.save();
+    context.globalAlpha = .22;
+    context.strokeStyle = palette.signal;
+    context.lineWidth = 2;
+    for (let x = 620; x <= WIDTH; x += 58) {
+      context.beginPath(); context.moveTo(x, 88); context.lineTo(x, 532); context.stroke();
+    }
+    for (let y = 88; y <= 532; y += 58) {
+      context.beginPath(); context.moveTo(620, y); context.lineTo(WIDTH, y); context.stroke();
+    }
+    context.globalAlpha = .82;
+    context.strokeStyle = palette.signal;
+    context.lineWidth = 30;
+    context.strokeRect(754, 160, 276, 276);
+    context.globalAlpha = 1;
+    context.strokeStyle = palette.accent;
+    context.lineWidth = 4;
+    context.beginPath(); context.moveTo(900, 78); context.lineTo(900, 526); context.stroke();
+    [[680, 188], [1000, 474], [704, 450]].forEach(([x, y]) => {
+      context.fillStyle = palette.accent + "3F";
+      context.beginPath(); context.arc(x, y, 30, 0, Math.PI * 2); context.fill();
+      context.fillStyle = palette.accent;
+      context.beginPath(); context.arc(x, y, 12, 0, Math.PI * 2); context.fill();
+    });
+    context.restore();
+  };
+  const drawOrganizationGeometry = (context, palette) => {
+    context.save();
+    context.globalAlpha = .88;
+    context.fillStyle = palette.signal;
+    context.fillRect(818, 106, 226, 144);
+    context.fillStyle = palette.accent;
+    context.fillRect(626, 270, 208, 188);
+    context.fillStyle = palette.signal;
+    context.fillRect(790, 408, 290, 104);
+    context.globalAlpha = .42;
+    context.fillStyle = palette.pale;
+    context.fillRect(654, 480, 126, 76);
+    context.globalAlpha = .58;
+    context.strokeStyle = palette.pale;
+    context.lineWidth = 2;
+    context.beginPath(); context.moveTo(730, 205); context.lineTo(928, 205); context.stroke();
+    context.beginPath(); context.moveTo(730, 205); context.lineTo(730, 364); context.stroke();
+    context.beginPath(); context.moveTo(730, 364); context.lineTo(935, 460); context.stroke();
+    context.restore();
+  };
+  const drawTimeGeometry = (context, palette) => {
+    context.save();
     context.globalAlpha = .72;
     context.fillStyle = palette.signal;
-    context.beginPath();
-    context.arc(960, 450, 390, 0, Math.PI * 2);
-    context.fill();
+    context.beginPath(); context.arc(960, 450, 390, 0, Math.PI * 2); context.fill();
     context.fillStyle = palette.ink;
-    context.beginPath();
-    context.arc(960, 450, 270, 0, Math.PI * 2);
-    context.fill();
+    context.beginPath(); context.arc(960, 450, 270, 0, Math.PI * 2); context.fill();
     context.globalAlpha = 1;
-
     strokeCircle(context, 960, 270, 168, palette.pale + "B8", 2);
     strokeCircle(context, 960, 270, 116, palette.signal, 2);
     strokeCircle(context, 960, 270, 58, palette.accent, 3);
@@ -172,6 +222,49 @@
     context.strokeStyle = palette.signal;
     context.lineWidth = 4;
     context.beginPath(); context.moveTo(960, 270); context.lineTo(980, 395); context.stroke();
+    context.restore();
+  };
+  const drawEthicsGeometry = (context, palette) => {
+    context.save();
+    context.strokeStyle = palette.signal;
+    context.lineWidth = 8;
+    context.beginPath(); context.moveTo(640, 250); context.lineTo(1060, 216); context.stroke();
+    context.strokeStyle = palette.pale;
+    context.globalAlpha = .7;
+    context.lineWidth = 4;
+    context.beginPath(); context.moveTo(854, 128); context.lineTo(854, 520); context.stroke();
+    context.globalAlpha = 1;
+    context.fillStyle = palette.accent;
+    context.beginPath(); context.arc(854, 235, 18, 0, Math.PI * 2); context.fill();
+    strokeCircle(context, 702, 366, 92, palette.accent, 22);
+    strokeCircle(context, 996, 342, 92, palette.accent, 22);
+    context.globalAlpha = .5;
+    context.strokeStyle = palette.pale;
+    context.lineWidth = 2;
+    context.beginPath(); context.moveTo(686, 246); context.lineTo(702, 274); context.stroke();
+    context.beginPath(); context.moveTo(1018, 222); context.lineTo(996, 250); context.stroke();
+    context.restore();
+  };
+  const DOMAIN_GEOMETRY = {
+    judgement: drawJudgementGeometry,
+    technology: drawTechnologyGeometry,
+    organization: drawOrganizationGeometry,
+    time: drawTimeGeometry,
+    ethics: drawEthicsGeometry,
+  };
+  const drawDomainGeometry = (context, domain, palette) => {
+    (DOMAIN_GEOMETRY[domain] || drawJudgementGeometry)(context, palette);
+  };
+  const drawHero = (context, post, locale, palette, plan) => {
+    const date = String(post && post.date || new Date().toISOString().slice(0, 10));
+    const month = date.slice(0, 7).replace("-", "—");
+    const domainKey = String(post && post.domain || "judgement").toLowerCase();
+    const domain = domainKey.toUpperCase();
+    const number = String(post && (post.no || post.published_revision) || 1).padStart(2, "0");
+    context.fillStyle = palette.ink;
+    context.fillRect(0, 0, WIDTH, plan.height);
+
+    drawDomainGeometry(context, domainKey, palette);
 
     context.fillStyle = palette.pale;
     setFont(context, 800, 21, MONO);
