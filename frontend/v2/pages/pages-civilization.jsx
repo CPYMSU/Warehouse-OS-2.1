@@ -88,7 +88,7 @@ const contentLocale = (thought, includeDraft = false) => {
     eyebrow: "CIVILIZATION · QUESTION",
     category_label: String(thought && thought.domain || "judgement").toUpperCase(),
     title: thoughtText(thought, "title"), short: thoughtText(thought, "short"), thesis: thoughtText(thought, "thesis"),
-    quote: thoughtText(thought, "short"), sections: [],
+    quote: "", sections: [],
     footer_left: "12 COLUMN SYSTEM · ONE QUESTION / MANY LENSES", footer_right: "INFORMATION BEFORE DECORATION",
   };
 };
@@ -287,6 +287,7 @@ const Page = () => {
   const activeDomain = selected || filter === "all" ? selectedDomain : domainOf(filter);
   const selectedLenses = thoughtLenses(selected);
   const selectedContent = contentLocale(selected);
+  const selectedQuote = String(selectedContent.quote || "").trim();
   const selectedReadingSections = readingSections(selectedContent);
   const shareThought = allThoughts.find(item => item.id === shareId) || null;
 
@@ -371,7 +372,9 @@ const Page = () => {
     {selected && <aside className="civ-atlas-detail" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}>
       <div className="civ-detail-meta"><span>{selectedDomain.en.toUpperCase()} / {selected.date}</span><span>{t("選中").toUpperCase()}</span></div>
       <div className="civ-detail-figure"><div className="civ-detail-no">{selected.no}</div><DomainGlyph domain={selectedDomain} large/></div><span className="civ-micro">{t("當前問題")}</span>
-      <h2>{thoughtText(selected, "title")}</h2><p>{thoughtText(selected, "thesis")}</p>
+      <h2>{thoughtText(selected, "title")}</h2>
+      {selectedQuote && <blockquote className="civ-detail-quote"><span>READING QUOTE / {t("閱讀引語")}</span>{selectedQuote}</blockquote>}
+      <p>{thoughtText(selected, "thesis")}</p>
       <div className="civ-detail-actions"><button type="button" onClick={() => setView("c")}>{t("海報閱讀")} →</button><button type="button" onClick={() => openShare(selected)}>{t("分享")} ↗</button>{selected.can_edit && <button type="button" onClick={() => { setComposerError(""); setComposer({ initial: selected }); }}>{t("編輯")} ↗</button>}<button type="button" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製分享")} ↗</button></div>
     </aside>}
   </div>;

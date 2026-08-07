@@ -75,6 +75,10 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert "relations: relations.map" in source
     assert ".civ-relation-editor-row" in style
     assert "civ-poster-index" in source
+    assert 'className="civ-detail-quote"' in source
+    assert 'String(selectedContent.quote || "").trim()' in source
+    assert 'quote: "", sections: []' in source
+    assert ".civ-detail-quote" in style
     assert "12 COLUMN SYSTEM" in source
     assert "BUILTIN_THOUGHTS" not in source
     assert "const drafts" not in source
@@ -93,10 +97,10 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260808-civilization9' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization10' in index
-    assert 'pages/civilization-postcard.js?v=20260808-share3' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization10' in index
+    assert 'pages/pages-civilization.css?v=20260808-civilization10' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization11' in index
+    assert 'pages/civilization-postcard.js?v=20260808-share4' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization11' in index
 
 
 def test_public_civilization_page_and_browser_postcard_are_static_assets() -> None:
@@ -107,7 +111,7 @@ def test_public_civilization_page_and_browser_postcard_are_static_assets() -> No
 
     assert "__PAGE_TITLE__" in page
     assert "/pages/pages-civilization-public.css?v=20260808-share1" in page
-    assert "/pages/civilization-postcard.js?v=20260808-share3" in page
+    assert "/pages/civilization-postcard.js?v=20260808-share4" in page
     assert "/pages/pages-civilization-public.js?v=20260808-share2" in page
     assert "/api/public/civilization/" in script
     assert 'credentials:"omit"' in script
@@ -120,6 +124,10 @@ def test_public_civilization_page_and_browser_postcard_are_static_assets() -> No
     assert "downloadLong" in postcard
     assert "MAX_HEIGHT = 14000" in postcard
     assert "drawDomainGeometry(context, domainKey, palette)" in postcard
+    assert 'const readingQuote = String(content.quote || "").trim()' in postcard
+    assert 'quote: ""' in postcard
+    assert 'type: "reading-quote"' in postcard
+    assert 'type: "reading-quote-label"' in postcard
     for domain, renderer in (
         ("judgement", "drawJudgementGeometry"),
         ("technology", "drawTechnologyGeometry"),

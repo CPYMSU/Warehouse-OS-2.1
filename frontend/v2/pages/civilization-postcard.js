@@ -25,7 +25,7 @@
       title: textOf(post && post.title, locale),
       short: textOf(post && post.short, locale),
       thesis: textOf(post && post.thesis, locale),
-      quote: textOf(post && post.short, locale),
+      quote: "",
     };
   };
   const tokens = value => String(value || "").match(/[\u3400-\u9fff\uf900-\ufaff]|[^\u3400-\u9fff\uf900-\ufaff\s]+\s*|\s+/g) || [];
@@ -88,6 +88,21 @@
     const titleY = y;
     y += titlePlan.lines.length * titleLineHeight + 54;
     const items = [];
+    const readingQuote = String(content.quote || "").trim();
+    if (readingQuote) {
+      items.push({ type: "rule", y });
+      y += 48;
+      items.push({
+        type: "reading-quote-label",
+        y,
+        text: locale === "en" ? "READING QUOTE" : "阅读引语",
+      });
+      y += 44;
+      setFont(context, 680, 36);
+      const lines = wrap(context, readingQuote, CONTENT_WIDTH - 58);
+      items.push({ type: "reading-quote", y, lines });
+      y += lines.length * 54 + 42;
+    }
     const sections = sectionsOf(content);
     sections.forEach((section, sectionIndex) => {
       const kicker = String(section && section.kicker || `SECTION ${sectionIndex + 1}`).trim();
@@ -299,6 +314,19 @@
         context.fillStyle = palette.accent;
         setFont(context, 850, 19, MONO);
         context.fillText(item.text, MARGIN, item.y);
+      } else if (item.type === "reading-quote-label") {
+        context.fillStyle = palette.accent;
+        setFont(context, 850, 18, MONO);
+        context.fillText(item.text, MARGIN + 34, item.y);
+      } else if (item.type === "reading-quote") {
+        const lineHeight = 54;
+        context.fillStyle = palette.accent;
+        context.fillRect(MARGIN, item.y - 33, 6, item.lines.length * lineHeight + 8);
+        context.fillStyle = palette.pale;
+        setFont(context, 680, 36);
+        item.lines.forEach((line, index) => {
+          context.fillText(line, MARGIN + 34, item.y + index * lineHeight);
+        });
       } else if (item.type === "heading") {
         context.fillStyle = palette.pale;
         setFont(context, 850, 52);

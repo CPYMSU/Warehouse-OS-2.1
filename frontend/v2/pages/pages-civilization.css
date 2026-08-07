@@ -130,6 +130,8 @@
 .civ-detail-no { color: var(--civ-accent); font: 900 124px/.7 var(--f-mono); letter-spacing: -.14em; }
 .civ-detail-figure .civ-domain-glyph { margin-right: -38px; opacity: .86; }
 .civ-atlas-detail h2 { margin: 28px 0 14px; font-size: 36px; line-height: .9; letter-spacing: -.06em; }
+.civ-detail-quote { margin: 2px 0 17px; padding: 11px 0 11px 15px; border-left: 4px solid var(--civ-accent); color: #FFF; font-size: 15px; font-weight: 680; line-height: 1.58; }
+.civ-detail-quote span { display: block; margin-bottom: 8px; color: var(--civ-accent); font: 750 7.5px var(--f-mono); letter-spacing: .11em; }
 .civ-atlas-detail p { color: rgba(255,255,255,.8); font-size: 12px; line-height: 1.75; }
 .civ-detail-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(82px, 1fr)); margin-top: 24px; border: 1px solid rgba(255,255,255,.5); }
 .civ-detail-actions button { min-height: 42px; padding: 8px; border-right: 1px solid rgba(255,255,255,.5); color: #FFF; font: 750 8.5px var(--f-mono); }
@@ -391,6 +393,7 @@
   .civ-row-domain .civ-domain-glyph { display: inline-block; margin: 0 7px 0 0; vertical-align: middle; }
   .civ-row-links { border-top: 1px solid var(--hair); }
   .civ-row-year { position: absolute; right: 0; top: 0; }
+  .civ-detail-quote { font-size: 16px; line-height: 1.64; }
   .civ-chronology { grid-template-columns: 1fr; }
   .civ-chronology-side { border-right: 0; border-bottom: 1px solid var(--rule); }
   .civ-timeline { padding: 12px; }
