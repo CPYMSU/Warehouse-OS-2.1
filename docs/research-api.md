@@ -184,7 +184,57 @@ curl --fail-with-body \
 The API also accepts a project's slug. File IDs are the unambiguous reference
 for terminal calls; a single-segment logical path is accepted as a convenience.
 
-## 7. Research operating model
+## 7. Semantic manuscript refinement
+
+DOCX refinement runs inside the Warehouse OS research service. It does not
+allocate a dedicated application Runtime. The browser edits the structured
+draft while the shared API service performs on-demand semantic work and stores
+durable results in the research schema.
+
+The semantic workspace aligns every translation and distillation artifact to
+the exact source block ID and content SHA-256. Unchanged blocks reuse cached
+artifacts. Changed blocks make earlier findings stale instead of silently
+applying a suggestion to different text.
+
+```text
+research manuscript refinement --project PROJECT_ID --file FILE_ID
+research manuscript semantic show --project PROJECT_ID --file FILE_ID
+research manuscript semantic refresh --project PROJECT_ID --file FILE_ID \
+  --modes '["translate","distill","review:neutrality","review:logic",\
+"review:clarity","review:professional"]'
+research manuscript agent chat --project PROJECT_ID --file FILE_ID \
+  --agent logic --message "Check the transition between Methods and Results"
+```
+
+The refresh endpoint returns `202 Accepted` and a durable run ID. Clients read
+the semantic workspace until that run reaches `ready` or `failed`:
+
+```sh
+curl --fail-with-body -X POST \
+  "$WAREHOUSE_BASE_URL/api/research/projects/PROJECT_ID/files/FILE_ID/refinement/semantic/refresh" \
+  -H "Authorization: Bearer $WAREHOUSE_RESEARCH_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"modes":["translate","distill","review:neutrality","review:logic",\
+"review:clarity","review:professional"]}'
+
+curl --fail-with-body \
+  "$WAREHOUSE_BASE_URL/api/research/projects/PROJECT_ID/files/FILE_ID/refinement/semantic" \
+  -H "Authorization: Bearer $WAREHOUSE_RESEARCH_KEY"
+```
+
+The four independent review threads are `neutrality`, `logic`, `clarity`, and
+`professional`. The `chief` thread can read their findings, document digest,
+and recorded user decisions without merging the reviewers' private dialogue
+histories. Accepting a finding checks the original content SHA-256 before
+writing to the draft; rejecting it records the decision without changing the
+manuscript.
+
+Common Word equations are converted from OMML into displayable LaTeX while the
+original OpenXML remains available for lossless export. Figures keep their
+source relationships, and tables retain row/column span metadata. Unsupported
+equation constructs fall back to source text instead of disappearing.
+
+## 8. Research operating model
 
 The workflow endpoint joins the project's living DMP, protocols, execution
 runs, claims, immutable evidence links, peer reviews, reproducibility checks,

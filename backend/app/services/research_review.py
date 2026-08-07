@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from app.core.config import Settings
 
 
-PROCESSOR_VERSION = "word-review-v2"
+PROCESSOR_VERSION = "word-review-v3"
 MAX_AI_CONTEXT = 52_000
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
@@ -237,6 +237,81 @@ def _node_text(node: ElementTree.Element, *, include_image_labels: bool = True) 
     return re.sub(r"[ \u00a0]+", " ", "".join(parts)).strip()
 
 
+def _local_name(node: ElementTree.Element) -> str:
+    return node.tag.rsplit("}", 1)[-1]
+
+
+def _omml_to_latex(node: ElementTree.Element) -> str:
+    """Preserve common Word equations as editable, browser-renderable LaTeX."""
+
+    name = _local_name(node)
+    children = list(node)
+    if name == "t":
+        return str(node.text or "")
+    if name in {"oMath", "oMathPara", "r", "e", "num", "den", "sup", "sub", "deg"}:
+        return "".join(_omml_to_latex(child) for child in children)
+    if name == "f":
+        numerator = node.find(f"./{_tag(M_NS, 'num')}")
+        denominator = node.find(f"./{_tag(M_NS, 'den')}")
+        return "\\frac{" + (_omml_to_latex(numerator) if numerator is not None else "") + "}{" + (
+            _omml_to_latex(denominator) if denominator is not None else ""
+        ) + "}"
+    if name in {"sSup", "sSub", "sSubSup"}:
+        expression = node.find(f"./{_tag(M_NS, 'e')}")
+        subscript = node.find(f"./{_tag(M_NS, 'sub')}")
+        superscript = node.find(f"./{_tag(M_NS, 'sup')}")
+        value = _omml_to_latex(expression) if expression is not None else ""
+        if subscript is not None:
+            value += "_{" + _omml_to_latex(subscript) + "}"
+        if superscript is not None:
+            value += "^{" + _omml_to_latex(superscript) + "}"
+        return value
+    if name == "rad":
+        degree = node.find(f"./{_tag(M_NS, 'deg')}")
+        expression = node.find(f"./{_tag(M_NS, 'e')}")
+        degree_value = _omml_to_latex(degree) if degree is not None else ""
+        expression_value = _omml_to_latex(expression) if expression is not None else ""
+        return (
+            "\\sqrt[" + degree_value + "]{" + expression_value + "}"
+            if degree_value
+            else "\\sqrt{" + expression_value + "}"
+        )
+    if name == "d":
+        expression = node.find(f"./{_tag(M_NS, 'e')}")
+        value = _omml_to_latex(expression) if expression is not None else ""
+        return "\\left(" + value + "\\right)"
+    if name == "nary":
+        operator = "\\sum"
+        character = node.find(f".//{_tag(M_NS, 'chr')}")
+        raw_character = character.attrib.get(_tag(M_NS, "val"), "") if character is not None else ""
+        operator = {"∫": "\\int", "∏": "\\prod", "∑": "\\sum"}.get(
+            raw_character, operator
+        )
+        subscript = node.find(f"./{_tag(M_NS, 'sub')}")
+        superscript = node.find(f"./{_tag(M_NS, 'sup')}")
+        expression = node.find(f"./{_tag(M_NS, 'e')}")
+        if subscript is not None:
+            operator += "_{" + _omml_to_latex(subscript) + "}"
+        if superscript is not None:
+            operator += "^{" + _omml_to_latex(superscript) + "}"
+        return operator + " " + (_omml_to_latex(expression) if expression is not None else "")
+    if name == "m":
+        rows: list[str] = []
+        for row in node.findall(f"./{_tag(M_NS, 'mr')}"):
+            cells = row.findall(f"./{_tag(M_NS, 'e')}")
+            rows.append(" & ".join(_omml_to_latex(cell) for cell in cells))
+        return "\\begin{matrix}" + " \\\\ ".join(rows) + "\\end{matrix}"
+    if name == "func":
+        function_name = node.find(f"./{_tag(M_NS, 'fName')}")
+        expression = node.find(f"./{_tag(M_NS, 'e')}")
+        return (
+            (_omml_to_latex(function_name) if function_name is not None else "")
+            + " "
+            + (_omml_to_latex(expression) if expression is not None else "")
+        )
+    return "".join(_omml_to_latex(child) for child in children)
+
+
 def _docx_relationships(archive: zipfile.ZipFile) -> dict[str, dict[str, str]]:
     try:
         root = ElementTree.fromstring(archive.read("word/_rels/document.xml.rels"))
@@ -330,7 +405,9 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
             has_numbering = child.find(
                 f"./{_tag(W_NS, 'pPr')}/{_tag(W_NS, 'numPr')}"
             ) is not None
-            has_math = child.find(f".//{_tag(M_NS, 'oMath')}") is not None
+            math_nodes = child.findall(f".//{_tag(M_NS, 'oMath')}")
+            has_math = bool(math_nodes)
+            latex = " ".join(_omml_to_latex(item) for item in math_nodes).strip()
             if level == 1 and re.sub(r"[ _-]+", "", style_name).lower() in {
                 "title",
                 "documenttitle",
@@ -360,6 +437,8 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
                             "paragraph_index": current_paragraph,
                             "style": style_name or None,
                             "contains_math": has_math,
+                            "latex": latex or None,
+                            "source_text": value,
                         },
                     }
                 )
@@ -385,6 +464,26 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
                     _node_text(cell)
                     for cell in row.findall(f"./{_tag(W_NS, 'tc')}")
                 ]
+                cell_spans: list[dict[str, object]] = []
+                for cell in row.findall(f"./{_tag(W_NS, 'tc')}"):
+                    grid_span = cell.find(
+                        f"./{_tag(W_NS, 'tcPr')}/{_tag(W_NS, 'gridSpan')}"
+                    )
+                    vertical_merge = cell.find(
+                        f"./{_tag(W_NS, 'tcPr')}/{_tag(W_NS, 'vMerge')}"
+                    )
+                    cell_spans.append(
+                        {
+                            "colspan": int(grid_span.attrib.get(_tag(W_NS, "val"), "1"))
+                            if grid_span is not None
+                            else 1,
+                            "vertical_merge": vertical_merge.attrib.get(
+                                _tag(W_NS, "val"), "continue"
+                            )
+                            if vertical_merge is not None
+                            else None,
+                        }
+                    )
                 value = " | ".join(cells).strip(" |")
                 if value:
                     raw.append(
@@ -399,6 +498,7 @@ def _raw_docx_blocks(path: Path) -> list[dict[str, object]]:
                                 "row_index": row_index,
                                 "cell_count": len(cells),
                                 "cells": cells,
+                                "cell_spans": cell_spans,
                             },
                         }
                     )
