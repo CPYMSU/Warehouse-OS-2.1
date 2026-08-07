@@ -103,6 +103,13 @@ window.W2_LANG.addEN({
   "部門權限上限": "Department permission ceiling", "啟用權限上限": "Enable permission ceiling",
   "一般人員的有效權限受此上限約束；L10/L11 身份可跨部門掛職，且不因部門權限上限而降級；崗位角色仍按治理規則同步。": "Regular members remain constrained by this ceiling. L10/L11 identities may hold cross-department appointments and are not downgraded by the department ceiling; position roles still synchronise under governance rules.",
   "搜索權限": "Search permissions", "全選可見": "Select visible", "清除": "Clear", "儲存權限上限": "Save permission ceiling",
+  "權限拓撲": "Access topology", "按功能域整組調整,也可展開逐項設定。": "Adjust a whole capability domain or expand it for individual permissions.",
+  "功能域": "Domains", "已選權限": "Selected permissions", "已調整權限": "Overrides", "展開權限": "Expand permissions", "收起權限": "Collapse permissions",
+  "整組選擇": "Select group", "清除分組": "Clear group", "整組繼承": "Inherit group", "整組允許": "Allow group", "整組拒絕": "Deny group",
+  "人工智能": "AI", "預警": "Alerts", "審批": "Approvals", "數字資產": "Digital assets", "資產管理": "Asset management",
+  "審計": "Audit", "瀏覽器運行": "Browser runtime", "事務檔案": "Cases", "資料庫": "Database", "財務": "Finance", "總帳": "Ledger", "地圖": "Maps", "庫存": "Inventory",
+  "法務": "Legal", "總覽": "Overview", "權限治理": "Access governance", "採購": "Procurement", "檔案管理": "Records",
+  "報表": "Reports", "科研": "Research", "系統設定": "System settings", "任務": "Tasks", "終端": "Terminal", "成員管理": "Member management", "其他權限": "Other access",
   "尚未設定權限上限": "No permission ceiling configured", "已啟用上限": "Ceiling enabled", "未啟用上限": "Ceiling disabled",
   "直接權限調整": "Direct permission overrides", "允許": "Allow", "拒絕": "Deny", "繼承": "Inherit", "儲存人員權限": "Save member access",
   "直接允許仍受部門權限上限限制;拒絕會優先於角色與委託權限。": "Direct allows remain constrained by the department ceiling; denies override role and delegated access.",
@@ -589,6 +596,18 @@ const orgArray = (value) => {
 const permissionKey = (p) => String((p && (p.key || p.permission_key)) || p || "");
 const permissionLabel = (p) => (p && (p.description || p.label)) || permissionKey(p);
 const permissionGroup = (p) => (p && p.group) || t("權限");
+const PERMISSION_GROUP_LABELS = Object.freeze({
+  ai: "人工智能", alerts: "預警", approval: "審批", approvals: "審批",
+  assets: "數字資產", asset_mgmt: "資產管理", audit: "審計", browser: "瀏覽器運行", cases: "事務檔案",
+  database: "資料庫", db: "資料庫", erp: "ERP", finance: "財務", gis: "地圖",
+  inventory: "庫存", ledger: "總帳", legal: "法務", overview: "總覽", permissions: "權限治理",
+  procurement: "採購", records: "檔案管理", reports: "報表", research: "科研",
+  settings: "系統設定", tasks: "任務", terminal: "終端", users: "成員管理",
+});
+const permissionGroupKey = (permission) => String(
+  (permission && permission.group) || permissionKey(permission).split(".", 1)[0] || "other"
+).trim().toLowerCase();
+const permissionGroupLabel = (group) => t(PERMISSION_GROUP_LABELS[group] || (group === "other" ? "其他權限" : group.replace(/[_-]+/g, " ")));
 const BIU_PERMISSION_KEYS = new Set([
   "ai.use", "audit.read", "cases.all.manage", "cases.analytics.read",
   "cases.assign", "cases.close", "cases.config.manage", "cases.create",
@@ -677,6 +696,28 @@ const OrgTopologyStyles = () => <style>{`
   .org-appointment-list{display:flex;flex-direction:column;border:1px solid var(--hair);margin-top:9px}.org-appointment-row{padding:9px;border-bottom:1px solid var(--hair-soft)}.org-appointment-row:last-child{border-bottom:0}.org-appointment-meta{font-size:10px;color:var(--ink-3);margin-top:3px}
   .org-appointment-editor{border:1px solid var(--hair);background:var(--paper-2);padding:10px;margin-top:9px}
   .org-perm-box{border-top:2px solid var(--rule);padding-top:13px;margin-top:18px}
+  .org-perm-topology{position:relative;margin-top:10px;border:1px solid var(--hair);background:var(--paper)}
+  .org-perm-topology-root{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 12px;border-bottom:2px solid var(--rule);background:var(--paper-2)}
+  .org-perm-topology-code{font:800 8.5px/1 var(--mono,monospace);letter-spacing:.14em;color:var(--red);text-transform:uppercase}
+  .org-perm-topology-title{font-size:13px;font-weight:800;letter-spacing:-.015em;margin-top:5px}
+  .org-perm-topology-summary{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+  .org-perm-domains{max-height:430px;overflow:auto;padding:0 12px 12px 30px}
+  .org-perm-domain{position:relative;border-left:1px solid var(--hair);padding:12px 0 0 17px}
+  .org-perm-domain:before{content:"";position:absolute;left:-1px;top:28px;width:17px;border-top:1px solid var(--hair)}
+  .org-perm-domain:last-child:after{content:"";position:absolute;left:-2px;top:29px;bottom:0;width:3px;background:var(--paper)}
+  .org-perm-domain-head{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;border:1px solid var(--hair);background:var(--paper);padding:8px}
+  .org-perm-domain-main{appearance:none;border:0;background:transparent;color:inherit;display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:8px;align-items:center;text-align:left;padding:0;cursor:pointer;min-width:0}
+  .org-perm-domain-no{font:800 9px/1 var(--mono,monospace);color:var(--red)}
+  .org-perm-domain-name{display:block;font-size:11.5px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .org-perm-domain-key{display:block;font:600 8.5px/1.3 var(--mono,monospace);color:var(--ink-3);margin-top:2px;text-transform:uppercase}
+  .org-perm-domain-count{font:700 9px/1 var(--mono,monospace);white-space:nowrap;color:var(--ink-3)}
+  .org-perm-domain-actions{display:flex;gap:4px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+  .org-perm-domain-action{height:25px;border:1px solid var(--hair);background:var(--paper);font-size:9px;font-weight:750;padding:0 7px;cursor:pointer;white-space:nowrap}
+  .org-perm-domain-action:hover{border-color:var(--ink)}.org-perm-domain-action.allow{background:var(--ink);border-color:var(--ink);color:var(--paper)}.org-perm-domain-action.deny{background:var(--red);border-color:var(--red);color:#fff}
+  .org-perm-domain-action:disabled{cursor:not-allowed;opacity:.4}
+  .org-perm-domain-expand{font:800 14px/1 var(--mono,monospace);width:20px;text-align:center}
+  .org-perm-domain-body{margin-left:28px;border:1px solid var(--hair);border-top:0;background:var(--paper-2)}
+  .org-perm-domain-body .org-perm-list{max-height:none;border:0;margin:0;background:var(--paper)}
   .org-perm-list{max-height:270px;overflow:auto;border:1px solid var(--hair);margin-top:9px}
   .org-perm-row{display:grid;grid-template-columns:22px minmax(0,1fr);gap:7px;align-items:start;padding:8px 9px;border-bottom:1px solid var(--hair-soft);font-size:11.5px;cursor:pointer}
   .org-perm-row:last-child{border-bottom:0}.org-perm-row:hover{background:var(--paper-2)}
@@ -695,9 +736,71 @@ const OrgTopologyStyles = () => <style>{`
   .org-person-list{display:flex;flex-direction:column;border-top:1px solid var(--hair);margin-top:8px}.org-person-link{appearance:none;border:0;border-bottom:1px solid var(--hair-soft);background:transparent;padding:9px 2px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;gap:9px;font-size:12px}.org-person-link:hover{color:var(--red)}
   .org-notice{padding:9px 11px;border-left:3px solid var(--ink);font-size:11.5px;line-height:1.5;margin:10px 0}.org-notice.error{border-color:var(--red);color:var(--red);background:var(--red-soft)}
   @media(max-width:980px){.org-topology-layout{grid-template-columns:1fr}.org-inspector{border-left:0;border-top:2px solid var(--rule);padding-left:0;max-height:none}.org-map-pane{padding-right:0}.org-map-viewport{height:560px}}
-  @media(max-width:620px){.org-form-grid,.org-inspector-grid,.org-action-grid,.org-type-grid{grid-template-columns:1fr}.org-topology-toolbar .field{width:100%!important}.org-topology-layout{display:block}.org-nav-policy-row{grid-template-columns:minmax(0,1fr) repeat(3,46px)}.org-nav-state{font-size:9px}}
+  @media(max-width:620px){.org-form-grid,.org-inspector-grid,.org-action-grid,.org-type-grid{grid-template-columns:1fr}.org-topology-toolbar .field{width:100%!important}.org-topology-layout{display:block}.org-perm-topology-root,.org-perm-domain-head{grid-template-columns:1fr}.org-perm-topology-summary,.org-perm-domain-actions{justify-content:flex-start}.org-perm-domains{padding-left:20px}.org-perm-domain{padding-left:11px}.org-perm-domain:before{width:11px}.org-perm-domain-body{margin-left:0}.org-nav-policy-row{grid-template-columns:minmax(0,1fr) repeat(3,46px)}.org-nav-state{font-size:9px}}
   @media(max-width:420px){.org-nav-policy-row{grid-template-columns:repeat(3,1fr)}.org-nav-policy-row>div:first-child{grid-column:1/-1}.org-nav-state{min-width:0}}
 `}</style>;
+
+const PermissionTopology = ({ permissions, query = "", mode = "binary", selected = [], allow = [], deny = [], disabled, identity, onKeysState }) => {
+  const q = query.trim().toLowerCase();
+  const selectedSet = new Set(selected); const allowSet = new Set(allow); const denySet = new Set(deny);
+  const groupMap = new Map();
+  (permissions || []).forEach(permission => {
+    const key = permissionKey(permission); const groupKey = permissionGroupKey(permission);
+    if (!key) return;
+    if (!groupMap.has(groupKey)) groupMap.set(groupKey, { key: groupKey, items: [], matches: [] });
+    const group = groupMap.get(groupKey); group.items.push(permission);
+    const haystack = (key + " " + permissionLabel(permission) + " " + permissionGroupLabel(groupKey) + " " + groupKey).toLowerCase();
+    if (!q || haystack.includes(q)) group.matches.push(permission);
+  });
+  const groups = Array.from(groupMap.values()).filter(group => group.matches.length);
+  const [expanded, setExpanded] = _s(new Set());
+  _e(() => { setExpanded(q ? new Set(groups.map(group => group.key)) : new Set()); }, [identity, q]);
+  const toggleExpanded = groupKey => setExpanded(current => {
+    const next = new Set(current); if (next.has(groupKey)) next.delete(groupKey); else next.add(groupKey); return next;
+  });
+  const stateFor = key => mode === "binary" ? (selectedSet.has(key) ? "selected" : "clear") : allowSet.has(key) ? "allow" : denySet.has(key) ? "deny" : "inherit";
+  const adjustedTotal = mode === "binary" ? selectedSet.size : new Set(allow.concat(deny)).size;
+  return <div className="org-perm-topology">
+    <div className="org-perm-topology-root">
+      <div><div className="org-perm-topology-code">ACCESS MAP · SWISS CONTROL</div><div className="org-perm-topology-title">{t("權限拓撲")}</div><div className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>{t("按功能域整組調整,也可展開逐項設定。")}</div></div>
+      <div className="org-perm-topology-summary"><T tone="plain">{t("功能域")} {groups.length}</T><T tone={adjustedTotal ? "inv" : "plain"}>{t(mode === "binary" ? "已選權限" : "已調整權限")} {adjustedTotal}</T></div>
+    </div>
+    <div className="org-perm-domains">
+      {groups.map((group, groupIndex) => {
+        const keys = group.items.map(permissionKey).filter(Boolean);
+        const selectedCount = mode === "binary" ? keys.filter(key => selectedSet.has(key)).length : keys.filter(key => allowSet.has(key) || denySet.has(key)).length;
+        const isExpanded = expanded.has(group.key);
+        return <section className="org-perm-domain" key={group.key}>
+          <div className="org-perm-domain-head">
+            <button type="button" className="org-perm-domain-main" aria-expanded={isExpanded} onClick={() => toggleExpanded(group.key)}>
+              <span className="org-perm-domain-no">{String(groupIndex + 1).padStart(2, "0")}</span>
+              <span style={{ minWidth: 0 }}><span className="org-perm-domain-name">{permissionGroupLabel(group.key)}</span><span className="org-perm-domain-key">{group.key}</span></span>
+              <span className="org-perm-domain-count">{selectedCount}/{keys.length}</span>
+            </button>
+            <div className="org-perm-domain-actions">
+              {mode === "binary" ? <>
+                <button type="button" className="org-perm-domain-action allow" disabled={disabled || selectedCount === keys.length} onClick={() => onKeysState(keys, "selected")}>{t("整組選擇")}</button>
+                <button type="button" className="org-perm-domain-action" disabled={disabled || !selectedCount} onClick={() => onKeysState(keys, "clear")}>{t("清除分組")}</button>
+              </> : <>
+                <button type="button" className="org-perm-domain-action" disabled={disabled} onClick={() => onKeysState(keys, "inherit")}>{t("整組繼承")}</button>
+                <button type="button" className="org-perm-domain-action allow" disabled={disabled} onClick={() => onKeysState(keys, "allow")}>{t("整組允許")}</button>
+                <button type="button" className="org-perm-domain-action deny" disabled={disabled} onClick={() => onKeysState(keys, "deny")}>{t("整組拒絕")}</button>
+              </>}
+              <button type="button" className="org-perm-domain-action org-perm-domain-expand" aria-label={t(isExpanded ? "收起權限" : "展開權限")} title={t(isExpanded ? "收起權限" : "展開權限")} onClick={() => toggleExpanded(group.key)}>{isExpanded ? "−" : "+"}</button>
+            </div>
+          </div>
+          {isExpanded && <div className="org-perm-domain-body"><div className="org-perm-list">{group.matches.map(permission => {
+            const key = permissionKey(permission); const state = stateFor(key);
+            return mode === "binary"
+              ? <label key={key} className="org-perm-row"><input type="checkbox" checked={state === "selected"} disabled={disabled} onChange={() => onKeysState([key], state === "selected" ? "clear" : "selected")}/><span><span style={{ fontWeight: 650 }}>{permissionLabel(permission)}</span><span className="org-perm-key">{key}</span></span></label>
+              : <div key={key} className="org-override-row"><div style={{ minWidth: 0 }}><div style={{ fontSize: 11.5, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis" }}>{permissionLabel(permission)}</div><div className="org-perm-key">{key} · {t(state === "inherit" ? "繼承" : state === "allow" ? "允許" : "拒絕")}</div></div><button type="button" className={"org-override-state allow " + (state === "allow" ? "on" : "")} aria-pressed={state === "allow"} disabled={disabled} onClick={() => onKeysState([key], state === "allow" ? "inherit" : "allow")}>{t("允許")}</button><button type="button" className={"org-override-state deny " + (state === "deny" ? "on" : "")} aria-pressed={state === "deny"} disabled={disabled} onClick={() => onKeysState([key], state === "deny" ? "inherit" : "deny")}>{t("拒絕")}</button></div>;
+          })}</div></div>}
+        </section>;
+      })}
+      {!groups.length && <div className="muted" style={{ fontSize: 11.5, padding: "14px 0" }}>{t("尚無權限目錄可供編輯")}</div>}
+    </div>
+  </div>;
+};
 
 const DepartmentPermissionEditor = ({ unit, permissions, biu = false, disabled, busy, onSave }) => {
   const rawCeiling = unit && (unit.permission_ceiling || unit.permission_ceiling_keys || unit.permission_ceiling_json);
@@ -708,10 +811,13 @@ const DepartmentPermissionEditor = ({ unit, permissions, biu = false, disabled, 
   const [query, setQuery] = _s("");
   _e(() => { setEnabled(initialEnabled); setSelected(initial); setQuery(""); }, [unit && unit.id, biu, initial.join("|")]);
   const q = query.trim().toLowerCase();
+  const permissionOrder = (permissions || []).map(permissionKey).filter(Boolean);
   const rows = (permissions || []).filter(p => !q || (permissionKey(p) + " " + permissionLabel(p) + " " + permissionGroup(p)).toLowerCase().includes(q));
-  const selectedSet = new Set(selected);
-  const toggle = (key) => setSelected(selectedSet.has(key) ? selected.filter(v => v !== key) : selected.concat([key]));
   const visibleKeys = rows.map(permissionKey).filter(Boolean);
+  const setKeysState = (keys, state) => setSelected(current => {
+    const next = new Set(current); keys.forEach(key => state === "selected" ? next.add(key) : next.delete(key));
+    return permissionOrder.filter(key => next.has(key)).concat(Array.from(next).filter(key => !permissionOrder.includes(key)));
+  });
   return <div className="org-perm-box">
     <div className="row spread g8 wrap">
       <div className="col g4"><LB red>{t("部門權限上限")}</LB><span className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>{t("一般人員的有效權限受此上限約束；L10/L11 身份可跨部門掛職，且不因部門權限上限而降級；崗位角色仍按治理規則同步。")}</span></div>
@@ -720,10 +826,10 @@ const DepartmentPermissionEditor = ({ unit, permissions, biu = false, disabled, 
     <label className="row g8" style={{ marginTop: 12, fontSize: 12, fontWeight: 650 }}><input type="checkbox" checked={enabled} disabled={disabled || busy} onChange={e => setEnabled(e.target.checked)}/>{t("啟用權限上限")}</label>
     <div className="row g6 wrap" style={{ marginTop: 9 }}>
       <input className="field" value={query} onChange={e => setQuery(e.target.value)} placeholder={t("搜索權限")} style={{ height: 32, flex: 1, minWidth: 140, fontSize: 11.5 }}/>
-      <button className="btn sm" type="button" disabled={disabled || busy || !enabled || !visibleKeys.length} onClick={() => setSelected(Array.from(new Set(selected.concat(visibleKeys))))}>{t("全選可見")}</button>
+      <button className="btn sm" type="button" disabled={disabled || busy || !enabled || !visibleKeys.length} onClick={() => setKeysState(visibleKeys, "selected")}>{t("全選可見")}</button>
       <button className="btn sm" type="button" disabled={disabled || busy || !selected.length} onClick={() => setSelected([])}>{t("清除")}</button>
     </div>
-    {permissions && permissions.length ? <div className="org-perm-list">{rows.map(p => { const key = permissionKey(p); return <label key={key} className="org-perm-row"><input type="checkbox" checked={selectedSet.has(key)} disabled={disabled || busy || !enabled} onChange={() => toggle(key)}/><span><span style={{ fontWeight: 650 }}>{permissionLabel(p)}</span><span className="org-perm-key">{permissionGroup(p)} · {key}</span></span></label>; })}</div> : <div className="muted" style={{ fontSize: 11.5, padding: "12px 0" }}>{t("尚無權限目錄可供編輯")}</div>}
+    <PermissionTopology permissions={permissions} query={query} selected={selected} disabled={disabled || busy || !enabled} identity={unit && unit.id} onKeysState={setKeysState}/>
     <button className="btn primary" type="button" style={{ width: "100%", marginTop: 10 }} disabled={disabled || busy} onClick={() => onSave({ permissions: selected, enabled })}><I name="shield" size={13}/>{busy ? t("載入中…") : t("儲存權限上限")}</button>
   </div>;
 };
@@ -737,17 +843,17 @@ const UserPermissionEditor = ({ person, permissions, biu = false, disabled, busy
   const [deny, setDeny] = _s(initialDeny);
   const [query, setQuery] = _s("");
   _e(() => { setAllow(initialAllow); setDeny(initialDeny); setQuery(""); }, [person && person.id, biu, initialAllow.join("|"), initialDeny.join("|")]);
-  const allowSet = new Set(allow); const denySet = new Set(deny);
   const q = query.trim().toLowerCase();
   const rows = (permissions || []).filter(p => !q || (permissionKey(p) + " " + permissionLabel(p)).toLowerCase().includes(q));
-  const setState = (key, state) => {
-    setAllow(state === "allow" ? Array.from(new Set(allow.concat([key]))) : allow.filter(v => v !== key));
-    setDeny(state === "deny" ? Array.from(new Set(deny.concat([key]))) : deny.filter(v => v !== key));
+  const visibleKeys = rows.map(permissionKey).filter(Boolean);
+  const setKeysState = (keys, state) => {
+    setAllow(current => state === "allow" ? Array.from(new Set(current.concat(keys))) : current.filter(key => !keys.includes(key)));
+    setDeny(current => state === "deny" ? Array.from(new Set(current.concat(keys))) : current.filter(key => !keys.includes(key)));
   };
   return <div className="org-perm-box">
     <LB red>{t("直接權限調整")}</LB><div className="muted" style={{ fontSize: 11, lineHeight: 1.55, marginTop: 5 }}>{t("直接允許仍受部門權限上限限制;拒絕會優先於角色與委託權限。")}</div>
-    <input className="field" value={query} onChange={e => setQuery(e.target.value)} placeholder={t("搜索權限")} style={{ height: 32, width: "100%", fontSize: 11.5, marginTop: 10 }}/>
-    {permissions && permissions.length ? <div className="org-perm-list">{rows.map(p => { const key = permissionKey(p); const state = allowSet.has(key) ? "allow" : denySet.has(key) ? "deny" : "inherit"; return <div key={key} className="org-override-row"><div style={{ minWidth: 0 }}><div style={{ fontSize: 11.5, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis" }}>{permissionLabel(p)}</div><div className="org-perm-key">{key} · {t(state === "inherit" ? "繼承" : state === "allow" ? "允許" : "拒絕")}</div></div><button type="button" className={"org-override-state allow " + (state === "allow" ? "on" : "")} aria-pressed={state === "allow"} disabled={disabled || busy} onClick={() => setState(key, state === "allow" ? "inherit" : "allow")}>{t("允許")}</button><button type="button" className={"org-override-state deny " + (state === "deny" ? "on" : "")} aria-pressed={state === "deny"} disabled={disabled || busy} onClick={() => setState(key, state === "deny" ? "inherit" : "deny")}>{t("拒絕")}</button></div>; })}</div> : <div className="muted" style={{ fontSize: 11.5, padding: "12px 0" }}>{t("尚無權限目錄可供編輯")}</div>}
+    <div className="row g6 wrap" style={{ marginTop: 10 }}><input className="field" value={query} onChange={e => setQuery(e.target.value)} placeholder={t("搜索權限")} style={{ height: 32, flex: 1, minWidth: 140, fontSize: 11.5 }}/>{q && <><button className="btn sm" type="button" disabled={disabled || busy || !visibleKeys.length} onClick={() => setKeysState(visibleKeys, "allow")}>{t("允許")}</button><button className="btn sm red" type="button" disabled={disabled || busy || !visibleKeys.length} onClick={() => setKeysState(visibleKeys, "deny")}>{t("拒絕")}</button><button className="btn sm" type="button" disabled={disabled || busy || !visibleKeys.length} onClick={() => setKeysState(visibleKeys, "inherit")}>{t("繼承")}</button></>}</div>
+    <PermissionTopology permissions={permissions} query={query} mode="override" allow={allow} deny={deny} disabled={disabled || busy} identity={person && person.id} onKeysState={setKeysState}/>
     <button className="btn primary" type="button" style={{ width: "100%", marginTop: 10 }} disabled={disabled || busy} onClick={() => onSave({ allow, deny })}><I name="shield" size={13}/>{busy ? t("載入中…") : t("儲存人員權限")}</button>
   </div>;
 };
