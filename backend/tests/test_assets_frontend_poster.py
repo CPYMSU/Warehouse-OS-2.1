@@ -104,10 +104,10 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
-    assert 'action-center.jsx?v=20260804-task-runtime1' in index
+    assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260807-company-root1' in index
+    assert 'dist/app.bundle.js?v=20260807-passkey-action1' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -167,6 +167,11 @@ def test_business_action_command_topology_exposes_runtime_execution_contract():
     assert "selected.adapter" in source
     assert 'className="business-action-contract"' in source
     assert ".business-action-contract" in css
+    assert '"/propose"' in source
+    assert "W2.OperationConfirmation" in source
+    assert '"/execute-authorized"' in source
+    assert 'className="business-action-authorization"' in source
+    assert ".business-action-authorization-flow" in css
 
 
 def test_secretary_dock_exposes_lighthouse_pairing_and_read_only_runs():

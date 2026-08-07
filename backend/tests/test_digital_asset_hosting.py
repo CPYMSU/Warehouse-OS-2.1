@@ -398,6 +398,14 @@ def test_native_21_guide_cli_and_provision_contract(tmp_path, monkeypatch) -> No
         assert client.get("/api/workspaces/mk4-exam-practice/keys").status_code == 404
         continuation = confirmed_payload["action"]["continuation"]
         assert continuation["type"] == "authorization_granted"
+        wrong_surface = client.post(
+            f"/api/business/actions/confirmation-actions/{action['id']}/execute-authorized",
+            json={
+                "authorization_keychain_id": continuation["authorization_keychain_id"]
+            },
+        )
+        assert wrong_surface.status_code == 409
+        assert "different conversation" in wrong_surface.json()["detail"]
         handed_off: dict[str, object] = {}
 
         def fake_runtime(

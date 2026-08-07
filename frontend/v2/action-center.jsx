@@ -42,6 +42,16 @@ window.W2_LANG.addEN({
   "執行查詢": "Run query",
   "確認並執行": "Confirm and execute",
   "提交受治理提案": "Submit governed proposal",
+  "安全授權": "Secure authorization",
+  "請求": "Request",
+  "本人驗證": "Identity verification",
+  "公司 AI 執行": "Company AI execution",
+  "鎖定原指令與參數": "Lock the original command and arguments",
+  "使用 Passkey 簽署一次性授權": "Sign a one-use authorization with Passkey",
+  "領取 Keychain、執行並回讀": "Claim the Keychain, execute and read back",
+  "Passkey 通過後會自動執行同一指令；不需要再次點擊原按鈕。": "After Passkey succeeds, the same command runs automatically; there is no need to click the original button again.",
+  "授權已完成，但執行回應暫時無法核對。請重新核對後再決定是否重試。": "Authorization succeeded, but the execution response cannot yet be verified. Reconcile before deciding whether to retry.",
+  "重新執行已授權操作": "Retry authorized action",
   "返回修改": "Back to edit",
   "操作覆核": "Action review",
   "即將執行的能力": "Capability to execute",
@@ -158,6 +168,11 @@ const stateLabel = action => {
 const executionIdentityLabel = action => action.execution_identity === "requesting_user"
   ? t("請求帳號")
   : t("公司 AI");
+const usesPasskeyStaging = action => {
+  const policy = action && action.confirmation_policy;
+  return !!(action && action.confirmation_required && policy
+    && policy.mode === "passkey" && policy.adapter === "staged_action");
+};
 
 const ActionField = ({ name, property, required, value, onChange, disabled }) => {
   const type = property.type || "string";
@@ -214,11 +229,15 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
   const [parsed, setParsed] = useState({});
   const [formError, setFormError] = useState("");
   const [result, setResult] = useState(null);
+  const [confirmationAction, setConfirmationAction] = useState(null);
+  const [governedError, setGovernedError] = useState("");
   const [busy, setBusy] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState(() => new Set());
   const [expandedBranches, setExpandedBranches] = useState(() => new Set());
   const pendingSelection = useRef("");
   const pendingArguments = useRef({});
+  const governedExecution = useRef(new Set());
+  const completedActions = useRef(new Set());
 
   const actions = catalogue && Array.isArray(catalogue.actions) ? catalogue.actions : [];
   const selected = actions.find(action => action.tool_name === selectedName) || null;
@@ -258,7 +277,10 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
       setValues({});
       setExpandedCategories(new Set());
       setExpandedBranches(new Set());
-      setStage("edit"); setResult(null); setFormError("");
+      governedExecution.current.clear();
+      completedActions.current.clear();
+      setStage("edit"); setResult(null); setConfirmationAction(null);
+      setGovernedError(""); setFormError("");
       // The catalogue is versioned server state. Re-opening the sheet must
       // never reuse an older in-memory topology after a hot deployment.
       load(true);
@@ -291,14 +313,17 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
 
   useEffect(() => {
     if (!open) return;
-    const close = event => { if (event.key === "Escape" && !busy) setOpen(false); };
+    const locked = ["pending", "authorized", "executing"].includes(
+      String(confirmationAction && confirmationAction.status || "")
+    );
+    const close = event => { if (event.key === "Escape" && !busy && !locked) setOpen(false); };
     window.addEventListener("keydown", close);
     document.documentElement.classList.add("business-action-open");
     return () => {
       window.removeEventListener("keydown", close);
       document.documentElement.classList.remove("business-action-open");
     };
-  }, [open, busy]);
+  }, [open, busy, confirmationAction]);
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -377,6 +402,9 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
   };
 
   const choose = action => {
+    if (["pending", "authorized", "executing"].includes(
+      String(confirmationAction && confirmationAction.status || "")
+    )) return;
     setSelectedName(action.tool_name);
     setValues(initialValuesFor(action));
     setExpandedCategories(previous => new Set(previous).add(action.category || "other"));
@@ -386,6 +414,10 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
     setStage("edit");
     setParsed({});
     setResult(null);
+    setConfirmationAction(null);
+    setGovernedError("");
+    governedExecution.current.clear();
+    completedActions.current.clear();
     setFormError("");
   };
 
@@ -420,6 +452,19 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
     if (!selected || busy || selected.manual_execution === "unavailable") return;
     setBusy(true); setFormError("");
     try {
+      if (usesPasskeyStaging(selected)) {
+        const proposal = await W2.post(
+          "/api/business/actions/" + encodeURIComponent(selected.tool_name) + "/propose",
+          { arguments: argumentsValue, proposal_id: requestId() }
+        );
+        if (!proposal || !proposal.action || proposal.action.kind !== "command_confirmation") {
+          throw new Error(t("確認操作回應不匹配"));
+        }
+        setConfirmationAction(proposal.action);
+        setGovernedError("");
+        setStage("authorization");
+        return;
+      }
       const response = await W2.post(
         "/api/business/actions/" + encodeURIComponent(selected.tool_name) + "/execute",
         { arguments: argumentsValue }
@@ -437,6 +482,69 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
     } finally { setBusy(false); }
   };
 
+  const announceCompletion = async detail => {
+    const action = detail && detail.action ? detail.action : confirmationAction;
+    const actionId = String(action && (action.id || action.action_id)
+      || detail && detail.confirmation_action_id || "");
+    if (!actionId || completedActions.current.has(actionId)) return;
+    completedActions.current.add(actionId);
+    window.dispatchEvent(new CustomEvent("w2-business-action-complete", { detail }));
+    window.dispatchEvent(new CustomEvent("w2-agent-complete", { detail }));
+    if (onComplete) await onComplete(detail);
+  };
+
+  const consumeAuthorizedAction = async (actionId, keychainId) => {
+    const executionKey = String(actionId) + ":" + String(keychainId);
+    if (!actionId || !keychainId || governedExecution.current.has(executionKey)) return;
+    governedExecution.current.add(executionKey);
+    setBusy(true); setGovernedError("");
+    try {
+      const response = await W2.post(
+        "/api/business/actions/confirmation-actions/" + encodeURIComponent(actionId) + "/execute-authorized",
+        { authorization_keychain_id: keychainId }
+      );
+      if (response && response.action) setConfirmationAction(response.action);
+      if (response && response.action && response.action.status === "completed") {
+        await announceCompletion(response);
+      }
+    } catch (error) {
+      let unresolved = true;
+      try {
+        const latest = await W2.json(
+          "/api/agent/confirmation-actions/" + encodeURIComponent(actionId),
+          { cache: "no-store" }
+        );
+        if (latest && latest.action) {
+          setConfirmationAction(latest.action);
+          if (latest.action.status === "completed") {
+            unresolved = false;
+            await announceCompletion(latest);
+          } else if (["executing", "failed", "cancelled", "expired", "outcome_unknown"].includes(latest.action.status)) {
+            unresolved = false;
+          }
+          if (latest.action.status === "authorized") governedExecution.current.delete(executionKey);
+        }
+      } catch (syncError) {}
+      if (unresolved) {
+        setGovernedError(t("授權已完成，但執行回應暫時無法核對。請重新核對後再決定是否重試。"));
+      }
+    } finally { setBusy(false); }
+  };
+
+  const handleGovernedTerminal = async detail => {
+    if (!detail || typeof detail !== "object") return;
+    if (detail.status === "authorized") {
+      const continuation = detail.continuation && typeof detail.continuation === "object"
+        ? detail.continuation : {};
+      await consumeAuthorizedAction(
+        detail.confirmation_action_id,
+        continuation.authorization_keychain_id
+      );
+    } else if (detail.status === "completed") {
+      await announceCompletion(detail);
+    }
+  };
+
   if (!open) return null;
   const properties = selected && selected.parameters && selected.parameters.properties || {};
   const required = new Set(selected && selected.parameters && selected.parameters.required || []);
@@ -444,9 +552,11 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
     name, secretName(name) ? "••••••••" : value,
   ]));
   const canExecute = selected && selected.manual_execution !== "unavailable";
+  const confirmationStatus = String(confirmationAction && confirmationAction.status || "");
+  const confirmationLocked = ["pending", "authorized", "executing"].includes(confirmationStatus);
 
   return <div className="business-action-overlay" role="presentation" onMouseDown={event => {
-    if (event.target === event.currentTarget && !busy) setOpen(false);
+    if (event.target === event.currentTarget && !busy && !confirmationLocked) setOpen(false);
   }}>
     <section className="business-action-sheet" role="dialog" aria-modal="true" aria-label={t("業務操作")}>
       <header className="business-action-head">
@@ -459,7 +569,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
           <b>{catalogue ? catalogue.tenant_total : "—"}</b><span>TENANT</span>
           <b>{catalogue ? catalogue.executable : "—"}</b><span>READY</span>
         </div>
-        <button type="button" className="business-action-close" disabled={busy} onClick={() => setOpen(false)} aria-label={t("關閉業務操作")}><Icon name="x" size={17}/></button>
+        <button type="button" className="business-action-close" disabled={busy || confirmationLocked} onClick={() => setOpen(false)} aria-label={t("關閉業務操作")}><Icon name="x" size={17}/></button>
       </header>
 
       <div className="business-action-toolbar">
@@ -528,6 +638,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
                       {branchOpen && <div className="business-action-branch-actions" id={branchId}>
                         {branch.actions.map(action => <button type="button" key={action.tool_name}
                           className={"business-action-row" + (selectedName === action.tool_name ? " is-selected" : "")}
+                          disabled={confirmationLocked}
                           onClick={() => choose(action)}>
                           <span className={"business-action-state is-" + (action.manual_execution === "execute" ? "ready" : action.confirmation_required ? "governed" : "locked")}/>
                           <span><b>{action.command}</b><small>{[
@@ -595,6 +706,29 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
                   {busy ? t("執行中…") : selected.confirmation_required ? t("提交受治理提案") : t("確認並執行")}
                 </button>
               </div>
+            </div>}
+
+            {stage === "authorization" && confirmationAction && <div className="business-action-authorization">
+              <div className="business-action-authorization-head">
+                <span className="label red">PASSKEY · STAGED ACTION</span>
+                <h4>{t("安全授權")}</h4>
+                <p>{t("Passkey 通過後會自動執行同一指令；不需要再次點擊原按鈕。")}</p>
+              </div>
+              <div className="business-action-authorization-flow" aria-label={t("安全授權")}>
+                <span><em>01</em><b>{t("請求")}</b><small>{t("鎖定原指令與參數")}</small></span>
+                <span><em>02</em><b>{t("本人驗證")}</b><small>{t("使用 Passkey 簽署一次性授權")}</small></span>
+                <span><em>03</em><b>{t("公司 AI 執行")}</b><small>{t("領取 Keychain、執行並回讀")}</small></span>
+              </div>
+              <W2.OperationConfirmation confirmation={{ action: confirmationAction }}
+                onActionChange={setConfirmationAction} onTerminal={handleGovernedTerminal}/>
+              {!!governedError && <div className="business-action-error business-action-governed-error" role="alert">
+                <span>{governedError}</span>
+                {confirmationStatus === "authorized" && confirmationAction.authorization_keychain && <button type="button" className="btn sm"
+                  disabled={busy} onClick={() => consumeAuthorizedAction(
+                    confirmationAction.id || confirmationAction.action_id,
+                    confirmationAction.authorization_keychain.keychain_id
+                  )}>{t("重新執行已授權操作")}</button>}
+              </div>}
             </div>}
 
             {stage === "result" && <div className={"business-action-result " + (result && result.ok ? "is-ok" : "is-error")}>

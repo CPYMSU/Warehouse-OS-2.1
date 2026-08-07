@@ -486,10 +486,11 @@ def propose_confirmation_action(
     settings: Settings,
     conversation_id: object = None,
     run_id: object = None,
+    proposal_id: object = None,
     source_step_no: int | None = None,
     action_context: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Persist one model-selected proposal without executing its mutation."""
+    """Persist one governed proposal without executing its mutation."""
 
     entry = entry_by_tool_name(tool_name)
     if entry is None:
@@ -508,17 +509,19 @@ def propose_confirmation_action(
     if retained_action_context is not None:
         presentation["_runtime_action_context"] = retained_action_context
     arguments_digest = _digest({"tool_name": tool_name, "arguments": normalized})
-    request_digest = _digest(
-        {
-            "tool_name": tool_name,
-            "arguments_digest": arguments_digest,
-            "run_id": str(run_id or ""),
-            "source_step_no": source_step_no,
-            "action_context": retained_action_context,
-        }
-    )
     conversation_uuid = _as_uuid(conversation_id)
     run_uuid = _as_uuid(run_id)
+    proposal_key = str(proposal_id or "").strip()[:128]
+    request_identity = {
+        "tool_name": tool_name,
+        "arguments_digest": arguments_digest,
+        "run_id": str(run_id or ""),
+        "source_step_no": source_step_no,
+        "action_context": retained_action_context,
+    }
+    if proposal_key:
+        request_identity["proposal_id"] = proposal_key
+    request_digest = _digest(request_identity)
     expires_at = datetime.now(UTC) + timedelta(minutes=20)
     with tenant_session(actor.tenant_id) as session:
         _expire_stale(session, actor)
@@ -538,6 +541,29 @@ def propose_confirmation_action(
                         "tenant_id": actor.tenant_id,
                         "user_id": actor.user_id,
                         "run_id": run_uuid,
+                        "request_digest": request_digest,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+        elif proposal_key:
+            existing = (
+                session.execute(
+                    text(
+                        """
+                        SELECT * FROM secretariat.confirmation_actions
+                        WHERE tenant_id = :tenant_id AND requester_user_id = :user_id
+                          AND conversation_id IS NULL AND run_id IS NULL
+                          AND request_digest = :request_digest
+                          AND status IN ('pending', 'authorized', 'executing')
+                          AND expires_at > now()
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "tenant_id": actor.tenant_id,
+                        "user_id": actor.user_id,
                         "request_digest": request_digest,
                     },
                 )
@@ -1040,7 +1066,7 @@ def execute_authorized_confirmation_action(
     conversation_id: object = None,
     settings: Settings,
 ) -> dict[str, object]:
-    """Let Auto Runtime consume one exact Passkey authorization once."""
+    """Let an authorized Runtime consumer use one exact Passkey grant once."""
 
     keychain_uuid = _as_uuid(authorization_keychain_id)
     if keychain_uuid is None:
@@ -1048,10 +1074,13 @@ def execute_authorized_confirmation_action(
     with tenant_session(actor.tenant_id) as session:
         row = _load_action(session, actor, action_id, for_update=True)
         requested_conversation = _as_uuid(conversation_id)
-        if (
-            requested_conversation is None
-            or row.get("conversation_id") is None
-            or requested_conversation != row.get("conversation_id")
+        stored_conversation = row.get("conversation_id")
+        # Conversation-launched actions can only return to that exact Auto
+        # Runtime conversation.  Action Center proposals deliberately have no
+        # conversation and can only be consumed by the manual governed route.
+        if (stored_conversation is None) != (requested_conversation is None) or (
+            stored_conversation is not None
+            and requested_conversation != stored_conversation
         ):
             raise HTTPException(
                 status_code=409,

@@ -18,6 +18,7 @@ from app.db.session import system_session, tenant_session
 from app.main import app
 from app.services import auto_runtime
 from app.services.legacy_capability_runtime import execute_retained_capability
+from app.services.passkey_grants import issue_step_up_grant
 from app.services.templates import provision_tenant_template
 from app.terminal import executor
 from app.terminal.store import (
@@ -1318,13 +1319,80 @@ def test_member_appointments_share_button_ai_contract_and_project_l11() -> None:
         }
         assert updated_codes == {primary["position_code"], second_concurrent["position_code"]}
 
-        promoted = client.post(
-            f"/api/org/users/{actor.user_id}/assign",
-            json={"position_code": second_concurrent["position_code"]},
-        ).json()
+        proposal_request = {
+            "proposal_id": str(uuid4()),
+            "arguments": {
+                "user": str(actor.user_id),
+                "position": second_concurrent["position_code"],
+            },
+        }
+        proposal = client.post(
+            "/api/business/actions/organization_user_assign/propose",
+            json=proposal_request,
+        )
+        assert proposal.status_code == 200
+        proposal_payload = proposal.json()
+        assert proposal_payload["status"] == "confirmation_required"
+        assert proposal_payload["business_operation_executed"] is False
+        confirmation = proposal_payload["action"]
+        assert confirmation["status"] == "pending"
+        assert confirmation["conversation_id"] is None
+        repeated_proposal = client.post(
+            "/api/business/actions/organization_user_assign/propose",
+            json=proposal_request,
+        )
+        assert repeated_proposal.status_code == 200
+        assert repeated_proposal.json()["action"]["id"] == confirmation["id"]
+
+        grant_token = "manual-action-passkey-" + uuid4().hex
+        issue_step_up_grant(
+            actor,
+            token=grant_token,
+            purpose="ai.confirmation.execute",
+            resource={
+                "action_id": confirmation["id"],
+                "revision": confirmation["revision"],
+            },
+            verification={
+                "verified": True,
+                "method": "webauthn",
+                "operator": actor.username,
+            },
+        )
+        confirmed = client.post(
+            f"/api/agent/confirmation-actions/{confirmation['id']}/confirm",
+            json={
+                "expected_revision": confirmation["revision"],
+                "step_up_token": grant_token,
+            },
+        )
+        assert confirmed.status_code == 200
+        authorized = confirmed.json()["action"]
+        assert authorized["status"] == "authorized"
+        assert authorized["verification"]["method"] == "webauthn"
+
+        executed = client.post(
+            "/api/business/actions/confirmation-actions/"
+            f"{confirmation['id']}/execute-authorized",
+            json={
+                "authorization_keychain_id": authorized["authorization_keychain"][
+                    "keychain_id"
+                ]
+            },
+        )
+        assert executed.status_code == 200
+        executed_payload = executed.json()
+        assert executed_payload["ok"] is True
+        assert executed_payload["action"]["status"] == "completed"
+        assert executed_payload["action"]["completion_receipt"]["status"] == "completed"
+
+        promoted = next(
+            row for row in client.get("/api/users").json()["users"]
+            if row["id"] == str(actor.user_id)
+        )
         appointment_types = {
             row["position_code"]: row["appointment_type"]
-            for row in promoted["member"]["appointments"]
+            for row in promoted["identities"]
         }
         assert appointment_types[second_concurrent["position_code"]] == "primary"
         assert appointment_types[primary["position_code"]] == "concurrent"
