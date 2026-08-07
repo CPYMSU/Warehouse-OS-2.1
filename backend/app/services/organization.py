@@ -664,8 +664,25 @@ def organization_structure(actor: ActorContext) -> dict[str, object]:
         "name": actor.tenant_name,
         "revision": "—",
     }
+    company_unit = next(
+        (
+            unit
+            for unit in projection["units"]
+            if unit["unit_type"] == "company" and unit["active"]
+        ),
+        None,
+    )
     return {
         "template": {**template, "version": template.get("revision")},
+        "company": {
+            **(company_unit or {}),
+            "id": company_unit["id"] if company_unit else "company",
+            "unit_code": company_unit["unit_code"] if company_unit else "company",
+            "unit_name": actor.tenant_name,
+            "unit_type": "company",
+            "parent_id": None,
+            "active": True,
+        },
         "units": projection["units"],
         "positions": projection["positions"],
         "memberships": projection["memberships"],
@@ -909,6 +926,36 @@ def _unit(session: Session, unit_id: object) -> dict[str, object]:
     return dict(unit)
 
 
+def _parent_unit(session: Session, parent_ref: object) -> dict[str, object]:
+    """Resolve a real unit or the tenant's stable virtual company root."""
+    normalized = str(parent_ref or "").strip().lower()
+    if normalized not in {"", "0", "company", "company_root", "__company__"}:
+        return _unit(session, parent_ref)
+    root = (
+        session.execute(
+            text("""
+                SELECT id, unit_code, name, unit_type, parent_unit_code, active
+                FROM iam.organizational_units
+                WHERE unit_type = 'company' AND active
+                ORDER BY created_at, unit_code
+                LIMIT 1
+            """)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if root is not None:
+        return dict(root)
+    return {
+        "id": None,
+        "unit_code": None,
+        "name": "Company",
+        "unit_type": "company",
+        "parent_unit_code": None,
+        "active": True,
+    }
+
+
 def _position(session: Session, position_id: object) -> dict[str, object]:
     position = (
         session.execute(
@@ -976,7 +1023,7 @@ def create_department(actor: ActorContext, payload: dict[str, object]) -> dict[s
             detail="Valid department name and type are required",
         )
     with tenant_session(actor.tenant_id) as session:
-        parent = _unit(session, payload.get("parent_id"))
+        parent = _parent_unit(session, payload.get("parent_id"))
         if not parent["active"]:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1004,7 +1051,7 @@ def create_department(actor: ActorContext, payload: dict[str, object]) -> dict[s
                 "name": name,
                 "description": str(payload.get("description") or "").strip(),
                 "unit_type": unit_type,
-                "parent_unit_code": parent["unit_code"],
+                "parent_unit_code": parent.get("unit_code"),
             },
         )
         _audit(
@@ -1026,16 +1073,7 @@ def update_department(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Company root cannot be edited here"
             )
-        parent = (
-            _unit(session, payload.get("parent_id"))
-            if payload.get("parent_id") not in (None, "", 0, "0")
-            else None
-        )
-        if parent is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="A parent organization unit is required",
-            )
+        parent = _parent_unit(session, payload.get("parent_id"))
         if str(parent["id"]) == str(unit["id"]):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1043,7 +1081,7 @@ def update_department(
             )
         cursor = parent
         seen: set[str] = set()
-        while cursor and str(cursor["id"]) not in seen:
+        while cursor and cursor.get("id") is not None and str(cursor["id"]) not in seen:
             if str(cursor["id"]) == str(unit["id"]):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1085,7 +1123,7 @@ def update_department(
                 "name": name,
                 "description": str(payload.get("description") or "").strip(),
                 "unit_type": unit_type,
-                "parent_unit_code": parent["unit_code"],
+                "parent_unit_code": parent.get("unit_code"),
                 "manager_user_id": _manager(session, payload.get("manager_user_id")),
             },
         )

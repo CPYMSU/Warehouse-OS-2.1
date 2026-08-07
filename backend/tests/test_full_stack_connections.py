@@ -1150,13 +1150,15 @@ def test_organization_topology_edit_buttons_round_trip() -> None:
         structure = client.get("/api/org/structure")
         assert structure.status_code == 200
         company = next(unit for unit in structure.json()["units"] if unit["unit_type"] == "company")
+        assert structure.json()["company"]["id"] == company["id"]
+        assert structure.json()["company"]["unit_name"] == actor.tenant_name
 
         created_department = client.post(
             "/api/org/departments",
             json={
                 "unit_name": "可編輯部門",
                 "unit_type": "department",
-                "parent_id": company["id"],
+                "parent_id": "company",
                 "description": "created by topology round trip",
             },
         )
@@ -1168,7 +1170,7 @@ def test_organization_topology_edit_buttons_round_trip() -> None:
             json={
                 "unit_name": "已編輯部門",
                 "unit_type": "team",
-                "parent_id": company["id"],
+                "parent_id": "company",
                 "manager_user_id": None,
                 "description": "edited by topology round trip",
             },

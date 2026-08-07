@@ -40,3 +40,4 @@ def test_department_create_keeps_company_root_available_as_parent() -> None:
 
     assert "const isSelf = !isCreate" in source
     assert 't("公司本體 · 直屬公司")' in source
+    assert ": [company].concat(rawUnits)" in source

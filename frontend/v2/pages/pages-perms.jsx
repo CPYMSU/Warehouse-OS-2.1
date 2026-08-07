@@ -1063,7 +1063,19 @@ const makeOrgTree = (data, topology, biu = false) => {
   // editable live topology nodes. Rendering them made an already archived
   // legacy root position (for example "Bonfire / 總經理") appear impossible
   // to delete.
-  const allUnits = (Array.isArray(data.units) ? data.units : []).filter(isActive);
+  const rawUnits = (Array.isArray(data.units) ? data.units : []).filter(isActive);
+  const sourceCompany = rawUnits.find(u => String(u.unit_type || "") === "company");
+  const company = {
+    ...(sourceCompany || {}),
+    ...(data.company && typeof data.company === "object" ? data.company : {}),
+    id: (data.company && data.company.id) || (sourceCompany && sourceCompany.id) || "company",
+    unit_code: (data.company && data.company.unit_code) || (sourceCompany && sourceCompany.unit_code) || "company",
+    unit_name: (data.company && data.company.unit_name) || (sourceCompany && sourceCompany.unit_name) || (data.template && data.template.name) || t("公司根節點"),
+    unit_type: "company", active: true, parent_id: null,
+  };
+  const allUnits = sourceCompany
+    ? rawUnits.map(unit => String(unit.id) === String(sourceCompany.id) ? company : unit)
+    : [company].concat(rawUnits);
   const navigationCatalog = biuNavCatalog(data.navigation_catalog, biu);
   const departments = allUnits.filter(u => String(u.unit_type || "") !== "company");
   const positions = (Array.isArray(data.positions) ? data.positions : []).filter(isActive);
@@ -1076,7 +1088,6 @@ const makeOrgTree = (data, topology, biu = false) => {
   const userById = new Map(users.map(u => [String(u.id), u]));
   const positionById = new Map(positions.map(p => [String(p.id), p]));
   const unitById = new Map(departments.map(u => [String(u.id), u]));
-  const company = allUnits.find(u => String(u.unit_type || "") === "company") || { id: "company", unit_code: "ORG-ROOT", unit_name: (data.template && data.template.name) || t("公司根節點"), unit_type: "company" };
   const childUnits = new Map();
   departments.forEach(u => { const key = String(u.parent_id == null ? "" : u.parent_id); if (!childUnits.has(key)) childUnits.set(key, []); childUnits.get(key).push(u); });
   childUnits.forEach(list => list.sort((a, b) => String(a.unit_name || "").localeCompare(String(b.unit_name || ""))));

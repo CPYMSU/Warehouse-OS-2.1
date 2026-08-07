@@ -4547,7 +4547,7 @@ COMMANDS = [
             _p("name", "body.unit_name", "部門名稱", required=True),
             _p("code", "body.unit_code", "唯一部門代碼(省略則自動生成)"),
             _p("type", "body.unit_type", "department/team/project/other(默認 department)"),
-            _p("parent", "body.parent_id", "上級組織 UUID"),
+            _p("parent", "body.parent_id", "上級組織 UUID；company 或省略表示公司本體"),
             _p("desc", "body.description", "說明"),
         ],
         "examples": ["org department create --name 前臺 --code HOTEL-FRONT --type department"],
