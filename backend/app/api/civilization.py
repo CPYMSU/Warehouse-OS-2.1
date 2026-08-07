@@ -8,7 +8,12 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, status
 
 from app.api.deps import ActorContext, current_actor
-from app.services.civilization import create_thought, delete_thought, list_thoughts
+from app.services.civilization import (
+    create_thought,
+    delete_thought,
+    list_thoughts,
+    update_thought,
+)
 
 router = APIRouter(tags=["civilization"])
 
@@ -26,6 +31,15 @@ def civilization_thought_create(
     payload: dict[str, object] = Body(default={}),
 ) -> dict[str, object]:
     return create_thought(actor, payload)
+
+
+@router.put("/api/civilization/thoughts/{thought_id}")
+def civilization_thought_update(
+    thought_id: UUID,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    return update_thought(actor, thought_id, payload)
 
 
 @router.delete("/api/civilization/thoughts/{thought_id}")

@@ -36,6 +36,9 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert "w2_civilization:v1:" in source
     assert 'W2.json("/api/civilization/thoughts"' in source
     assert 'W2.post("/api/civilization/thoughts"' in source
+    assert 'method: "PUT"' in source
+    assert "expected_revision" in source
+    assert "civ-lens-editor" in source
     assert "BUILTIN_THOUGHTS" not in source
     assert "drafts" not in source
     assert ".civ-atlas-layout" in style
@@ -45,15 +48,17 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert "data-domain" in source
     for domain in ("judgement", "technology", "organization", "time", "ethics"):
         assert f".civ-poster-motion.is-{domain}" in style
+    assert "civ-poster-opposition" not in style
+    assert ".civ-poster-motion { display: none; }" in style
     assert "@media (prefers-reduced-motion: reduce)" in style
 
 
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260808-civilization3' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization3' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization3' in index
+    assert 'pages/pages-civilization.css?v=20260808-civilization4' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization4' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization4' in index
 
 
 def test_civilization_content_is_tenant_data_with_database_isolation() -> None:

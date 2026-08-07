@@ -29,6 +29,7 @@ EXPECTED_CONTRACTS = {
     ("POST", "/api/research/projects"),
     ("GET", "/api/civilization/thoughts"),
     ("POST", "/api/civilization/thoughts"),
+    ("PUT", "/api/civilization/thoughts/00000000-0000-0000-0000-000000000001"),
     ("DELETE", "/api/civilization/thoughts/00000000-0000-0000-0000-000000000001"),
     ("GET", "/api/tasks/meta"),
     ("GET", "/api/tasks"),

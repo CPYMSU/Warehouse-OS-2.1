@@ -5,7 +5,12 @@ from fastapi.testclient import TestClient
 from app.api import civilization as civilization_api
 from app.api.deps import ActorContext, current_actor
 from app.main import app
-from app.services.civilization import _can_delete
+from app.services.civilization import (
+    _can_delete,
+    _clean_lenses,
+    _merged_lenses,
+    _merged_localized,
+)
 
 
 def _actor(*, role_level: int = 5, permissions: frozenset[str] = frozenset()) -> ActorContext:
@@ -34,6 +39,30 @@ def test_delete_policy_allows_creator_and_company_administrator() -> None:
     assert _can_delete(_actor(permissions=frozenset({"settings.manage"})), another_user) is True
 
 
+def test_lenses_are_validated_and_localized_for_storage() -> None:
+    lenses = _clean_lenses(
+        {"lenses": [{"name": "制度", "text": "先看約束，再看選擇。"}]},
+        "zh",
+    )
+
+    assert lenses == [
+        {"name": {"zh": "制度"}, "text": {"zh": "先看約束，再看選擇。"}}
+    ]
+    assert _merged_localized({"en": "Question"}, "問題", "zh") == {
+        "en": "Question",
+        "zh": "問題",
+    }
+    assert _merged_lenses(
+        [{"name": {"en": "System"}, "text": {"en": "Read constraints first."}}],
+        lenses,
+    ) == [
+        {
+            "name": {"en": "System", "zh": "制度"},
+            "text": {"en": "Read constraints first.", "zh": "先看約束，再看選擇。"},
+        }
+    ]
+
+
 def test_civilization_routes_delegate_to_one_tenant_service(monkeypatch) -> None:
     actor = _actor()
     thought_id = uuid4()
@@ -55,6 +84,14 @@ def test_civilization_routes_delegate_to_one_tenant_service(monkeypatch) -> None
         lambda received, received_id: calls.append(("delete", (received, received_id)))
         or {"ok": True, "deleted_id": str(received_id)},
     )
+    monkeypatch.setattr(
+        civilization_api,
+        "update_thought",
+        lambda received, received_id, payload: calls.append(
+            ("update", (received, received_id, payload))
+        )
+        or {"ok": True, "thought": {"id": str(received_id), "revision": 2}},
+    )
     app.dependency_overrides[current_actor] = lambda: actor
     client = TestClient(app)
     try:
@@ -64,11 +101,23 @@ def test_civilization_routes_delegate_to_one_tenant_service(monkeypatch) -> None
             json={"domain": "time", "title": "Question", "short": "Prompt", "thesis": "Thesis"},
         )
         assert created.status_code == 201
+        updated = client.put(
+            f"/api/civilization/thoughts/{thought_id}",
+            json={
+                "domain": "time",
+                "title": "Question",
+                "short": "Prompt",
+                "thesis": "Thesis",
+                "expected_revision": 1,
+            },
+        )
+        assert updated.status_code == 200
         assert client.delete(f"/api/civilization/thoughts/{thought_id}").status_code == 200
     finally:
         app.dependency_overrides.clear()
 
-    assert [call[0] for call in calls] == ["list", "create", "delete"]
+    assert [call[0] for call in calls] == ["list", "create", "update", "delete"]
     assert calls[0][1] is actor
     assert calls[1][1][0] is actor
-    assert calls[2][1] == (actor, thought_id)
+    assert calls[2][1][0:2] == (actor, thought_id)
+    assert calls[3][1] == (actor, thought_id)

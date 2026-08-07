@@ -22,13 +22,17 @@ window.W2_LANG.addEN({
   "正在讀取文明資料": "Loading Civilization content", "文明資料讀取失敗": "Civilization content could not be loaded",
   "重新讀取": "Try again", "記錄問題": "Record question", "領域": "Domain", "問題": "Question",
   "一句引子": "Short prompt", "核心判斷": "Core proposition", "保存並發布": "Save and publish",
-  "保存後公司成員可見；建立者與公司管理員可刪除。": "Once saved, it is visible to company members; its creator and company administrators can delete it.",
+  "保存後公司成員可見；建立者與公司管理員可繼續編輯。": "Once saved, it is visible to company members; its creator and company administrators can continue editing it.",
   "取消": "Cancel", "正在保存": "Saving", "問題已發布": "Question published",
   "發布失敗": "Publishing failed", "思想已刪除": "Thought deleted", "刪除失敗": "Deletion failed",
   "確認刪除這個思考？此操作會從公司資料中移除它。": "Delete this thought? It will be removed from company data.",
   "思想鏈接已複製": "Thought link copied", "無法自動複製，請從地址欄複製": "Could not copy automatically; copy it from the address bar",
   "共享觀看方式": "Shared ways of seeing", "提問": "Question", "視角": "Lens", "方法": "Method", "譜系": "Lineage",
   "尚未添加視角": "No lenses have been added yet",
+  "編輯": "Edit", "編輯思考": "Edit thought", "保存修改": "Save changes", "內容已更新": "Content updated",
+  "更新失敗": "Update failed", "添加視角": "Add lens", "視角名稱": "Lens name", "視角說明": "Lens description",
+  "移除": "Remove", "最多可添加 12 個視角。": "Up to 12 lenses can be added.",
+  "內容已被其他人更新，請重新打開後再編輯。": "Someone else updated this content. Reopen it before editing again.",
 });
 
 const DOMAINS = [
@@ -76,8 +80,10 @@ const PosterQuestion = ({ children }) => <>{String(children || "").split(/([，,
 const DomainGlyph = ({ domain, large = false }) => <span className={`civ-domain-glyph is-${domain.key}${large ? " is-large" : ""}`} style={domainStyle(domain)} aria-hidden="true"><i/><i/><i/><i/></span>;
 const PosterMotion = ({ domain }) => <div className={`civ-poster-motion is-${domain.key}`} style={domainStyle(domain)} aria-hidden="true"><i/><i/><i/><i/><b>{domain.en.slice(0, 3).toUpperCase()}</b></div>;
 
-const CivilizationComposer = ({ busy, error, onClose, onSave }) => {
-  const [domainKey, setDomainKey] = useState("judgement");
+const CivilizationComposer = ({ busy, error, initial, onClose, onSave }) => {
+  const editing = !!initial;
+  const [domainKey, setDomainKey] = useState(initial ? initial.domain : "judgement");
+  const [lenses, setLenses] = useState(() => thoughtLenses(initial).map(item => ({ name: localText(item.name), text: localText(item.text) })));
   const composerDomain = domainOf(domainKey);
   useEffect(() => {
     const close = event => { if (event.key === "Escape" && !busy) onClose(); };
@@ -92,21 +98,25 @@ const CivilizationComposer = ({ busy, error, onClose, onSave }) => {
       title: String(form.get("title") || "").trim(),
       short: String(form.get("short") || "").trim(),
       thesis: String(form.get("thesis") || "").trim(),
+      lenses: lenses.map(item => ({ name: item.name.trim(), text: item.text.trim() })),
       locale: lang(),
-    });
+      ...(editing ? { expected_revision: initial.revision } : {}),
+    }, initial);
   };
+  const changeLens = (index, key, value) => setLenses(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item));
   return <div className="civ-composer" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <form className="civ-composer-card" role="dialog" aria-modal="true" aria-labelledby="civ-composer-title" onSubmit={submit}>
-      <header className="civ-composer-head"><b>C1</b><div><span className="civ-eyebrow">NEW THOUGHT OBJECT</span><h2 id="civ-composer-title">{t("記錄問題")}</h2></div><button type="button" disabled={busy} className="civ-composer-close" onClick={onClose} aria-label={t("取消")}>×</button></header>
+      <header className="civ-composer-head"><b>C1</b><div><span className="civ-eyebrow">{editing ? "REVISE THOUGHT OBJECT" : "NEW THOUGHT OBJECT"}</span><h2 id="civ-composer-title">{editing ? t("編輯思考") : t("記錄問題")}</h2></div><button type="button" disabled={busy} className="civ-composer-close" onClick={onClose} aria-label={t("取消")}>×</button></header>
       <div className="civ-composer-body">
         <label>{t("領域")}<select name="domain" value={domainKey} onChange={event => setDomainKey(event.target.value)}>{DOMAINS.slice(1).map(domain => <option key={domain.key} value={domain.key}>{lang() === "en" ? domain.en : t(domain.zh)}</option>)}</select></label>
         <div className="civ-composer-domain" data-domain={composerDomain.key} style={domainStyle(composerDomain)}><DomainGlyph domain={composerDomain}/><span><b>{lang() === "en" ? composerDomain.en : t(composerDomain.zh)}</b><small>{composerDomain.en.toUpperCase()} POSTER SYSTEM</small></span></div>
-        <label>{t("一句引子")}<input name="short" maxLength="180" required/></label>
-        <label className="is-wide">{t("問題")}<input name="title" maxLength="160" autoFocus required/></label>
-        <label className="is-wide">{t("核心判斷")}<textarea name="thesis" maxLength="1200" required/></label>
+        <label>{t("一句引子")}<input name="short" maxLength="180" defaultValue={thoughtText(initial, "short")} required/></label>
+        <label className="is-wide">{t("問題")}<input name="title" maxLength="160" defaultValue={thoughtText(initial, "title")} autoFocus required/></label>
+        <label className="is-wide">{t("核心判斷")}<textarea name="thesis" maxLength="1200" defaultValue={thoughtText(initial, "thesis")} required/></label>
+        <section className="civ-lens-editor is-wide"><header><span><b>{t("視角")}</b><small>{t("最多可添加 12 個視角。")}</small></span><button type="button" disabled={busy || lenses.length >= 12} onClick={() => setLenses(current => current.concat({ name: "", text: "" }))}>＋ {t("添加視角")}</button></header>{lenses.map((item, index) => <div className="civ-lens-editor-row" key={index}><b>{String(index + 1).padStart(2, "0")}</b><label>{t("視角名稱")}<input value={item.name} maxLength="80" onChange={event => changeLens(index, "name", event.target.value)} required/></label><label>{t("視角說明")}<textarea value={item.text} maxLength="500" onChange={event => changeLens(index, "text", event.target.value)} required/></label><button type="button" disabled={busy} onClick={() => setLenses(current => current.filter((_item, itemIndex) => itemIndex !== index))}>{t("移除")}</button></div>)}</section>
         {error && <div className="civ-composer-error is-wide" role="alert">{error}</div>}
       </div>
-      <footer className="civ-composer-foot"><span>{t("保存後公司成員可見；建立者與公司管理員可刪除。")}</span><button type="submit" disabled={busy}>{busy ? t("正在保存") : t("保存並發布")}</button></footer>
+      <footer className="civ-composer-foot"><span>{t("保存後公司成員可見；建立者與公司管理員可繼續編輯。")}</span><button type="submit" disabled={busy}>{busy ? t("正在保存") : editing ? t("保存修改") : t("保存並發布")}</button></footer>
     </form>
   </div>;
 };
@@ -121,7 +131,7 @@ const Page = () => {
   const [lens, setLens] = useState(0);
   const [thoughts, setThoughts] = useState(null);
   const [loadError, setLoadError] = useState("");
-  const [composer, setComposer] = useState(false);
+  const [composer, setComposer] = useState(null);
   const [composerBusy, setComposerBusy] = useState(false);
   const [composerError, setComposerError] = useState("");
   const [toast, setToast] = useState("");
@@ -170,14 +180,23 @@ const Page = () => {
     try { await navigator.clipboard.writeText(link); setToast(t("思想鏈接已複製")); }
     catch (_error) { setToast(t("無法自動複製，請從地址欄複製")); }
   };
-  const saveThought = async value => {
+  const saveThought = async (value, initial) => {
     setComposerBusy(true); setComposerError("");
     try {
-      const result = await W2.post("/api/civilization/thoughts", value);
-      const created = { ...result.thought, no: String(allThoughts.length + 1).padStart(2, "0") };
-      setThoughts(current => (current || []).concat(created));
-      setSelectedId(created.id); setComposer(false); setToast(t("問題已發布"));
-    } catch (error) { setComposerError(error.message || t("發布失敗")); }
+      if (initial) {
+        const result = await W2.json("/api/civilization/thoughts/" + encodeURIComponent(initial.id), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(value),
+        });
+        setThoughts(current => (current || []).map(item => item.id === initial.id ? result.thought : item));
+        setSelectedId(result.thought.id); setComposer(null); setToast(t("內容已更新"));
+      } else {
+        const result = await W2.post("/api/civilization/thoughts", value);
+        setThoughts(current => (current || []).concat(result.thought));
+        setSelectedId(result.thought.id); setComposer(null); setToast(t("問題已發布"));
+      }
+    } catch (error) { setComposerError(error.status === 409 ? t("內容已被其他人更新，請重新打開後再編輯。") : (error.message || t(initial ? "更新失敗" : "發布失敗"))); }
     finally { setComposerBusy(false); }
   };
   const removeThought = async thought => {
@@ -209,7 +228,7 @@ const Page = () => {
       <div className="civ-detail-meta"><span>{selectedDomain.en.toUpperCase()} / {selected.date}</span><span>{t("選中").toUpperCase()}</span></div>
       <div className="civ-detail-figure"><div className="civ-detail-no">{selected.no}</div><DomainGlyph domain={selectedDomain} large/></div><span className="civ-micro">{t("當前問題")}</span>
       <h2>{thoughtText(selected, "title")}</h2><p>{thoughtText(selected, "thesis")}</p>
-      <div className="civ-detail-actions"><button type="button" onClick={() => setView("c")}>{t("海報閱讀")} →</button><button type="button" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製分享")} ↗</button></div>
+      <div className="civ-detail-actions"><button type="button" onClick={() => setView("c")}>{t("海報閱讀")} →</button>{selected.can_edit && <button type="button" onClick={() => { setComposerError(""); setComposer({ initial: selected }); }}>{t("編輯")} ↗</button>}<button type="button" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製分享")} ↗</button></div>
     </aside>}
   </div>;
 
@@ -223,17 +242,17 @@ const Page = () => {
   const reader = !selected ? <div className="civ-empty">{t("沒有符合條件的思考對象")}</div> : <div className="civ-reader" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}>
     <nav className="civ-reader-rail" aria-label={t("問題")}>{visible.map(thought => { const domain = domainOf(thought.domain); return <button type="button" key={thought.id} data-domain={domain.key} style={domainStyle(domain)} className={thought.id === selected.id ? "is-active" : ""} onClick={() => selectThought(thought.id)}>{thought.no} · {domain.en.toUpperCase()}</button>; })}</nav>
     <article className="civ-reader-poster" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><PosterMotion domain={selectedDomain}/><div className="civ-poster-label"><span>CIVILIZATION · QUESTION {selected.no}</span><span>{selectedDomain.en.toUpperCase()}</span></div><h2 className="civ-poster-question"><PosterQuestion>{thoughtText(selected, "title")}</PosterQuestion></h2><p className="civ-poster-thesis">{thoughtText(selected, "thesis")}</p><footer className="civ-poster-foot"><span>ONE QUESTION · MANY LENSES</span><span>{selected.date}</span></footer></article>
-    <aside className="civ-reader-notes" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><span className="civ-micro">CHANGE THE LENS / {t("換一個角度")}</span><h3>{thoughtText(selected, "title")}</h3><p>{thoughtText(selected, "short")}</p><div className="civ-lens-list">{selectedLenses.length ? selectedLenses.map((item, index) => <button type="button" key={index} className={lens === index ? "is-active" : ""} onClick={() => setLens(index)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{localText(item.name)}</strong><br/>{localText(item.text)}</span></button>) : <div className="civ-empty">{t("尚未添加視角")}</div>}</div><button type="button" className="civ-read-action" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製這個思考的鏈接")} →</button></aside>
+    <aside className="civ-reader-notes" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}><span className="civ-micro">CHANGE THE LENS / {t("換一個角度")}</span><h3>{thoughtText(selected, "title")}</h3><p>{thoughtText(selected, "short")}</p><div className="civ-lens-list">{selectedLenses.length ? selectedLenses.map((item, index) => <button type="button" key={index} className={lens === index ? "is-active" : ""} onClick={() => setLens(index)}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{localText(item.name)}</strong><br/>{localText(item.text)}</span></button>) : <div className="civ-empty civ-lens-empty">{t("尚未添加視角")}</div>}</div><div className="civ-read-actions">{selected.can_edit && <button type="button" className="civ-read-action" onClick={() => { setComposerError(""); setComposer({ initial: selected }); }}>{t(selectedLenses.length ? "編輯" : "添加視角")} →</button>}<button type="button" className="civ-read-action" onClick={() => selected.can_delete ? removeThought(selected) : copyLink(selected)}>{selected.can_delete ? t("刪除") : t("複製這個思考的鏈接")} →</button></div></aside>
   </div>;
 
   return <div className="civilization-page" data-domain={activeDomain.key} style={domainStyle(activeDomain)}>
-    <header className="civ-toolbar"><div className="civ-toolbar-brand"><span className="civ-toolbar-mark" aria-hidden="true"/><span>BONFIRE PLATFORM<br/>CIVILIZATION / {t("文明")}</span></div><nav className="civ-view-switch" aria-label={t("閱讀海報")}>{[["a", "問題拓撲"], ["b", "思想時間軸"], ["c", "閱讀海報"]].map(([id, label]) => <button type="button" key={id} aria-selected={view === id} onClick={() => setView(id)}>{id.toUpperCase()} {t(label)}</button>)}</nav><div className="civ-toolbar-right"><span>{String(allThoughts.length).padStart(2, "0")} QUESTIONS · {String(allThoughts.reduce((sum, item) => sum + thoughtLenses(item).length, 0)).padStart(2, "0")} LENSES</span><button type="button" className="civ-new-button" onClick={() => { setComposerError(""); setComposer(true); }}>＋ {t("記錄一個問題")}</button></div></header>
+    <header className="civ-toolbar"><div className="civ-toolbar-brand"><span className="civ-toolbar-mark" aria-hidden="true"/><span>BONFIRE PLATFORM<br/>CIVILIZATION / {t("文明")}</span></div><nav className="civ-view-switch" aria-label={t("閱讀海報")}>{[["a", "問題拓撲"], ["b", "思想時間軸"], ["c", "閱讀海報"]].map(([id, label]) => <button type="button" key={id} aria-selected={view === id} onClick={() => setView(id)}>{id.toUpperCase()} {t(label)}</button>)}</nav><div className="civ-toolbar-right"><span>{String(allThoughts.length).padStart(2, "0")} QUESTIONS · {String(allThoughts.reduce((sum, item) => sum + thoughtLenses(item).length, 0)).padStart(2, "0")} LENSES</span><button type="button" className="civ-new-button" onClick={() => { setComposerError(""); setComposer({ initial: null }); }}>＋ {t("記錄一個問題")}</button></div></header>
     <section className="civ-masthead"><div className="civ-mast-copy"><span className="civ-kicker">MODULE C1 · {t("共享觀看方式").toUpperCase()}</span><h1 className="civ-mast-title">{t("文明")}<span>CIVILIZATION</span></h1><p className="civ-mast-lead">{t("分享答案之前，先分享我們如何提出問題。")} {t("這裡保存觀察世界的方法、判斷事物的尺度，以及思想彼此連接和變化的過程。")}</p></div><aside className="civ-mast-index"><span className="civ-micro">LIVE INDEX / {new Date().getFullYear()}</span><strong>C1</strong><div className="civ-domain-spectrum" aria-hidden="true">{DOMAINS.slice(1).map(domain => <i key={domain.key} style={domainStyle(domain)}/>)}</div><p>{t("提問").toUpperCase()}<br/>{t("視角").toUpperCase()}<br/>{t("方法").toUpperCase()}<br/>{t("譜系").toUpperCase()}</p></aside></section>
     <section className="civ-filters"><div className="civ-filter-label"><b>FILTER / {t("篩選")}</b><small>{String(visible.length).padStart(2, "0")} {t("個對象").toUpperCase()}</small></div><div className="civ-filter-buttons" role="group" aria-label={t("篩選")}>{DOMAINS.map(domain => <button type="button" key={domain.key} data-domain={domain.key} style={domainStyle(domain)} className={filter === domain.key ? "is-active" : ""} onClick={() => setFilter(domain.key)}>{lang() === "en" ? domain.en : t(domain.zh)}</button>)}</div><label className="civ-search"><span>⌕</span><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索問題、方法或角度")}/></label></section>
     {loadError && <div className="civ-load-error" role="alert"><span>{t("文明資料讀取失敗")}: {loadError}</span><button type="button" onClick={loadThoughts}>{t("重新讀取")}</button></div>}
     <main className="civ-view">{view === "a" ? atlas : view === "b" ? chronology : reader}</main>
     <footer className="civ-footer"><span>INFORMATION BEFORE DECORATION</span><span>LIST ↔ LINEAGE ↔ READING</span></footer>
-    {composer && <CivilizationComposer busy={composerBusy} error={composerError} onClose={() => setComposer(false)} onSave={saveThought}/>} {toast && <div className="civ-toast" role="status">{toast}</div>}
+    {composer && <CivilizationComposer busy={composerBusy} error={composerError} initial={composer.initial} onClose={() => setComposer(null)} onSave={saveThought}/>} {toast && <div className="civ-toast" role="status">{toast}</div>}
   </div>;
 };
 
