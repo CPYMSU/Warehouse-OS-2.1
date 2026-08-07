@@ -14,7 +14,9 @@ SCHEMA_MIGRATION = (
     / "versions"
     / "20260807_0083_civilization_thoughts.py"
 )
-SEED_MIGRATION = ROOT / "backend" / "alembic" / "versions" / "20260807_0084_civilization_seed.py"
+EMPTY_DATA_MIGRATION = (
+    ROOT / "backend" / "alembic" / "versions" / "20260807_0084_civilization_empty_data.py"
+)
 
 
 def test_civilization_navigation_sits_between_records_and_settings() -> None:
@@ -51,7 +53,7 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
 
 def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
     schema_migration = SCHEMA_MIGRATION.read_text(encoding="utf-8")
-    seed_migration = SEED_MIGRATION.read_text(encoding="utf-8")
+    empty_data_migration = EMPTY_DATA_MIGRATION.read_text(encoding="utf-8")
 
     assert 'warehouse_scope = "schema"' in schema_migration
     assert "CREATE TABLE civilization.thoughts" in schema_migration
@@ -59,5 +61,7 @@ def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
     assert "FORCE ROW LEVEL SECURITY" in schema_migration
     assert "tenant_id = app.current_tenant_id()" in schema_migration
     assert "INSERT INTO civilization.thoughts" not in schema_migration
-    assert 'warehouse_scope = "primary_data"' in seed_migration
-    assert "ON CONFLICT (tenant_id, stable_key) DO NOTHING" in seed_migration
+    assert 'warehouse_scope = "primary_data"' in empty_data_migration
+    assert "INSERT" not in empty_data_migration
+    assert "DELETE" not in empty_data_migration
+    assert "No application rows are written" in empty_data_migration
