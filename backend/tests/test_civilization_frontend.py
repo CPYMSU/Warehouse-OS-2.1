@@ -7,7 +7,14 @@ ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.jsx"
 STYLE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.css"
 INDEX = ROOT / "frontend" / "v2" / "index.html"
-MIGRATION = ROOT / "backend" / "alembic" / "versions" / "20260807_0083_civilization_thoughts.py"
+SCHEMA_MIGRATION = (
+    ROOT
+    / "backend"
+    / "alembic"
+    / "versions"
+    / "20260807_0083_civilization_thoughts.py"
+)
+SEED_MIGRATION = ROOT / "backend" / "alembic" / "versions" / "20260807_0084_civilization_seed.py"
 
 
 def test_civilization_navigation_sits_between_records_and_settings() -> None:
@@ -43,10 +50,14 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
 
 
 def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
-    migration = MIGRATION.read_text(encoding="utf-8")
+    schema_migration = SCHEMA_MIGRATION.read_text(encoding="utf-8")
+    seed_migration = SEED_MIGRATION.read_text(encoding="utf-8")
 
-    assert "CREATE TABLE civilization.thoughts" in migration
-    assert "ENABLE ROW LEVEL SECURITY" in migration
-    assert "FORCE ROW LEVEL SECURITY" in migration
-    assert "tenant_id = app.current_tenant_id()" in migration
-    assert "ON CONFLICT (tenant_id, stable_key) DO NOTHING" in migration
+    assert 'warehouse_scope = "schema"' in schema_migration
+    assert "CREATE TABLE civilization.thoughts" in schema_migration
+    assert "ENABLE ROW LEVEL SECURITY" in schema_migration
+    assert "FORCE ROW LEVEL SECURITY" in schema_migration
+    assert "tenant_id = app.current_tenant_id()" in schema_migration
+    assert "INSERT INTO civilization.thoughts" not in schema_migration
+    assert 'warehouse_scope = "primary_data"' in seed_migration
+    assert "ON CONFLICT (tenant_id, stable_key) DO NOTHING" in seed_migration
