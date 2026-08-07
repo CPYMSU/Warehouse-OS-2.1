@@ -738,9 +738,32 @@ def test_registration_and_join_approvals_share_the_real_membership_workflow() ->
         assert approved_registration["ok"] is True
         assert approved_registration["status"] == "succeeded"
         assert approved_registration["data"]["membership_active"] is True
+        assert approved_registration["data"]["verification"] == {
+            "schema": "warehouse.domain-readback.v1",
+            "verified": True,
+            "source": "tenant_membership_readback",
+        }
+        membership_readback = approved_registration["data"]["membership"]
+        assert membership_readback["active"] is True
+        assert membership_readback["username"] == registration_username
+        assert "position_code" in membership_readback
+        assert "role_name" in membership_readback
+        observation = approved_registration["data"]["world_observation"]
+        assert observation["schema"] == "warehouse.world-observation.v1"
+        assert observation["verified_facts"]["assignment_readback"] is True
+        assert observation["related_entities"][0]["resource"] == "iam.member"
         approved_registrations = client.get("/api/auth/registrations?status=approved").json()
         assert [row["id"] for row in approved_registrations["requests"]] == [registration_id]
         assert approved_registrations["pending_count"] == 0
+
+        idempotent_approval = executor.execute_confirmed_runtime_tool_call(
+            manager,
+            "registration_approve",
+            {"id": registration_id, "note": "Registration verified"},
+        )
+        assert idempotent_approval["ok"] is True
+        assert idempotent_approval["data"]["already_processed"] is True
+        assert idempotent_approval["data"]["membership"] == membership_readback
 
         rejected_username = f"rejected-{uuid4().hex[:12]}"
         rejected_registration = client.post(

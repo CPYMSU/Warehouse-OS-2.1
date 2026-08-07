@@ -1017,6 +1017,22 @@ def _domain_index_prompt(
     }
 
 
+def _resource_atlas_prompt(layers: dict[str, object]) -> list[dict[str, object]]:
+    l0 = layers.get("L0_permanent_world_map")
+    l0 = l0 if isinstance(l0, dict) else {}
+    return [
+        {
+            "resource_key": item.get("resource_key"),
+            "aliases": item.get("aliases") or [],
+            "identity_fields": item.get("identity_fields") or [],
+            "allowed_effects": item.get("allowed_effects") or [],
+            "description": str(item.get("description") or "")[:180],
+        }
+        for item in l0.get("resource_atlas") or []
+        if isinstance(item, dict) and item.get("resource_key")
+    ]
+
+
 def _parameter_contracts(tool_names: list[str]) -> list[dict[str, object]]:
     contracts: list[dict[str, object]] = []
     for gene in ai_capability_genes(tool_names):
@@ -1032,6 +1048,7 @@ def _parameter_contracts(tool_names: list[str]) -> list[dict[str, object]]:
                 "tool_name": name,
                 "parameters": function.get("parameters") or {},
                 "confirmation_policy": gene.get("confirmation_policy") or {},
+                "semantic_contract": gene.get("semantic_contract") or {},
             }
         )
     return contracts
@@ -1951,6 +1968,7 @@ def _plan_goal(
         "company_summary": l1.get("company_summary") or {},
         "goal": l2,
         "selected_capability_genes": l3.get("selected_capability_genes") or [],
+        "registered_resource_atlas": _resource_atlas_prompt(layers),
         "contextual_evidence": _compact_for_model(contextual_evidence),
         "data_scope": "current_tenant_only",
     }
@@ -1984,6 +2002,8 @@ def _plan_goal(
             "semantic_contract as a factual effect and invariant declaration, not a prescribed "
             "workflow. Prefer the capability whose effect matches the typed resource and goal; "
             "do not substitute a superficially similar write. "
+            "registered_resource_atlas is the exact semantic registry. When using generic data "
+            "capabilities, use only a listed resource_key or alias; never shorten or invent one. "
             "The completion assessment is provisional until the independent reflection phase "
             "has linked material world claims to observed evidence. Do not put an unobserved "
             "resource locator or deliverable in message. " + _language_prompt(layers)
@@ -2159,6 +2179,12 @@ def _reflect(
             "action fails, that authorization remains bound to the failed action. Preserve "
             "action_context, incorporate the returned evidence, and freely replan; any "
             "materially different write must become a new confirmation proposal. "
+            "A succeeded domain capability with verified readback or a world observation is "
+            "authoritative evidence for its declared effect and returned facts. Cite that "
+            "evidence and finish when it satisfies the goal; generic semantic resolution is "
+            "optional and must not be used merely to re-prove the same successful effect. "
+            "When a missing fact truly requires generic data, use only an exact resource_key "
+            "or alias from registered_resource_atlas; never guess a shorter name. "
             "Atomic recovery packets are optional affordances after a failed capability, "
             "not mandatory fallback steps. The company AI database Runtime may expose "
             "physical schemas, columns, keys, row values, read-only SQL and SQL writes under "
@@ -2240,6 +2266,7 @@ def _reflect(
                     list(l3.get("tool_results") or tool_results),
                 ),
                 "capability_atlas": l0.get("capability_atlas") or [],
+                "registered_resource_atlas": _resource_atlas_prompt(layers),
                 "expanded_domains": l3.get("expanded_domains") or [],
                 "expanded_families": l3.get("expanded_families") or [],
                 "expanded_domain_capability_index": _domain_index_prompt(

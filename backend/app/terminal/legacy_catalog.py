@@ -9948,6 +9948,7 @@ COMMANDS = [
             "identity_invariant": "global_login_exists_and_must_not_be_recreated",
             "request_kind": "join",
             "position_policy": "resolve_requested_or_existing_position_profile",
+            "success_evidence": "active_membership_assignment_readback_and_world_observation",
             "workflow_prescribed": False,
         },
         "params": [
@@ -10027,6 +10028,7 @@ COMMANDS = [
             "identity_invariant": "global_login_exists_and_must_not_be_recreated",
             "request_kind": "registration",
             "position_policy": "resolve_requested_or_existing_position_profile",
+            "success_evidence": "active_membership_assignment_readback_and_world_observation",
             "workflow_prescribed": False,
         },
         "search_aliases": ["批准註冊", "审批注册", "通過註冊申請", "approve registration"],

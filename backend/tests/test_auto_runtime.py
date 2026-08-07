@@ -669,6 +669,97 @@ def test_runtime_preserves_world_observations_without_turning_them_into_workflow
     assert projected[0]["workflow_prescribed"] is False
 
 
+def test_plan_and_reflection_receive_exact_registered_resource_keys(monkeypatch) -> None:
+    layers = {
+        "L0_permanent_world_map": {
+            "capability_atlas": [],
+            "resource_atlas": [
+                {
+                    "resource_key": "iam.member",
+                    "aliases": ["member_profile"],
+                    "identity_fields": ["user_id", "username"],
+                    "allowed_effects": ["read"],
+                    "description": "Canonical tenant member",
+                }
+            ],
+        },
+        "L1_current_company_and_people": {"company_summary": {}},
+        "L2_current_goal": {
+            "action_context": {
+                "resource_type": "iam.membership_request",
+                "resource_ref": "request-1",
+            }
+        },
+        "L3_execution_working_set": {
+            "selected_capability_genes": [],
+            "expanded_domains": [],
+            "expanded_families": [],
+            "domain_capability_index": [],
+        },
+    }
+    captured: dict[str, object] = {}
+
+    def fake_completion(_connection, **kwargs):
+        captured[str(kwargs["phase"])] = kwargs
+        if kwargs["phase"] == "plan":
+            return json.dumps(
+                {
+                    "message": "核对成功回读。",
+                    "plan": ["使用现有证据"],
+                    "decisions": [],
+                    "completion_assessment": {"complete": True},
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "message": "审批与岗位回读已完成。",
+                "goal_complete": True,
+                "evidence": ["domain readback"],
+                "claims": [],
+                "contradictions": [],
+                "revised_plan": [],
+                "continue_reason": "complete",
+                "continue_autonomously": False,
+                "requires_user_input": False,
+                "next_domains": [],
+                "next_families": [],
+                "next_decisions": [],
+                "memory_candidate": None,
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(auto_runtime, "_completion", fake_completion)
+    auto_runtime._plan_goal(
+        SimpleNamespace(),
+        "审批申请",
+        layers,
+        {},
+        [],
+        context_mode="balanced",
+        activity_callback=None,
+    )
+    auto_runtime._reflect(
+        SimpleNamespace(),
+        "审批申请",
+        {"plan": []},
+        [],
+        round_number=1,
+        layers=layers,
+        metrics=[],
+        context_mode="balanced",
+        activity_callback=None,
+    )
+
+    plan_prompt = str(captured["plan"]["user_prompt"])
+    reflection_prompt = json.loads(str(captured["reflect_1"]["user_prompt"]))
+    assert '"resource_key":"iam.member"' in plan_prompt
+    assert '"aliases":["member_profile"]' in plan_prompt
+    assert reflection_prompt["registered_resource_atlas"][0]["resource_key"] == "iam.member"
+    assert "never guess a shorter name" in str(captured["reflect_1"]["system_prompt"])
+
+
 def test_runtime_preserves_atomic_recovery_as_optional_ai_affordance() -> None:
     recovery = {
         "schema": "warehouse.atomic-recovery.v1",

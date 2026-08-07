@@ -195,6 +195,122 @@ def _load_request_for_review(
     return dict(row)
 
 
+def _active_membership_readback(
+    actor: ActorContext,
+    user_id: object,
+) -> dict[str, object]:
+    """Read the actual tenant assignment after a membership transition."""
+
+    with tenant_session(actor.tenant_id) as session:
+        row = (
+            session.execute(
+                text(
+                    """
+                SELECT m.user_id, u.username, u.display_name, m.active,
+                       m.position_code, m.role_level, m.topology_level,
+                       m.topology_title,
+                       position.name AS position_name,
+                       position.department_code AS org_unit_code,
+                       org_unit.name AS org_unit_name,
+                       assigned_role.id AS role_id,
+                       assigned_role.role_key,
+                       assigned_role.name AS role_name,
+                       assigned_role.level AS access_role_level
+                FROM iam.memberships AS m
+                JOIN iam.users AS u ON u.id = m.user_id
+                LEFT JOIN iam.position_profiles AS position
+                  ON position.tenant_id = m.tenant_id
+                 AND position.position_code = m.position_code
+                LEFT JOIN iam.organizational_units AS org_unit
+                  ON org_unit.tenant_id = position.tenant_id
+                 AND org_unit.unit_code = position.department_code
+                LEFT JOIN LATERAL (
+                  SELECT role.id, role.role_key, role.name, role.level
+                  FROM iam.membership_roles AS membership_role
+                  JOIN iam.roles AS role
+                    ON role.tenant_id = membership_role.tenant_id
+                   AND role.id = membership_role.role_id
+                  WHERE membership_role.tenant_id = m.tenant_id
+                    AND membership_role.user_id = m.user_id
+                    AND role.active
+                  ORDER BY role.level DESC, role.name
+                  LIMIT 1
+                ) AS assigned_role ON true
+                WHERE m.tenant_id = :tenant_id AND m.user_id = :user_id
+                  AND m.active
+                """
+                ),
+                {"tenant_id": actor.tenant_id, "user_id": user_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approved request has no active tenant membership",
+        )
+    return _safe(dict(row))
+
+
+def _approval_result(
+    actor: ActorContext,
+    request_row: dict[str, object],
+    *,
+    already_processed: bool = False,
+) -> dict[str, object]:
+    membership = _active_membership_readback(actor, request_row["user_id"])
+    request_id = str(request_row["id"])
+    request_kind = str(request_row["request_kind"])
+    observation = {
+        "schema": "warehouse.world-observation.v1",
+        "operation": "membership_request.approve",
+        "effect": "membership_activated",
+        "primary_entity": {
+            "resource": "iam.membership_request",
+            "id": request_id,
+            "ref": request_id,
+            "facts": {"status": "approved", "request_kind": request_kind},
+        },
+        "related_entities": [
+            {
+                "resource": "iam.member",
+                "id": membership["user_id"],
+                "ref": membership["username"],
+                "facts": membership,
+            }
+        ],
+        "verified_facts": {
+            "request_status": "approved",
+            "request_kind": request_kind,
+            "membership_active": membership["active"] is True,
+            "assignment_readback": True,
+            "org_unit_code": membership.get("org_unit_code"),
+            "position_code": membership.get("position_code"),
+            "role_id": membership.get("role_id"),
+        },
+        "uncertainties": [],
+        "affordances": [],
+        "decision_owner": "auto_runtime",
+        "workflow_prescribed": False,
+    }
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "status": "approved",
+        "request_kind": request_kind,
+        "membership_active": True,
+        "membership": membership,
+        "verification": {
+            "schema": "warehouse.domain-readback.v1",
+            "verified": True,
+            "source": "tenant_membership_readback",
+        },
+        "world_observation": observation,
+        **({"already_processed": True} if already_processed else {}),
+    }
+
+
 def _audit(
     session,
     actor: ActorContext,
@@ -233,12 +349,7 @@ def approve_membership_request(
         expected_kind=expected_kind,
     )
     if request_row["status"] == "approved":
-        return {
-            "ok": True,
-            "request_id": str(request_row["id"]),
-            "status": "approved",
-            "already_processed": True,
-        }
+        return _approval_result(actor, request_row, already_processed=True)
     if request_row["status"] != "pending":
         raise HTTPException(status_code=409, detail="Membership request is already rejected")
 
@@ -449,13 +560,7 @@ def approve_membership_request(
         )
     if result.rowcount != 1:
         raise HTTPException(status_code=409, detail="Membership request changed during approval")
-    return {
-        "ok": True,
-        "request_id": str(request_row["id"]),
-        "status": "approved",
-        "request_kind": request_row["request_kind"],
-        "membership_active": True,
-    }
+    return _approval_result(actor, request_row)
 
 
 def reject_membership_request(
