@@ -85,7 +85,7 @@ window.W2_LANG.addEN({
   "自動生成": "Generated automatically", "公司直屬": "Reports to company", "無預設角色": "No default role", "主管崗位標記": "Manager position",
   "部門身份": "Department identity", "組織位置": "Organisation placement", "部門職責": "Department purpose", "建立規則": "Creation rules",
   "長期組織單元": "Long-term organisation unit", "小型執行單元": "Small delivery unit", "圍繞專案建立": "Project-based unit", "自定義組織形式": "Custom organisation form",
-  "公司或現有部門": "Company or existing department", "位置預覽": "Placement preview", "繼承上級權限邊界": "Inherit parent access ceiling", "繼承上級導航範圍": "Inherit parent navigation scope",
+  "公司或現有部門": "Company or existing department", "公司本體 · 直屬公司": "Company itself · reports directly to company", "位置預覽": "Placement preview", "繼承上級權限邊界": "Inherit parent access ceiling", "繼承上級導航範圍": "Inherit parent navigation scope",
   "部門代碼留空時由系統自動生成；建立後保持穩定。": "Leave the code blank to generate it automatically; it remains stable after creation.",
   "工作流節點職責": "Workflow node responsibilities",
   "按節點類型與階段顯示；責任綁定以採購工作流節點設定為唯一事實來源，本頁不另存副本。": "Grouped by node type and stage. Procurement workflow node settings are the single source of truth for responsibility bindings; this page stores no duplicate copy.",
@@ -981,7 +981,8 @@ const OrgEntityForm = ({ mode, entity, seedParentId, units, memberships, roles, 
   const managerChoices = isCreate || !entity ? [] : (memberships || []).filter(m => String(m.org_unit_id) === String(entity.id));
   const activeUnits = (units || []).filter(u => {
     const active = !(u && (u.active === false || u.active === 0 || u.active === "0" || String(u.active).toLowerCase() === "false"));
-    return active && String(u && u.id || "") !== String(entity && entity.id || "");
+    const isSelf = !isCreate && String(u && u.id || "") === String(entity && entity.id || "");
+    return active && !isSelf;
   }).sort((a, b) => {
     const aCompany = String(a && a.unit_type || "").toLowerCase() === "company";
     const bCompany = String(b && b.unit_type || "").toLowerCase() === "company";
@@ -1039,7 +1040,7 @@ const OrgEntityForm = ({ mode, entity, seedParentId, units, memberships, roles, 
   if (isDepartment && isCreate) return <form className="org-form org-department-create" onSubmit={submit}>
     <div className="row spread g8"><div><LB red>{t("新增部門")}</LB><div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{t("按鈕與 AI 使用同一 tool_name、參數 Schema、權限、確認與審計。")}</div></div><button className="btn ghost sm" type="button" onClick={onCancel}>{t("返回詳情")}</button></div>
     <section className="org-create-section"><div className="org-create-no">01</div><div className="org-create-body"><LB dim>{t("部門身份")}</LB><div className="org-form-grid" style={{ marginTop: 8 }}><label>{t("部門名稱")}<input className="field boxed" autoFocus required maxLength="120" value={form.name} onChange={e => set("name", e.target.value)}/></label><label>{t("部門代碼")}<input className="field boxed mono" maxLength="80" value={form.code} placeholder={t("自動生成")} onChange={e => set("code", e.target.value)}/><span className="muted" style={{ fontSize: 9.5, lineHeight: 1.45 }}>{t("部門代碼留空時由系統自動生成；建立後保持穩定。")}</span></label></div><div className="org-type-grid">{typeOptions.map(([value, label, note]) => <button key={value} type="button" className={form.type === value ? "on" : ""} onClick={() => set("type", value)}><b>{t(label)}</b><span>{t(note)}</span></button>)}</div></div></section>
-    <section className="org-create-section"><div className="org-create-no">02</div><div className="org-create-body"><LB dim>{t("組織位置")}</LB><label style={{ marginTop: 8 }}>{t("上級組織")}<select className="field boxed" required value={form.parent_id} onChange={e => set("parent_id", e.target.value)}><option value="">{t("公司或現有部門")}</option>{activeUnits.map(u => <option key={u.id} value={u.id}>{String(u.unit_type) === "company" ? "▣ " : "└ "}{unitPath(u).join(" / ")}</option>)}</select></label><div className="org-placement-preview"><LB red>{t("位置預覽")}</LB><div>{placementPath.map((part, index) => <span key={index} style={{ paddingLeft: index * 12 }}>{index ? "└─ " : "▣ "}{part}</span>)}</div></div></div></section>
+    <section className="org-create-section"><div className="org-create-no">02</div><div className="org-create-body"><LB dim>{t("組織位置")}</LB><label style={{ marginTop: 8 }}>{t("上級組織")}<select className="field boxed" required value={form.parent_id} onChange={e => set("parent_id", e.target.value)}><option value="">{t("公司或現有部門")}</option>{activeUnits.map(u => <option key={u.id} value={u.id}>{String(u.unit_type) === "company" ? "▣ " + (u.unit_name || u.unit_code) + " · " + t("公司本體 · 直屬公司") : "└ " + unitPath(u).join(" / ")}</option>)}</select></label><div className="org-placement-preview"><LB red>{t("位置預覽")}</LB><div>{placementPath.map((part, index) => <span key={index} style={{ paddingLeft: index * 12 }}>{index ? "└─ " : "▣ "}{part}</span>)}</div></div></div></section>
     <section className="org-create-section"><div className="org-create-no">03</div><div className="org-create-body"><LB dim>{t("部門職責")}</LB><label style={{ marginTop: 8 }}>{t("說明")}<textarea className="field boxed" maxLength="800" rows="4" value={form.description} onChange={e => set("description", e.target.value)}/></label></div></section>
     <section className="org-create-section"><div className="org-create-no">04</div><div className="org-create-body"><LB dim>{t("建立規則")}</LB><div className="org-inherit-summary"><span>✓ {t("繼承上級權限邊界")}</span><span>✓ {t("繼承上級導航範圍")}</span></div></div></section>
     {formError && <div className="org-notice error" role="alert">{formError}</div>}

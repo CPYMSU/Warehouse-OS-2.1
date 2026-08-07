@@ -33,3 +33,10 @@ def test_department_and_appointment_buttons_use_shared_capability_contracts() ->
     assert 'openOrgAction("organization_user_appointment_remove"' in source
     assert "governanceLabelOf(governanceIdentity)" in source
     assert "Math.min(11, governanceLevelOf(u))" in source
+
+
+def test_department_create_keeps_company_root_available_as_parent() -> None:
+    source = (ROOT / "frontend/v2/pages/pages-perms.jsx").read_text(encoding="utf-8")
+
+    assert "const isSelf = !isCreate" in source
+    assert 't("公司本體 · 直屬公司")' in source
