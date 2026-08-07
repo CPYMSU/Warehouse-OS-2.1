@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from app.db.session import tenant_session
+from app.services.action_context import bounded_action_context
 from app.services.passkey_grants import consume_step_up_grant
 from app.services.runtime_output import public_data
 from app.templates.industry_blueprints import BLUEPRINT_PERMISSION_KEYS
@@ -58,9 +59,7 @@ def _digest(value: object) -> str:
 
 
 def _fernet(signing_secret: str) -> Fernet:
-    key = hashlib.sha256(
-        ("warehouse-confirmation-v1:" + signing_secret).encode("utf-8")
-    ).digest()
+    key = hashlib.sha256(("warehouse-confirmation-v1:" + signing_secret).encode("utf-8")).digest()
     return Fernet(base64.urlsafe_b64encode(key))
 
 
@@ -151,16 +150,16 @@ def _presentation(
         if sensitive or field_type is None:
             continue
         editable_field = {
-                "key": flag,
-                "label": label,
-                "type": field_type,
-                "value": (
-                    ",".join(str(item) for item in arguments[flag])
-                    if isinstance(arguments[flag], list)
-                    else arguments[flag]
-                ),
-                "required": bool(parameter.get("required")),
-            }
+            "key": flag,
+            "label": label,
+            "type": field_type,
+            "value": (
+                ",".join(str(item) for item in arguments[flag])
+                if isinstance(arguments[flag], list)
+                else arguments[flag]
+            ),
+            "required": bool(parameter.get("required")),
+        }
         if choices:
             editable_field["choices"] = choices
         editable.append(editable_field)
@@ -331,19 +330,13 @@ def _delivery_descriptor(row: Mapping[str, object]) -> dict[str, object]:
     return {
         "delivery_id": str(row["delivery_id"]),
         "action_id": action_id,
-        "conversation_id": (
-            str(row["conversation_id"]) if row.get("conversation_id") else None
-        ),
+        "conversation_id": (str(row["conversation_id"]) if row.get("conversation_id") else None),
         "status": str(row["status"]),
         "expires_at": _safe_datetime(row["expires_at"]),
         "credential_count": int(row["credential_count"]),
         "credentials": list(row["descriptors"] or []),
-        "fetch_path": (
-            f"/api/agent/confirmation-actions/{action_id}/credential-delivery/fetch"
-        ),
-        "ack_path": (
-            f"/api/agent/confirmation-actions/{action_id}/credential-delivery/ack"
-        ),
+        "fetch_path": (f"/api/agent/confirmation-actions/{action_id}/credential-delivery/fetch"),
+        "ack_path": (f"/api/agent/confirmation-actions/{action_id}/credential-delivery/ack"),
     }
 
 
@@ -360,6 +353,8 @@ def _public_action(session: Session, row: Mapping[str, object]) -> dict[str, obj
             "completed_at": _safe_datetime(row["completed_at"]),
             "execution_id": str(row["execution_id"]) if row.get("execution_id") else None,
         }
+    presentation = dict(row["presentation"] or {})
+    action_context = bounded_action_context(presentation.pop("_runtime_action_context", None))
     action: dict[str, object] = {
         "id": action_id,
         "action_id": action_id,
@@ -371,23 +366,15 @@ def _public_action(session: Session, row: Mapping[str, object]) -> dict[str, obj
         "tool_name": str(row["tool_name"]),
         "source_run_id": str(row["run_id"]) if row.get("run_id") else None,
         "source_step_no": row.get("source_step_no"),
-        "conversation_id": (
-            str(row["conversation_id"]) if row.get("conversation_id") else None
-        ),
+        "conversation_id": (str(row["conversation_id"]) if row.get("conversation_id") else None),
         "risk": str(row["risk"]),
         "passkey_required": True,
-        "presentation": dict(row["presentation"] or {}),
+        "presentation": presentation,
         "editable_fields": list(row["editable_fields"] or []),
         "result": public_data(row.get("result"), locale="zh-Hant"),
-        "error": (
-            "操作未完成；原始診斷已保留於受保護的審計記錄。"
-            if row.get("error")
-            else None
-        ),
+        "error": ("操作未完成；原始診斷已保留於受保護的審計記錄。" if row.get("error") else None),
         "verification": (
-            dict(row["verification"])
-            if isinstance(row.get("verification"), dict)
-            else None
+            dict(row["verification"]) if isinstance(row.get("verification"), dict) else None
         ),
         "expires_at": _safe_datetime(row["expires_at"]),
         "authorized_at": _safe_datetime(row.get("authorized_at")),
@@ -398,6 +385,8 @@ def _public_action(session: Session, row: Mapping[str, object]) -> dict[str, obj
         "created_at": _safe_datetime(row["created_at"]),
         "updated_at": _safe_datetime(row["updated_at"]),
     }
+    if action_context is not None:
+        action["action_context"] = action_context
     action["timestamps"] = {
         key: action[key]
         for key in (
@@ -498,6 +487,7 @@ def propose_confirmation_action(
     conversation_id: object = None,
     run_id: object = None,
     source_step_no: int | None = None,
+    action_context: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Persist one model-selected proposal without executing its mutation."""
 
@@ -514,6 +504,9 @@ def propose_confirmation_action(
     except (legacy_catalog.CommandError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     presentation, editable = _presentation(entry, normalized)
+    retained_action_context = bounded_action_context(action_context)
+    if retained_action_context is not None:
+        presentation["_runtime_action_context"] = retained_action_context
     arguments_digest = _digest({"tool_name": tool_name, "arguments": normalized})
     request_digest = _digest(
         {
@@ -521,6 +514,7 @@ def propose_confirmation_action(
             "arguments_digest": arguments_digest,
             "run_id": str(run_id or ""),
             "source_step_no": source_step_no,
+            "action_context": retained_action_context,
         }
     )
     conversation_uuid = _as_uuid(conversation_id)
@@ -583,9 +577,7 @@ def propose_confirmation_action(
                     "risk": entry["risk"],
                     "confirmation_mode": policy["mode"],
                     "confirmation_adapter": policy["adapter"],
-                    "arguments_ciphertext": _encrypt_json(
-                        settings.integration_secret, normalized
-                    ),
+                    "arguments_ciphertext": _encrypt_json(settings.integration_secret, normalized),
                     "arguments_digest": arguments_digest,
                     "request_digest": request_digest,
                     "presentation": _canonical(presentation),
@@ -759,9 +751,7 @@ def edit_confirmation_action(
         except (legacy_catalog.CommandError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         presentation, editable = _presentation(entry, normalized)
-        arguments_digest = _digest(
-            {"tool_name": row["tool_name"], "arguments": normalized}
-        )
+        arguments_digest = _digest({"tool_name": row["tool_name"], "arguments": normalized})
         request_digest = _digest(
             {
                 "tool_name": row["tool_name"],
@@ -790,9 +780,7 @@ def edit_confirmation_action(
                     "id": int(row["id"]),
                     "revision": revision,
                     "next_revision": next_revision,
-                    "arguments_ciphertext": _encrypt_json(
-                        settings.integration_secret, normalized
-                    ),
+                    "arguments_ciphertext": _encrypt_json(settings.integration_secret, normalized),
                     "arguments_digest": arguments_digest,
                     "request_digest": request_digest,
                     "presentation": _canonical(presentation),
@@ -1008,9 +996,7 @@ def confirm_confirmation_action(
                     }
                 ),
                 "credential_client_id_hash": (
-                    hashlib.sha256(client_id.encode("utf-8")).hexdigest()
-                    if client_id
-                    else None
+                    hashlib.sha256(client_id.encode("utf-8")).hexdigest() if client_id else None
                 ),
                 "expires_at": keychain_expiry,
             },
@@ -1199,8 +1185,7 @@ def execute_authorized_confirmation_action(
                         {
                             "id": int(current["id"]),
                             "error": (
-                                "Execution outcome requires verification "
-                                f"({type(exc).__name__})"
+                                f"Execution outcome requires verification ({type(exc).__name__})"
                             ),
                         },
                     )
@@ -1228,9 +1213,7 @@ def execute_authorized_confirmation_action(
     succeeded = bool(isinstance(result, dict) and result.get("ok") is True)
     final_status = "completed" if succeeded else "failed"
     safe_result = (
-        _safe_execution_result(result, credentials)
-        if isinstance(result, dict)
-        else {"data": None}
+        _safe_execution_result(result, credentials) if isinstance(result, dict) else {"data": None}
     )
     with tenant_session(actor.tenant_id) as session:
         current = _load_action(session, actor, action_id, for_update=True)
@@ -1444,6 +1427,7 @@ def authorization_signal_for_runtime(
                 "execution_identity": str(scope.get("execution_identity") or "company_ai"),
                 "uses": int(scope.get("uses") or 1),
             },
+            "action_context": action.get("action_context"),
             "action": action,
         }
 

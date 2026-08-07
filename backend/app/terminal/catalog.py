@@ -361,24 +361,26 @@ def ai_capability_candidates(
         if entry is None:
             continue
         summary = legacy_catalog.capability_summary(entry)
-        candidates.append(
-            {
-                "tool_name": tool_name,
-                "command": summary["command"],
-                "domain": summary["category"],
-                "description": summary["description"],
-                "writes": summary["writes"],
-                "confirmation_required": (legacy_catalog.ai_confirmation_required(entry)),
-                "availability": availability(
-                    entry,
-                    platform=tool_name in platform_tool_names,
-                ),
-                "execution_kind": execution_kind(
-                    entry,
-                    platform=tool_name in platform_tool_names,
-                ),
-            }
-        )
+        candidate = {
+            "tool_name": tool_name,
+            "command": summary["command"],
+            "domain": summary["category"],
+            "description": summary["description"],
+            "writes": summary["writes"],
+            "confirmation_required": (legacy_catalog.ai_confirmation_required(entry)),
+            "availability": availability(
+                entry,
+                platform=tool_name in platform_tool_names,
+            ),
+            "execution_kind": execution_kind(
+                entry,
+                platform=tool_name in platform_tool_names,
+            ),
+        }
+        semantic_contract = dict(entry.get("semantic_contract") or {})
+        if semantic_contract:
+            candidate["semantic_contract"] = semantic_contract
+        candidates.append(candidate)
     return candidates
 
 
@@ -397,6 +399,7 @@ def ai_capability_genes(tool_names: Iterable[str]) -> list[dict[str, object]]:
                 "permission_any": list(legacy_catalog.effective_permissions(entry)),
                 "confirmation_policy": legacy_catalog.confirmation_contract(entry),
                 "examples": entry.get("examples") or [],
+                "semantic_contract": dict(entry.get("semantic_contract") or {}),
             }
         )
     return genes

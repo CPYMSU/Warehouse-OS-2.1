@@ -8822,7 +8822,7 @@ COMMANDS = [
             _p(
                 "desired-state",
                 "body.desired_state",
-                "可選 storage/runtime/deployment 目標 JSON 物件；runtime 契約必須使用 {\"type\":\"static|web|api|worker|agent|container|compose|auto\"} 物件，不接受字串縮寫",
+                '可選 storage/runtime/deployment 目標 JSON 物件；runtime 契約必須使用 {"type":"static|web|api|worker|agent|container|compose|auto"} 物件，不接受字串縮寫',
                 ptype="json",
             ),
             _p(
@@ -8914,7 +8914,12 @@ COMMANDS = [
         "writes": False,
         "risk": "normal",
         "params": [
-            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
             _p("limit", "query.limit", "發布歷史條數 1-50", ptype="int", default=20),
         ],
         "examples": ["dm pages status --workspace mk7-workspace"],
@@ -8936,12 +8941,37 @@ COMMANDS = [
         "risk": "high",
         "ai_requires_confirmation": True,
         "params": [
-            _p("workspace", "body.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
-            _p("site-key", "body.desired_state.pages.site_key", "3-63 位小寫字母、數字或連字符的 Pages 短名稱", required=True),
-            _p("public-alias", "body.desired_state.pages.public_alias_enabled", "是否啟用獨立 apps.bonfirework.org alias；未提供時保持目前值", ptype="bool"),
-            _p("message", "body.message", "本次 Pages 變更目的", default="Configure the Pages site through governed desired state"),
+            _p(
+                "workspace",
+                "body.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+            _p(
+                "site-key",
+                "body.desired_state.pages.site_key",
+                "3-63 位小寫字母、數字或連字符的 Pages 短名稱",
+                required=True,
+            ),
+            _p(
+                "public-alias",
+                "body.desired_state.pages.public_alias_enabled",
+                "是否啟用獨立 apps.bonfirework.org alias；未提供時保持目前值",
+                ptype="bool",
+            ),
+            _p(
+                "message",
+                "body.message",
+                "本次 Pages 變更目的",
+                default="Configure the Pages site through governed desired state",
+            ),
             _p("execute", "body.execute", "是否在會話內立即執行", ptype="bool", default=True),
-            _p("client-kind", "body.client_kind", "web_secretary/terminal_ai/external_ai/automation", default="web_secretary"),
+            _p(
+                "client-kind",
+                "body.client_kind",
+                "web_secretary/terminal_ai/external_ai/automation",
+                default="web_secretary",
+            ),
         ],
         "examples": [
             "dm pages configure --workspace mk7-workspace --site-key my-site --execute true"
@@ -8962,7 +8992,12 @@ COMMANDS = [
         "writes": False,
         "risk": "normal",
         "params": [
-            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
             _p("source", "query.source_ref", "可選不可變 source version UUID 或數字 ID"),
         ],
         "examples": ["dm pages design --workspace mk7-workspace"],
@@ -8984,7 +9019,12 @@ COMMANDS = [
         "writes": False,
         "risk": "normal",
         "params": [
-            _p("workspace", "path.workspace_ref", "工作区 UUID、数字 ID 或 workspace_key", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作区 UUID、数字 ID 或 workspace_key",
+                required=True,
+            ),
             _p("source", "query.source_ref", "可选不可变 source version UUID 或数字 ID"),
         ],
         "examples": ["dm pages package --workspace mk7-workspace"],
@@ -9000,7 +9040,12 @@ COMMANDS = [
         "writes": False,
         "risk": "normal",
         "params": [
-            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
             _p("path", "path.file_path", "design context 返回的精確相對文件路徑", required=True),
             _p("source", "query.source_ref", "可選不可變 source version UUID 或數字 ID"),
         ],
@@ -9017,8 +9062,18 @@ COMMANDS = [
         "risk": "high",
         "ai_requires_confirmation": True,
         "params": [
-            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
-            _p("deployment", "path.deployment_id", "目標 ready/healthy 部署 UUID 或數字 ID", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
+            _p(
+                "deployment",
+                "path.deployment_id",
+                "目標 ready/healthy 部署 UUID 或數字 ID",
+                required=True,
+            ),
         ],
         "examples": [
             "dm pages release activate --workspace mk7-workspace --deployment 74fb04b3-445b-42d1-ae91-db8b966cd2c1"
@@ -9035,7 +9090,12 @@ COMMANDS = [
         "writes": False,
         "risk": "normal",
         "params": [
-            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
         ],
         "examples": ["dm pages device plan --workspace mk7-workspace"],
     },
@@ -9050,7 +9110,12 @@ COMMANDS = [
         "risk": "high",
         "ai_requires_confirmation": True,
         "params": [
-            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
             _p("execute", "body.execute", "確認執行遷移", ptype="bool", default=True),
         ],
         "examples": ["dm pages device migrate --workspace mk7-workspace --execute true"],
@@ -9066,7 +9131,12 @@ COMMANDS = [
         "writes": False,
         "risk": "normal",
         "params": [
-            _p("workspace", "path.workspace_ref", "工作區 UUID、數字 ID 或 workspace_key", required=True),
+            _p(
+                "workspace",
+                "path.workspace_ref",
+                "工作區 UUID、數字 ID 或 workspace_key",
+                required=True,
+            ),
         ],
         "examples": ["dm device runtime --workspace mk7-workspace"],
     },
@@ -9850,7 +9920,7 @@ COMMANDS = [
     {
         "command": "members pending",
         "tool_name": "memberships_pending",
-        "description": "查待審批的企業加入申請",
+        "description": "查待審批的企業加入申請及其現有全局身份、期望部門、崗位與角色",
         "api_method": "GET",
         "api_path": "/api/memberships/pending",
         "permission": "users.manage",
@@ -9863,15 +9933,23 @@ COMMANDS = [
         "command": "members approve",
         "tool_name": "membership_approve",
         "description": (
-            "正式批准企業加入申請的唯一指令:建立或綁定租戶成員、同步部門/崗位/角色，"
+            "批准已登入全局帳號的企業加入申請：建立或綁定租戶成員、同步部門/崗位/角色，"
             "並把平台 membership 原子激活且寫入 tenant_user_id。"
-            "審批加入申請不得用 user add 或 org assign 代替；先用 members pending 核對申請 id。"
         ),
         "api_method": "POST",
         "api_path": "/api/memberships/{id}/approve",
         "permission": "users.manage",
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "effect": "approve_existing_identity_membership_request",
+            "resource": "iam.membership_request",
+            "canonical_identity": "platform.membership_requests",
+            "identity_invariant": "global_login_exists_and_must_not_be_recreated",
+            "request_kind": "join",
+            "position_policy": "resolve_requested_or_existing_position_profile",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "加入申請 UUID", required=True, positional=True),
             _p("department", "body.org_unit_code", "部門代碼(可選，覆蓋申請值)"),
@@ -9892,12 +9970,101 @@ COMMANDS = [
         "permission": "users.manage",
         "writes": True,
         "risk": "normal",
+        "semantic_contract": {
+            "effect": "reject_existing_identity_membership_request",
+            "resource": "iam.membership_request",
+            "canonical_identity": "platform.membership_requests",
+            "request_kind": "join",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "加入申請 UUID", required=True, positional=True),
             _p("note", "body.note", "駁回原因", required=True),
         ],
+        "examples": ['members reject 7fd4a7df-6f84-42c1-ae38-f58bcc488a44 --note "資料不完整"'],
+    },
+    {
+        "command": "registrations pending",
+        "tool_name": "registrations_pending",
+        "description": (
+            "查當前公司的註冊申請；註冊交易已建立全局登入身份，此處返回待審資源及其"
+            "期望部門、崗位與角色，供 AI 觀察後自主判斷。"
+        ),
+        "api_method": "GET",
+        "api_path": "/api/auth/registrations",
+        "permission": "users.manage",
+        "writes": False,
+        "risk": "low",
+        "semantic_contract": {
+            "effect": "observe_membership_requests",
+            "resource": "iam.membership_request",
+            "canonical_identity": "platform.membership_requests",
+            "identity_invariant": "global_login_already_exists",
+            "request_kind": "registration",
+            "workflow_prescribed": False,
+        },
+        "search_aliases": ["註冊申請", "注册申请", "待審批註冊", "pending registration"],
+        "params": [_p("status", "query.status", "狀態(默認 pending)")],
+        "examples": ["registrations pending"],
+    },
+    {
+        "command": "registrations approve",
+        "tool_name": "registration_approve",
+        "description": (
+            "批准現有註冊申請：保留申請中已建立的全局登入身份，按當前公司的真實"
+            "部門/崗位/角色資料激活成員關係並關閉申請。"
+        ),
+        "api_method": "POST",
+        "api_path": "/api/auth/registrations/{id}/approve",
+        "permission": "users.manage",
+        "writes": True,
+        "risk": "high",
+        "confirmation_policy": {"mode": "passkey", "adapter": "staged_action"},
+        "semantic_contract": {
+            "effect": "approve_existing_identity_membership_request",
+            "resource": "iam.membership_request",
+            "canonical_identity": "platform.membership_requests",
+            "identity_invariant": "global_login_exists_and_must_not_be_recreated",
+            "request_kind": "registration",
+            "position_policy": "resolve_requested_or_existing_position_profile",
+            "workflow_prescribed": False,
+        },
+        "search_aliases": ["批准註冊", "审批注册", "通過註冊申請", "approve registration"],
+        "params": [
+            _p("id", "path.id", "註冊申請 UUID", required=True, positional=True),
+            _p("department", "body.org_unit_code", "部門代碼(可選，覆蓋申請值)"),
+            _p("position", "body.position_code", "崗位代碼(可選，覆蓋申請值)"),
+            _p("role", "body.role_id", "角色 id(有崗位時必須匹配崗位預設角色)", ptype="int"),
+            _p("note", "body.note", "審批備註"),
+        ],
         "examples": [
-            'members reject 7fd4a7df-6f84-42c1-ae38-f58bcc488a44 --note "資料不完整"'
+            "registrations approve 7fd4a7df-6f84-42c1-ae38-f58bcc488a44 --position researcher"
+        ],
+    },
+    {
+        "command": "registrations reject",
+        "tool_name": "registration_reject",
+        "description": "駁回現有註冊申請並保留審核原因，不刪除或重建其全局登入身份。",
+        "api_method": "POST",
+        "api_path": "/api/auth/registrations/{id}/reject",
+        "permission": "users.manage",
+        "writes": True,
+        "risk": "normal",
+        "semantic_contract": {
+            "effect": "reject_existing_identity_membership_request",
+            "resource": "iam.membership_request",
+            "canonical_identity": "platform.membership_requests",
+            "identity_invariant": "global_login_exists_and_must_not_be_recreated",
+            "request_kind": "registration",
+            "workflow_prescribed": False,
+        },
+        "search_aliases": ["駁回註冊", "驳回注册", "reject registration"],
+        "params": [
+            _p("id", "path.id", "註冊申請 UUID", required=True, positional=True),
+            _p("note", "body.note", "駁回原因", required=True),
+        ],
+        "examples": [
+            'registrations reject 7fd4a7df-6f84-42c1-ae38-f58bcc488a44 --note "資料不完整"'
         ],
     },
     {
@@ -10358,7 +10525,7 @@ COMMANDS = [
         ],
         "examples": [
             "research manuscript semantic refresh --project MK51 --file manuscript/paper.docx "
-            "--modes '[\"translate\",\"distill\",\"review:logic\"]'",
+            '--modes \'["translate","distill","review:logic"]\'',
         ],
     },
     {
@@ -10417,8 +10584,8 @@ COMMANDS = [
         ],
         "examples": [
             "research manuscript annotate --project MK51 --file manuscript/paper.docx "
-            "--selection '{\"block_id\":\"p-1\",\"field_name\":\"text\","
-            "\"start_offset\":0,\"end_offset\":4,\"quote\":\"研究问题\"}' "
+            '--selection \'{"block_id":"p-1","field_name":"text",'
+            '"start_offset":0,"end_offset":4,"quote":"研究问题"}\' '
             "--type note --body '需要界定研究边界'",
         ],
     },
@@ -10501,7 +10668,7 @@ COMMANDS = [
         ],
         "examples": [
             "research manuscript draft save --project MK51 --file manuscript/paper.docx "
-            "--revision 3 --blocks '[{\"id\":\"draft-1\",\"type\":\"paragraph\",\"text\":\"...\"}]'",
+            '--revision 3 --blocks \'[{"id":"draft-1","type":"paragraph","text":"..."}]\'',
         ],
     },
     {
@@ -11773,6 +11940,9 @@ COMPOSITE_STORE_TOOL_NAMES = frozenset(
         "memberships_pending",
         "membership_approve",
         "membership_reject",
+        "registrations_pending",
+        "registration_approve",
+        "registration_reject",
         "notifications_summary",
         "notifications_seen",
         "digital_market_common",
@@ -11914,6 +12084,8 @@ _TENANT_PLATFORM_IDENTITY_WRITE_TOOLS = frozenset(
         # transition and global identity live in platform.control.
         "membership_approve",
         "membership_reject",
+        "registration_approve",
+        "registration_reject",
     }
 )
 _TENANT_PLATFORM_IDENTITY_READ_TOOLS = frozenset(
@@ -11921,6 +12093,7 @@ _TENANT_PLATFORM_IDENTITY_READ_TOOLS = frozenset(
         # Pending requests come from platform.control and are decorated with the
         # current tenant's role/department/position projection.
         "memberships_pending",
+        "registrations_pending",
     }
 )
 _TENANT_PLATFORM_GOVERNANCE_WRITE_TOOLS = frozenset(

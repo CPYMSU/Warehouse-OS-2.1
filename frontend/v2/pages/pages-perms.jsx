@@ -153,7 +153,7 @@ window.W2_LANG.addEN({
   "{n} 項核心權限不可分享": "{n} core permissions locked",
   "審計標記來源": "Audit-tagged source",
   "註冊 / 加入審批": "Registrations & joins",
-  "審批通過即建帳號 · 全程留痕": "Approval creates the account · fully audited",
+  "審批通過即啟用公司成員 · 全程留痕": "Approval activates company membership · fully audited",
   "待審批": "Pending", "已通過": "Approved", "已駁回": "Rejected",
   "加入申請": "Join request", "註冊申請": "Registration",
   "期望角色": "Requested role",
@@ -205,6 +205,10 @@ window.W2_LANG.addEN({
   "駁回「{u}」的加入申請(#{id}),請追問駁回理由後執行": "Reject join request #{id} from {u}; ask me for the reason, then execute.",
   "審批通過「{u}」的註冊申請(#{id}),期望角色「{r}」;請確認分配角色後執行並建立帳號": "Approve registration #{id} from {u}, requested role {r}; confirm the role with me, then create the account.",
   "駁回「{u}」的註冊申請(#{id}),請追問駁回理由後執行": "Reject registration #{id} from {u}; ask me for the reason, then execute.",
+  "加入": "join",
+  "註冊": "registration",
+  "審批通過「{u}」的{kind}申請(#{id}),期望角色「{r}」{o};請觀察真實申請、現有身份與崗位預設後完成審批": "Approve {kind} request #{id} from {u}, requested role {r}{o}; observe the real request, existing identity and position presets, then complete the review.",
+  "駁回「{u}」的{kind}申請(#{id}),請取得理由並核對真實申請後執行": "Reject {kind} request #{id} from {u}; obtain the reason and verify the real request before executing.",
   "調整成員「{u}」的角色(當前:{r}),請列出可選角色,經我確認後執行": "Change the role of member {u} (current: {r}); list the available roles and execute after my confirmation.",
   "調整成員「{u}」的部門與崗位;先列出目前行業模板中的部門和崗位,經我確認後用 org assign 執行": "Change the department and position of member {u}; list the current industry-template options first, then use org assign after I confirm.",
   "調整「{u}」的拓撲職級(當前 L{l}),請追問目標職級與職位標籤後執行": "Adjust the topology level of {u} (now L{l}); ask me for the target level and title, then execute.",
@@ -225,12 +229,12 @@ window.W2_LANG.addEN({
   "職位角色": "Position roles",
   "授權記錄": "Access grants",
   "加入與職位申請": "Entry & position applications",
-  "審核通過後建立帳號與職位歸屬 · 全程留痕": "Approval creates the account and position assignment · fully recorded",
+  "審核通過後啟用公司成員與職位歸屬 · 全程留痕": "Approval activates company membership and the position assignment · fully recorded",
   "職位角色 × 等級矩陣": "Position role × level matrix",
 });
 const { useState: _s, useEffect: _e, useRef: _r } = React;
 const { Icon: I, Btn: B, Tag: T, Label: LB, Empty: EM, Kpi, Folio, Band, pad2, num } = W2;
-const ask = (p) => W2.openSecretary(p);
+const ask = (p, options = {}) => W2.openSecretary(p, options);
 
 const PERMS_BIU_COPY = Object.freeze({
   "權限": "機構與職位",
@@ -241,7 +245,7 @@ const PERMS_BIU_COPY = Object.freeze({
   "公司 → 部門 → 崗位 → 人員;點擊節點查看與編輯,權限由部門上限向下約束": "BIU → 機構 → 職位 → 成員；點擊節點查看與編輯，權限由機構上限向下約束",
   "成員帳號": "參與成員", "待審批申請": "待審核加入", "角色": "職位角色",
   "權限分享": "授權記錄", "註冊 / 加入審批": "加入與職位申請",
-  "審批通過即建帳號 · 全程留痕": "審核通過後建立帳號與職位歸屬 · 全程留痕",
+  "審批通過即啟用公司成員 · 全程留痕": "審核通過後啟用公司成員與職位歸屬 · 全程留痕",
   "成員清單": "參與成員", "角色 × 等級矩陣": "職位角色 × 等級矩陣", "分享記錄": "授權記錄",
 });
 const permsText = (biu, value) => t(biu ? (PERMS_BIU_COPY[value] || value) : value);
@@ -1395,12 +1399,24 @@ const Page = ({ boot, reload, templateKey = "" }) => {
     const assignment = [departmentName, positionName].filter(Boolean).join(" / ");
     const meta = [assignment, r.contact, r.reason].filter(v => v && v !== "—").join(" · ");
     const orgHint = assignment ? t(",期望部門 / 崗位「{o}」", { o: assignment }) : "";
-    const approve = kind === "mem"
-      ? t("審批通過「{u}」的加入申請(#{id}),期望角色「{r}」{o};請核對後只使用 membership_approve 執行完整審批,不得用 user_add 或 organization_user_assign 代替", { u, id, r: role, o: orgHint })
-      : t("審批通過「{u}」的註冊申請(#{id}),期望角色「{r}」{o};請按崗位預設確認後執行並建立帳號", { u, id, r: role, o: orgHint });
-    const reject = kind === "mem"
-      ? t("駁回「{u}」的加入申請(#{id}),請追問理由後只使用 membership_reject 執行", { u, id })
-      : t("駁回「{u}」的註冊申請(#{id}),請追問駁回理由後執行", { u, id });
+    const requestKind = kind === "mem" ? t("加入") : t("註冊");
+    const approve = t("審批通過「{u}」的{kind}申請(#{id}),期望角色「{r}」{o};請觀察真實申請、現有身份與崗位預設後完成審批", { u, kind: requestKind, id, r: role, o: orgHint });
+    const reject = t("駁回「{u}」的{kind}申請(#{id}),請取得理由並核對真實申請後執行", { u, kind: requestKind, id });
+    const actionContext = (action, suggestions) => ({
+      action_context: {
+        schema: "warehouse.resource-action-context.v1",
+        action_key: `iam.membership_request.${action}`,
+        resource_type: "iam.membership_request",
+        resource_ref: String(id),
+        suggested_tool_names: suggestions,
+      },
+    });
+    const approveContext = actionContext("approve", kind === "mem"
+      ? ["memberships_pending", "membership_approve"]
+      : ["registrations_pending", "registration_approve"]);
+    const rejectContext = actionContext("reject", kind === "mem"
+      ? ["memberships_pending", "membership_reject"]
+      : ["registrations_pending", "registration_reject"]);
     return (
       <div key={kind + id + ":" + i} className="ledger-row">
         <span className="lr-idx">{pad2(i + 1)}</span>
@@ -1420,8 +1436,8 @@ const Page = ({ boot, reload, templateKey = "" }) => {
           <span className="muted" style={{ fontSize: 11.5 }}>{role}</span>
         </div>
         <div className="row g6">
-          <B size="sm" icon="check" onClick={() => ask(approve)}>{t("通過")}</B>
-          <B size="sm" kind="red" onClick={() => ask(reject)}>{t("駁回")}</B>
+          <B size="sm" icon="check" onClick={() => ask(approve, approveContext)}>{t("通過")}</B>
+          <B size="sm" kind="red" onClick={() => ask(reject, rejectContext)}>{t("駁回")}</B>
         </div>
       </div>
     );
@@ -1480,7 +1496,7 @@ const Page = ({ boot, reload, templateKey = "" }) => {
       <OrgStructure data={org} topology={topo} onChanged={() => { loadBase(); return reload ? Promise.resolve(reload()) : undefined; }} biu={biu} ask={ask}/>
 
       {/* A · 註冊 / 加入審批 */}
-      <Band no="A" title={permsText(biu, "註冊 / 加入審批")} sub={permsText(biu, "審批通過即建帳號 · 全程留痕")} delay={.1}
+      <Band no="A" title={permsText(biu, "註冊 / 加入審批")} sub={permsText(biu, "審批通過即啟用公司成員 · 全程留痕")} delay={.1}
         right={<div className="seg">
           {REG_TABS.map(([id, label]) => (
             <button key={id} className={regStatus === id ? "on" : ""} onClick={() => { setRegStatus(id); loadApprovals(id); }}>{t(label)}</button>

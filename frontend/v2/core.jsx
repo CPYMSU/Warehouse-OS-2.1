@@ -5565,23 +5565,51 @@ const secretaryActionContextOf = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value.action_context && typeof value.action_context === "object"
     && !Array.isArray(value.action_context) ? value.action_context : value;
-  if (source.schema !== "warehouse.pages-action-context.v1") return null;
+  const schema = String(source.schema || "");
+  if (!["warehouse.pages-action-context.v1", "warehouse.resource-action-context.v1"].includes(schema)) return null;
   const actionKey = String(source.action_key || "").trim();
-  const workspaceRef = String(source.workspace_ref || "").trim();
-  const deploymentId = String(source.deployment_id || "").trim();
-  if (!/^pages\.[a-z0-9][a-z0-9_.:-]{0,153}$/.test(actionKey)) return null;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(workspaceRef)) return null;
-  if (deploymentId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(deploymentId)) return null;
+  if (!/^[a-z][a-z0-9_.:-]{2,159}$/.test(actionKey)) return null;
+  const validRef = ref => /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,159}$/.test(String(ref || "").trim());
+  const validType = type => /^[a-z][a-z0-9_.:-]{1,127}$/.test(String(type || "").trim());
   const suggestedToolNames = Array.from(new Set(
     (Array.isArray(source.suggested_tool_names) ? source.suggested_tool_names : [])
       .map(name => String(name || "").trim())
       .filter(name => /^[a-z][a-z0-9_]{2,127}$/.test(name)),
   )).slice(0, 8);
+  if (schema === "warehouse.pages-action-context.v1") {
+    const workspaceRef = String(source.workspace_ref || "").trim();
+    const deploymentId = String(source.deployment_id || "").trim();
+    if (!actionKey.startsWith("pages.") || !validRef(workspaceRef)) return null;
+    if (deploymentId && !validRef(deploymentId)) return null;
+    return {
+      schema, action_key: actionKey, workspace_ref: workspaceRef,
+      ...(deploymentId ? { deployment_id: deploymentId } : {}),
+      suggested_tool_names: suggestedToolNames,
+    };
+  }
+  const resourceType = String(source.resource_type || "").trim();
+  const resourceRef = String(source.resource_ref || "").trim();
+  const resourceVersion = String(source.resource_version || "").trim();
+  if (!validType(resourceType) || !validRef(resourceRef)) return null;
+  if (resourceVersion && !validRef(resourceVersion)) return null;
+  const relatedResources = (Array.isArray(source.related_resources) ? source.related_resources : [])
+    .map(item => ({
+      resource_type: String(item && item.resource_type || "").trim(),
+      resource_ref: String(item && item.resource_ref || "").trim(),
+      resource_version: String(item && item.resource_version || "").trim(),
+    }))
+    .filter(item => validType(item.resource_type) && validRef(item.resource_ref)
+      && (!item.resource_version || validRef(item.resource_version)))
+    .slice(0, 4)
+    .map(item => ({
+      resource_type: item.resource_type,
+      resource_ref: item.resource_ref,
+      ...(item.resource_version ? { resource_version: item.resource_version } : {}),
+    }));
   return {
-    schema: "warehouse.pages-action-context.v1",
-    action_key: actionKey,
-    workspace_ref: workspaceRef,
-    ...(deploymentId ? { deployment_id: deploymentId } : {}),
+    schema, action_key: actionKey, resource_type: resourceType, resource_ref: resourceRef,
+    ...(resourceVersion ? { resource_version: resourceVersion } : {}),
+    ...(relatedResources.length ? { related_resources: relatedResources } : {}),
     suggested_tool_names: suggestedToolNames,
   };
 };

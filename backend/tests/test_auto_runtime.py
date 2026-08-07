@@ -853,6 +853,13 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
         "command": "dm runtime upgrade",
         "expires_at": "2026-08-01T13:20:00+00:00",
         "scope": {"execution_identity": "company_ai", "uses": 1},
+        "action_context": {
+            "schema": "warehouse.resource-action-context.v1",
+            "action_key": "digital_asset.workspace.runtime_upgrade",
+            "resource_type": "digital_asset.workspace",
+            "resource_ref": "mk4-workspace",
+            "suggested_tool_names": ["digital_market_runtime_upgrade"],
+        },
         "action": {
             "presentation": {
                 "title": "授權 AI 執行 · dm runtime upgrade",
@@ -918,6 +925,10 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
 
     def fake_plan(_connection, goal, plan_layers, *_args, **_kwargs):
         planned_world.update(plan_layers["L3_execution_working_set"])
+        assert (
+            plan_layers["L2_current_goal"]["action_context"]["resource_ref"]
+            == "mk4-workspace"
+        )
         return (
             {
                 "message": "準備接手已授權操作。",
@@ -1199,12 +1210,55 @@ def test_agent_action_context_schema_rejects_unbounded_presentation_input() -> N
         )
 
 
+def test_resource_action_context_preserves_identity_without_selecting_a_tool() -> None:
+    payload = AgentRunRequest(
+        text="审批这个注册申请",
+        action_context={
+            "schema": "warehouse.resource-action-context.v1",
+            "action_key": "iam.membership_request.approve",
+            "resource_type": "iam.membership_request",
+            "resource_ref": "7d9ad337-f8dc-432a-9dc7-fca065e0baf6",
+            "suggested_tool_names": [
+                "registrations_pending",
+                "registration_approve",
+                "user_add",
+                "not_registered",
+            ],
+        },
+    )
+
+    bounded = auto_runtime._bounded_action_context(
+        payload.action_context.model_dump(exclude_none=True, by_alias=True)
+    )
+
+    assert bounded is not None
+    assert bounded["resource_type"] == "iam.membership_request"
+    assert bounded["resource_ref"] == "7d9ad337-f8dc-432a-9dc7-fca065e0baf6"
+    assert bounded["suggested_tool_names"] == [
+        "registrations_pending",
+        "registration_approve",
+        "user_add",
+    ]
+    assert "tool selection" in str(bounded["trust_boundary"])
+
+    with pytest.raises(ValidationError):
+        AgentRunRequest(
+            text="审批",
+            action_context={
+                "schema": "warehouse.resource-action-context.v1",
+                "action_key": "iam.membership_request.approve",
+                "resource_type": "iam.membership_request",
+                "suggested_tool_names": [],
+            },
+        )
+
+
 def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> None:
     atlas = ai_capability_atlas()
     genes = ai_capability_gene_index()
 
-    assert len(genes) == 534
-    assert sum(int(domain["gene_count"]) for domain in atlas) == 534
+    assert len(genes) == 537
+    assert sum(int(domain["gene_count"]) for domain in atlas) == 537
     assert {gene["scope"] for gene in genes} == {"tenant", "platform"}
     assert all("permission_any" in gene and "availability" in gene for gene in genes)
     observe_gene = next(gene for gene in genes if gene["tool_name"] == "generic_data_observe")

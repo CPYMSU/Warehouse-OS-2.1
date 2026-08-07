@@ -354,10 +354,18 @@ def test_native_21_guide_cli_and_provision_contract(tmp_path, monkeypatch) -> No
             },
             settings=settings,
             conversation_id=conversation["id"],
+            action_context={
+                "schema": "warehouse.resource-action-context.v1",
+                "action_key": "digital_asset.workspace.provision",
+                "resource_type": "digital_asset.workspace",
+                "resource_ref": "mk4-exam-practice",
+                "suggested_tool_names": ["digital_market_provision"],
+            },
         )
         assert action["status"] == "pending"
         assert action["passkey_required"] is True
         assert "arguments" not in action
+        assert action["action_context"]["resource_ref"] == "mk4-exam-practice"
         grant_token = secrets.token_urlsafe(36)
         issue_step_up_grant(
             actor,
@@ -385,6 +393,7 @@ def test_native_21_guide_cli_and_provision_contract(tmp_path, monkeypatch) -> No
         assert confirmed_payload["signal"] == "authorization_granted"
         assert confirmed_payload["business_operation_executed"] is False
         assert confirmed_payload["action"]["status"] == "authorized"
+        assert confirmed_payload["action"]["action_context"]["resource_ref"] == "mk4-exam-practice"
         assert re.search(r"wak_[A-Za-z0-9_-]{20,}", str(confirmed_payload)) is None
         assert client.get("/api/workspaces/mk4-exam-practice/keys").status_code == 404
         continuation = confirmed_payload["action"]["continuation"]
@@ -399,6 +408,7 @@ def test_native_21_guide_cli_and_provision_contract(tmp_path, monkeypatch) -> No
         ):
             signal = kwargs.get("authorization_signal")
             assert isinstance(signal, dict)
+            assert signal["action_context"]["resource_ref"] == "mk4-exam-practice"
             handed_off.update(signal)
             executed = execute_authorized_confirmation_action(
                 runtime_actor,
@@ -661,9 +671,7 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
         assert upload_created.json()["part_count"] == 2
         chunk_size = upload_created.json()["chunk_size_bytes"]
         for part_no in range(2):
-            part_content = resumable_package[
-                part_no * chunk_size : (part_no + 1) * chunk_size
-            ]
+            part_content = resumable_package[part_no * chunk_size : (part_no + 1) * chunk_size]
             part = client.put(
                 f"/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
                 headers={
@@ -1093,9 +1101,7 @@ def test_intelligent_hosting_workspace_key_reaches_healthy_runtime(tmp_path, mon
         attached = client.post(
             f"/api/hosting/v2/sessions/{session_id}/sources/attach",
             headers=headers,
-            json={
-                "source_version_id": uploaded.json()["source"]["source"]["uuid"]
-            },
+            json={"source_version_id": uploaded.json()["source"]["source"]["uuid"]},
         )
         assert attached.status_code == 200, attached.text
         assert attached.json()["session"]["status"] == "planning"
@@ -1119,29 +1125,20 @@ def test_intelligent_hosting_workspace_key_reaches_healthy_runtime(tmp_path, mon
         assert session_upload.status_code == 201, session_upload.text
         session_upload_id = session_upload.json()["upload_id"]
         session_part = client.put(
-            (
-                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
-                f"{session_upload_id}/parts/0"
-            ),
+            (f"/api/hosting/v2/sessions/{session_id}/source-uploads/{session_upload_id}/parts/0"),
             headers={**headers, "Content-SHA256": session_digest},
             content=session_package,
         )
         assert session_part.status_code == 200, session_part.text
         session_complete = client.post(
-            (
-                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
-                f"{session_upload_id}/complete"
-            ),
+            (f"/api/hosting/v2/sessions/{session_id}/source-uploads/{session_upload_id}/complete"),
             headers=headers,
             json={},
         )
         assert session_complete.status_code == 202, session_complete.text
         assert RuntimeController(settings).run_once() is True
         session_verified = client.get(
-            (
-                f"/api/hosting/v2/sessions/{session_id}/source-uploads/"
-                f"{session_upload_id}"
-            ),
+            (f"/api/hosting/v2/sessions/{session_id}/source-uploads/{session_upload_id}"),
             headers=headers,
         )
         assert session_verified.status_code == 200
@@ -1149,9 +1146,7 @@ def test_intelligent_hosting_workspace_key_reaches_healthy_runtime(tmp_path, mon
         session_attached = client.post(
             f"/api/hosting/v2/sessions/{session_id}/sources/attach",
             headers=headers,
-            json={
-                "source_version_id": session_verified.json()["source"]["uuid"]
-            },
+            json={"source_version_id": session_verified.json()["source"]["uuid"]},
         )
         assert session_attached.status_code == 200, session_attached.text
 
@@ -1750,10 +1745,13 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
                 assert connection.execute(
                     "SELECT extversion FROM pg_extension WHERE extname='vector'"
                 ).fetchone()[0]
-                assert connection.execute(
-                    "SELECT payload->>'answer' FROM app.workspace_records "
-                    "WHERE collection_name='questions' AND record_key='q-1'"
-                ).fetchone()[0] == "4"
+                assert (
+                    connection.execute(
+                        "SELECT payload->>'answer' FROM app.workspace_records "
+                        "WHERE collection_name='questions' AND record_key='q-1'"
+                    ).fetchone()[0]
+                    == "4"
+                )
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     connection.execute("CREATE TABLE app.runtime_must_not_own(id integer)")
             migration_runtime_url = make_url(
@@ -1765,9 +1763,7 @@ def test_workspace_database_uses_dedicated_hdd_provider_and_shared_quota(
             )
             assert migration_runtime_url.database == database_ref
             assert migration_runtime_url.username == role_ref
-            with psycopg.connect(
-                admin_url.render_as_string(hide_password=False)
-            ) as connection:
+            with psycopg.connect(admin_url.render_as_string(hide_password=False)) as connection:
                 runtime_role = connection.execute(
                     """
                     SELECT role.rolsuper,role.rolcreatedb,role.rolcreaterole,
@@ -1881,8 +1877,9 @@ def test_external_postgresql_binding_drives_runtime_and_relational_data_api(
             ).format(psycopg.sql.Identifier(role_ref), psycopg.sql.Literal(password))
         )
         connection.execute(
-            psycopg.sql.SQL("CREATE DATABASE {} OWNER {}")
-            .format(psycopg.sql.Identifier(database_ref), psycopg.sql.Identifier(role_ref))
+            psycopg.sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                psycopg.sql.Identifier(database_ref), psycopg.sql.Identifier(role_ref)
+            )
         )
     with psycopg.connect(external_url.render_as_string(hide_password=False)) as connection:
         connection.execute(
@@ -2066,9 +2063,7 @@ def test_external_postgresql_binding_drives_runtime_and_relational_data_api(
                 )
             )
             connection.execute(
-                psycopg.sql.SQL("DROP ROLE IF EXISTS {}").format(
-                    psycopg.sql.Identifier(role_ref)
-                )
+                psycopg.sql.SQL("DROP ROLE IF EXISTS {}").format(psycopg.sql.Identifier(role_ref))
             )
 
 

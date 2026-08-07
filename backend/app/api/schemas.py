@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.services.action_context import (
+    PAGES_ACTION_CONTEXT_SCHEMA,
+    RESOURCE_ACTION_CONTEXT_SCHEMA,
+)
 
 
 class LoginRequest(BaseModel):
@@ -36,18 +41,60 @@ class AiToolCallRequest(BaseModel):
     arguments: dict[str, object] = Field(default_factory=dict)
 
 
+class AgentResourceReference(BaseModel):
+    resource_type: str = Field(
+        min_length=2,
+        max_length=128,
+        pattern=r"^[a-z][a-z0-9_.:-]*$",
+    )
+    resource_ref: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@/-]*$",
+    )
+    resource_version: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@/-]*$",
+    )
+
+
 class AgentActionContext(BaseModel):
     """Bounded presentation hint; never live evidence or authorization."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    schema_: Literal["warehouse.pages-action-context.v1"] = Field(alias="schema")
+    schema_: Literal[
+        "warehouse.pages-action-context.v1",
+        "warehouse.resource-action-context.v1",
+    ] = Field(alias="schema")
     action_key: str = Field(
-        min_length=7,
+        min_length=3,
         max_length=160,
-        pattern=r"^pages\.[a-z0-9][a-z0-9_.:-]*$",
+        pattern=r"^[a-z][a-z0-9_.:-]*$",
     )
-    workspace_ref: str = Field(
+    resource_type: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=128,
+        pattern=r"^[a-z][a-z0-9_.:-]*$",
+    )
+    resource_ref: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@/-]*$",
+    )
+    resource_version: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@/-]*$",
+    )
+    related_resources: list[AgentResourceReference] = Field(default_factory=list, max_length=4)
+    workspace_ref: str | None = Field(
+        default=None,
         min_length=1,
         max_length=160,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
@@ -59,6 +106,16 @@ class AgentActionContext(BaseModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
     )
     suggested_tool_names: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_schema_shape(self) -> AgentActionContext:
+        if self.schema_ == PAGES_ACTION_CONTEXT_SCHEMA:
+            if not self.workspace_ref or not self.action_key.startswith("pages."):
+                raise ValueError("Pages action context requires a Pages action and workspace")
+        elif self.schema_ == RESOURCE_ACTION_CONTEXT_SCHEMA:
+            if not self.resource_type or not self.resource_ref:
+                raise ValueError("Resource action context requires a typed resource reference")
+        return self
 
 
 class AgentRunRequest(BaseModel):
