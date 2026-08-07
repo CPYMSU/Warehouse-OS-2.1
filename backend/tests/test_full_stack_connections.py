@@ -600,6 +600,169 @@ def test_sensitive_native_retained_mutations_have_real_readback() -> None:
     assert int(counts["preserved_category"]) == 1
 
 
+def test_registration_and_join_approvals_share_the_real_membership_workflow() -> None:
+    base_manager = _actor()
+    manager = replace(
+        base_manager,
+        permissions=frozenset({"users.manage", *base_manager.permissions}),
+    )
+    client = TestClient(app)
+    app.dependency_overrides[current_actor] = lambda: manager
+    try:
+        registration_username = f"registration-{uuid4().hex[:12]}"
+        registration = client.post(
+            "/api/auth/register",
+            json={
+                "tenant_slug": manager.tenant_slug,
+                "username": registration_username,
+                "display_name": "Registration Applicant",
+                "password": "registration-password",
+                "reason": "Create my first company account",
+            },
+        )
+        assert registration.status_code == 201
+        registration_id = registration.json()["request_id"]
+
+        source_tenant_id = uuid4()
+        joining_user_id = uuid4()
+        joining_username = f"joining-{joining_user_id.hex[:12]}"
+        with system_session() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO iam.tenants(id, slug, name, industry_template_key)
+                    VALUES (:id, :slug, 'Joining Source', 'generic_warehouse')
+                    """
+                ),
+                {"id": source_tenant_id, "slug": f"source-{source_tenant_id.hex[:12]}"},
+            )
+            session.execute(
+                text(
+                    """
+                    INSERT INTO iam.users(id, username, display_name, password_hash)
+                    VALUES (:id, :username, 'Joining Applicant', :password_hash)
+                    """
+                ),
+                {
+                    "id": joining_user_id,
+                    "username": joining_username,
+                    "password_hash": hash_password("joining-password"),
+                },
+            )
+        with tenant_session(source_tenant_id) as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO iam.memberships(
+                      tenant_id, user_id, role_level, topology_level, topology_title
+                    ) VALUES (:tenant_id, :user_id, 1, 1, 'Member')
+                    """
+                ),
+                {"tenant_id": source_tenant_id, "user_id": joining_user_id},
+            )
+        joining_actor = ActorContext(
+            user_id=joining_user_id,
+            tenant_id=source_tenant_id,
+            tenant_slug=f"source-{source_tenant_id.hex[:12]}",
+            tenant_name="Joining Source",
+            industry_template_key="generic_warehouse",
+            username=joining_username,
+            display_name="Joining Applicant",
+            role_level=1,
+            topology_level=1,
+            topology_title="Member",
+        )
+        app.dependency_overrides[current_actor] = lambda: joining_actor
+        joined = client.post(
+            "/api/companies/join",
+            json={"slug": manager.tenant_slug, "reason": "Join the managed company"},
+        )
+        assert joined.status_code == 201
+        join_id = joined.json()["request_id"]
+
+        app.dependency_overrides[current_actor] = lambda: manager
+        registrations = client.get("/api/auth/registrations?status=pending")
+        joins = client.get("/api/memberships/pending?status=pending")
+        assert registrations.status_code == 200
+        assert joins.status_code == 200
+        assert registrations.json()["available"] is True
+        assert joins.json()["available"] is True
+        assert [row["id"] for row in registrations.json()["requests"]] == [registration_id]
+        assert [row["id"] for row in joins.json()["requests"]] == [join_id]
+        assert registrations.json()["pending_count"] == 1
+        assert joins.json()["pending_count"] == 1
+
+        attacker = replace(
+            joining_actor,
+            role_level=10,
+            topology_level=10,
+            permissions=frozenset({"users.manage"}),
+        )
+        app.dependency_overrides[current_actor] = lambda: attacker
+        hidden = client.post(f"/api/memberships/{join_id}/approve", json={})
+        assert hidden.status_code == 404
+
+        app.dependency_overrides[current_actor] = lambda: manager
+        approved_join = executor.execute_confirmed_runtime_tool_call(
+            manager,
+            "membership_approve",
+            {"id": join_id, "note": "Identity verified"},
+        )
+        assert approved_join["ok"] is True
+        assert approved_join["status"] == "succeeded"
+        assert approved_join["data"]["membership_active"] is True
+        with tenant_session(manager.tenant_id) as session:
+            assert (
+                session.execute(
+                    text(
+                        """
+                    SELECT active FROM iam.memberships
+                    WHERE tenant_id = :tenant_id AND user_id = :user_id
+                    """
+                    ),
+                    {"tenant_id": manager.tenant_id, "user_id": joining_user_id},
+                ).scalar_one()
+                is True
+            )
+
+        approved_history = client.get("/api/memberships/pending?status=approved").json()
+        assert [row["id"] for row in approved_history["requests"]] == [join_id]
+        assert approved_history["requests"][0]["reviewer_name"] == manager.display_name
+        assert approved_history["pending_count"] == 0
+
+        approved_registration = client.post(
+            f"/api/auth/registrations/{registration_id}/approve",
+            json={"note": "Registration verified"},
+        )
+        assert approved_registration.status_code == 200
+        assert approved_registration.json()["membership_active"] is True
+        approved_registrations = client.get("/api/auth/registrations?status=approved").json()
+        assert [row["id"] for row in approved_registrations["requests"]] == [registration_id]
+        assert approved_registrations["pending_count"] == 0
+
+        rejected_username = f"rejected-{uuid4().hex[:12]}"
+        rejected_registration = client.post(
+            "/api/auth/register",
+            json={
+                "tenant_slug": manager.tenant_slug,
+                "username": rejected_username,
+                "display_name": "Rejected Applicant",
+                "password": "rejected-password",
+            },
+        )
+        rejected_id = rejected_registration.json()["request_id"]
+        rejected = client.post(
+            f"/api/auth/registrations/{rejected_id}/reject",
+            json={"note": "Incomplete information"},
+        )
+        assert rejected.status_code == 200
+        rejected_history = client.get("/api/auth/registrations?status=rejected").json()
+        assert [row["id"] for row in rejected_history["requests"]] == [rejected_id]
+        assert rejected_history["requests"][0]["review_note"] == "Incomplete information"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_retained_first_write_profile_run_and_weather_paths_are_truthful(monkeypatch) -> None:
     actor = _actor()
     run_id = uuid4()

@@ -9873,14 +9873,14 @@ COMMANDS = [
         "writes": True,
         "risk": "high",
         "params": [
-            _p("id", "path.id", "加入申請 id", required=True, positional=True, ptype="int"),
+            _p("id", "path.id", "加入申請 UUID", required=True, positional=True),
             _p("department", "body.org_unit_code", "部門代碼(可選，覆蓋申請值)"),
             _p("position", "body.position_code", "崗位代碼(可選，覆蓋申請值)"),
             _p("role", "body.role_id", "角色 id(有崗位時必須匹配崗位默認角色)", ptype="int"),
             _p("note", "body.note", "審批備註"),
         ],
         "examples": [
-            "members approve 12 --department HOTEL-FRONT --position hotel_receptionist --note 已核驗",
+            "members approve 7fd4a7df-6f84-42c1-ae38-f58bcc488a44 --department HOTEL-FRONT --position hotel_receptionist --note 已核驗",
         ],
     },
     {
@@ -9893,10 +9893,12 @@ COMMANDS = [
         "writes": True,
         "risk": "normal",
         "params": [
-            _p("id", "path.id", "加入申請 id", required=True, positional=True, ptype="int"),
+            _p("id", "path.id", "加入申請 UUID", required=True, positional=True),
             _p("note", "body.note", "駁回原因", required=True),
         ],
-        "examples": ['members reject 12 --note "資料不完整"'],
+        "examples": [
+            'members reject 7fd4a7df-6f84-42c1-ae38-f58bcc488a44 --note "資料不完整"'
+        ],
     },
     {
         "command": "datahub jobs",

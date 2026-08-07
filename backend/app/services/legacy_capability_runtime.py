@@ -1548,6 +1548,31 @@ def execute_retained_capability(
         )
     if tool_name == "user_add":
         return _create_login_user(actor, values, origin=origin)
+    if tool_name in {"membership_approve", "membership_reject"}:
+        from app.services.membership_requests import (
+            approve_membership_request,
+            reject_membership_request,
+        )
+
+        request_id = str(values.get("path.id") or "")
+        body = {
+            key.removeprefix("body."): value
+            for key, value in values.items()
+            if key.startswith("body.")
+        }
+        if tool_name == "membership_approve":
+            return approve_membership_request(
+                actor,
+                request_id,
+                body,
+                expected_kind="join",
+            )
+        return reject_membership_request(
+            actor,
+            request_id,
+            body,
+            expected_kind="join",
+        )
     if tool_name in {"role_upsert", "role_update"}:
         return _change_access_role(tool_name, actor, values, origin=origin)
     if tool_name == "inventory_reset":

@@ -654,31 +654,6 @@ def org_user_navigation(
     return set_user_navigation(actor, user_id, payload)
 
 
-@router.get("/api/memberships/pending")
-def pending_memberships(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
-    """State the current limitation explicitly until request workflows are migrated."""
-    _ = actor
-    return {
-        "available": False,
-        "requests": [],
-        "pending_count": 0,
-        "reason": "membership_request_workflow_not_migrated",
-    }
-
-
-@router.get("/api/auth/registrations")
-def registrations(
-    status: str = "pending", actor: ActorContext = Depends(current_actor)
-) -> dict[str, object]:
-    _ = (status, actor)
-    return {
-        "available": False,
-        "requests": [],
-        "pending_count": 0,
-        "reason": "registration_request_workflow_not_migrated",
-    }
-
-
 @router.get("/api/cli/commands")
 def cli_commands(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
     """Return the full catalogue with separate authorization/adapter states."""

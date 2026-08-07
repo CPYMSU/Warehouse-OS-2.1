@@ -1267,7 +1267,7 @@ const OrgStructure = ({ data, topology, onChanged, biu = false, ask }) => {
 const Page = ({ boot, reload, templateKey = "" }) => {
   const biu = !!(W2.isBiuTemplate && W2.isBiuTemplate(templateKey));
   const [usersData, setUsersData] = _s(null);   // /api/users → {users, roles}
-  const [members, setMembers] = _s(null);       // /api/memberships/pending → {requests, pending_count}
+  const [members, setMembers] = _s(null);       // /api/memberships/pending?status=… → company join requests
   const [topo, setTopo] = _s(null);             // /api/permissions/topology
   const [org, setOrg] = _s(null);               // /api/org/structure → template/units/positions/memberships/summary
   const [regStatus, setRegStatus] = _s("pending");
@@ -1281,19 +1281,21 @@ const Page = ({ boot, reload, templateKey = "" }) => {
   const loadBase = () => {
     setOrg(null);
     W2.json("/api/users").then(d => setUsersData(safe(d))).catch(() => setUsersData({}));
-    W2.json("/api/memberships/pending").then(d => setMembers(safe(d))).catch(() => setMembers({}));
     W2.json("/api/permissions/topology").then(d => setTopo(safe(d))).catch(() => setTopo({}));
     W2.json("/api/org/structure").then(d => setOrg(safe(d))).catch(() => setOrg({ __error: true }));
   };
-  const loadRegs = (status) => {
+  const loadApprovals = (status) => {
+    setMembers(null);
     setRegs(null);
-    W2.json("/api/auth/registrations?status=" + encodeURIComponent(status)).then(d => setRegs(safe(d))).catch(() => setRegs({}));
+    const query = "?status=" + encodeURIComponent(status);
+    W2.json("/api/memberships/pending" + query).then(d => setMembers(safe(d))).catch(() => setMembers({ available: false, requests: [], pending_count: 0 }));
+    W2.json("/api/auth/registrations" + query).then(d => setRegs(safe(d))).catch(() => setRegs({ available: false, requests: [], pending_count: 0 }));
   };
-  _e(() => { loadBase(); loadRegs("pending"); }, []);
+  _e(() => { loadBase(); loadApprovals("pending"); }, []);
   _e(() => {
     const refreshAfterSecretary = () => {
       loadBase();
-      loadRegs(regStatus);
+      loadApprovals(regStatus);
       if (reload) reload();
     };
     window.addEventListener("w2-agent-complete", refreshAfterSecretary);
@@ -1371,13 +1373,16 @@ const Page = ({ boot, reload, templateKey = "" }) => {
   const memList = (members && Array.isArray(members.requests)) ? members.requests : [];
   const regList = (regs && Array.isArray(regs.requests)) ? regs.requests : [];
   const pendingTotal = num(members ? members.pending_count : 0) + num(regs ? regs.pending_count : 0);
-  const approvalUnavailable = !!((members && members.available === false) || (regs && regs.available === false));
+  const approvalSources = [members, regs].filter(source => source && source.available !== false).length;
+  const unavailableApprovalSources = [members, regs].filter(source => source && source.available === false).length;
+  const approvalUnavailable = members !== null && regs !== null && approvalSources === 0;
+  const approvalPartiallyUnavailable = approvalSources > 0 && unavailableApprovalSources > 0;
   const delsRaw = (topo && Array.isArray(topo.delegations)) ? topo.delegations : [];
   const dels = biu ? delsRaw.filter(row => BIU_PERMISSION_KEYS.has(String(row && row.permission_key || ""))) : delsRaw;
   const delCount = biu ? dels.length : ((topo && topo.summary && topo.summary.delegations != null) ? num(topo.summary.delegations) : dels.length);
   const protectedCount = biuPermissionValues(topo && topo.protected_permissions, biu).length;
   const onCount = rowsAll.filter(r => r.active).length;
-  const regLoading = regs === null;
+  const regLoading = regs === null || members === null;
 
   /* ── 審批行 ── */
   const pendRow = (r, i, kind) => {
@@ -1421,7 +1426,7 @@ const Page = ({ boot, reload, templateKey = "" }) => {
       </div>
     );
   };
-  const doneRow = (r, i) => {
+  const doneRow = (r, i, kind) => {
     const tone = r.status === "approved" ? "ok" : "plain";
     const meta = [
       r.reviewer_name ? t("審批人 {r}", { r: r.reviewer_name }) : "",
@@ -1430,12 +1435,13 @@ const Page = ({ boot, reload, templateKey = "" }) => {
       r.reviewed_at || "",
     ].filter(Boolean).join(" · ");
     return (
-      <div key={"d" + (r.id != null ? r.id : i)} className="ledger-row">
+      <div key={"d" + kind + (r.id != null ? r.id : i)} className="ledger-row">
         <span className="lr-idx">{pad2(i + 1)}</span>
         <div className="col g4" style={{ flex: 1, minWidth: 0 }}>
           <span className="row g8" style={{ fontWeight: 650, fontSize: 13.5 }}>
             {r.display_name || r.username || "—"}
             {r.username && <span className="num muted" style={{ fontSize: 11, fontWeight: 400 }}>@{r.username}</span>}
+            <T tone={kind === "mem" ? "inv" : "plain"}>{t(kind === "mem" ? "加入申請" : "註冊申請")}</T>
           </span>
           <span className="muted" style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={meta}>{meta || "—"}</span>
         </div>
@@ -1449,7 +1455,7 @@ const Page = ({ boot, reload, templateKey = "" }) => {
       <Folio no="14" en="ACCESS" title={permsText(biu, "權限")}
         sub={permsText(biu, "模板 · 組織拓撲 · 部門上限 · 人員權限 —— 可視化手動編輯,同一指令亦可交秘書執行")}
         right={<>
-          <B icon="refresh" onClick={() => { loadBase(); loadRegs(regStatus); setTemplateRefreshSeq(v => v + 1); reload && reload(); }}>{t("刷新")}</B>
+          <B icon="refresh" onClick={() => { loadBase(); loadApprovals(regStatus); setTemplateRefreshSeq(v => v + 1); reload && reload(); }}>{t("刷新")}</B>
           <B icon="plus" onClick={() => ask(t("我要新增或批量導入成員帳號,請追問名單(姓名、帳號、部門、崗位)後按崗位預設建立"))}>{t("新增成員")}</B>
           <B kind="primary" icon="sparkle" onClick={() => ask(t("權限與帳號現在有什麼需要處理的?有沒有待審批的申請?"))}>{t("問秘書")}</B>
         </>}/>
@@ -1477,11 +1483,12 @@ const Page = ({ boot, reload, templateKey = "" }) => {
       <Band no="A" title={permsText(biu, "註冊 / 加入審批")} sub={permsText(biu, "審批通過即建帳號 · 全程留痕")} delay={.1}
         right={<div className="seg">
           {REG_TABS.map(([id, label]) => (
-            <button key={id} className={regStatus === id ? "on" : ""} onClick={() => { setRegStatus(id); loadRegs(id); }}>{t(label)}</button>
+            <button key={id} className={regStatus === id ? "on" : ""} onClick={() => { setRegStatus(id); loadApprovals(id); }}>{t(label)}</button>
           ))}
         </div>}>
         {regLoading && <div className="muted" style={{ fontSize: 12.5, padding: "14px 4px" }}>{t("載入中…")}</div>}
         {!regLoading && approvalUnavailable && <div className="org-notice" role="status">{t("註冊與加入審批工作流尚未移植到新資料庫；此處不會把「沒有資料」誤顯示為「全部處理完畢」。目前可由系統管理員直接建立或調整既有帳號。")}</div>}
+        {!regLoading && approvalPartiallyUnavailable && <div className="org-notice" role="status">{t("部分審批來源暫時無法讀取；已載入的申請仍可正常查看與處理。")}</div>}
         {!regLoading && !approvalUnavailable && regStatus === "pending" && (memList.length || regList.length ? (
           <div style={{ borderTop: "2px solid var(--rule)" }}>
             {memList.map((m, i) => pendRow(m, i, "mem"))}
@@ -1489,8 +1496,11 @@ const Page = ({ boot, reload, templateKey = "" }) => {
           </div>
         ) : <EM icon="clipboard" title={t(REG_EMPTY.pending)} sub={t("新申請會第一時間出現在這裡;也可以讓秘書代發邀請。")}
               action={<B size="sm" icon="sparkle" onClick={() => ask(t("我要新增或批量導入成員帳號,請追問名單(姓名、帳號、部門、崗位)後按崗位預設建立"))}>{t("新增成員")}</B>}/>)}
-        {!regLoading && !approvalUnavailable && regStatus !== "pending" && (regList.length ? (
-          <div style={{ borderTop: "2px solid var(--rule)" }}>{regList.map(doneRow)}</div>
+        {!regLoading && !approvalUnavailable && regStatus !== "pending" && (memList.length || regList.length ? (
+          <div style={{ borderTop: "2px solid var(--rule)" }}>
+            {memList.map((r, i) => doneRow(r, i, "mem"))}
+            {regList.map((r, i) => doneRow(r, memList.length + i, "reg"))}
+          </div>
         ) : <EM icon="doc" title={t(REG_EMPTY[regStatus] || REG_EMPTY.pending)}/>)}
       </Band>
 

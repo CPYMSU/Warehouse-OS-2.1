@@ -58,6 +58,11 @@ from app.services.identity_employment import (
     sync_personnel_record,
 )
 from app.services.language_contract import normalize_locale
+from app.services.membership_requests import (
+    approve_membership_request,
+    list_membership_requests,
+    reject_membership_request,
+)
 from app.services.templates import get_template_summary, list_template_summaries, provision_tenant_template
 from app.templates.industry_blueprints import BLUEPRINT_PERMISSION_KEYS
 
@@ -483,14 +488,15 @@ def join_company(
     target = _tenant_by_slug(str(payload.get("slug") or ""))
     request_id = uuid4()
     with system_session() as session:
-        session.execute(
+        request_id = session.execute(
             text(
                 """
                 INSERT INTO platform.membership_requests(id, tenant_id, user_id, reason)
                 VALUES (:id, :tenant_id, :user_id, :reason)
                 ON CONFLICT (tenant_id, user_id)
                 DO UPDATE SET status = 'pending', reason = EXCLUDED.reason,
-                  note = NULL, reviewed_by = NULL
+                  note = NULL, reviewed_by = NULL, created_at = now()
+                RETURNING id
                 """
             ),
             {
@@ -499,7 +505,7 @@ def join_company(
                 "user_id": actor.user_id,
                 "reason": payload.get("reason"),
             },
-        )
+        ).scalar_one()
     return {
         "ok": True,
         "request_id": str(request_id),
@@ -513,139 +519,27 @@ def registration_requests(
     request_status: str = Query(default="pending", alias="status"),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
-    with system_session() as session:
-        rows = session.execute(
-            text(
-                """
-                SELECT mr.id, mr.user_id, u.username, u.display_name,
-                       mr.requested_org_unit_code, mr.requested_position_code,
-                       mr.requested_role_id, mr.department, mr.contact, mr.reason,
-                       mr.status, mr.note, mr.created_at, mr.updated_at
-                FROM platform.membership_requests AS mr
-                JOIN iam.users AS u ON u.id = mr.user_id
-                WHERE mr.tenant_id = :tenant_id
-                  AND (:status = 'all' OR mr.status = :status)
-                ORDER BY mr.created_at DESC
-                """
-            ),
-            {"tenant_id": actor.tenant_id, "status": request_status},
-        ).mappings().all()
-    requests = [_safe(dict(row)) for row in rows]
-    return {
-        "available": True,
-        "requests": requests,
-        "registrations": requests,
-        "pending_count": sum(1 for row in requests if row.get("status") == "pending"),
-    }
-
-
-def _approve_membership_request(actor: ActorContext, request_id: str) -> dict[str, object]:
-    with system_session() as session:
-        request_row = session.execute(
-            text(
-                """
-                SELECT id, tenant_id, user_id, requested_position_code
-                FROM platform.membership_requests WHERE id = :id
-                """
-            ),
-            {"id": UUID(request_id)},
-        ).mappings().one_or_none()
-    if request_row is None:
-        raise HTTPException(status_code=404, detail="Registration request not found")
-    target_tenant = request_row["tenant_id"]
-    with tenant_session(target_tenant) as session:
-        position = None
-        if request_row["requested_position_code"]:
-            position = session.execute(
-                text(
-                    """
-                    SELECT position_code, role_level, name
-                    FROM iam.position_profiles
-                    WHERE position_code = :code AND active
-                    """
-                ),
-                {"code": request_row["requested_position_code"]},
-            ).mappings().one_or_none()
-        if position is None:
-            position = session.execute(
-                text(
-                    """
-                    SELECT position_code, role_level, name
-                    FROM iam.position_profiles WHERE active
-                    ORDER BY role_level, position_code LIMIT 1
-                    """
-                )
-            ).mappings().one_or_none()
-        session.execute(
-            text(
-                """
-                INSERT INTO iam.memberships(
-                  tenant_id, user_id, position_code, role_level, topology_level, topology_title
-                ) VALUES (
-                  :tenant_id, :user_id, :position_code, :role_level, :role_level, :title
-                )
-                ON CONFLICT (tenant_id, user_id)
-                DO UPDATE SET active = true, position_code = EXCLUDED.position_code,
-                  role_level = EXCLUDED.role_level, topology_level = EXCLUDED.topology_level,
-                  topology_title = EXCLUDED.topology_title
-                """
-            ),
-            {
-                "tenant_id": target_tenant,
-                "user_id": request_row["user_id"],
-                "position_code": position["position_code"] if position else None,
-                "role_level": int(position["role_level"]) if position else 1,
-                "title": position["name"] if position else "Member",
-            },
-        )
-        if position:
-            session.execute(
-                text(
-                    """
-                    INSERT INTO iam.membership_positions(
-                      tenant_id, user_id, position_code, appointment_type
-                    ) VALUES (:tenant_id, :user_id, :position_code, 'primary')
-                    ON CONFLICT (tenant_id, user_id, position_code)
-                    DO UPDATE SET active = true, appointment_type = 'primary'
-                    """
-                ),
-                {
-                    "tenant_id": target_tenant,
-                    "user_id": request_row["user_id"],
-                    "position_code": position["position_code"],
-                },
-            )
-        _audit(
-            session,
-            None,
-            "membership.request.approved",
-            {
-                "tenant_id": target_tenant,
-                "actor_user_id": actor.user_id,
-                "request_id": request_id,
-                "user_id": str(request_row["user_id"]),
-            },
-        )
-    with system_session() as session:
-        session.execute(
-            text(
-                """
-                UPDATE platform.membership_requests
-                SET status = 'approved', reviewed_by = :reviewed_by
-                WHERE id = :id
-                """
-            ),
-            {"id": UUID(request_id), "reviewed_by": actor.user_id},
-        )
-    return {"ok": True, "request_id": request_id, "status": "approved"}
+    result = list_membership_requests(
+        actor,
+        request_status=request_status,
+        request_kind="registration",
+    )
+    result["registrations"] = result["requests"]
+    return result
 
 
 @router.post("/api/auth/registrations/{request_id}/approve")
 def approve_registration(
     request_id: str,
+    payload: dict[str, object] = Body(default={}),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
-    return _approve_membership_request(actor, request_id)
+    return approve_membership_request(
+        actor,
+        request_id,
+        payload,
+        expected_kind="registration",
+    )
 
 
 @router.post("/api/auth/registrations/{request_id}/reject")
@@ -654,24 +548,52 @@ def reject_registration(
     payload: dict[str, object] = Body(default={}),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
-    with system_session() as session:
-        result = session.execute(
-            text(
-                """
-                UPDATE platform.membership_requests
-                SET status = 'rejected', note = :note, reviewed_by = :reviewed_by
-                WHERE id = :id
-                """
-            ),
-            {
-                "id": UUID(request_id),
-                "note": str(payload.get("note") or payload.get("reason") or ""),
-                "reviewed_by": actor.user_id,
-            },
-        )
-    if result.rowcount != 1:
-        raise HTTPException(status_code=404, detail="Registration request not found")
-    return {"ok": True, "request_id": request_id, "status": "rejected"}
+    return reject_membership_request(
+        actor,
+        request_id,
+        payload,
+        expected_kind="registration",
+    )
+
+
+@router.get("/api/memberships/pending")
+def pending_membership_requests(
+    request_status: str = Query(default="pending", alias="status"),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return list_membership_requests(
+        actor,
+        request_status=request_status,
+        request_kind="join",
+    )
+
+
+@router.post("/api/memberships/{request_id}/approve")
+def approve_join_request(
+    request_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return approve_membership_request(
+        actor,
+        request_id,
+        payload,
+        expected_kind="join",
+    )
+
+
+@router.post("/api/memberships/{request_id}/reject")
+def reject_join_request(
+    request_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return reject_membership_request(
+        actor,
+        request_id,
+        payload,
+        expected_kind="join",
+    )
 
 
 @router.post("/api/companies/apply", status_code=201)
