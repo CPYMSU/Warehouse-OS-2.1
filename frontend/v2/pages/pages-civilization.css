@@ -280,6 +280,16 @@
 .civ-section-editor-row textarea { min-height: 72px; }
 .civ-section-editor-row .civ-section-paragraphs { min-height: 150px; line-height: 1.65; }
 .civ-section-editor-row > button { min-height: 36px; margin-top: 15px; padding: 0 9px; border: 1px solid var(--rule); font: 750 8px var(--f-mono); }
+.civ-relation-editor { border-top: 3px solid var(--rule); }
+.civ-relation-editor > header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--rule); }
+.civ-relation-editor > header span { display: flex; flex-direction: column; gap: 5px; }
+.civ-relation-editor > header b { font: 850 10px var(--f-mono); letter-spacing: .1em; }
+.civ-relation-editor > header small { color: var(--ink-3); font: 700 8px var(--f-mono); }
+.civ-relation-editor > header button { min-height: 34px; padding: 0 12px; color: #FFF; background: var(--civ-signal); font: 750 8px var(--f-mono); }
+.civ-relation-editor-row { padding: 11px 0; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: start; gap: 10px; border-bottom: 1px solid var(--hair); }
+.civ-relation-editor-row > b { padding-top: 12px; color: var(--civ-signal); font: 850 9px var(--f-mono); }
+.civ-relation-editor-row > button { min-height: 36px; margin-top: 15px; padding: 0 9px; border: 1px solid var(--rule); font: 750 8px var(--f-mono); }
+.civ-relation-empty { padding: 18px 0; color: var(--ink-3); font: 700 8px var(--f-mono); letter-spacing: .06em; }
 .civ-lens-editor > header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--rule); }
 .civ-lens-editor > header span { display: flex; flex-direction: column; gap: 5px; }
 .civ-lens-editor > header b { font: 850 10px var(--f-mono); letter-spacing: .1em; }
@@ -411,6 +421,9 @@
   .civ-section-editor-row { grid-template-columns: 28px 1fr; }
   .civ-section-editor-row > .civ-section-meta, .civ-section-editor-row > label, .civ-section-editor-row > button { grid-column: 2; }
   .civ-section-editor-row > button { margin-top: 0; }
+  .civ-relation-editor-row { grid-template-columns: 28px 1fr; }
+  .civ-relation-editor-row > label, .civ-relation-editor-row > button { grid-column: 2; }
+  .civ-relation-editor-row > button { margin-top: 0; }
   .civ-composer-foot { align-items: flex-start; flex-direction: column; }
   .civ-composer-foot > div { width: 100%; }
   .civ-composer-foot button { flex: 1; }

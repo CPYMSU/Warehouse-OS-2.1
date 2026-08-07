@@ -104,6 +104,35 @@ def _clean_lenses(payload: dict[str, object], locale: str) -> list[dict[str, obj
     return lenses
 
 
+def _clean_relations(payload: dict[str, object], locale: str) -> list[dict[str, str]]:
+    raw = payload.get("relations") or []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=422, detail="relations must be an array")
+    if len(raw) > 12:
+        raise HTTPException(status_code=422, detail="no more than 12 relations are allowed")
+    relations: list[dict[str, str]] = []
+    for index, item in enumerate(raw):
+        if isinstance(item, dict):
+            localized = {
+                language: str(item.get(language) or "").strip()
+                for language in ("zh", "en")
+                if str(item.get(language) or "").strip()
+            }
+            if not localized:
+                raise HTTPException(status_code=422, detail=f"relations[{index}] is empty")
+            if any(len(value) > 160 for value in localized.values()):
+                raise HTTPException(status_code=422, detail=f"relations[{index}] is too long")
+            relations.append(localized)
+            continue
+        value = str(item or "").strip()
+        if not value:
+            raise HTTPException(status_code=422, detail=f"relations[{index}] is empty")
+        if len(value) > 160:
+            raise HTTPException(status_code=422, detail=f"relations[{index}] is too long")
+        relations.append(_localized(value, locale))
+    return relations
+
+
 def _clean_sections(value: object) -> list[dict[str, object]]:
     if value in (None, ""):
         return []
@@ -283,6 +312,22 @@ def _merged_lenses(
         name.update(item.get("name") if isinstance(item.get("name"), dict) else {})
         lens_text.update(item.get("text") if isinstance(item.get("text"), dict) else {})
         merged.append({"name": name, "text": lens_text})
+    return merged
+
+
+def _merged_relations(
+    existing: object,
+    replacement: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    current = existing if isinstance(existing, list) else []
+    merged: list[dict[str, str]] = []
+    for index, item in enumerate(replacement):
+        prior = current[index] if index < len(current) else {}
+        localized = dict(prior) if isinstance(prior, dict) else {}
+        localized.update(item)
+        merged.append(
+            {str(language): str(value) for language, value in localized.items() if value is not None}
+        )
     return merged
 
 
@@ -558,6 +603,7 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
         }
     normalized = _clean_content(raw_content, domain=domain)
     lenses = _clean_lenses(payload, locale)
+    relations = _clean_relations(payload, locale)
     publish = payload.get("publish", True) is not False
     thought_id = uuid4()
     stable_key = f"thought-{thought_id.hex}"
@@ -583,7 +629,7 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                       published_revision, published_at
                     ) VALUES (
                       :id, :tenant_id, :stable_key, :domain, CAST(:title AS jsonb),
-                      CAST(:prompt AS jsonb), CAST(:thesis AS jsonb), '[]'::jsonb,
+                      CAST(:prompt AS jsonb), CAST(:thesis AS jsonb), CAST(:relations AS jsonb),
                       CAST(:lenses AS jsonb), CURRENT_DATE, :display_order, 'member', :created_by,
                       :template_key, CAST(:published_content AS jsonb),
                       CAST(:draft_content AS jsonb),
@@ -606,6 +652,7 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
                         _localized(str(normalized["thesis"]), locale), ensure_ascii=False
                     ),
                     "lenses": json.dumps(lenses, ensure_ascii=False),
+                    "relations": json.dumps(relations, ensure_ascii=False),
                     "display_order": display_order,
                     "created_by": actor.user_id,
                     "template_key": TEMPLATE_KEY,
@@ -716,13 +763,19 @@ def save_draft(
             if "lenses" in payload
             else data["lenses"]
         )
+        relations = (
+            _merged_relations(data["relations"], _clean_relations(payload, locale))
+            if "relations" in payload
+            else data["relations"]
+        )
         row = dict(
             session.execute(
                 text(
                     f"""
                     UPDATE civilization.thoughts
                     SET domain = :domain, draft_content = CAST(:draft_content AS jsonb),
-                        lenses = CAST(:lenses AS jsonb), updated_at = now(), revision = revision + 1
+                        relations = CAST(:relations AS jsonb), lenses = CAST(:lenses AS jsonb),
+                        updated_at = now(), revision = revision + 1
                     WHERE id = :thought_id AND revision = :expected_revision
                     RETURNING {_THOUGHT_COLUMNS}
                     """
@@ -731,6 +784,7 @@ def save_draft(
                     "domain": domain,
                     "draft_content": json.dumps(draft_content, ensure_ascii=False),
                     "lenses": json.dumps(lenses, ensure_ascii=False),
+                    "relations": json.dumps(relations, ensure_ascii=False),
                     "thought_id": thought_id,
                     "expected_revision": expected_revision,
                 },

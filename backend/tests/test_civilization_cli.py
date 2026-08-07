@@ -1,4 +1,4 @@
-from app.civilization_cli import CLI_COMMANDS, KEY_ENV, build_parser
+from app.civilization_cli import CLI_COMMANDS, KEY_ENV, build_parser, dispatch
 
 
 def test_civilization_cli_is_content_first_and_never_accepts_a_key_argument() -> None:
@@ -51,3 +51,37 @@ def test_civilization_cli_share_contract_requires_post_and_revision() -> None:
     assert args.group == "share"
     assert args.action == "enable"
     assert args.revision == 7
+
+
+def test_civilization_cli_draft_can_update_relations_through_the_shared_api() -> None:
+    class Client:
+        call: tuple[str, str, object] | None = None
+
+        def request(self, method: str, path: str, payload: object = None) -> object:
+            self.call = (method, path, payload)
+            return {"ok": True}
+
+    args = build_parser().parse_args(
+        [
+            "draft",
+            "save",
+            "--post",
+            "00000000-0000-0000-0000-000000000001",
+            "--revision",
+            "4",
+            "--content",
+            '{"title":"問題","short":"引子","thesis":"判斷"}',
+            "--relations",
+            '["一種長期主義"]',
+        ]
+    )
+    client = Client()
+
+    dispatch(client, args)
+
+    assert client.call is not None
+    assert client.call[0:2] == (
+        "PATCH",
+        "/api/civilization/thoughts/00000000-0000-0000-0000-000000000001/draft",
+    )
+    assert client.call[2]["relations"] == ["一種長期主義"]

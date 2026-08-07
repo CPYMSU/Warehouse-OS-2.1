@@ -71,6 +71,9 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
     assert "civ-share-card" in source
     assert ".civ-reader.is-notes-collapsed" in style
     assert "civ-lens-editor" in source
+    assert "civilization-relations-editor" in source
+    assert "relations: relations.map" in source
+    assert ".civ-relation-editor-row" in style
     assert "civ-poster-index" in source
     assert "12 COLUMN SYSTEM" in source
     assert "BUILTIN_THOUGHTS" not in source
@@ -90,10 +93,10 @@ def test_civilization_page_registers_all_three_swiss_views() -> None:
 def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
-    assert 'pages/pages-civilization.css?v=20260808-civilization8' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization8' in index
+    assert 'pages/pages-civilization.css?v=20260808-civilization9' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization9' in index
     assert 'pages/civilization-postcard.js?v=20260808-share1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization8' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization9' in index
 
 
 def test_public_civilization_page_and_browser_postcard_are_static_assets() -> None:

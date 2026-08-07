@@ -9,10 +9,12 @@ from app.services.civilization import (
     _can_delete,
     _clean_content,
     _clean_lenses,
+    _clean_relations,
     _content_locale,
     _merge_content,
     _merged_lenses,
     _merged_localized,
+    _merged_relations,
     template_catalog,
 )
 from app.terminal.catalog import availability, entry_by_tool_name
@@ -64,6 +66,20 @@ def test_lenses_are_validated_and_localized_for_storage() -> None:
             "text": {"en": "Read constraints first.", "zh": "先看約束，再看選擇。"},
         }
     ]
+
+
+def test_relations_are_editable_localized_and_preserve_the_other_language() -> None:
+    relations = _clean_relations(
+        {"relations": ["一種長期主義", "秩序與時間"]},
+        "zh",
+    )
+
+    assert relations == [{"zh": "一種長期主義"}, {"zh": "秩序與時間"}]
+    assert _merged_relations(
+        [{"en": "A form of long-termism"}],
+        relations[:1],
+    ) == [{"en": "A form of long-termism", "zh": "一種長期主義"}]
+    assert _clean_relations({"relations": []}, "zh") == []
 
 
 def test_swiss_b_content_keeps_layout_and_localized_characters_separate() -> None:
@@ -133,6 +149,14 @@ def test_civilization_auto_runtime_genes_are_backed_by_native_routes() -> None:
         entry = entry_by_tool_name(tool_name)
         assert entry is not None
         assert availability(entry) == "active"
+
+    for tool_name in ("civilization_post_create", "civilization_post_draft_update"):
+        entry = entry_by_tool_name(tool_name)
+        assert entry is not None
+        relation_parameter = next(
+            parameter for parameter in entry["params"] if parameter["dest"] == "body.relations"
+        )
+        assert relation_parameter["type"] == "array"
 
 
 def test_civilization_routes_delegate_to_one_tenant_service(monkeypatch) -> None:

@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 DEFAULT_BASE_URL = "https://bonfirework.org"
 KEY_ENV = "WAREHOUSE_CIVILIZATION_KEY"
 BASE_URL_ENV = "WAREHOUSE_BASE_URL"
@@ -71,6 +71,24 @@ def _read_json(value: str | None, *, label: str) -> dict[str, object] | None:
         raise CliError(f"Invalid {label} JSON: {exc.msg}") from exc
     if not isinstance(parsed, dict):
         raise CliError(f"{label} must be a JSON object")
+    return parsed
+
+
+def _read_array(value: str | None, *, label: str) -> list[object] | None:
+    if value is None:
+        return None
+    source = value
+    if value.startswith("@"):
+        try:
+            source = Path(value[1:]).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CliError(f"Cannot read {label}: {exc}") from exc
+    try:
+        parsed = json.loads(source)
+    except json.JSONDecodeError as exc:
+        raise CliError(f"Invalid {label} JSON: {exc.msg}") from exc
+    if not isinstance(parsed, list):
+        raise CliError(f"{label} must be a JSON array")
     return parsed
 
 
@@ -170,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--locale", default="zh")
     create.add_argument("--content", required=True, help="Inline JSON or @content.json")
     create.add_argument("--lenses", help="Inline JSON object with a lenses array or @file")
+    create.add_argument("--relations", help="Inline JSON array or @relations.json")
     create.add_argument("--publish", action="store_true")
 
     draft = groups.add_parser("draft").add_subparsers(dest="action", required=True)
@@ -181,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     save.add_argument("--locale", default="zh")
     save.add_argument("--content", required=True, help="Inline JSON or @content.json")
+    save.add_argument("--relations", help="Inline JSON array or @relations.json")
 
     preview = groups.add_parser("preview")
     preview.add_argument("--post", required=True)
@@ -232,6 +252,9 @@ def dispatch(client: Client, args: argparse.Namespace) -> object:
         lenses = _read_json(args.lenses, label="lenses")
         if lenses is not None:
             payload["lenses"] = lenses.get("lenses", [])
+        relations = _read_array(args.relations, label="relations")
+        if relations is not None:
+            payload["relations"] = relations
         return client.request("POST", "/api/civilization/thoughts", payload)
     post_path = f"/api/civilization/thoughts/{_ref(args.post)}"
     if args.group == "draft":
@@ -242,6 +265,9 @@ def dispatch(client: Client, args: argparse.Namespace) -> object:
         }
         if args.domain:
             payload["domain"] = args.domain
+        relations = _read_array(args.relations, label="relations")
+        if relations is not None:
+            payload["relations"] = relations
         return client.request("PATCH", f"{post_path}/draft", payload)
     if args.group == "preview":
         return client.request("GET", f"{post_path}/preview")

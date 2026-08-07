@@ -32,6 +32,9 @@ window.W2_LANG.addEN({
   "編輯": "Edit", "編輯思考": "Edit thought", "保存修改": "Save changes", "內容已更新": "Content updated",
   "更新失敗": "Update failed", "添加視角": "Add lens", "視角名稱": "Lens name", "視角說明": "Lens description",
   "移除": "Remove", "最多可添加 12 個視角。": "Up to 12 lenses can be added.",
+  "思想關聯": "Thought relations", "添加關聯": "Add relation", "關聯文字": "Relation label",
+  "關聯顯示於問題拓撲與時間軸；最多 12 條。": "Relations appear in question topology and chronology; up to 12 may be added.",
+  "尚未添加關聯": "No relations have been added yet", "例如：一種長期主義": "For example: a form of long-termism",
   "內容已被其他人更新，請重新打開後再編輯。": "Someone else updated this content. Reopen it before editing again.",
   "保存草稿": "Save draft", "草稿已保存": "Draft saved", "發布這一版": "Publish this version",
   "字符與正文": "Characters & body", "版面固定為 Swiss B；你可以編輯其中的全部字符與正文區段。": "The Swiss B layout is locked; every character and body section remains editable.",
@@ -137,6 +140,7 @@ const PosterMotion = ({ domain }) => <div className={`civ-poster-motion is-${dom
 const CivilizationComposer = ({ busy, error, initial, onClose, onSave }) => {
   const editing = !!initial;
   const [domainKey, setDomainKey] = useState(initial ? initial.domain : "judgement");
+  const [relations, setRelations] = useState(() => thoughtRelations(initial).map(localText));
   const [lenses, setLenses] = useState(() => thoughtLenses(initial).map(item => ({ name: localText(item.name), text: localText(item.text) })));
   const editorContent = contentLocale(initial, true);
   const [sections, setSections] = useState(() => (Array.isArray(editorContent.sections) ? editorContent.sections : []).map(item => ({ ...item, paragraphs: Array.isArray(item.paragraphs) ? item.paragraphs.join("\n\n") : String(item.paragraphs || "") })));
@@ -159,11 +163,13 @@ const CivilizationComposer = ({ busy, error, initial, onClose, onSave }) => {
         sections: sections.map(item => ({ marker: String(item.marker || "").trim(), kicker: String(item.kicker || "").trim(), heading: String(item.heading || "").trim(), paragraphs: String(item.paragraphs || "").split(/\n\s*\n/).map(part => part.trim()).filter(Boolean) })),
         footer_left: String(form.get("footer_left") || "").trim(), footer_right: String(form.get("footer_right") || "").trim(),
       },
+      relations: relations.map(item => item.trim()).filter(Boolean),
       lenses: lenses.map(item => ({ name: item.name.trim(), text: item.text.trim() })),
       locale: lang(),
       ...(editing ? { expected_revision: initial.revision } : {}),
     }, initial, intent === "publish");
   };
+  const changeRelation = (index, value) => setRelations(current => current.map((item, itemIndex) => itemIndex === index ? value : item));
   const changeLens = (index, key, value) => setLenses(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item));
   const changeSection = (index, key, value) => setSections(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item));
   return <div className="civ-composer" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
@@ -182,6 +188,7 @@ const CivilizationComposer = ({ busy, error, initial, onClose, onSave }) => {
         <section className="civ-section-editor is-wide"><header><span><b>{t("正文區段")}</b><small>{t("段落之間空一行。")}</small></span><button type="button" disabled={busy || sections.length >= 24} onClick={() => setSections(current => current.concat({ marker: String(current.length).padStart(2, "0"), kicker: "", heading: "", paragraphs: "" }))}>＋ {t("添加區段")}</button></header>{sections.map((item, index) => <div className="civ-section-editor-row" key={index}><b>{String(index + 1).padStart(2, "0")}</b><div className="civ-section-meta"><label>{t("區段標記")}<input value={item.marker || ""} maxLength="20" onChange={event => changeSection(index, "marker", event.target.value)}/></label><label>{t("英文提示")}<input value={item.kicker || ""} maxLength="80" onChange={event => changeSection(index, "kicker", event.target.value)}/></label></div><label>{t("區段標題")}<textarea value={item.heading || ""} maxLength="300" onChange={event => changeSection(index, "heading", event.target.value)} required/></label><label>{t("段落正文")}<textarea className="civ-section-paragraphs" value={item.paragraphs || ""} maxLength="60000" onChange={event => changeSection(index, "paragraphs", event.target.value)} required/></label><button type="button" disabled={busy} onClick={() => setSections(current => current.filter((_item, itemIndex) => itemIndex !== index))}>{t("移除")}</button></div>)}</section>
         <label>{t("頁尾左側")}<input name="footer_left" maxLength="120" defaultValue={editorContent.footer_left || "12 COLUMN SYSTEM · ONE QUESTION / MANY LENSES"}/></label>
         <label>{t("頁尾右側")}<input name="footer_right" maxLength="120" defaultValue={editorContent.footer_right || "INFORMATION BEFORE DECORATION"}/></label>
+        <section className="civ-relation-editor is-wide" data-testid="civilization-relations-editor"><header><span><b>{t("思想關聯")}</b><small>{t("關聯顯示於問題拓撲與時間軸；最多 12 條。")}</small></span><button type="button" disabled={busy || relations.length >= 12} onClick={() => setRelations(current => current.concat(""))}>＋ {t("添加關聯")}</button></header>{relations.length ? relations.map((item, index) => <div className="civ-relation-editor-row" key={index}><b>{String(index + 1).padStart(2, "0")}</b><label>{t("關聯文字")}<input value={item} maxLength="160" onChange={event => changeRelation(index, event.target.value)} placeholder={t("例如：一種長期主義")}/></label><button type="button" disabled={busy} onClick={() => setRelations(current => current.filter((_item, itemIndex) => itemIndex !== index))}>{t("移除")}</button></div>) : <div className="civ-relation-empty">{t("尚未添加關聯")}</div>}</section>
         <section className="civ-lens-editor is-wide"><header><span><b>{t("視角")}</b><small>{t("最多可添加 12 個視角。")}</small></span><button type="button" disabled={busy || lenses.length >= 12} onClick={() => setLenses(current => current.concat({ name: "", text: "" }))}>＋ {t("添加視角")}</button></header>{lenses.map((item, index) => <div className="civ-lens-editor-row" key={index}><b>{String(index + 1).padStart(2, "0")}</b><label>{t("視角名稱")}<input value={item.name} maxLength="80" onChange={event => changeLens(index, "name", event.target.value)} required/></label><label>{t("視角說明")}<textarea value={item.text} maxLength="500" onChange={event => changeLens(index, "text", event.target.value)} required/></label><button type="button" disabled={busy} onClick={() => setLenses(current => current.filter((_item, itemIndex) => itemIndex !== index))}>{t("移除")}</button></div>)}</section>
         {error && <div className="civ-composer-error is-wide" role="alert">{error}</div>}
       </div>
