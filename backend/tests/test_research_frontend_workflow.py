@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RESEARCH_PAGE = ROOT / "frontend/v2/pages/pages-research.jsx"
 RESEARCH_STYLE = ROOT / "frontend/v2/pages/pages-research.css"
 RESEARCH_SELECTION_STYLE = ROOT / "frontend/v2/pages/pages-research-selection.css"
+RESEARCH_CONTINUITY_STYLE = ROOT / "frontend/v2/pages/pages-research-continuity.css"
 INDEX_HTML = ROOT / "frontend/v2/index.html"
 
 
@@ -98,6 +99,10 @@ def test_research_index_restores_last_project_file_tab_and_reading_position() ->
     assert "rememberedResearchTab(id, selected, fallbackTab)" in source
     assert "saveResearchReadingPosition" in source
     assert "restoreResearchReadingPosition" in source
+    assert "restoreResearchReadingPositionStable" in source
+    assert 'window.addEventListener("pagehide", save)' in source
+    assert "rememberResearchReviewState" in source
+    assert "review_state" in source
     assert "W2.tenant()" in source
     assert "detailRequestSerial" in source
     assert "request !== detailRequestSerial.current" in source
@@ -120,6 +125,7 @@ def test_manuscript_refinement_is_browser_local_recoverable_and_formally_version
     source = RESEARCH_PAGE.read_text(encoding="utf-8")
     styles = RESEARCH_STYLE.read_text(encoding="utf-8")
     selection_styles = RESEARCH_SELECTION_STYLE.read_text(encoding="utf-8")
+    continuity_styles = RESEARCH_CONTINUITY_STYLE.read_text(encoding="utf-8")
 
     assert '["refinement", "論文精修"]' in source
     assert 'data-testid="research-refinement-workspace"' in source
@@ -130,6 +136,9 @@ def test_manuscript_refinement_is_browser_local_recoverable_and_formally_version
     assert "提交正式 DOCX 版本" in source
     assert "不啟動 Office Runtime" in source
     assert "block.type === \"image\"" in source
+    assert "AuthenticatedResearchImage" in source
+    assert "W2.fetch(src)" in source
+    assert "URL.createObjectURL(blob)" in source
     assert "block.type === \"table_row\"" in source
     assert ".rv-refinement-grid" in styles
     assert ".rv-refinement-table-row" in styles
@@ -149,4 +158,12 @@ def test_manuscript_refinement_is_browser_local_recoverable_and_formally_version
     assert "询问主 AI" in source
     assert ".rv-refinement-selection-dock" in selection_styles
     assert ".rv-refinement-annotation-list" in selection_styles
+    assert "paperScrollRef" in source
+    assert "inspectorScrollRef" in source
+    assert "paper_position" in source
+    assert "inspector_position" in source
+    assert "selection_question" in source
+    assert ".rv-refinement-image-state" in continuity_styles
+    assert "position:sticky" in continuity_styles
+    assert "max-height:calc(100vh - 118px)" in continuity_styles
     assert "@media(max-width:680px)" in styles

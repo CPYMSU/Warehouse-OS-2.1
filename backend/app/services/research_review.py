@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import unquote
 from uuid import UUID, uuid4
 from xml.etree import ElementTree
 
@@ -41,6 +42,9 @@ WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+V_NS = "urn:schemas-microsoft-com:vml"
+O_NS = "urn:schemas-microsoft-com:office:office"
+CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 
 
 @dataclass(frozen=True)
@@ -312,28 +316,55 @@ def _omml_to_latex(node: ElementTree.Element) -> str:
     return "".join(_omml_to_latex(child) for child in children)
 
 
+def _docx_content_types(archive: zipfile.ZipFile) -> tuple[dict[str, str], dict[str, str]]:
+    try:
+        root = ElementTree.fromstring(archive.read("[Content_Types].xml"))
+    except (KeyError, ElementTree.ParseError):
+        return {}, {}
+    defaults = {
+        str(item.attrib.get("Extension") or "").lower(): str(
+            item.attrib.get("ContentType") or ""
+        )
+        for item in root.findall(_tag(CONTENT_TYPES_NS, "Default"))
+        if item.attrib.get("Extension") and item.attrib.get("ContentType")
+    }
+    overrides = {
+        str(item.attrib.get("PartName") or "").lstrip("/"): str(
+            item.attrib.get("ContentType") or ""
+        )
+        for item in root.findall(_tag(CONTENT_TYPES_NS, "Override"))
+        if item.attrib.get("PartName") and item.attrib.get("ContentType")
+    }
+    return defaults, overrides
+
+
 def _docx_relationships(archive: zipfile.ZipFile) -> dict[str, dict[str, str]]:
     try:
         root = ElementTree.fromstring(archive.read("word/_rels/document.xml.rels"))
     except (KeyError, ElementTree.ParseError):
         return {}
+    defaults, overrides = _docx_content_types(archive)
     relationships: dict[str, dict[str, str]] = {}
+    names = set(archive.namelist())
     for item in root.findall(_tag(REL_NS, "Relationship")):
         relationship_id = str(item.attrib.get("Id") or "").strip()
         target = str(item.attrib.get("Target") or "").strip()
         if not relationship_id or not target or item.attrib.get("TargetMode") == "External":
             continue
-        normalized_target = target.lstrip("/")
+        normalized_target = unquote(target).lstrip("/")
         archive_path = posixpath.normpath(
             normalized_target
             if normalized_target.startswith("word/")
             else posixpath.join("word", normalized_target)
         )
-        if archive_path.startswith("word/media/") and archive_path in archive.namelist():
+        if archive_path.startswith("word/media/") and archive_path in names:
+            extension = Path(archive_path).suffix.lower().lstrip(".")
             relationships[relationship_id] = {
                 "relationship_id": relationship_id,
                 "archive_path": archive_path,
-                "content_type": mimetypes.guess_type(archive_path)[0]
+                "content_type": overrides.get(archive_path)
+                or defaults.get(extension)
+                or mimetypes.guess_type(archive_path)[0]
                 or "application/octet-stream",
             }
     return relationships
@@ -350,8 +381,18 @@ def _paragraph_images(
     ]
     images: list[dict[str, str]] = []
     seen: set[str] = set()
-    for index, item in enumerate(paragraph.findall(f".//{_tag(A_NS, 'blip')}")):
-        relationship_id = str(item.attrib.get(_tag(R_NS, "embed")) or "").strip()
+    image_nodes = [
+        item
+        for item in paragraph.iter()
+        if item.tag in {_tag(A_NS, "blip"), _tag(V_NS, "imagedata")}
+    ]
+    for index, item in enumerate(image_nodes):
+        relationship_id = str(
+            item.attrib.get(_tag(R_NS, "embed"))
+            or item.attrib.get(_tag(R_NS, "id"))
+            or item.attrib.get(_tag(O_NS, "relid"))
+            or ""
+        ).strip()
         relationship = relationships.get(relationship_id)
         if not relationship or relationship_id in seen:
             continue

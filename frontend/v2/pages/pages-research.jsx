@@ -125,6 +125,7 @@ const rememberResearchSelection = ({ projectId, fileId, tab, section }) => {
         tab: RESEARCH_READER_TABS.has(tab) ? tab : before.tab,
         opened_at: Date.now(),
         positions: nextFile === clean(before.file_id) ? before.positions || {} : {},
+        review_state: nextFile === clean(before.file_id) ? before.review_state || {} : {},
       };
     }
     const retained = Object.fromEntries(Object.entries(projects)
@@ -138,13 +139,35 @@ const rememberResearchSelection = ({ projectId, fileId, tab, section }) => {
     };
   });
 };
+const rememberedResearchReviewState = (projectId, fileId) => {
+  const entry = (readResearchMemory().projects || {})[clean(projectId)] || {};
+  return clean(entry.file_id) === clean(fileId) && entry.review_state
+    ? entry.review_state : {};
+};
+const rememberResearchReviewState = (projectId, fileId, patch) => {
+  if (!projectId || !fileId) return false;
+  return writeResearchMemory(current => {
+    const projects = { ...(current.projects || {}) };
+    const before = projects[clean(projectId)] || {};
+    if (clean(before.file_id) !== clean(fileId)) return current;
+    projects[clean(projectId)] = {
+      ...before,
+      review_state: {
+        ...(before.review_state || {}),
+        ...patch,
+        saved_at: Date.now(),
+      },
+    };
+    return { ...current, projects };
+  });
+};
 const researchReadingPosition = (projectId, fileId, tab) => {
   const entry = (readResearchMemory().projects || {})[clean(projectId)] || {};
   if (clean(entry.file_id) !== clean(fileId)) return null;
   const position = (entry.positions || {})[tab];
   return position && Number.isFinite(Number(position.top)) ? position : null;
 };
-const saveResearchReadingPosition = (element, projectId, fileId, tab) => {
+const saveResearchReadingPosition = (element, projectId, fileId, tab, marker = "") => {
   if (!element || !projectId || !fileId || !RESEARCH_READER_TABS.has(tab)) return;
   const top = Math.max(0, Math.round(Number(element.scrollTop) || 0));
   const range = Math.max(0, Number(element.scrollHeight) - Number(element.clientHeight));
@@ -156,19 +179,63 @@ const saveResearchReadingPosition = (element, projectId, fileId, tab) => {
       ...before,
       positions: {
         ...(before.positions || {}),
-        [tab]: { top, ratio: range ? top / range : 0, saved_at: Date.now() },
+        [tab]: { top, ratio: range ? top / range : 0, marker: clean(marker), saved_at: Date.now() },
       },
     };
     return { ...current, projects };
   });
 };
-const restoreResearchReadingPosition = (element, projectId, fileId, tab) => {
+const restoreResearchReadingPosition = (element, projectId, fileId, tab, marker = "") => {
   const position = researchReadingPosition(projectId, fileId, tab);
   if (!element || !position) return false;
   const range = Math.max(0, Number(element.scrollHeight) - Number(element.clientHeight));
   const ratio = Math.max(0, Math.min(1, Number(position.ratio) || 0));
-  element.scrollTop = Math.min(range, range > 0 ? Math.round(range * ratio) : Number(position.top) || 0);
+  const exact = clean(position.marker) && clean(position.marker) === clean(marker);
+  const desired = exact ? Number(position.top) || 0
+    : range > 0 ? Math.round(range * ratio) : Number(position.top) || 0;
+  element.scrollTop = Math.min(range, desired);
   return true;
+};
+const restoreResearchReadingPositionStable = (element, projectId, fileId, tab, marker = "") => {
+  if (!element) return () => {};
+  let disposed = false;
+  const restore = () => {
+    if (!disposed) restoreResearchReadingPosition(element, projectId, fileId, tab, marker);
+  };
+  const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(restore));
+  const timers = [180, 620, 1500].map(delay => window.setTimeout(restore, delay));
+  return () => {
+    disposed = true;
+    window.cancelAnimationFrame(frame);
+    timers.forEach(timer => window.clearTimeout(timer));
+  };
+};
+const captureElementScroll = (element, marker = "") => {
+  if (!element) return null;
+  const top = Math.max(0, Math.round(Number(element.scrollTop) || 0));
+  const range = Math.max(0, Number(element.scrollHeight) - Number(element.clientHeight));
+  return { top, ratio: range ? top / range : 0, marker: clean(marker), saved_at: Date.now() };
+};
+const restoreElementScroll = (element, position, marker = "") => {
+  if (!element || !position) return false;
+  const range = Math.max(0, Number(element.scrollHeight) - Number(element.clientHeight));
+  const exact = clean(position.marker) && clean(position.marker) === clean(marker);
+  const ratio = Math.max(0, Math.min(1, Number(position.ratio) || 0));
+  const desired = exact ? Number(position.top) || 0 : Math.round(range * ratio);
+  element.scrollTop = Math.min(range, Math.max(0, desired));
+  return true;
+};
+const restoreElementScrollStable = (element, position, marker = "") => {
+  if (!element || !position) return () => {};
+  let disposed = false;
+  const restore = () => { if (!disposed) restoreElementScroll(element, position, marker); };
+  const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(restore));
+  const timers = [180, 620, 1500].map(delay => window.setTimeout(restore, delay));
+  return () => {
+    disposed = true;
+    window.cancelAnimationFrame(frame);
+    timers.forEach(timer => window.clearTimeout(timer));
+  };
 };
 
 const Metric = ({ label, value, note }) => (
@@ -497,8 +564,18 @@ const ReviewWorkspace = ({ project, file, preview, canAnnotate, onError }) => {
   };
   useEffect(() => {
     let alive = true;
+    const remembered = rememberedResearchReviewState(project && project.id, file && file.id);
     setWorkspace(null); setSelection(null); setWorking("");
-    load().catch(reason => alive && onError(clean(reason.message || reason)));
+    setPanel(["annotations", "ai"].includes(remembered.panel) ? remembered.panel : "annotations");
+    setComment(clean(remembered.comment).slice(0, 20000));
+    setQuestion(clean(remembered.question).slice(0, 30000));
+    load().then(data => {
+      if (!alive || !data) return;
+      const version = Number((data.version || {}).version) || 0;
+      if (Number(remembered.version) === version && remembered.selection) {
+        setSelection(remembered.selection);
+      }
+    }).catch(reason => alive && onError(clean(reason.message || reason)));
     return () => { alive = false; };
   }, [base]);
   useEffect(() => {
@@ -511,12 +588,27 @@ const ReviewWorkspace = ({ project, file, preview, canAnnotate, onError }) => {
     workspace.version.id || workspace.version.version || workspace.version.git_sha
   );
   useEffect(() => {
+    if (!workspace || !project || !file) return () => {};
+    const timer = window.setTimeout(() => {
+      rememberResearchReviewState(project.id, file.id, {
+        version: Number((workspace.version || {}).version) || 0,
+        panel,
+        comment: comment.slice(0, 20000),
+        question: question.slice(0, 30000),
+        selection: selection || null,
+      });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [clean(versionMarker), panel, comment, question, selection]);
+  useEffect(() => {
     if (!workspace || !readingRef.current || !project || !file) return () => {};
     const element = readingRef.current;
-    let frame = window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      restoreResearchReadingPosition(element, project.id, file.id, "review");
-    }));
-    const save = () => saveResearchReadingPosition(element, project.id, file.id, "review");
+    const stopRestoring = restoreResearchReadingPositionStable(
+      element, project.id, file.id, "review", versionMarker
+    );
+    const save = () => saveResearchReadingPosition(
+      element, project.id, file.id, "review", versionMarker
+    );
     const onScroll = () => {
       if (scrollTimer.current != null) window.clearTimeout(scrollTimer.current);
       scrollTimer.current = window.setTimeout(() => {
@@ -524,10 +616,24 @@ const ReviewWorkspace = ({ project, file, preview, canAnnotate, onError }) => {
         save();
       }, 180);
     };
+    const stopOnUserInput = () => stopRestoring();
     element.addEventListener("scroll", onScroll, { passive: true });
+    element.addEventListener("wheel", stopOnUserInput, { passive: true });
+    element.addEventListener("touchstart", stopOnUserInput, { passive: true });
+    element.addEventListener("pointerdown", stopOnUserInput, { passive: true });
+    element.addEventListener("keydown", stopOnUserInput);
+    window.addEventListener("pagehide", save);
+    const onVisibility = () => { if (document.visibilityState === "hidden") save(); };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      window.cancelAnimationFrame(frame);
+      stopRestoring();
       element.removeEventListener("scroll", onScroll);
+      element.removeEventListener("wheel", stopOnUserInput);
+      element.removeEventListener("touchstart", stopOnUserInput);
+      element.removeEventListener("pointerdown", stopOnUserInput);
+      element.removeEventListener("keydown", stopOnUserInput);
+      window.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", onVisibility);
       if (scrollTimer.current != null) window.clearTimeout(scrollTimer.current);
       scrollTimer.current = null;
       save();
@@ -622,7 +728,9 @@ const ReviewWorkspace = ({ project, file, preview, canAnnotate, onError }) => {
         {isDocx ? (
           <DocxPaper contentUrl={preview && preview.content_url} title={file.logical_path}
             paperRef={paperRef} onSelect={chooseSelection} onError={onError}
-            onReady={() => restoreResearchReadingPosition(readingRef.current, project.id, file.id, "review")}/>
+            onReady={() => restoreResearchReadingPosition(
+              readingRef.current, project.id, file.id, "review", versionMarker
+            )}/>
         ) : (
           <SemanticPaper blocks={workspace.blocks} paperRef={paperRef} onSelect={chooseSelection}/>
         )}
@@ -713,10 +821,12 @@ const Viewer = ({ project, file, preview, diff, tab, onTab, blobUrl, busy, canAn
   useEffect(() => {
     if (!project || !file || busy || tab === "review" || !canvasRef.current) return () => {};
     const element = canvasRef.current;
-    const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      restoreResearchReadingPosition(element, project.id, file.id, tab);
-    }));
-    const save = () => saveResearchReadingPosition(element, project.id, file.id, tab);
+    const stopRestoring = restoreResearchReadingPositionStable(
+      element, project.id, file.id, tab, versionMarker
+    );
+    const save = () => saveResearchReadingPosition(
+      element, project.id, file.id, tab, versionMarker
+    );
     const onScroll = () => {
       if (scrollTimer.current != null) window.clearTimeout(scrollTimer.current);
       scrollTimer.current = window.setTimeout(() => {
@@ -724,10 +834,24 @@ const Viewer = ({ project, file, preview, diff, tab, onTab, blobUrl, busy, canAn
         save();
       }, 180);
     };
+    const stopOnUserInput = () => stopRestoring();
     element.addEventListener("scroll", onScroll, { passive: true });
+    element.addEventListener("wheel", stopOnUserInput, { passive: true });
+    element.addEventListener("touchstart", stopOnUserInput, { passive: true });
+    element.addEventListener("pointerdown", stopOnUserInput, { passive: true });
+    element.addEventListener("keydown", stopOnUserInput);
+    window.addEventListener("pagehide", save);
+    const onVisibility = () => { if (document.visibilityState === "hidden") save(); };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      window.cancelAnimationFrame(frame);
+      stopRestoring();
       element.removeEventListener("scroll", onScroll);
+      element.removeEventListener("wheel", stopOnUserInput);
+      element.removeEventListener("touchstart", stopOnUserInput);
+      element.removeEventListener("pointerdown", stopOnUserInput);
+      element.removeEventListener("keydown", stopOnUserInput);
+      window.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", onVisibility);
       if (scrollTimer.current != null) window.clearTimeout(scrollTimer.current);
       scrollTimer.current = null;
       save();
@@ -810,7 +934,15 @@ const readRefinementLocal = fileId => {
   catch (_error) { return null; }
 };
 const writeRefinementLocal = (fileId, value) => {
-  try { localStorage.setItem(refinementLocalKey(fileId), JSON.stringify(value)); return true; }
+  try {
+    const current = readRefinementLocal(fileId) || {};
+    localStorage.setItem(refinementLocalKey(fileId), JSON.stringify({
+      ...current,
+      ...value,
+      ui: value && value.ui ? { ...(current.ui || {}), ...value.ui } : current.ui,
+    }));
+    return true;
+  }
   catch (_error) { return false; }
 };
 
@@ -818,6 +950,36 @@ const REFINEMENT_AGENTS = [
   ["neutrality", "中立化"], ["logic", "逻辑"], ["clarity", "易懂"],
   ["professional", "专业"], ["chief", "主 AI"],
 ];
+
+const AuthenticatedResearchImage = ({ src, alt, contentType }) => {
+  const [url, setUrl] = useState("");
+  const [state, setState] = useState("loading");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    let objectUrl = "";
+    setUrl(""); setState("loading");
+    if (!src) { setState("missing"); return () => { alive = false; }; }
+    W2.fetch(src).then(async response => {
+      if (!response.ok) throw await apiError(response);
+      const blob = await response.blob();
+      objectUrl = URL.createObjectURL(blob);
+      if (!alive) { URL.revokeObjectURL(objectUrl); return; }
+      setUrl(objectUrl); setState("ready");
+    }).catch(() => { if (alive) setState("failed"); });
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src, attempt]);
+  if (state === "ready" && url) return <img src={url} alt={alt || "Research figure"}
+    onError={() => setState("unsupported")}/>;
+  return <div className={"rv-refinement-image-state " + state} role="status">
+    <b>{state === "loading" ? "LOADING SOURCE FIGURE…" : "FIGURE PREVIEW UNAVAILABLE"}</b>
+    <span>{state === "unsupported" ? "浏览器暂不支持这种 Word 图片格式" : clean(contentType || "受保护的 DOCX 内置图片")}</span>
+    {state !== "loading" && <button type="button" onClick={() => setAttempt(value => value + 1)}>重新读取</button>}
+  </div>;
+};
 
 const RefinementEquation = ({ latex, fallback }) => {
   const node = useRef(null);
@@ -871,6 +1033,26 @@ const refinementSelectionFromTextarea = (block, event, cellIndex, onSelect) => {
     quote,
   });
 };
+const restoredRefinementSelection = (anchor, blocks) => {
+  if (!anchor || !Array.isArray(blocks)) return null;
+  const block = blocks.find(item => clean(item.id) === clean(anchor.block_id));
+  if (!block) return null;
+  const cellIndex = Number.isInteger(anchor.cell_index) ? anchor.cell_index : null;
+  const source = clean(cellIndex == null ? block.text : (block.cells || [])[cellIndex]);
+  const start = Number(anchor.start_offset);
+  const end = Number(anchor.end_offset);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start ||
+      source.slice(start, end) !== clean(anchor.quote)) return null;
+  return {
+    block_id: clean(anchor.block_id),
+    field_name: cellIndex == null ? "text" : "cell",
+    cell_index: cellIndex,
+    start_offset: start,
+    end_offset: end,
+    quote: clean(anchor.quote),
+    source_sha256: clean(anchor.source_sha256),
+  };
+};
 
 const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onError }) => {
   const activeFile = files.find(item => clean(item.id) === clean(fileId)) || files[0] || null;
@@ -897,6 +1079,9 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const savingRef = useRef(false);
   const selectionNodes = useRef({});
   const selectionPanelRef = useRef(null);
+  const paperScrollRef = useRef(null);
+  const inspectorScrollRef = useRef(null);
+  const continuityScrollTimer = useRef(null);
   const base = project && activeFile
     ? "/api/research/projects/" + encodeURIComponent(project.id) + "/files/" + encodeURIComponent(activeFile.id) + "/refinement"
     : "";
@@ -943,9 +1128,18 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   }, [clean(activeFile && activeFile.id)]);
   useEffect(() => {
     let alive = true;
+    const remembered = activeFile ? readRefinementLocal(activeFile.id) || {} : {};
+    const ui = remembered.ui || {};
     setWorkspace(null); setBlocks([]); setState(base ? "loading" : "empty");
-    setCommitMessage(""); setLocalWarning(""); setSemantic(null); setAgentMessage("");
-    setSelection(null); setAnnotationBody(""); setSelectionQuestion(""); setSelectionBusy("");
+    setCommitMessage(clean(ui.commit_message).slice(0, 20000));
+    setLocalWarning(""); setSemantic(null);
+    setSemanticLayer(["all", "original", "translation", "distillation"].includes(ui.semantic_layer) ? ui.semantic_layer : "all");
+    setAgentType(REFINEMENT_AGENTS.some(item => item[0] === ui.agent_type) ? ui.agent_type : "neutrality");
+    setAgentMessage(clean(ui.agent_message).slice(0, 30000));
+    setSelection(null);
+    setAnnotationBody(clean(ui.annotation_body).slice(0, 20000));
+    setSelectionQuestion(clean(ui.selection_question).slice(0, 30000));
+    setSelectionBusy("");
     selectionNodes.current = {};
     editSerial.current = 0; savedSerial.current = 0; revisionRef.current = 0;
     if (!base) return () => { alive = false; };
@@ -959,6 +1153,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
         Array.isArray(local.blocks) && local.blocks.length;
       const next = restoreLocal ? local.blocks : serverBlocks;
       setWorkspace(data); setBlocks(next); blocksRef.current = next;
+      setSelection(restoredRefinementSelection(ui.selection, next));
       revisionRef.current = Number((data.draft || {}).revision) || 0;
       editSerial.current = restoreLocal ? 1 : 0;
       savedSerial.current = 0;
@@ -986,6 +1181,79 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     const timer = window.setTimeout(() => loadSemantic(true), 1800);
     return () => window.clearTimeout(timer);
   }, [semantic && semantic.latest_run]);
+  const refinementMarker = workspace && (
+    clean((workspace.draft || {}).id) + ":" + clean((workspace.base_version || {}).id)
+  );
+  useEffect(() => {
+    if (!workspace || !activeFile) return () => {};
+    const timer = window.setTimeout(() => {
+      writeRefinementLocal(activeFile.id, { ui: {
+        semantic_layer: semanticLayer,
+        agent_type: agentType,
+        agent_message: agentMessage.slice(0, 30000),
+        commit_message: commitMessage.slice(0, 20000),
+        selection: selection || null,
+        annotation_body: annotationBody.slice(0, 20000),
+        selection_question: selectionQuestion.slice(0, 30000),
+      }});
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [clean(refinementMarker), semanticLayer, agentType, agentMessage, commitMessage,
+    selection, annotationBody, selectionQuestion]);
+  useEffect(() => {
+    if (!workspace || !activeFile || !paperScrollRef.current || !inspectorScrollRef.current) {
+      return () => {};
+    }
+    const paper = paperScrollRef.current;
+    const inspector = inspectorScrollRef.current;
+    const ui = (readRefinementLocal(activeFile.id) || {}).ui || {};
+    const stopPaperRestore = restoreElementScrollStable(
+      paper, ui.paper_position, refinementMarker
+    );
+    const stopInspectorRestore = restoreElementScrollStable(
+      inspector, ui.inspector_position, refinementMarker
+    );
+    const save = () => writeRefinementLocal(activeFile.id, { ui: {
+      paper_position: captureElementScroll(paper, refinementMarker),
+      inspector_position: captureElementScroll(inspector, refinementMarker),
+    }});
+    const onScroll = () => {
+      if (continuityScrollTimer.current != null) {
+        window.clearTimeout(continuityScrollTimer.current);
+      }
+      continuityScrollTimer.current = window.setTimeout(() => {
+        continuityScrollTimer.current = null;
+        save();
+      }, 160);
+    };
+    const stopPaperOnInput = () => stopPaperRestore();
+    const stopInspectorOnInput = () => stopInspectorRestore();
+    paper.addEventListener("scroll", onScroll, { passive: true });
+    inspector.addEventListener("scroll", onScroll, { passive: true });
+    ["wheel", "touchstart", "pointerdown", "keydown"].forEach(name => {
+      paper.addEventListener(name, stopPaperOnInput, { passive: name !== "keydown" });
+      inspector.addEventListener(name, stopInspectorOnInput, { passive: name !== "keydown" });
+    });
+    window.addEventListener("pagehide", save);
+    const onVisibility = () => { if (document.visibilityState === "hidden") save(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stopPaperRestore(); stopInspectorRestore();
+      paper.removeEventListener("scroll", onScroll);
+      inspector.removeEventListener("scroll", onScroll);
+      ["wheel", "touchstart", "pointerdown", "keydown"].forEach(name => {
+        paper.removeEventListener(name, stopPaperOnInput);
+        inspector.removeEventListener(name, stopInspectorOnInput);
+      });
+      window.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (continuityScrollTimer.current != null) {
+        window.clearTimeout(continuityScrollTimer.current);
+        continuityScrollTimer.current = null;
+      }
+      save();
+    };
+  }, [clean(refinementMarker), clean(activeFile && activeFile.id)]);
 
   const syncDraft = async () => {
     if (!workspace || savingRef.current || editSerial.current <= savedSerial.current) return !savingRef.current;
@@ -1234,7 +1502,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     {workspace.source_changed && <div className="rv-refinement-conflict">課題庫已有較新的正式版本。這份草稿仍保留，但提交前需要重新基準化。</div>}
     {localWarning && <div className="rv-refinement-conflict">{localWarning}</div>}
     <div className="rv-refinement-grid">
-      <main className="rv-refinement-paper">
+      <main ref={paperScrollRef} className="rv-refinement-paper">
         <div className="rv-refinement-ledger"><span>CONTENT BLOCKS · {blocks.length}</span><b>{characters.toLocaleString()} CHAR</b><b>{figures} FIG</b><b>{tables} TABLE</b></div>
         {selection && <div className="rv-refinement-selection-dock" role="toolbar" aria-label="选中内容操作">
           <span>SELECTED · {selection.quote.length} CHAR</span><q>{selection.quote.slice(0, 240)}</q>
@@ -1251,7 +1519,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
           {blocks.map((block, index) => <section key={block.id} className={"rv-refinement-block " + block.type}>
             <aside><b>{String(index + 1).padStart(3, "0")}</b><span>{clean(block.type).toUpperCase()}</span><button disabled={index === 0} onClick={() => moveBlock(index, -1)}>↑</button><button disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)}>↓</button>{block.type !== "image" && <button onClick={() => removeBlock(block.id)}>×</button>}</aside>
             <div className="rv-refinement-block-content">
-              {block.type === "image" ? <figure><img src={block.media_url} alt={block.text || "Research figure"}/><textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="圖題或替代文字"/></figure>
+              {block.type === "image" ? <figure><AuthenticatedResearchImage src={block.media_url} contentType={block.content_type} alt={block.text || "Research figure"}/><textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="圖題或替代文字"/></figure>
               : block.type === "table_row" ? <div className="rv-refinement-table-row" role="row">{(block.cells || []).map((cell, cellIndex) => <textarea ref={node => { const key = clean(block.id) + ":cell:" + cellIndex; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} key={cellIndex} role="cell" style={{ gridColumn: "span " + Math.max(1, Number((((block.cell_spans || [])[cellIndex] || {}).colspan) || 1)) }} value={cell} onMouseUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onChange={event => {
                 const cells = [...(block.cells || [])]; cells[cellIndex] = event.target.value; updateBlock(block.id, { cells, text: cells.join(" | ") });
               }}/>)}</div>
@@ -1266,7 +1534,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
           <button className="rv-refinement-add" onClick={addParagraph}>＋ 新增內容段落</button>
         </article>
       </main>
-      <aside className="rv-refinement-inspector">
+      <aside ref={inspectorScrollRef} className="rv-refinement-inspector">
         <section ref={selectionPanelRef} className="rv-refinement-selection-panel">
           <header><span>SELECTION / 选区标注</span><strong>{selectionAnnotations.filter(item => item.status === "open").length} OPEN</strong></header>
           {selection ? <div className="rv-refinement-selection-composer">
