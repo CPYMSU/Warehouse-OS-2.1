@@ -46,6 +46,8 @@ RESEARCH_TOOLS = {
     "research_manuscript_semantic_show",
     "research_manuscript_semantic_refresh",
     "research_manuscript_agent_chat",
+    "research_manuscript_annotate",
+    "research_manuscript_annotation_status",
     "research_manuscript_finding_accept",
     "research_manuscript_finding_reject",
     "research_manuscript_draft_save",
@@ -131,6 +133,8 @@ def test_research_routes_and_capability_catalogue_share_exact_permissions() -> N
     assert reader_actions["research_manuscript_semantic_show"]["authorized"] is False
     assert reader_actions["research_manuscript_semantic_refresh"]["authorized"] is False
     assert reader_actions["research_manuscript_agent_chat"]["authorized"] is False
+    assert reader_actions["research_manuscript_annotate"]["authorized"] is False
+    assert reader_actions["research_manuscript_annotation_status"]["authorized"] is False
     assert reader_actions["research_manuscript_finding_accept"]["authorized"] is False
     assert reader_actions["research_manuscript_finding_reject"]["authorized"] is False
     assert reader_actions["research_manuscript_draft_save"]["authorized"] is False
@@ -164,6 +168,8 @@ def test_research_routes_and_capability_catalogue_share_exact_permissions() -> N
     assert writer_actions["research_manuscript_semantic_show"]["authorized"] is True
     assert writer_actions["research_manuscript_semantic_refresh"]["authorized"] is True
     assert writer_actions["research_manuscript_agent_chat"]["authorized"] is True
+    assert writer_actions["research_manuscript_annotate"]["authorized"] is True
+    assert writer_actions["research_manuscript_annotation_status"]["authorized"] is True
     assert writer_actions["research_manuscript_finding_accept"]["authorized"] is True
     assert writer_actions["research_manuscript_finding_reject"]["authorized"] is True
     assert writer_actions["research_manuscript_draft_save"]["authorized"] is True

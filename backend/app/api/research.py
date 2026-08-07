@@ -52,10 +52,12 @@ from app.services.research_review import (
 )
 from app.services.research_semantic_refinement import (
     agent_chat,
+    create_manuscript_annotation,
     queue_semantic_run,
     resolve_finding,
     run_semantic_ai,
     semantic_workspace,
+    set_manuscript_annotation_status,
 )
 from app.services.research_vault import (
     add_file_version,
@@ -387,6 +389,34 @@ def research_manuscript_agent_message(
     payload: dict[str, object] = Body(default={}),
 ) -> dict[str, object]:
     return agent_chat(actor, project_ref, file_ref, agent_type, payload, settings)
+
+
+@router.post(
+    "/api/research/projects/{project_ref}/files/{file_ref}/refinement/annotations",
+    status_code=status.HTTP_201_CREATED,
+)
+def research_manuscript_annotation_create(
+    project_ref: str,
+    file_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    """Persist one content-hash-pinned selection in the live manuscript draft."""
+
+    return create_manuscript_annotation(actor, project_ref, file_ref, payload)
+
+
+@router.post("/api/research/manuscript-annotations/{annotation_id}/status")
+def research_manuscript_annotation_status(
+    annotation_id: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    return set_manuscript_annotation_status(
+        actor,
+        annotation_id,
+        resolved=bool(payload.get("resolved")),
+    )
 
 
 @router.post("/api/research/manuscript-findings/{finding_id}/accept")

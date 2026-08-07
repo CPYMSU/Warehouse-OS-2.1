@@ -850,6 +850,28 @@ const RefinementSemanticLayer = ({ artifact, layer }) => {
   </div>;
 };
 
+const refinementSelectionFromTextarea = (block, event, cellIndex, onSelect) => {
+  const target = event.currentTarget;
+  let start = Number(target.selectionStart);
+  let end = Number(target.selectionEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+  const source = clean(target.value);
+  const raw = source.slice(start, end);
+  const leading = raw.length - raw.trimStart().length;
+  const trailing = raw.length - raw.trimEnd().length;
+  start += leading; end -= trailing;
+  const quote = source.slice(start, end);
+  if (!quote) return;
+  onSelect({
+    block_id: clean(block.id),
+    field_name: Number.isInteger(cellIndex) ? "cell" : "text",
+    cell_index: Number.isInteger(cellIndex) ? cellIndex : null,
+    start_offset: start,
+    end_offset: end,
+    quote,
+  });
+};
+
 const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onError }) => {
   const activeFile = files.find(item => clean(item.id) === clean(fileId)) || files[0] || null;
   const [workspace, setWorkspace] = useState(null);
@@ -864,11 +886,17 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const [agentType, setAgentType] = useState("neutrality");
   const [agentMessage, setAgentMessage] = useState("");
   const [agentBusy, setAgentBusy] = useState("");
+  const [selection, setSelection] = useState(null);
+  const [annotationBody, setAnnotationBody] = useState("");
+  const [selectionQuestion, setSelectionQuestion] = useState("");
+  const [selectionBusy, setSelectionBusy] = useState("");
   const blocksRef = useRef([]);
   const revisionRef = useRef(0);
   const editSerial = useRef(0);
   const savedSerial = useRef(0);
   const savingRef = useRef(false);
+  const selectionNodes = useRef({});
+  const selectionPanelRef = useRef(null);
   const base = project && activeFile
     ? "/api/research/projects/" + encodeURIComponent(project.id) + "/files/" + encodeURIComponent(activeFile.id) + "/refinement"
     : "";
@@ -917,6 +945,8 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     let alive = true;
     setWorkspace(null); setBlocks([]); setState(base ? "loading" : "empty");
     setCommitMessage(""); setLocalWarning(""); setSemantic(null); setAgentMessage("");
+    setSelection(null); setAnnotationBody(""); setSelectionQuestion(""); setSelectionBusy("");
+    selectionNodes.current = {};
     editSerial.current = 0; savedSerial.current = 0; revisionRef.current = 0;
     if (!base) return () => { alive = false; };
     W2.post(base, {}).then(data => {
@@ -998,6 +1028,72 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     return () => window.clearTimeout(timer);
   }, [blocks, workspace && workspace.draft && workspace.draft.id, state === "conflict"]);
 
+  const selectionKey = anchor => clean(anchor && anchor.block_id) + ":" +
+    clean(anchor && anchor.field_name || "text") + ":" +
+    (Number.isInteger(anchor && anchor.cell_index) ? anchor.cell_index : "-");
+  const chooseRefinementSelection = anchor => {
+    setSelection(anchor); setAnnotationBody(""); setSelectionQuestion("");
+  };
+  const focusRefinementSelection = anchor => {
+    if (!anchor) return;
+    const node = selectionNodes.current[selectionKey(anchor)];
+    if (!node) return;
+    node.focus();
+    node.setSelectionRange(Number(anchor.start_offset), Number(anchor.end_offset));
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    setSelection({
+      block_id: clean(anchor.block_id), field_name: clean(anchor.field_name || "text"),
+      cell_index: Number.isInteger(anchor.cell_index) ? anchor.cell_index : null,
+      start_offset: Number(anchor.start_offset), end_offset: Number(anchor.end_offset),
+      quote: clean(anchor.quote), source_sha256: clean(anchor.source_sha256),
+    });
+  };
+  const ensureSelectionSynced = async () => {
+    if (editSerial.current > savedSerial.current && !await syncDraft()) return false;
+    return true;
+  };
+  const saveSelectionAnnotation = async annotationType => {
+    if (!selection || selectionBusy) return;
+    const body = annotationBody.trim();
+    if (annotationType === "note" && !body) return;
+    if (!await ensureSelectionSynced()) return;
+    setSelectionBusy(annotationType);
+    try {
+      await W2.post(base + "/annotations", {
+        selection,
+        annotation_type: annotationType,
+        color: "yellow",
+        body,
+      });
+      setAnnotationBody(""); await loadSemantic(true);
+    } catch (reason) { onError(clean(reason.message || reason)); }
+    finally { setSelectionBusy(""); }
+  };
+  const askSelectionAI = async preset => {
+    if (!selection || selectionBusy) return;
+    const message = clean(preset || selectionQuestion).trim() ||
+      "请解释选中内容的准确含义、论证作用、隐含前提，并指出是否需要修改。";
+    if (!await ensureSelectionSynced()) return;
+    setSelectionBusy("ai"); setAgentType("chief");
+    try {
+      await W2.post(base + "/agents/chief/messages", { message, selection });
+      setSelectionQuestion(""); await loadSemantic(true);
+    } catch (reason) { onError(clean(reason.message || reason)); }
+    finally { setSelectionBusy(""); }
+  };
+  const toggleSelectionAnnotation = async annotation => {
+    if (!annotation || selectionBusy) return;
+    setSelectionBusy(clean(annotation.id));
+    try {
+      await W2.post(
+        "/api/research/manuscript-annotations/" + encodeURIComponent(annotation.id) + "/status",
+        { resolved: annotation.status !== "resolved" }
+      );
+      await loadSemantic(true);
+    } catch (reason) { onError(clean(reason.message || reason)); }
+    finally { setSelectionBusy(""); }
+  };
+
   const changeBlocks = updater => {
     const next = updater(blocksRef.current).map(item => ({ ...item }));
     blocksRef.current = next; setBlocks(next);
@@ -1051,7 +1147,11 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     if (!message || agentBusy) return;
     setAgentBusy("message");
     try {
-      await W2.post(base + "/agents/" + encodeURIComponent(agentType) + "/messages", { message });
+      if (!await ensureSelectionSynced()) return;
+      await W2.post(base + "/agents/" + encodeURIComponent(agentType) + "/messages", {
+        message,
+        selection: selection || undefined,
+      });
       setAgentMessage("");
       await loadSemantic(true);
     } catch (reason) { onError(clean(reason.message || reason)); }
@@ -1092,6 +1192,16 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     item.agent_type === agentType) || null, [semantic, agentType]);
   const activeFindings = useMemo(() => ((semantic && semantic.findings) || []).filter(item =>
     item.agent_type === agentType), [semantic, agentType]);
+  const annotationsByBlock = useMemo(() => {
+    const result = {};
+    ((semantic && semantic.annotations) || []).forEach(item => {
+      const key = clean(item.block_id);
+      if (!result[key]) result[key] = [];
+      result[key].push(item);
+    });
+    return result;
+  }, [semantic]);
+  const selectionAnnotations = (semantic && semantic.annotations) || [];
 
   if (!project) return <EmptyPanel title="先選擇研究課題" copy="論文精修只處理當前課題中的真實 DOCX 主稿。"/>;
   if (!files.length) return <EmptyPanel title="尚無可精修的 Word 論文" copy="先在課題庫上傳 DOCX；系統會自動提取正文、圖像與表格。"/>;
@@ -1126,6 +1236,13 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     <div className="rv-refinement-grid">
       <main className="rv-refinement-paper">
         <div className="rv-refinement-ledger"><span>CONTENT BLOCKS · {blocks.length}</span><b>{characters.toLocaleString()} CHAR</b><b>{figures} FIG</b><b>{tables} TABLE</b></div>
+        {selection && <div className="rv-refinement-selection-dock" role="toolbar" aria-label="选中内容操作">
+          <span>SELECTED · {selection.quote.length} CHAR</span><q>{selection.quote.slice(0, 240)}</q>
+          <button disabled={Boolean(selectionBusy)} onClick={() => saveSelectionAnnotation("highlight")}>{selectionBusy === "highlight" ? "标记中…" : "高亮标记"}</button>
+          <button disabled={Boolean(selectionBusy)} onClick={() => { selectionPanelRef.current && selectionPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" }); }}>写批注</button>
+          <button className="ai" disabled={Boolean(selectionBusy)} onClick={() => askSelectionAI()}>{selectionBusy === "ai" ? "AI 阅读中…" : "询问 AI"}</button>
+          <button className="clear" onClick={() => setSelection(null)}>×</button>
+        </div>}
         {documentDigest && semanticLayer !== "original" && <section className="rv-refinement-document-digest">
           <b>全文蒸馏</b><p>{documentDigest.content.summary}</p>
           <dl><div><dt>研究问题</dt><dd>{documentDigest.content.research_question || "—"}</dd></div><div><dt>方法</dt><dd>{documentDigest.content.method || "—"}</dd></div><div><dt>局限</dt><dd>{documentDigest.content.limitations || "—"}</dd></div></dl>
@@ -1134,26 +1251,44 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
           {blocks.map((block, index) => <section key={block.id} className={"rv-refinement-block " + block.type}>
             <aside><b>{String(index + 1).padStart(3, "0")}</b><span>{clean(block.type).toUpperCase()}</span><button disabled={index === 0} onClick={() => moveBlock(index, -1)}>↑</button><button disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)}>↓</button>{block.type !== "image" && <button onClick={() => removeBlock(block.id)}>×</button>}</aside>
             <div className="rv-refinement-block-content">
-              {block.type === "image" ? <figure><img src={block.media_url} alt={block.text || "Research figure"}/><textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="圖題或替代文字"/></figure>
-              : block.type === "table_row" ? <div className="rv-refinement-table-row" role="row">{(block.cells || []).map((cell, cellIndex) => <textarea key={cellIndex} role="cell" style={{ gridColumn: "span " + Math.max(1, Number((((block.cell_spans || [])[cellIndex] || {}).colspan) || 1)) }} value={cell} onChange={event => {
+              {block.type === "image" ? <figure><img src={block.media_url} alt={block.text || "Research figure"}/><textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="圖題或替代文字"/></figure>
+              : block.type === "table_row" ? <div className="rv-refinement-table-row" role="row">{(block.cells || []).map((cell, cellIndex) => <textarea ref={node => { const key = clean(block.id) + ":cell:" + cellIndex; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} key={cellIndex} role="cell" style={{ gridColumn: "span " + Math.max(1, Number((((block.cell_spans || [])[cellIndex] || {}).colspan) || 1)) }} value={cell} onMouseUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onChange={event => {
                 const cells = [...(block.cells || [])]; cells[cellIndex] = event.target.value; updateBlock(block.id, { cells, text: cells.join(" | ") });
               }}/>)}</div>
-              : block.type === "equation" ? <div className="rv-refinement-equation"><RefinementEquation latex={block.latex} fallback={block.text}/><textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} aria-label="公式语义文本"/></div>
+              : block.type === "equation" ? <div className="rv-refinement-equation"><RefinementEquation latex={block.latex} fallback={block.text}/><textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} aria-label="公式语义文本"/></div>
               : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
                 <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
-              </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<textarea value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
+              </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<textarea ref={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
               <RefinementSemanticLayer artifact={semanticByBlock[clean(block.id)]} layer={semanticLayer}/>
+              {(annotationsByBlock[clean(block.id)] || []).length > 0 && <div className="rv-refinement-block-annotations">{annotationsByBlock[clean(block.id)].map(item => <button key={item.id} className={item.status + " " + item.color} onClick={() => focusRefinementSelection(item)}><span>{item.annotation_type === "highlight" ? "MARK" : "NOTE"}</span><q>{item.quote.slice(0, 90)}</q></button>)}</div>}
             </div>
           </section>)}
           <button className="rv-refinement-add" onClick={addParagraph}>＋ 新增內容段落</button>
         </article>
       </main>
       <aside className="rv-refinement-inspector">
+        <section ref={selectionPanelRef} className="rv-refinement-selection-panel">
+          <header><span>SELECTION / 选区标注</span><strong>{selectionAnnotations.filter(item => item.status === "open").length} OPEN</strong></header>
+          {selection ? <div className="rv-refinement-selection-composer">
+            <q>{selection.quote}</q>
+            <textarea value={annotationBody} onChange={event => setAnnotationBody(event.target.value)} placeholder="记录判断、修改意图或审阅意见…"/>
+            <div><button disabled={!annotationBody.trim() || Boolean(selectionBusy)} onClick={() => saveSelectionAnnotation("note")}>{selectionBusy === "note" ? "保存中…" : "保存批注"}</button><button disabled={Boolean(selectionBusy)} onClick={() => saveSelectionAnnotation("highlight")}>仅高亮</button></div>
+            <textarea className="ai" value={selectionQuestion} onChange={event => setSelectionQuestion(event.target.value)} placeholder="针对选中内容向主 AI 提问；留空则自动解释含义、前提与作用…" onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") askSelectionAI(); }}/>
+            <button className="ai" disabled={Boolean(selectionBusy)} onClick={() => askSelectionAI()}>{selectionBusy === "ai" ? "主 AI 正在结合全文阅读…" : "询问主 AI · ⌘ ENTER"}</button>
+          </div> : <p className="rv-refinement-selection-empty">在左侧正文、图题、公式说明或表格单元格中选中文字，即可高亮、写批注或询问 AI。</p>}
+          <div className="rv-refinement-annotation-list">
+            {selectionAnnotations.slice(0, 30).map(item => <article key={item.id} className={item.status + " " + item.color}>
+              <button className="quote" disabled={item.status === "stale"} onClick={() => focusRefinementSelection(item)}><b>{item.annotation_type === "highlight" ? "HIGHLIGHT" : "NOTE"}</b><q>{item.quote}</q></button>
+              {item.body && <p>{item.body}</p>}
+              <footer><span>{item.author_name || "RESEARCHER"} · {stamp(item.created_at)}</span><button disabled={item.status === "stale" || selectionBusy === clean(item.id)} onClick={() => toggleSelectionAnnotation(item)}>{item.status === "resolved" ? "重新打开" : item.status === "stale" ? "原文已变化" : "完成"}</button></footer>
+            </article>)}
+          </div>
+        </section>
         <header><span>AGENT BUS / 共享上下文</span><strong>主系统按需服务 · 无专属 Runtime</strong></header>
         <button className="rv-refinement-review-all" disabled={Boolean(agentBusy) || semanticBusy} onClick={startReviews}>{agentBusy === "review" ? "四位评审正在并行工作…" : "并行启动四项专业评审"}</button>
         <nav className="rv-refinement-agent-tabs">{REFINEMENT_AGENTS.map(item => <button key={item[0]} className={agentType === item[0] ? "active" : ""} onClick={() => setAgentType(item[0])}>{item[1]}<b>{((semantic && semantic.findings) || []).filter(finding => finding.agent_type === item[0] && finding.status === "open").length}</b></button>)}</nav>
         <div className="rv-refinement-agent-stream">
-          {activeThread && (activeThread.messages || []).map(message => <article key={message.id} className={message.role}><b>{message.role === "user" ? "YOU" : REFINEMENT_AGENTS.find(item => item[0] === agentType)[1]}</b><p>{message.body}</p><small>REV {message.context_revision} · {stamp(message.created_at)}</small></article>)}
+          {activeThread && (activeThread.messages || []).map(message => <article key={message.id} className={message.role}><b>{message.role === "user" ? "YOU" : REFINEMENT_AGENTS.find(item => item[0] === agentType)[1]}</b>{(message.citations || []).map((citation, index) => <button className="rv-refinement-agent-citation" key={index} onClick={() => focusRefinementSelection(citation)}><span>SELECTED</span><q>{citation.quote}</q></button>)}<p>{message.body}</p><small>REV {message.context_revision} · {stamp(message.created_at)}</small></article>)}
           {!activeThread && <p className="rv-refinement-agent-empty">尚未建立对话。可以先启动专业评审，或直接向当前 Agent 提问。</p>}
           {activeFindings.map(finding => <article key={finding.id} className={"rv-refinement-finding " + finding.status}>
             <header><b>{clean(finding.severity).toUpperCase()} · {finding.category || "REVIEW"}</b><span>{finding.block_id}</span></header>
@@ -1161,7 +1296,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
             <footer><button disabled={finding.status !== "open" || Boolean(agentBusy)} onClick={() => decideFinding(finding, true)}>接受修改</button><button disabled={finding.status !== "open" || Boolean(agentBusy)} onClick={() => decideFinding(finding, false)}>拒绝</button></footer>
           </article>)}
         </div>
-        <label className="rv-refinement-agent-composer"><span>与{REFINEMENT_AGENTS.find(item => item[0] === agentType)[1]}对话</span><textarea value={agentMessage} onChange={event => setAgentMessage(event.target.value)} placeholder={agentType === "chief" ? "综合四位评审，解释冲突并给出统一方案" : "追问理由、要求保留结论强度，或指定目标读者"}/><button disabled={!agentMessage.trim() || Boolean(agentBusy)} onClick={sendAgentMessage}>{agentBusy === "message" ? "正在思考…" : "发送"}</button></label>
+        <label className="rv-refinement-agent-composer"><span>与{REFINEMENT_AGENTS.find(item => item[0] === agentType)[1]}对话{selection ? " · 已附选区" : ""}</span><textarea value={agentMessage} onChange={event => setAgentMessage(event.target.value)} placeholder={agentType === "chief" ? "综合四位评审，解释冲突并给出统一方案" : "追问理由、要求保留结论强度，或指定目标读者"}/><button disabled={!agentMessage.trim() || Boolean(agentBusy)} onClick={sendAgentMessage}>{agentBusy === "message" ? "正在思考…" : "发送"}</button></label>
         <label className="rv-refinement-commit"><span>VERSION NOTE / 本次修改說明</span><textarea value={commitMessage} onChange={event => setCommitMessage(event.target.value)} placeholder="例如：重寫方法與結果銜接，統一三張圖的論證口徑"/></label>
         <button className="rv-refinement-submit" disabled={publishing || state === "saving" || state === "conflict" || workspace.source_changed} onClick={submit}>{publishing ? "ASSEMBLING DOCX…" : "提交正式 DOCX 版本"}</button>
         <small>浏览器负责编辑与公式渲染；平台保存可恢复草稿、语义资源和审计记录。提交时才生成正式 DOCX。</small>

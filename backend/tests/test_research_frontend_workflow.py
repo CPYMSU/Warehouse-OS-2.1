@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH_PAGE = ROOT / "frontend/v2/pages/pages-research.jsx"
 RESEARCH_STYLE = ROOT / "frontend/v2/pages/pages-research.css"
+RESEARCH_SELECTION_STYLE = ROOT / "frontend/v2/pages/pages-research-selection.css"
 INDEX_HTML = ROOT / "frontend/v2/index.html"
 
 
@@ -118,6 +119,7 @@ def test_docx_reader_reuses_version_scoped_render_cache_across_navigation() -> N
 def test_manuscript_refinement_is_browser_local_recoverable_and_formally_versioned() -> None:
     source = RESEARCH_PAGE.read_text(encoding="utf-8")
     styles = RESEARCH_STYLE.read_text(encoding="utf-8")
+    selection_styles = RESEARCH_SELECTION_STYLE.read_text(encoding="utf-8")
 
     assert '["refinement", "論文精修"]' in source
     assert 'data-testid="research-refinement-workspace"' in source
@@ -140,4 +142,11 @@ def test_manuscript_refinement_is_browser_local_recoverable_and_formally_version
     assert "RefinementEquation" in source
     assert ".rv-refinement-agent-tabs" in styles
     assert ".rv-refinement-semantic-layer" in styles
+    assert "refinementSelectionFromTextarea" in source
+    assert 'base + "/annotations"' in source
+    assert 'selection: selection || undefined' in source
+    assert "高亮标记" in source
+    assert "询问主 AI" in source
+    assert ".rv-refinement-selection-dock" in selection_styles
+    assert ".rv-refinement-annotation-list" in selection_styles
     assert "@media(max-width:680px)" in styles
