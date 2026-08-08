@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
 import httpx
@@ -87,6 +90,97 @@ def _http_acceptance(
                 observed["error"] = str(exc)[:500]
                 failures.append(f"http:{name}")
             evidence.append(observed)
+    return evidence, failures
+
+
+def _static_candidate_root(result: dict[str, object], settings: Settings) -> Path:
+    relative = str(result.get("runtime_rel_path") or "").strip()
+    if not relative:
+        raise ValueError("release_files_unavailable")
+    data_root = settings.hosted_runtime_data_root.resolve()
+    root = (data_root / relative).resolve()
+    try:
+        root.relative_to(data_root)
+    except ValueError as exc:
+        raise ValueError("unsafe_release_path") from exc
+    if not (root / "index.html").is_file():
+        raise ValueError("static_index_unavailable")
+    return root
+
+
+def _static_probe_target(root: Path, path: str) -> Path | None:
+    decoded = unquote(urlsplit(path).path)
+    relative = PurePosixPath(decoded.lstrip("/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("unsafe_static_probe_path")
+    target = (root.joinpath(*relative.parts)).resolve() if relative.parts else root
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("unsafe_static_probe_path") from exc
+    if target.is_dir():
+        target = target / "index.html"
+    if not target.is_file() and not relative.suffix:
+        target = root / "index.html"
+    return target if target.is_file() else None
+
+
+def _static_acceptance(
+    root: Path,
+    probes: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[str]]:
+    effective_probes = probes or [
+        {
+            "name": "static-root",
+            "path": "/",
+            "expected_status": 200,
+            "operator": "status_only",
+        }
+    ]
+    evidence: list[dict[str, object]] = []
+    failures: list[str] = []
+    for probe in effective_probes:
+        name = str(probe["name"])
+        path = str(probe["path"])
+        observed: dict[str, object] = {"name": name, "path": path}
+        try:
+            target = _static_probe_target(root, path)
+            status = 200 if target is not None else 404
+            observed["status"] = status
+            observed["content_type"] = (
+                mimetypes.guess_type(str(target))[0] if target is not None else ""
+            ) or "application/octet-stream"
+            expected_status = int(probe["expected_status"])
+            if status != expected_status:
+                raise ValueError(f"expected HTTP {expected_status}, observed {status}")
+            operator = str(probe.get("operator") or "status_only")
+            if operator != "status_only":
+                if target is None:
+                    raise ValueError("static response has no document")
+                if target.stat().st_size > _MAX_RESPONSE_BYTES:
+                    raise ValueError("response exceeds 1 MiB acceptance limit")
+                document = json.loads(target.read_text(encoding="utf-8"))
+                value = _json_pointer(document, str(probe.get("json_pointer") or ""))
+                observed["value"] = value
+                expected = probe.get("expected")
+                if operator == "length_equals":
+                    if not isinstance(value, (list, dict, str)) or len(value) != expected:
+                        raise ValueError(
+                            f"expected JSON length {expected}, observed "
+                            + (
+                                str(len(value))
+                                if isinstance(value, (list, dict, str))
+                                else "non-sized"
+                            )
+                        )
+                elif value != expected:
+                    raise ValueError(f"expected JSON value {expected!r}, observed {value!r}")
+            observed["accepted"] = True
+        except Exception as exc:
+            observed["accepted"] = False
+            observed["error"] = str(exc)[:500]
+            failures.append(f"http:{name}")
+        evidence.append(observed)
     return evidence, failures
 
 
@@ -299,8 +393,6 @@ def accept_workspace_deployment(
         candidate_id = UUID(str(candidate["id"]))
         source_version_id = str(candidate["source_version_id"])
         internal_url = str(result.get("internal_url") or "").rstrip("/")
-    if not _INTERNAL_URL.fullmatch(internal_url):
-        raise HTTPException(status_code=409, detail="Candidate internal URL is unavailable")
 
     acceptance = contract.get("acceptance")
     acceptance = acceptance if isinstance(acceptance, dict) else {}
@@ -309,7 +401,25 @@ def accept_workspace_deployment(
         acceptance.get("database") if isinstance(acceptance.get("database"), dict) else {}
     )
     lifecycle, lifecycle_failures = _lifecycle_evidence(lifecycle_rows, contract)
-    http_evidence, http_failures = _http_acceptance(internal_url, probes)
+    if str(result.get("runtime_kind") or "") == "static":
+        try:
+            static_root = _static_candidate_root(result, settings)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "candidate_static_release_unavailable",
+                    "message": str(exc),
+                    "deployment_id": str(candidate_id),
+                },
+            ) from exc
+        http_evidence, http_failures = _static_acceptance(static_root, probes)
+        candidate_transport = "immutable_static_release"
+    else:
+        if not _INTERNAL_URL.fullmatch(internal_url):
+            raise HTTPException(status_code=409, detail="Candidate internal URL is unavailable")
+        http_evidence, http_failures = _http_acceptance(internal_url, probes)
+        candidate_transport = "private_runtime_network"
     database_evidence, database_failures = _database_acceptance(
         credential,
         settings,
@@ -323,6 +433,7 @@ def accept_workspace_deployment(
         "source_version_id": source_version_id,
         "contract_schema": contract.get("schema"),
         "contract_digest": contract.get("contract_digest"),
+        "candidate_transport": candidate_transport,
         "lifecycle": lifecycle,
         "http": http_evidence,
         "database": database_evidence,

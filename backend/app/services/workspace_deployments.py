@@ -9,9 +9,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import HTTPException
 from sqlalchemy import text
 
@@ -47,7 +50,7 @@ from app.services.object_storage import (
     object_store_for_provider,
     object_store_read_candidates,
 )
-from app.services.pages_runtime import mark_pages_deployment_active
+from app.services.pages_runtime import mark_pages_deployment_active, set_pages_deployment_pointer
 from app.services.source_packages import SourceArchive, inspect_source_archive
 
 WORKSPACE_RUNTIME_TYPES = frozenset(
@@ -1837,7 +1840,9 @@ def _deployment_public(row: dict[str, object]) -> dict[str, object]:
         value["result"] = _sanitize_runtime_result(result)
     value["verified_application_url"] = (
         value.get("public_url")
-        if value.get("status") == "ready" and value.get("health") == "healthy"
+        if value.get("status") == "ready"
+        and value.get("health") == "healthy"
+        and result.get("public_route_verified") is True
         else None
     )
     return value
@@ -2145,14 +2150,99 @@ def cancel_workspace_deployment(
     return {"ok": True, "deployment": _deployment_public(dict(row))}
 
 
+def _record_deployment_event(
+    session: object,
+    *,
+    deployment_id: UUID,
+    tenant_id: UUID,
+    event_type: str,
+    payload: dict[str, object],
+) -> None:
+    sequence = int(
+        session.execute(
+            text(
+                "SELECT COALESCE(max(sequence),0)+1 "
+                "FROM digital_asset.deployment_events WHERE deployment_id=:id"
+            ),
+            {"id": deployment_id},
+        ).scalar_one()
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO digital_asset.deployment_events(
+              deployment_id, tenant_id, sequence, event_type, payload
+            ) VALUES (:id,:tenant_id,:sequence,:event_type,CAST(:payload AS jsonb))
+            """
+        ),
+        {
+            "id": deployment_id,
+            "tenant_id": tenant_id,
+            "sequence": sequence,
+            "event_type": event_type,
+            "payload": json.dumps(payload),
+        },
+    )
+
+
+def _verify_public_deployment_route(
+    public_url: str,
+    deployment_id: UUID,
+    health_path: str,
+    *,
+    timeout_seconds: int = 20,
+) -> dict[str, object]:
+    parsed = urlsplit(public_url)
+    route = (parsed.path or "/").rstrip("/") + "/" + health_path.lstrip("/")
+    if parsed.query:
+        route += "?" + parsed.query
+    candidates = [
+        f"http://api:8080{route}",
+        f"http://warehouse-os-api-green:8080{route}",
+        f"http://warehouse-os-api-blue:8080{route}",
+        public_url,
+    ]
+    deadline = time.monotonic() + max(1, timeout_seconds)
+    last = "not reachable"
+    while time.monotonic() < deadline:
+        for candidate in candidates:
+            try:
+                response = httpx.get(
+                    candidate,
+                    headers={"host": parsed.netloc},
+                    timeout=3,
+                    follow_redirects=False,
+                )
+                observed = response.headers.get("x-warehouse-deployment")
+                if 200 <= response.status_code < 400 and observed == str(deployment_id):
+                    return {
+                        "url": public_url,
+                        "health_path": health_path,
+                        "status": response.status_code,
+                        "deployment_id": observed,
+                    }
+                last = f"HTTP {response.status_code} deployment={observed or 'none'}"
+            except httpx.HTTPError as exc:
+                last = exc.__class__.__name__
+        time.sleep(1)
+    raise RuntimeError(f"Public Runtime route verification failed: {last}")
+
+
 def activate_workspace_deployment(
     credential: WorkspaceCredential,
     deployment_id: DeploymentReference,
 ) -> dict[str, object]:
-    """Atomically roll the permanent entry back/forward to a verified revision."""
+    """Switch traffic, verify the exact revision, and restore the former route on failure."""
 
     credential.require("deploy:write")
     with tenant_session(credential.tenant_id) as session:
+        previous_active_deployment_id = session.execute(
+            text(
+                "SELECT active_deployment_id FROM digital_asset.workspaces "
+                "WHERE id=:workspace_id FOR UPDATE"
+            ),
+            {"workspace_id": credential.workspace_id},
+        ).scalar_one()
         deployment = (
             session.execute(
                 text(
@@ -2208,7 +2298,9 @@ def activate_workspace_deployment(
                     },
                 )
         database_release = observe_database_release_gate(
-            session, credential.workspace_id
+            session,
+            credential.workspace_id,
+            deployment_config=requested_config,
         )
         if not bool(database_release["ready"]):
             raise HTTPException(
@@ -2241,44 +2333,198 @@ def activate_workspace_deployment(
                 UPDATE digital_asset.deployments
                 SET result=result || jsonb_build_object(
                   'activation_requested', true,
-                  'activation_deferred', false,
-                  'activated_at', now()
+                  'activation_deferred', true,
+                  'public_route_verified', false,
+                  'previous_active_deployment_id', CAST(:previous AS text),
+                  'activation_started_at', now()
                 )
                 WHERE id=:deployment_id
                 """
             ),
-            {"deployment_id": resolved_id},
+            {
+                "deployment_id": resolved_id,
+                "previous": (
+                    str(previous_active_deployment_id)
+                    if previous_active_deployment_id is not None
+                    else None
+                ),
+            },
         )
-        sequence = int(
+        _record_deployment_event(
+            session,
+            deployment_id=resolved_id,
+            tenant_id=credential.tenant_id,
+            event_type="route_activation_started",
+            payload={
+                "credential_id": str(credential.credential_id),
+                "manual_activation": True,
+                "previous_active_deployment_id": (
+                    str(previous_active_deployment_id)
+                    if previous_active_deployment_id is not None
+                    else None
+                ),
+            },
+        )
+
+    public_url = str(deployment.get("public_url") or "")
+    health_path = str(
+        deployment_result.get("health_path") or requested_config.get("health_path") or "/"
+    )
+    try:
+        route_evidence = _verify_public_deployment_route(
+            public_url,
+            resolved_id,
+            health_path,
+        )
+    except RuntimeError as exc:
+        with tenant_session(credential.tenant_id) as session:
+            current = session.execute(
+                text(
+                    "SELECT active_deployment_id FROM digital_asset.workspaces "
+                    "WHERE id=:workspace_id FOR UPDATE"
+                ),
+                {"workspace_id": credential.workspace_id},
+            ).scalar_one()
+            rolled_back = current == resolved_id
+            if rolled_back:
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.workspaces
+                        SET active_deployment_id=CAST(:previous AS uuid),
+                            runtime_status=CASE WHEN CAST(:previous AS uuid) IS NULL
+                              THEN 'failed' ELSE 'ready' END
+                        WHERE id=:workspace_id AND active_deployment_id=:deployment_id
+                        """
+                    ),
+                    {
+                        "previous": (
+                            str(previous_active_deployment_id)
+                            if previous_active_deployment_id is not None
+                            else None
+                        ),
+                        "workspace_id": credential.workspace_id,
+                        "deployment_id": resolved_id,
+                    },
+                )
+                set_pages_deployment_pointer(
+                    session,
+                    tenant_id=credential.tenant_id,
+                    workspace_id=credential.workspace_id,
+                    deployment_id=previous_active_deployment_id,
+                )
             session.execute(
                 text(
-                    "SELECT COALESCE(max(sequence),0)+1 "
-                    "FROM digital_asset.deployment_events WHERE deployment_id=:id"
+                    """
+                    UPDATE digital_asset.deployments
+                    SET status='failed',health='unhealthy',
+                        result=result || jsonb_build_object(
+                          'activation_deferred', true,
+                          'public_route_verified', false,
+                          'activation_error', CAST(:error AS text),
+                          'activation_rolled_back', CAST(:rolled_back AS boolean)
+                        )
+                    WHERE id=:deployment_id
+                    """
                 ),
-                {"id": resolved_id},
-            ).scalar_one()
-        )
-        session.execute(
+                {
+                    "deployment_id": resolved_id,
+                    "error": str(exc)[:1000],
+                    "rolled_back": rolled_back,
+                },
+            )
+            _record_deployment_event(
+                session,
+                deployment_id=resolved_id,
+                tenant_id=credential.tenant_id,
+                event_type=(
+                    "route_activation_rolled_back" if rolled_back else "route_activation_superseded"
+                ),
+                payload={
+                    "credential_id": str(credential.credential_id),
+                    "error": str(exc)[:1000],
+                    "restored_deployment_id": (
+                        str(previous_active_deployment_id)
+                        if rolled_back and previous_active_deployment_id is not None
+                        else None
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "public_route_verification_failed",
+                "deployment_id": str(resolved_id),
+                "previous_deployment_restored": rolled_back,
+                "message": str(exc),
+            },
+        ) from exc
+
+    with tenant_session(credential.tenant_id) as session:
+        current = session.execute(
             text(
-                """
-                INSERT INTO digital_asset.deployment_events(
-                  deployment_id, tenant_id, sequence, event_type, payload
-                ) VALUES (:id,:tenant_id,:sequence,'route_activated',CAST(:payload AS jsonb))
-                """
+                "SELECT active_deployment_id FROM digital_asset.workspaces "
+                "WHERE id=:workspace_id FOR UPDATE"
             ),
-            {
-                "id": resolved_id,
-                "tenant_id": credential.tenant_id,
-                "sequence": sequence,
-                "payload": json.dumps(
-                    {"credential_id": str(credential.credential_id), "manual_activation": True}
+            {"workspace_id": credential.workspace_id},
+        ).scalar_one()
+        if current != resolved_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "activation_superseded",
+                    "deployment_id": str(resolved_id),
+                    "active_deployment_id": str(current) if current is not None else None,
+                },
+            )
+        updated = (
+            session.execute(
+                text(
+                    """
+                    UPDATE digital_asset.deployments
+                    SET result=result || jsonb_build_object(
+                      'activation_requested', true,
+                      'activation_deferred', false,
+                      'public_route_verified', true,
+                      'activated_at', now(),
+                      'activation_rolled_back', false
+                    )
+                    WHERE id=:deployment_id
+                    RETURNING *
+                    """
                 ),
+                {"deployment_id": resolved_id},
+            )
+            .mappings()
+            .one()
+        )
+        _record_deployment_event(
+            session,
+            deployment_id=resolved_id,
+            tenant_id=credential.tenant_id,
+            event_type="route_activated",
+            payload={
+                "credential_id": str(credential.credential_id),
+                "manual_activation": True,
+                **route_evidence,
+            },
+        )
+        _record_deployment_event(
+            session,
+            deployment_id=resolved_id,
+            tenant_id=credential.tenant_id,
+            event_type="public_route_verified",
+            payload={
+                "credential_id": str(credential.credential_id),
+                "manual_activation": True,
+                **route_evidence,
             },
         )
     return {
         "ok": True,
-        "deployment": _deployment_public(dict(deployment)),
+        "deployment": _deployment_public(dict(updated)),
         "database_release": _json_safe(database_release),
+        "route_verification": _json_safe(route_evidence),
         "active": True,
     }
 

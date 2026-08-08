@@ -3200,9 +3200,13 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                        ), '[]'::jsonb) AS storage_bindings,
                        (
                          SELECT jsonb_build_object(
+                           'id', d.id,
+                           'active', d.id=w.active_deployment_id,
                            'status', d.status,
                            'health', d.health,
                            'public_url', d.public_url,
+                           'public_route_verified',
+                             COALESCE((d.result->>'public_route_verified')::boolean,false),
                            'updated_at', d.updated_at,
                            'failure_reason', CASE
                              WHEN d.status = 'failed'
@@ -3223,7 +3227,7 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
                          )
                          FROM digital_asset.deployments AS d
                          WHERE d.workspace_id = w.id
-                         ORDER BY d.updated_at DESC
+                         ORDER BY (d.id=w.active_deployment_id) DESC, d.updated_at DESC
                          LIMIT 1
                        ) AS latest_deployment
                 FROM digital_asset.workspaces AS w
@@ -3247,8 +3251,10 @@ def public_workspace_status(tenant_slug: str, workspace_key: str) -> dict[str, o
     verified_application_url = (
         deployment.get("public_url")
         if deployment
+        and deployment.get("active") is True
         and deployment.get("status") == "ready"
         and deployment.get("health") == "healthy"
+        and deployment.get("public_route_verified") is True
         else None
     )
     runtime_type = str((state.get("config") or {}).get("runtime_type") or "static")

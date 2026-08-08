@@ -33,6 +33,8 @@ def workspace_database_policy(config: object) -> dict[str, object]:
 def observe_database_release_gate(
     session: Any,
     workspace_id: object,
+    *,
+    deployment_config: object = None,
 ) -> dict[str, object]:
     """Return durable evidence required before routing a database-backed release."""
 
@@ -42,6 +44,35 @@ def observe_database_release_gate(
         {"workspace_id": resolved_workspace_id},
     ).scalar_one_or_none()
     policy = workspace_database_policy(workspace_config)
+    requested = deployment_config if isinstance(deployment_config, dict) else None
+    if requested is not None and "database_access" in requested:
+        database_access = str(requested.get("database_access") or "none").strip().lower()
+        contract = (
+            requested.get("compatibility_contract")
+            if isinstance(requested.get("compatibility_contract"), dict)
+            else {}
+        )
+        acceptance = (
+            contract.get("acceptance") if isinstance(contract.get("acceptance"), dict) else {}
+        )
+        database_acceptance = (
+            acceptance.get("database")
+            if isinstance(acceptance.get("database"), dict)
+            else {}
+        )
+        database_assertions = (
+            database_acceptance.get("counts")
+            if isinstance(database_acceptance.get("counts"), list)
+            else []
+        )
+        if database_access == "none" and not database_assertions:
+            return {
+                "required": False,
+                "ready": True,
+                "reason": "deployment_declares_no_database_access",
+                "deployment_database_access": database_access,
+                "policy": policy,
+            }
     if str(policy["mode"]) in WORKSPACE_MANAGED_DATABASE_MODES:
         return {
             "required": False,

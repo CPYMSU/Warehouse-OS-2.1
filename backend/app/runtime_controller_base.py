@@ -1395,6 +1395,12 @@ class RuntimeController:
         if snapshot["runtime_family"] == "static":
             if not (root / "index.html").is_file():
                 raise RuntimeError("Static Runtime requires index.html at the application root")
+            result.update(
+                {
+                    "candidate_files_verified": True,
+                    "candidate_transport": "immutable_static_release",
+                }
+            )
         else:
             data_path = (
                 self.settings.hosted_runtime_data_root
@@ -1552,7 +1558,9 @@ class RuntimeController:
 
         with tenant_session(tenant_id) as session:
             database_release = observe_database_release_gate(
-                session, snapshot["workspace_id"]
+                session,
+                snapshot["workspace_id"],
+                deployment_config=requested,
             )
         result["database_release"] = database_release
         if activation_requested and not bool(database_release["ready"]):
