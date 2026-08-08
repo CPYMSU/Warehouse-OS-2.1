@@ -115,12 +115,12 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
     assert 'pages/pages-civilization.css?v=20260808-civilization13' in index
-    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app4' in index
-    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app4' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization17' in index
+    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app5' in index
+    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app5' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization18' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
     assert 'app.jsx?v=20260808-civilization-app1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization18' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization19' in index
     assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
         "pages/pages-civilization.jsx"
     )
@@ -144,6 +144,11 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert "env(safe-area-inset-bottom)" in style
     assert "const MobileChronology" in mobile
     assert "const MobileReader" in mobile
+    assert "const MobileNotebook" in mobile
+    assert "D / PERSONAL NOTEBOOK" in mobile
+    assert "我的讀書筆記" in mobile
+    assert "分享與長圖" in mobile
+    assert "publicationStatus" in mobile
     assert 'className="civ-mobile-timeline"' in mobile
     assert 'className="civ-mobile-reader-cover"' in mobile
     assert 'className="civ-mobile-chrono-disc"' in mobile
@@ -179,6 +184,10 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert 'className="civ-mobile-only"' not in source
     assert 'className="civ-desktop-only"' not in source
     assert "thoughts={mobileThoughts}" in source
+    assert "myNotes={mobileOwnNotes}" in source
+    assert "allThoughts.filter(thought => thought.is_mine)" in source
+    assert 'mode: "reading-note"' in source
+    assert 'mode={composer.mode}' in source
     assert "selectedId={selected && selected.id}" in source
     assert "readerModel={mobileReader}" in source
     assert "chronology={chronology}" not in source
@@ -191,6 +200,9 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert 'method: "PATCH"' not in mobile
     assert 'method: "PUT"' not in mobile
     assert 'method: "DELETE"' not in mobile
+    assert ".civ-mobile-notebook" in style
+    assert ".civ-mobile-note-create" in style
+    assert ".civ-mobile-note-list" in style
 
 
 def test_civilization_app_route_inherits_the_civilization_navigation_permission() -> None:

@@ -18,6 +18,13 @@ window.W2_LANG.addEN({
   "返回問題": "Back to questions",
   "編輯內容": "Edit",
   "尚無可閱讀內容": "No reading content yet",
+  "我的讀書筆記": "My reading notes",
+  "寫一篇讀書筆記": "Write a reading note",
+  "在同一套文明版面中保存自己的閱讀、判斷與摘錄。": "Keep your reading, judgements and excerpts in the same Civilization layout.",
+  "尚未建立讀書筆記": "No reading notes yet",
+  "先寫成草稿，發布後可讓公司成員閱讀；公開網頁與 PNG 長圖由你決定何時分享。": "Start with a draft. After publishing, company members can read it; you decide when to share a public page or PNG poster.",
+  "草稿": "Draft", "已發布": "Published", "已公開": "Public", "未公開": "Not public",
+  "繼續編輯": "Continue editing", "分享與長圖": "Share & poster",
 });
 
 const MobileWordmark = () => <span className="civ-mobile-word" aria-label="CIVILIZATION">
@@ -30,8 +37,7 @@ const MobileWordmark = () => <span className="civ-mobile-word" aria-label="CIVIL
 </span>;
 
 const ViewNavigation = ({ view, onView }) => <nav className="civ-mobile-bottom-nav" aria-label={t("手機文明視圖")}>
-  {[['a', '問題拓撲'], ['b', '思想時間軸'], ['c', '閱讀海報']].map(([id, label]) => <button type="button" key={id} className={view === id ? "is-active" : ""} aria-current={view === id ? "page" : undefined} onClick={() => onView(id)}><b>{id.toUpperCase()}</b><span>{t(label)}</span></button>)}
-  <button type="button" className="is-create" onClick={() => onView('new')}><b>＋</b><span>{t("記錄一個問題")}</span></button>
+  {[['a', '問題拓撲'], ['b', '思想時間軸'], ['c', '閱讀海報'], ['d', '我的讀書筆記']].map(([id, label]) => <button type="button" key={id} className={(view === id ? "is-active " : "") + (id === "d" ? "is-notebook" : "")} aria-current={view === id ? "page" : undefined} onClick={() => onView(id)}><b>{id.toUpperCase()}</b><span>{t(label)}</span></button>)}
 </nav>;
 
 const MobileThought = ({ thought, onRead, onShare, onEdit }) => <article className="civ-mobile-thought" data-domain={thought.domainKey} style={thought.style}>
@@ -103,13 +109,32 @@ const MobileReader = ({ reader, thoughts, onSelect, onBack, onShare, onEdit }) =
   </section>;
 };
 
+const MobileNotebook = ({ notes, onCreate, onRead, onShare, onEdit }) => {
+  const publishedCount = notes.filter(note => note.publicationStatus === "published").length;
+  const draftCount = notes.length - publishedCount;
+  return <section className="civ-mobile-notebook">
+    <header className="civ-mobile-notebook-head">
+      <span>D / PERSONAL NOTEBOOK</span>
+      <strong>{t("我的讀書筆記")}</strong>
+      <p>{t("在同一套文明版面中保存自己的閱讀、判斷與摘錄。")}</p>
+      <div className="civ-mobile-notebook-count"><b>{String(notes.length).padStart(2, "0")}</b><span>TOTAL<br/>{String(publishedCount).padStart(2, "0")} PUBLISHED<br/>{String(draftCount).padStart(2, "0")} DRAFTS</span></div>
+      <i aria-hidden="true"/><i aria-hidden="true"/>
+    </header>
+    <button type="button" className="civ-mobile-note-create" onClick={onCreate}><b>＋</b><span><strong>{t("寫一篇讀書筆記")}</strong><small>SWISS B / PERSONAL EDITION</small></span></button>
+    {!notes.length ? <div className="civ-mobile-note-empty"><b>00</b><strong>{t("尚未建立讀書筆記")}</strong><p>{t("先寫成草稿，發布後可讓公司成員閱讀；公開網頁與 PNG 長圖由你決定何時分享。")}</p></div> : <div className="civ-mobile-note-list">{notes.map(note => <article key={note.id} data-domain={note.domainKey} style={note.style}>
+      <header><span>{note.domainEn.toUpperCase()} / {note.date}</span><b className={note.publicationStatus === "published" ? "is-published" : ""}>{t(note.publicationStatus === "published" ? "已發布" : "草稿")}</b></header>
+      <button type="button" className="civ-mobile-note-main" onClick={() => note.publicationStatus === "published" ? onRead(note.id) : onEdit(note.source)}><span>{note.no}</span><strong>{note.title}</strong><p>{note.short}</p></button>
+      <footer><span>{note.isPublic ? t("已公開") : t("未公開")}</span><button type="button" onClick={() => onEdit(note.source)}>{t("繼續編輯")} ↗</button>{note.publicationStatus === "published" && <button type="button" onClick={() => onShare(note.source)}>{t("分享與長圖")} →</button>}</footer>
+    </article>)}</div>}
+  </section>;
+};
+
 const CivilizationMobileA = props => {
   const {
     view, onView, domains, activeFilter, onFilter, query, onQuery,
-    thoughts, allCount, lensCount, selectedId, readerModel, loadError, onRetry,
+    thoughts, myNotes, allCount, lensCount, selectedId, readerModel, loadError, onRetry,
     onNew, onCli, onRead, onShare, onEdit,
   } = props;
-  const setView = next => next === "new" ? onNew() : onView(next);
 
   return <section className="civ-mobile-a" data-view={view}>
     <header className="civ-mobile-topbar">
@@ -137,9 +162,9 @@ const CivilizationMobileA = props => {
         <header><h2>{t("問題索引")}</h2><span>{String(allCount).padStart(2, "0")} QUESTIONS · {String(lensCount).padStart(2, "0")} LENSES</span></header>
         {!thoughts.length ? <div className="civ-mobile-empty">{t("沒有符合條件的思考對象")}</div> : thoughts.map(thought => <MobileThought key={thought.id} thought={thought} onRead={onRead} onShare={onShare} onEdit={onEdit}/>)}
       </section>
-    </> : view === "b" ? <MobileChronology thoughts={thoughts} domains={domains} activeFilter={activeFilter} onFilter={onFilter} selectedId={selectedId} loadError={loadError} onRetry={onRetry} onRead={onRead}/> : <MobileReader reader={readerModel} thoughts={thoughts} onSelect={onRead} onBack={() => onView("a")} onShare={onShare} onEdit={onEdit}/>}
+    </> : view === "b" ? <MobileChronology thoughts={thoughts} domains={domains} activeFilter={activeFilter} onFilter={onFilter} selectedId={selectedId} loadError={loadError} onRetry={onRetry} onRead={onRead}/> : view === "c" ? <MobileReader reader={readerModel} thoughts={thoughts} onSelect={onRead} onBack={() => onView("a")} onShare={onShare} onEdit={onEdit}/> : <MobileNotebook notes={myNotes} onCreate={onNew} onRead={onRead} onShare={onShare} onEdit={onEdit}/>}
 
-    <ViewNavigation view={view} onView={setView}/>
+    <ViewNavigation view={view} onView={onView}/>
   </section>;
 };
 

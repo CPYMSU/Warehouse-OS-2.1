@@ -1,3 +1,4 @@
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,7 @@ from app.services.civilization import (
     _merged_lenses,
     _merged_localized,
     _merged_relations,
+    _serialize,
     template_catalog,
 )
 from app.terminal.catalog import availability, entry_by_tool_name
@@ -81,6 +83,41 @@ def test_delete_policy_allows_creator_and_company_administrator() -> None:
     assert _can_delete(member, another_user) is False
     assert _can_delete(_actor(role_level=10), another_user) is True
     assert _can_delete(_actor(permissions=frozenset({"settings.manage"})), another_user) is True
+
+
+def test_serialized_thought_exposes_exact_personal_ownership() -> None:
+    owner = _actor(role_level=10)
+    another_actor = _actor(role_level=10)
+    now = datetime.now(timezone.utc)
+    row = {
+        "id": uuid4(),
+        "stable_key": "thought-personal-note",
+        "domain": "judgement",
+        "title": {"zh": "读书笔记"},
+        "prompt": {"zh": "一句摘要"},
+        "thesis": {"zh": "我的思考"},
+        "relations": [],
+        "lenses": [],
+        "occurred_on": date.today(),
+        "display_order": 1,
+        "source": "member",
+        "created_by": owner.user_id,
+        "created_at": now,
+        "updated_at": now,
+        "revision": 1,
+        "template_key": "swiss_b_longform_v1",
+        "published_content": {},
+        "draft_content": None,
+        "publication_status": "published",
+        "published_revision": 1,
+        "published_at": now,
+        "public_share_enabled": False,
+        "public_share_key": None,
+        "public_shared_at": None,
+    }
+
+    assert _serialize(row, owner, number=1)["is_mine"] is True
+    assert _serialize(row, another_actor, number=1)["is_mine"] is False
 
 
 def test_lenses_are_validated_and_localized_for_storage() -> None:

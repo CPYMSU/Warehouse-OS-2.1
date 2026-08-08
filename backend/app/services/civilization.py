@@ -375,6 +375,7 @@ def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> d
     assert isinstance(updated_at, datetime)
     assert created_by is None or isinstance(created_by, UUID)
     can_manage = _can_manage(actor, created_by)
+    is_mine = created_by == actor.user_id
     public_share_enabled = bool(row.get("public_share_enabled"))
     public_share_key = str(row.get("public_share_key") or "")
     return {
@@ -391,6 +392,7 @@ def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> d
         "year": str(occurred_on.year),
         "source": str(row["source"]),
         "created_by": str(created_by) if created_by else None,
+        "is_mine": is_mine,
         "created_at": created_at.isoformat(),
         "updated_at": updated_at.isoformat(),
         "revision": int(row["revision"]),

@@ -190,6 +190,41 @@
   .civ-mobile-reader[data-domain="time"] .civ-mobile-reader-figure i::after { width: 2px; height: 58px; left: 50%; top: 50%; background: var(--civ-theme-ink); transform-origin: top; animation: civ-mobile-reader-hand 7s linear infinite; }
   .civ-mobile-reader[data-domain="ethics"] .civ-mobile-reader-figure i { width: 132px; height: 132px; right: -2px; top: 10px; border: 20px solid color-mix(in srgb, var(--civ-theme-primary) 64%, transparent); box-shadow: -58px 28px 0 color-mix(in srgb, var(--civ-theme-secondary) 23%, transparent); animation: civ-mobile-reader-ethics 7.2s ease-in-out infinite; }
 
+  /* D · Personal reading notebook. Ownership comes from the API; publishing and poster export reuse Civilization. */
+  .civ-mobile-notebook { min-height: calc(100svh - 58px); color: var(--civ-mobile-ink); border: 1px solid var(--civ-mobile-ink); border-top: 0; background: var(--civ-mobile-paper); }
+  .civ-mobile-notebook-head { min-height: 344px; padding: 22px 17px 28px; position: relative; overflow: hidden; display: flex; flex-direction: column; color: #F4F1E8; border-bottom: 2px solid var(--civ-mobile-ink); background-color: #171717; background-image: linear-gradient(rgba(244,241,232,.12) 1px, transparent 1px), linear-gradient(90deg, rgba(244,241,232,.12) 1px, transparent 1px); background-size: 48px 48px; }
+  .civ-mobile-notebook-head > span { position: relative; z-index: 4; color: var(--civ-mobile-yellow); font: 850 8px var(--f-mono); letter-spacing: .12em; }
+  .civ-mobile-notebook-head > strong { max-width: 305px; margin-top: auto; position: relative; z-index: 4; font-size: clamp(48px, 15vw, 65px); line-height: .88; letter-spacing: -.085em; }
+  .civ-mobile-notebook-head > p { max-width: 286px; margin: 18px 0 0; position: relative; z-index: 4; color: rgba(244,241,232,.7); font-size: 12px; line-height: 1.7; }
+  .civ-mobile-notebook-count { width: 116px; min-height: 116px; padding: 13px; position: absolute; right: 15px; top: 52px; z-index: 5; display: flex; flex-direction: column; color: var(--civ-mobile-ink); background: var(--civ-mobile-yellow); }
+  .civ-mobile-notebook-count b { font: 900 50px/.76 var(--f-mono); letter-spacing: -.12em; }
+  .civ-mobile-notebook-count span { margin-top: auto; font: 850 6.5px/1.55 var(--f-mono); letter-spacing: .06em; }
+  .civ-mobile-notebook-head > i { position: absolute; display: block; pointer-events: none; }
+  .civ-mobile-notebook-head > i:first-of-type { width: 190px; height: 190px; right: -64px; bottom: -36px; border: 32px solid rgba(33,97,169,.62); border-radius: 50%; animation: civ-mobile-note-orbit 11s linear infinite; }
+  .civ-mobile-notebook-head > i:last-of-type { width: 102px; height: 138px; right: 50px; bottom: 16px; border: 1px solid #F4F1E8; box-shadow: -18px 18px 0 rgba(220,42,32,.62); animation: civ-mobile-note-register 7.2s ease-in-out infinite; }
+  .civ-mobile-note-create { width: 100%; min-height: 86px; padding: 0; display: grid; grid-template-columns: 74px minmax(0, 1fr); align-items: stretch; color: #FFF; border: 0; border-bottom: 2px solid var(--civ-mobile-ink); background: var(--civ-mobile-red); text-align: left; }
+  .civ-mobile-note-create > b { display: grid; place-items: center; border-right: 1px solid rgba(255,255,255,.55); font: 300 42px var(--f-sans); }
+  .civ-mobile-note-create > span { padding: 17px 15px; display: flex; flex-direction: column; justify-content: center; }
+  .civ-mobile-note-create strong { font-size: 20px; line-height: 1.1; }
+  .civ-mobile-note-create small { margin-top: 7px; font: 800 7px var(--f-mono); letter-spacing: .08em; }
+  .civ-mobile-note-empty { min-height: 280px; padding: 31px 18px; display: grid; align-content: start; grid-template-columns: 70px minmax(0, 1fr); column-gap: 14px; }
+  .civ-mobile-note-empty > b { grid-row: 1 / 3; color: var(--civ-mobile-red); font: 900 54px/.76 var(--f-mono); letter-spacing: -.1em; }
+  .civ-mobile-note-empty > strong { font-size: 23px; line-height: 1.1; }
+  .civ-mobile-note-empty > p { margin: 15px 0 0; color: var(--civ-mobile-muted); font-size: 12px; line-height: 1.75; }
+  .civ-mobile-note-list { padding: 0 12px 34px; }
+  .civ-mobile-note-list > article { margin-top: 18px; border: 1px solid var(--civ-mobile-ink); border-top: 6px solid var(--civ-signal); background: #FFFDF7; box-shadow: 5px 5px 0 color-mix(in srgb, var(--civ-signal) 16%, transparent); }
+  .civ-mobile-note-list > article > header { min-height: 38px; padding: 8px 11px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--civ-mobile-ink); font: 850 7px var(--f-mono); letter-spacing: .07em; }
+  .civ-mobile-note-list > article > header b { padding: 5px 7px; color: var(--civ-mobile-red); border: 1px solid currentColor; }
+  .civ-mobile-note-list > article > header b.is-published { color: var(--civ-mobile-green); }
+  .civ-mobile-note-main { width: 100%; min-height: 155px; padding: 14px 13px 16px; display: grid; grid-template-columns: 54px minmax(0, 1fr); column-gap: 11px; border: 0; background: transparent; text-align: left; }
+  .civ-mobile-note-main > span { grid-row: 1 / 4; color: var(--civ-signal); font: 900 31px/.8 var(--f-mono); letter-spacing: -.08em; }
+  .civ-mobile-note-main > strong { overflow-wrap: anywhere; font-size: 21px; line-height: 1.13; letter-spacing: -.04em; }
+  .civ-mobile-note-main > p { margin: 11px 0 0; color: var(--civ-mobile-muted); font-size: 11.5px; line-height: 1.68; }
+  .civ-mobile-note-list > article > footer { min-height: 44px; display: flex; align-items: stretch; border-top: 1px solid var(--civ-mobile-ink); font: 850 7px var(--f-mono); letter-spacing: .04em; }
+  .civ-mobile-note-list > article > footer > span { margin-right: auto; padding: 0 11px; display: flex; align-items: center; color: var(--civ-mobile-muted); }
+  .civ-mobile-note-list > article > footer button { padding: 0 10px; border: 0; border-left: 1px solid var(--civ-mobile-ink); background: transparent; font: inherit; }
+  .civ-mobile-note-list > article > footer button:last-child { color: #FFF; background: var(--civ-mobile-ink); }
+
   .civ-mobile-bottom-nav {
     width: min(480px, 100vw); min-height: calc(58px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); position: fixed; left: 50%; bottom: 0; z-index: 60; transform: translateX(-50%); display: grid; grid-template-columns: repeat(4, 1fr);
     border: 1px solid var(--civ-mobile-ink); border-top-width: 2px;
@@ -202,6 +237,8 @@
   .civ-mobile-bottom-nav button span { margin-top: 3px; overflow: hidden; font: 750 6.5px var(--f-mono); text-overflow: ellipsis; white-space: nowrap; }
   .civ-mobile-bottom-nav button.is-active { color: #FFF; background: var(--civ-mobile-ink); }
   .civ-mobile-bottom-nav button.is-create { color: #FFF; background: var(--civ-mobile-red); }
+  .civ-mobile-bottom-nav button.is-notebook { color: var(--civ-mobile-red); }
+  .civ-mobile-bottom-nav button.is-notebook.is-active { color: #FFF; background: var(--civ-mobile-red); }
 
   @keyframes civ-mobile-color-pass {
     0% { -webkit-clip-path: inset(0 100% 0 0); clip-path: inset(0 100% 0 0); opacity: 1; }
@@ -233,10 +270,12 @@
   @keyframes civ-mobile-reader-network { 0%, 100% { transform: scale(.88); } 50% { transform: scale(1.04); } }
   @keyframes civ-mobile-reader-hand { to { transform: rotate(360deg); } }
   @keyframes civ-mobile-reader-ethics { 0%, 100% { transform: translateX(-8px); } 50% { transform: translateX(10px); } }
+  @keyframes civ-mobile-note-orbit { to { transform: rotate(360deg); } }
+  @keyframes civ-mobile-note-register { 0%, 100% { transform: translate(-8px, 8px); } 50% { transform: translate(10px, -8px); } }
 @media (max-width: 520px) {
   .civilization-page.civilization-app-page { width: 100%; margin: 0; box-shadow: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .civ-mobile-word-color, .civ-mobile-word-offset, .civ-mobile-word-bars b, .civ-mobile-geometry, .civ-mobile-chrono-disc, .civ-mobile-chrono-frame, .civ-mobile-chrono-bar, .civ-mobile-reader-figure i, .civ-mobile-reader-figure i::before, .civ-mobile-reader-figure i::after { animation: none; }
+  .civ-mobile-word-color, .civ-mobile-word-offset, .civ-mobile-word-bars b, .civ-mobile-geometry, .civ-mobile-chrono-disc, .civ-mobile-chrono-frame, .civ-mobile-chrono-bar, .civ-mobile-reader-figure i, .civ-mobile-reader-figure i::before, .civ-mobile-reader-figure i::after, .civ-mobile-notebook-head > i { animation: none; }
 }
