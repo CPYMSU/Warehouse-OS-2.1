@@ -8,6 +8,7 @@ PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.jsx"
 STYLE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.css"
 MOBILE_PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization-mobile.jsx"
 MOBILE_STYLE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization-mobile.css"
+APP = ROOT / "frontend" / "v2" / "app.jsx"
 INDEX = ROOT / "frontend" / "v2" / "index.html"
 PUBLIC_PAGE = ROOT / "frontend" / "v2" / "civilization-public.html"
 PUBLIC_SCRIPT = ROOT / "frontend" / "v2" / "pages" / "pages-civilization-public.js"
@@ -114,11 +115,12 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
     assert 'pages/pages-civilization.css?v=20260808-civilization13' in index
-    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-a1' in index
+    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app1' in index
     assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-a1' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization14' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization15' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization14' in index
+    assert 'app.jsx?v=20260808-civilization-app1' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization15' in index
     assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
         "pages/pages-civilization.jsx"
     )
@@ -136,10 +138,18 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert 'className="civ-mobile-word-layer civ-mobile-word-offset is-green"' in mobile
     assert "civ-mobile-color-pass 7.2s" in style
     assert "height: 7px" in style
-    assert "@media (max-width: 720px)" in style
-    assert ".civ-mobile-only { display: block; }" in style
-    assert ".civ-desktop-only { display: none; }" in style
+    assert ".civilization-page.civilization-app-page" in style
+    assert "min-height: 100svh" in style
+    assert "env(safe-area-inset-top)" in style
+    assert "env(safe-area-inset-bottom)" in style
+    assert ".civ-mobile-only" not in style
+    assert ".civ-desktop-only" not in style
     assert "W2.CivilizationMobileA" in source
+    assert 'window.W2.PAGES["civilization-app"]' in source
+    assert 'civilizationApp ? (MobileView ? <MobileView' in source
+    assert 'civilizationApp ? " civilization-app-page" : ""' in source
+    assert 'className="civ-mobile-only"' not in source
+    assert 'className="civ-desktop-only"' not in source
     assert "thoughts={mobileThoughts}" in source
     assert "chronology={chronology}" in source
     assert "reader={reader}" in source
@@ -151,6 +161,13 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert 'method: "PATCH"' not in mobile
     assert 'method: "PUT"' not in mobile
     assert 'method: "DELETE"' not in mobile
+
+
+def test_civilization_app_route_inherits_the_civilization_navigation_permission() -> None:
+    app = APP.read_text(encoding="utf-8")
+
+    assert 'route === "civilization-app" ? "civilization" : route' in app
+    assert "navModel.routeItems.some(n => n.id === permissionRoute)" in app
 
 
 def test_public_civilization_page_and_browser_postcard_are_static_assets() -> None:

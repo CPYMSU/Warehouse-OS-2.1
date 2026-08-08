@@ -1,12 +1,9 @@
 /* WAREHOUSE OS 2.1 · CIVILIZATION MOBILE A
-   Dedicated mobile presentation; desktop renderer and backend contract remain unchanged. */
-.civ-mobile-only { display: none; }
-.civ-desktop-only { display: block; }
-
-@media (max-width: 720px) {
-  .civilization-page { padding-top: 0; }
-  .civ-mobile-only { display: block; }
-  .civ-desktop-only { display: none; }
+   Dedicated app surface; the original responsive route and backend contract remain unchanged. */
+.civilization-page.civilization-app-page {
+  width: min(100%, 480px); min-height: 100svh; margin: 0 auto; padding-top: 0;
+  overflow-x: clip; background: #F4F1E8; box-shadow: 0 0 0 1px rgba(18, 18, 18, .16);
+}
   .civ-mobile-a {
     --civ-mobile-paper: #F4F1E8;
     --civ-mobile-ink: #121212;
@@ -20,10 +17,10 @@
     --civ-mobile-rule: rgba(18, 18, 18, .24);
     min-width: 0; position: relative; color: var(--civ-mobile-ink); background: var(--civ-mobile-paper);
   }
-  .civ-mobile-a button, .civ-mobile-a input { color: inherit; font: inherit; }
+  .civ-mobile-a button, .civ-mobile-a input { color: inherit; font: inherit; touch-action: manipulation; }
 
   .civ-mobile-topbar {
-    min-height: 58px; padding: 10px 12px; position: sticky; top: 0; z-index: 20;
+    min-height: calc(58px + env(safe-area-inset-top)); padding: max(10px, env(safe-area-inset-top)) 12px 10px; position: sticky; top: 0; z-index: 20;
     display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px;
     border: 1px solid var(--civ-mobile-ink); border-bottom: 2px solid var(--civ-mobile-ink);
     background: rgba(244, 241, 232, .95); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
@@ -32,7 +29,7 @@
   .civ-mobile-brand i { width: 19px; height: 19px; position: relative; flex: 0 0 auto; background: var(--civ-mobile-red); }
   .civ-mobile-brand i::before { content: ""; position: absolute; inset: 4px 9px 4px 4px; background: var(--civ-mobile-paper); }
   .civ-mobile-top-actions { display: flex; border: 1px solid var(--civ-mobile-ink); }
-  .civ-mobile-top-actions button { min-width: 37px; height: 31px; padding: 0 8px; border: 0; border-right: 1px solid var(--civ-mobile-ink); background: transparent; font: 850 8px var(--f-mono); letter-spacing: .06em; }
+  .civ-mobile-top-actions button { min-width: 44px; height: 44px; padding: 0 8px; border: 0; border-right: 1px solid var(--civ-mobile-ink); background: transparent; font: 850 8px var(--f-mono); letter-spacing: .06em; }
   .civ-mobile-top-actions button:last-child { border-right: 0; color: #FFF; background: var(--civ-mobile-red); font-size: 15px; }
 
   .civ-mobile-hero {
@@ -44,7 +41,7 @@
   }
   .civ-mobile-kicker { position: relative; z-index: 5; color: var(--civ-mobile-red); font: 850 7.5px var(--f-mono); letter-spacing: .12em; }
   .civ-mobile-hero h1 { margin: 78px 0 0; position: relative; z-index: 5; font-size: clamp(102px, 30vw, 126px); font-weight: 900; line-height: .72; letter-spacing: -.12em; }
-  .civ-mobile-word { width: min(100%, 370px); height: 65px; margin-top: 31px; display: grid; position: relative; z-index: 6; isolation: isolate; font-size: clamp(35px, 11vw, 47px); font-weight: 850; line-height: 1; letter-spacing: -.072em; white-space: nowrap; }
+  .civ-mobile-word { width: min(100%, 370px); height: 65px; margin-top: 31px; display: grid; position: relative; z-index: 6; isolation: isolate; overflow: hidden; font-size: clamp(34px, 10.5vw, 47px); font-weight: 850; line-height: 1; letter-spacing: -.072em; white-space: nowrap; }
   .civ-mobile-word-layer { grid-area: 1 / 1; align-self: end; position: relative; line-height: inherit; letter-spacing: inherit; white-space: nowrap; pointer-events: none; }
   .civ-mobile-word-outline { z-index: 5; color: transparent; -webkit-text-stroke: 2px var(--civ-mobile-ink); }
   .civ-mobile-word-color { z-index: 4; color: transparent; background: linear-gradient(90deg, var(--civ-mobile-red) 0 18%, var(--civ-mobile-yellow) 18% 36%, var(--civ-mobile-blue) 36% 56%, var(--civ-mobile-green) 56% 76%, var(--civ-mobile-orange) 76% 90%, var(--civ-mobile-purple) 90% 100%); -webkit-background-clip: text; background-clip: text; -webkit-clip-path: inset(0 100% 0 0); clip-path: inset(0 100% 0 0); animation: civ-mobile-color-pass 7.2s cubic-bezier(.2,.72,.2,1) infinite; }
@@ -86,7 +83,7 @@
   .civ-mobile-thought-copy { min-width: 0; padding: 14px 13px 15px; display: block; }
   .civ-mobile-thought-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--civ-mobile-muted); font: 800 7px var(--f-mono); letter-spacing: .07em; }
   .civ-mobile-thought-copy > strong { margin: 17px 0 8px; display: block; font-size: 21px; line-height: 1.14; letter-spacing: -.04em; }
-  .civ-mobile-thought-short { display: block; color: var(--civ-mobile-muted); font-size: 11.5px; line-height: 1.65; }
+  .civ-mobile-thought-short { display: block; color: var(--civ-mobile-muted); overflow-wrap: anywhere; font-size: 11.5px; line-height: 1.65; }
   .civ-mobile-thought footer { min-height: 40px; padding-left: 12px; display: flex; align-items: stretch; border-top: 1px solid var(--civ-mobile-rule); font: 800 7px var(--f-mono); letter-spacing: .05em; }
   .civ-mobile-thought footer > span { margin-right: auto; display: flex; align-items: center; }
   .civ-mobile-thought footer button { padding: 0 9px; border: 0; border-left: 1px solid var(--civ-mobile-ink); background: transparent; font: inherit; }
@@ -96,7 +93,7 @@
   .civ-mobile-stage { min-height: calc(100svh - 116px); padding-bottom: 2px; border: 1px solid var(--civ-mobile-ink); border-top: 0; }
   .civ-mobile-stage > .civ-chronology, .civ-mobile-stage > .civ-reader { border: 0; }
   .civ-mobile-bottom-nav {
-    min-height: 58px; position: sticky; bottom: 0; z-index: 21; display: grid; grid-template-columns: repeat(4, 1fr);
+    min-height: calc(58px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); position: sticky; bottom: 0; z-index: 21; display: grid; grid-template-columns: repeat(4, 1fr);
     border: 1px solid var(--civ-mobile-ink); border-top-width: 2px;
     background: rgba(244, 241, 232, .97); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
   }
@@ -120,8 +117,10 @@
   @keyframes civ-mobile-bar-blue { 0%, 2.08% { transform: scaleX(0); transform-origin: left; opacity: .8; } 11.11% { transform: scaleX(1); transform-origin: left; opacity: .8; } 11.28% { transform: scaleX(1); transform-origin: right; opacity: .8; } 19.44%, 100% { transform: scaleX(0); transform-origin: right; opacity: 0; } }
   @keyframes civ-mobile-bar-green { 0%, 3.61% { transform: scaleX(0); transform-origin: left; opacity: .8; } 12.64% { transform: scaleX(1); transform-origin: left; opacity: .8; } 12.81% { transform: scaleX(1); transform-origin: right; opacity: .8; } 20.97%, 100% { transform: scaleX(0); transform-origin: right; opacity: 0; } }
   @keyframes civ-mobile-geometry { to { transform: translate(-12px, 12px) rotate(6deg); } }
+@media (max-width: 520px) {
+  .civilization-page.civilization-app-page { width: 100%; margin: 0; box-shadow: none; }
 }
 
-@media (max-width: 720px) and (prefers-reduced-motion: reduce) {
+@media (prefers-reduced-motion: reduce) {
   .civ-mobile-word-color, .civ-mobile-word-offset, .civ-mobile-word-bars b, .civ-mobile-geometry { animation: none; opacity: 0; }
 }

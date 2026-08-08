@@ -3356,9 +3356,10 @@ const App2 = () => {
   const navModel = navModelOf(user, isOwner, boot && boot.NAV_CONFIG, activeTemplateKey);
   const firstAllowed = navModel.ordered.length ? navModel.ordered[0].id : "";
   const specialRoute = route === "apply" || route === "join";
+  const permissionRoute = route === "civilization-app" ? "civilization" : route;
   const routeAllowed = specialRoute
     || (route === "warehouse" && !!W2.WarehouseTabs && navModel.warehouseTabs.length > 0)
-    || navModel.routeItems.some(n => n.id === route);
+    || navModel.routeItems.some(n => n.id === permissionRoute);
   $e(() => {
     if (phase !== "ready" || specialRoute || routeAllowed || !firstAllowed) return;
     /* ACL redirect changes only the background module; keep the server-authorized
