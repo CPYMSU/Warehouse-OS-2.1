@@ -6,6 +6,8 @@ from app.templates.industry_blueprints import nav_modules_for_permissions
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.jsx"
 STYLE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization.css"
+MOBILE_PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization-mobile.jsx"
+MOBILE_STYLE = ROOT / "frontend" / "v2" / "pages" / "pages-civilization-mobile.css"
 INDEX = ROOT / "frontend" / "v2" / "index.html"
 PUBLIC_PAGE = ROOT / "frontend" / "v2" / "civilization-public.html"
 PUBLIC_SCRIPT = ROOT / "frontend" / "v2" / "pages" / "pages-civilization-public.js"
@@ -112,9 +114,43 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
     assert 'pages/pages-civilization.css?v=20260808-civilization13' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization13' in index
+    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-a1' in index
+    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-a1' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization14' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization13' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization14' in index
+    assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
+        "pages/pages-civilization.jsx"
+    )
+
+
+def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() -> None:
+    source = PAGE.read_text(encoding="utf-8")
+    mobile = MOBILE_PAGE.read_text(encoding="utf-8")
+    style = MOBILE_STYLE.read_text(encoding="utf-8")
+
+    assert "W2.CivilizationMobileA = CivilizationMobileA" in mobile
+    assert 'className="civ-mobile-word"' in mobile
+    assert 'className="civ-mobile-word-layer civ-mobile-word-offset is-red"' in mobile
+    assert 'className="civ-mobile-word-layer civ-mobile-word-offset is-blue"' in mobile
+    assert 'className="civ-mobile-word-layer civ-mobile-word-offset is-green"' in mobile
+    assert "civ-mobile-color-pass 7.2s" in style
+    assert "height: 7px" in style
+    assert "@media (max-width: 720px)" in style
+    assert ".civ-mobile-only { display: block; }" in style
+    assert ".civ-desktop-only { display: none; }" in style
+    assert "W2.CivilizationMobileA" in source
+    assert "thoughts={mobileThoughts}" in source
+    assert "chronology={chronology}" in source
+    assert "reader={reader}" in source
+    assert "onRetry={loadThoughts}" in source
+    assert "onShare={openShare}" in source
+    assert "onRead={id => selectThought(id, \"c\")}" in source
+    assert "W2.json(" not in mobile
+    assert "W2.post(" not in mobile
+    assert 'method: "PATCH"' not in mobile
+    assert 'method: "PUT"' not in mobile
+    assert 'method: "DELETE"' not in mobile
 
 
 def test_public_civilization_page_and_browser_postcard_are_static_assets() -> None:
