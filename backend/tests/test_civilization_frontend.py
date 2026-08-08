@@ -115,12 +115,12 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
     assert 'pages/pages-civilization.css?v=20260808-civilization13' in index
-    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app1' in index
-    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-a1' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization15' in index
+    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app2' in index
+    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app2' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization16' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
     assert 'app.jsx?v=20260808-civilization-app1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization15' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization16' in index
     assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
         "pages/pages-civilization.jsx"
     )
@@ -142,6 +142,12 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert "min-height: 100svh" in style
     assert "env(safe-area-inset-top)" in style
     assert "env(safe-area-inset-bottom)" in style
+    assert "const MobileChronology" in mobile
+    assert "const MobileReader" in mobile
+    assert 'className="civ-mobile-timeline"' in mobile
+    assert 'className="civ-mobile-reader-cover"' in mobile
+    assert "position: fixed; left: 50%; bottom: 0" in style
+    assert "width: min(480px, 100vw)" in style
     assert ".civ-mobile-only" not in style
     assert ".civ-desktop-only" not in style
     assert "W2.CivilizationMobileA" in source
@@ -151,8 +157,10 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert 'className="civ-mobile-only"' not in source
     assert 'className="civ-desktop-only"' not in source
     assert "thoughts={mobileThoughts}" in source
-    assert "chronology={chronology}" in source
-    assert "reader={reader}" in source
+    assert "selectedId={selected && selected.id}" in source
+    assert "readerModel={mobileReader}" in source
+    assert "chronology={chronology}" not in source
+    assert "reader={reader}" not in source
     assert "onRetry={loadThoughts}" in source
     assert "onShare={openShare}" in source
     assert "onRead={id => selectThought(id, \"c\")}" in source
