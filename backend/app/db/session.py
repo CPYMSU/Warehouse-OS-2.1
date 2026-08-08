@@ -33,13 +33,21 @@ def get_session_factory() -> sessionmaker[Session]:
 
 
 @contextmanager
-def tenant_session(tenant_id: UUID) -> Generator[Session, None, None]:
-    """Open one transaction whose PostgreSQL RLS scope is the authenticated tenant."""
+def tenant_session(
+    tenant_id: UUID,
+    actor_user_id: UUID | None = None,
+) -> Generator[Session, None, None]:
+    """Open one transaction with tenant and optional actor RLS identity."""
     with get_session_factory().begin() as session:
         session.execute(
             text("SELECT set_config('app.tenant_id', CAST(:tenant_id AS text), true)"),
             {"tenant_id": str(tenant_id)},
         )
+        if actor_user_id is not None:
+            session.execute(
+                text("SELECT set_config('app.actor_user_id', CAST(:user_id AS text), true)"),
+                {"user_id": str(actor_user_id)},
+            )
         yield session
 
 

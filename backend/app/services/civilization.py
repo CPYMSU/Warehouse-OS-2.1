@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import ActorContext
 from app.db.session import system_session, tenant_session
+from app.templates.industry_blueprints import CIVILIZATION_TEMPLATE_KEY
 
 TEMPLATE_KEY = "swiss_b_longform_v1"
 CONTENT_SCHEMA = "warehouse.civilization.content.v1"
@@ -28,6 +29,8 @@ _PUBLIC_SHARE_RE = re.compile(r"^[a-z0-9_-]{12,64}$")
 
 
 def _can_manage(actor: ActorContext, created_by: UUID | None) -> bool:
+    if actor.industry_template_key == CIVILIZATION_TEMPLATE_KEY:
+        return created_by == actor.user_id
     return (
         actor.role_level >= 10
         or "settings.manage" in actor.permissions
@@ -37,6 +40,27 @@ def _can_manage(actor: ActorContext, created_by: UUID | None) -> bool:
 
 def _can_delete(actor: ActorContext, created_by: UUID | None) -> bool:
     return _can_manage(actor, created_by)
+
+
+def _require_read(actor: ActorContext) -> None:
+    if (
+        actor.role_level >= 10
+        or "settings.manage" in actor.permissions
+        or "civilization.read" in actor.permissions
+        or "civilization.write" in actor.permissions
+    ):
+        return
+    raise HTTPException(status_code=403, detail="Missing civilization.read")
+
+
+def _require_write(actor: ActorContext) -> None:
+    if (
+        actor.role_level >= 10
+        or "settings.manage" in actor.permissions
+        or "civilization.write" in actor.permissions
+    ):
+        return
+    raise HTTPException(status_code=403, detail="Missing civilization.write")
 
 
 def _language(locale: str) -> str:
@@ -536,7 +560,8 @@ def template_catalog(actor: ActorContext) -> dict[str, object]:
 
 
 def list_thoughts(actor: ActorContext) -> dict[str, object]:
-    with tenant_session(actor.tenant_id) as session:
+    _require_read(actor)
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         rows = (
             session.execute(
                 text(
@@ -564,7 +589,8 @@ def list_thoughts(actor: ActorContext) -> dict[str, object]:
 
 
 def get_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
-    with tenant_session(actor.tenant_id) as session:
+    _require_read(actor)
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         row = (
             session.execute(
                 text(
@@ -584,6 +610,7 @@ def get_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
 
 
 def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str, object]:
+    _require_write(actor)
     domain = _clean_domain(payload.get("domain"))
     locale = str(payload.get("locale") or "zh")
     raw_content = payload.get("content")
@@ -610,7 +637,7 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
     thought_id = uuid4()
     stable_key = f"thought-{thought_id.hex}"
     content = _merge_content({}, normalized, locale)
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
             {"lock_key": f"civilization:{actor.tenant_id}:display-order"},
@@ -692,7 +719,7 @@ def update_thought(
 
 
 def _latest_revision(actor: ActorContext, thought_id: UUID) -> int:
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         value = session.execute(
             text("SELECT revision FROM civilization.thoughts WHERE id = :thought_id"),
             {"thought_id": thought_id},
@@ -705,9 +732,10 @@ def _latest_revision(actor: ActorContext, thought_id: UUID) -> int:
 def save_draft(
     actor: ActorContext, thought_id: UUID, payload: dict[str, object]
 ) -> dict[str, object]:
+    _require_write(actor)
     expected_revision = _expected_revision(payload)
     locale = str(payload.get("locale") or "zh")
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         current = (
             session.execute(
                 text(
@@ -814,6 +842,7 @@ def save_draft(
 
 
 def preview_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
+    _require_read(actor)
     result = get_thought(actor, thought_id)["thought"]
     assert isinstance(result, dict)
     content = (
@@ -851,8 +880,9 @@ def _localized_projection(
 def publish_thought(
     actor: ActorContext, thought_id: UUID, payload: dict[str, object]
 ) -> dict[str, object]:
+    _require_write(actor)
     expected_revision = _expected_revision(payload)
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         current = (
             session.execute(
                 text(
@@ -937,9 +967,10 @@ def publish_thought(
 
 
 def list_revisions(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
+    _require_read(actor)
     thought = get_thought(actor, thought_id)["thought"]
     assert isinstance(thought, dict)
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         rows = (
             session.execute(
                 text(
@@ -976,8 +1007,9 @@ def restore_revision(
     revision_no: int,
     payload: dict[str, object],
 ) -> dict[str, object]:
+    _require_write(actor)
     expected_revision = _expected_revision(payload)
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         current = (
             session.execute(
                 text(
@@ -1063,12 +1095,13 @@ def upsert_lens(
     lens_index: int,
     payload: dict[str, object],
 ) -> dict[str, object]:
+    _require_write(actor)
     if not 0 <= lens_index < 12:
         raise HTTPException(status_code=422, detail="lens_index must be between 0 and 11")
     expected_revision = _expected_revision(payload)
     locale = str(payload.get("locale") or "zh")
     replacement = _clean_lenses({"lenses": [payload]}, locale)[0]
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         current = (
             session.execute(
                 text(
@@ -1138,11 +1171,12 @@ def configure_public_share(
     thought_id: UUID,
     payload: dict[str, object],
 ) -> dict[str, object]:
+    _require_write(actor)
     expected_revision = _expected_revision(payload)
     enabled_value = payload.get("enabled")
     if not isinstance(enabled_value, bool):
         raise HTTPException(status_code=422, detail="enabled must be a boolean")
-    with tenant_session(actor.tenant_id) as session:
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         current = (
             session.execute(
                 text(
@@ -1302,7 +1336,8 @@ def get_public_thought(share_key: str) -> dict[str, object]:
 
 
 def delete_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
-    with tenant_session(actor.tenant_id) as session:
+    _require_write(actor)
+    with tenant_session(actor.tenant_id, actor.user_id) as session:
         row = (
             session.execute(
                 text(

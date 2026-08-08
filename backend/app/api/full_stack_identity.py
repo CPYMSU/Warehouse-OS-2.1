@@ -63,8 +63,17 @@ from app.services.membership_requests import (
     list_membership_requests,
     reject_membership_request,
 )
-from app.services.templates import get_template_summary, list_template_summaries, provision_tenant_template
-from app.templates.industry_blueprints import BLUEPRINT_PERMISSION_KEYS
+from app.services.templates import (
+    get_template_detail,
+    get_template_summary,
+    list_template_summaries,
+    provision_tenant_template,
+)
+from app.templates.industry_blueprints import (
+    BLUEPRINT_PERMISSION_KEYS,
+    SELF_SERVICE_REGISTRATION_ALLOWED_PERMISSIONS,
+    nav_modules_for_permissions,
+)
 
 router = APIRouter(tags=["full-stack-identity"])
 
@@ -278,7 +287,12 @@ def auth_me_full(actor: ActorContext = Depends(current_actor)) -> dict[str, obje
     user = dict(actor.user_payload)
     user["roles"] = _roles_for_actor(actor)
     user["is_platform_owner"] = owner
-    user["allowed_nav"] = [item["id"] for item in NAVIGATION_CATALOG] if actor.role_level >= 10 else []
+    permission_modules = set(nav_modules_for_permissions(actor.permissions))
+    user["allowed_nav"] = [
+        item["id"]
+        for item in NAVIGATION_CATALOG
+        if actor.role_level >= 10 or item["id"] in permission_modules
+    ]
     return {
         "authenticated": True,
         "tenant": actor.tenant_slug,
@@ -344,6 +358,13 @@ def public_roles(tenant: str = Query(..., min_length=2)) -> dict[str, object]:
 @router.get("/api/auth/org-options")
 def public_org_options(tenant: str = Query(..., min_length=2)) -> dict[str, object]:
     target = _tenant_by_slug(tenant)
+    template_detail = get_template_detail(str(target["industry_template_key"])) or {}
+    template_blueprint = template_detail.get("blueprint")
+    registration_policy = (
+        template_blueprint.get("registration_policy")
+        if isinstance(template_blueprint, dict)
+        else None
+    )
     with tenant_session(target["id"]) as session:
         units = session.execute(
             text(
@@ -368,7 +389,8 @@ def public_org_options(tenant: str = Query(..., min_length=2)) -> dict[str, obje
     out_positions = []
     for row in positions:
         public = dict(row["public_entry"] or {}) if isinstance(row["public_entry"], dict) else {}
-        mode = str(public.get("entry_mode") or "application")
+        mode = str(public.get("entry_mode") or public.get("mode") or "application")
+        visibility = str(public.get("catalog_state") or public.get("visibility") or "public")
         out_positions.append(
             {
                 "id": str(row["id"]),
@@ -380,14 +402,22 @@ def public_org_options(tenant: str = Query(..., min_length=2)) -> dict[str, obje
                 "role_name": row["role_name"],
                 "level": int(row["role_level"]),
                 "entry_mode": mode,
-                "catalog_state": str(public.get("catalog_state") or "public"),
-                "selectable": bool(public.get("selectable", mode in {"direct", "application"})),
+                "catalog_state": visibility,
+                "selectable": bool(
+                    public.get(
+                        "selectable",
+                        visibility == "public" and mode in {"direct", "application"},
+                    )
+                ),
                 "summary": public.get("summary") or "",
+                "requirements": list(public.get("requirements") or ()),
+                "quick_registration": public.get("quick_registration") is True,
             }
         )
     return {
         "catalog_version": "postgresql-2.1",
         "template_key": target["industry_template_key"],
+        "registration_policy": registration_policy,
         "units": [
             {
                 "id": str(row["id"]),
@@ -403,8 +433,47 @@ def public_org_options(tenant: str = Query(..., min_length=2)) -> dict[str, obje
     }
 
 
+def _self_service_registration_policy(target: dict[str, object]) -> dict[str, object] | None:
+    """Resolve a fail-closed, template-owned direct-registration contract."""
+
+    detail = get_template_detail(str(target["industry_template_key"]))
+    blueprint = detail.get("blueprint") if detail else None
+    if not isinstance(blueprint, dict):
+        return None
+    policy = blueprint.get("registration_policy")
+    if not isinstance(policy, dict):
+        return None
+    if policy.get("mode") != "direct" or policy.get("approval_required") is not False:
+        return None
+    position_code = str(policy.get("default_position_code") or "").strip()
+    positions = {
+        str(item.get("code") or ""): item
+        for item in (blueprint.get("positions") or ())
+        if isinstance(item, dict)
+    }
+    position = positions.get(position_code)
+    public_entry = position.get("public_entry") if isinstance(position, dict) else None
+    permissions = set(position.get("permissions") or ()) if isinstance(position, dict) else set()
+    if (
+        not position_code
+        or not isinstance(position, dict)
+        or not isinstance(public_entry, dict)
+        or public_entry.get("mode") != "direct"
+        or public_entry.get("visibility") != "public"
+        or public_entry.get("quick_registration") is not True
+        or position.get("is_manager") is not False
+        or int(position.get("level") or 0) > 3
+        or not permissions.issubset(SELF_SERVICE_REGISTRATION_ALLOWED_PERMISSIONS)
+    ):
+        return None
+    return {**policy, "default_position_code": position_code}
+
+
 def _create_membership_request(payload: dict[str, object], *, tenant_slug: str) -> dict[str, object]:
     target = _tenant_by_slug(tenant_slug)
+    if str(target.get("status") or "") != "active":
+        raise HTTPException(status_code=409, detail="Company is not accepting registrations")
+    direct_policy = _self_service_registration_policy(target)
     username = str(payload.get("username") or "").strip().lower()
     display_name = str(payload.get("display_name") or username).strip() or username
     password = str(payload.get("password") or "")
@@ -418,7 +487,6 @@ def _create_membership_request(payload: dict[str, object], *, tenant_slug: str) 
         if existing is not None:
             raise HTTPException(status_code=409, detail="Username already exists")
         user_id = uuid4()
-        request_id = uuid4()
         session.execute(
             text(
                 """
@@ -433,30 +501,128 @@ def _create_membership_request(payload: dict[str, object], *, tenant_slug: str) 
                 "password_hash": hash_password(password),
             },
         )
-        session.execute(
-            text(
-                """
-                INSERT INTO platform.membership_requests(
-                  id, tenant_id, user_id, requested_org_unit_code,
-                  requested_position_code, requested_role_id, department, contact, reason
-                ) VALUES (
-                  :id, :tenant_id, :user_id, :requested_org_unit_code,
-                  :requested_position_code, :requested_role_id, :department, :contact, :reason
+        if direct_policy is not None:
+            session.execute(
+                text("SELECT set_config('app.tenant_id', CAST(:tenant_id AS text), true)"),
+                {"tenant_id": str(target["id"])},
+            )
+            position = (
+                session.execute(
+                    text(
+                        """
+                        SELECT position_code, name, role_level, is_manager,
+                               permissions, public_entry
+                        FROM iam.position_profiles
+                        WHERE tenant_id = :tenant_id AND position_code = :position_code
+                          AND active
+                        """
+                    ),
+                    {
+                        "tenant_id": target["id"],
+                        "position_code": direct_policy["default_position_code"],
+                    },
                 )
-                """
-            ),
-            {
-                "id": request_id,
-                "tenant_id": target["id"],
-                "user_id": user_id,
-                "requested_org_unit_code": payload.get("requested_org_unit_code"),
-                "requested_position_code": payload.get("requested_position_code"),
-                "requested_role_id": payload.get("requested_role_id"),
-                "department": payload.get("department"),
-                "contact": payload.get("contact"),
-                "reason": payload.get("reason"),
-            },
-        )
+                .mappings()
+                .one_or_none()
+            )
+            public_entry = position.get("public_entry") if position is not None else None
+            permissions = set(position.get("permissions") or ()) if position is not None else set()
+            if (
+                position is None
+                or bool(position["is_manager"])
+                or int(position["role_level"]) > 3
+                or not isinstance(public_entry, dict)
+                or public_entry.get("mode") != "direct"
+                or public_entry.get("visibility") != "public"
+                or public_entry.get("quick_registration") is not True
+                or not permissions.issubset(SELF_SERVICE_REGISTRATION_ALLOWED_PERMISSIONS)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Direct registration policy is not fully provisioned",
+                )
+            session.execute(
+                text(
+                    """
+                    INSERT INTO iam.memberships(
+                      tenant_id, user_id, position_code, role_level,
+                      topology_level, topology_title
+                    ) VALUES (
+                      :tenant_id, :user_id, :position_code, :role_level,
+                      :role_level, :title
+                    )
+                    """
+                ),
+                {
+                    "tenant_id": target["id"],
+                    "user_id": user_id,
+                    "position_code": position["position_code"],
+                    "role_level": int(position["role_level"]),
+                    "title": str(position["name"]),
+                },
+            )
+            session.execute(
+                text(
+                    """
+                    INSERT INTO iam.membership_positions(
+                      tenant_id, user_id, position_code, appointment_type, active
+                    ) VALUES (:tenant_id, :user_id, :position_code, 'primary', true)
+                    """
+                ),
+                {
+                    "tenant_id": target["id"],
+                    "user_id": user_id,
+                    "position_code": position["position_code"],
+                },
+            )
+            _audit(
+                session,
+                None,
+                str(direct_policy.get("audit_event") or "membership.registration.completed"),
+                {
+                    "tenant_id": target["id"],
+                    "actor_user_id": user_id,
+                    "user_id": user_id,
+                    "position_code": position["position_code"],
+                    "registration_mode": "direct",
+                },
+            )
+        else:
+            request_id = uuid4()
+            session.execute(
+                text(
+                    """
+                    INSERT INTO platform.membership_requests(
+                      id, tenant_id, user_id, requested_org_unit_code,
+                      requested_position_code, requested_role_id, department, contact, reason
+                    ) VALUES (
+                      :id, :tenant_id, :user_id, :requested_org_unit_code,
+                      :requested_position_code, :requested_role_id, :department, :contact, :reason
+                    )
+                    """
+                ),
+                {
+                    "id": request_id,
+                    "tenant_id": target["id"],
+                    "user_id": user_id,
+                    "requested_org_unit_code": payload.get("requested_org_unit_code"),
+                    "requested_position_code": payload.get("requested_position_code"),
+                    "requested_role_id": payload.get("requested_role_id"),
+                    "department": payload.get("department"),
+                    "contact": payload.get("contact"),
+                    "reason": payload.get("reason"),
+                },
+            )
+    if direct_policy is not None:
+        return {
+            "ok": True,
+            "status": "active",
+            "membership_active": True,
+            "tenant": target["slug"],
+            "tenant_name": target["name"],
+            "default_route": "civilization",
+            "message": "注册已完成，现在可以直接登录 CIVILIZATION。",
+        }
     return {
         "ok": True,
         "request_id": str(request_id),

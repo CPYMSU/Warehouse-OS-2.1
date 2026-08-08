@@ -414,6 +414,7 @@ const NAV2 = [
   { idx: "18", id: "settings", label: "設置" },
 ];
 const BIU_TEMPLATE_KEY = "biu_legal_ethics_case_lab";
+const CIVILIZATION_TEMPLATE_KEY = "civilization";
 const BIU_NAV_PROFILE = [
   { id: "dashboard", idx: "01", label: "案件總覽" },
   { id: "tasks", idx: "02", label: "我的工作" },
@@ -422,23 +423,36 @@ const BIU_NAV_PROFILE = [
   { id: "logs", idx: "05", label: "程序記錄" },
   { id: "settings", idx: "06", label: "規則與秘書" },
 ];
+const CIVILIZATION_NAV_PROFILE = [
+  { id: "civilization", idx: "01", label: "文明" },
+  { id: "perms", idx: "02", label: "權限" },
+  { id: "settings", idx: "03", label: "設置" },
+];
 const templateKeyOf = value => {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object") return "";
   return String(value.key || value.template_key || value.industry_template || "");
 };
 const isBiuTemplate = value => templateKeyOf(value) === BIU_TEMPLATE_KEY;
+const isCivilizationTemplate = value => templateKeyOf(value) === CIVILIZATION_TEMPLATE_KEY;
 const industryTemplateKeyOfBoot = boot => templateKeyOf(boot && boot.INDUSTRY_TEMPLATE)
   || templateKeyOf(boot && boot.INDUSTRY_TEMPLATE_KEY);
 const navigationForTemplate = templateKey => {
-  if (!isBiuTemplate(templateKey)) return NAV2;
+  const profile = isBiuTemplate(templateKey)
+    ? BIU_NAV_PROFILE
+    : isCivilizationTemplate(templateKey)
+      ? CIVILIZATION_NAV_PROFILE
+      : null;
+  if (!profile) return NAV2;
   const byId = new Map(NAV2.map(item => [item.id, item]));
-  return BIU_NAV_PROFILE
+  return profile
     .filter(item => byId.has(item.id))
     .map(item => ({ ...byId.get(item.id), ...item }));
 };
 W2.BIU_TEMPLATE_KEY = BIU_TEMPLATE_KEY;
 W2.isBiuTemplate = isBiuTemplate;
+W2.CIVILIZATION_TEMPLATE_KEY = CIVILIZATION_TEMPLATE_KEY;
+W2.isCivilizationTemplate = isCivilizationTemplate;
 const WAREHOUSE_ROUTE_IDS = ["inventory", "inbound", "outbound", "shipments"];
 W2.NAV = NAV2;
 /* 管理面(ADMIN 紅組):終端也必須由 allowed_nav/terminal.use 授權;
@@ -630,7 +644,7 @@ const NAV_PERMISSION_RULES = {
   alerts: { all: ["alerts.read"] },
   stocktake: { all: ["inventory.read"] },
   cases: { any: ["cases.read", "records.read"] },
-  civilization: { all: ["overview.read"] },
+  civilization: { all: ["civilization.read"] },
   erp: { all: ["erp.read"] },
   finance: { all: ["finance.read"] },
   assets: { any: ["assets.read", "asset_mgmt.read"] },
@@ -809,6 +823,7 @@ const Login2 = ({ onDone, notice }) => {
         setOrgOptions({
           catalog_version: orgData && orgData.catalog_version,
           template_key: orgData && orgData.template_key,
+          registration_policy: orgData && orgData.registration_policy,
           units,
           positions: Array.isArray(orgData && orgData.positions) ? orgData.positions : [],
         });
@@ -824,6 +839,12 @@ const Login2 = ({ onDone, notice }) => {
   const orgPositions = (orgOptions && orgOptions.positions) || [];
   const isBiuCatalogue = !!(
     orgOptions && orgOptions.template_key === "biu_legal_ethics_case_lab"
+  );
+  const isCivilizationCatalogue = !!(
+    orgOptions && orgOptions.template_key === CIVILIZATION_TEMPLATE_KEY
+    && orgOptions.registration_policy
+    && orgOptions.registration_policy.mode === "direct"
+    && orgOptions.registration_policy.approval_required === false
   );
   const positionsForUnit = orgPositions.filter(p => String(p.org_unit_code || "") === orgUnitCode);
   const selectedBiuPosition = isBiuCatalogue
@@ -971,14 +992,18 @@ const Login2 = ({ onDone, notice }) => {
     </label>
   );
 
-  const posterFoot = isBiuCatalogue && mode === "join"
+  const posterFoot = isCivilizationCatalogue && mode === "join"
+    ? "READ · THINK · SHARE"
+    : isBiuCatalogue && mode === "join"
     ? "LEARN · ANALYZE · ARCHIVE"
     : { login: "CONNECT · CREATE · EVOLVE", apply: "FOUND · APPROVE · OPERATE", join: "APPLY · APPROVE · ENTER" }[mode];
-  const headLabel = isBiuCatalogue && mode === "join"
+  const headLabel = isCivilizationCatalogue && mode === "join"
+    ? "CIVILIZATION ACCESS"
+    : isBiuCatalogue && mode === "join"
     ? "BIU ROLE CATALOG"
     : { login: "SIGN IN", apply: "OPEN COMPANY", join: "JOIN COMPANY" }[mode];
   const title = mode === "apply" ? t("申請開通公司")
-    : mode === "join" ? (isBiuCatalogue ? t("選擇 BIU 學術職位") : t("申請加入公司"))
+    : mode === "join" ? (isCivilizationCatalogue ? "CIVILIZATION" : isBiuCatalogue ? t("選擇 BIU 學術職位") : t("申請加入公司"))
     : "BONFIRE PLATFORM";
 
   return (
@@ -1007,7 +1032,11 @@ const Login2 = ({ onDone, notice }) => {
           {mode === "apply" ? (L === "en"
             ? <h1>Bring your<br/>company into<br/><span className="hollow">order</span>.</h1>
             : <h1>{t("把你的公司,")}<br/>{t("開進")}<span className="hollow">{t("秩序")}</span>{t("。")}</h1>)
-          : mode === "join" ? (isBiuCatalogue
+          : mode === "join" ? (isCivilizationCatalogue
+            ? (L === "en"
+              ? <h1>Read.<br/>Think.<br/><span className="hollow">Share.</span></h1>
+              : <h1>{t("閱讀。")}<br/>{t("思考。")}<br/><span className="hollow">{t("分享。")}</span></h1>)
+            : isBiuCatalogue
             ? (L === "en"
               ? <h1>Choose your<br/><span className="hollow">legal role</span>.</h1>
               : <h1>{t("選擇你的")}<br/><span className="hollow">{t("法律角色")}</span>{t("。")}</h1>)
@@ -1023,7 +1052,9 @@ const Login2 = ({ onDone, notice }) => {
               </h1>)}
           {mode !== "login" && <div style={{ marginTop: 30, maxWidth: "46ch", fontSize: 15, lineHeight: 1.7, color: "var(--ink-2)" }}>
             {mode === "apply" ? t("開通即建立獨立數據庫與初始表;審批通過後,你就是新公司的系統管理員。")
-            : (isBiuCatalogue
+            : (isCivilizationCatalogue
+              ? t("建立独立成员身份后即可直接进入文明模块；个人草稿只对自己可见，公开分享由你主动开启。")
+              : isBiuCatalogue
               ? t("從案例收錄、律師、證據、調解到多級審理,選擇一個 BIU 內部學術職位參與。")
               : t("填一張申請單:帳號、企業代碼、期望角色。企業管理員審批通過後,即可登入開工。"))}
           </div>}
@@ -1057,8 +1088,8 @@ const Login2 = ({ onDone, notice }) => {
               <div className="row g10"><LangSeg compact/><PlatformMark size={24}/></div>
             </div>
             <div className="row spread" style={{ borderBottom: "2px solid var(--rule)", paddingBottom: 14, alignItems: "flex-end" }}>
-              <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.035em" }}>{done ? t("申請已提交") : title}</div>
-              <Label red>{done ? "FILED" : headLabel}</Label>
+              <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.035em" }}>{done ? (done.status === "active" ? t("註冊完成") : t("申請已提交")) : title}</div>
+              <Label red>{done ? (done.status === "active" ? "ACTIVE" : "FILED") : headLabel}</Label>
             </div>
           </div>
 
@@ -1069,10 +1100,10 @@ const Login2 = ({ onDone, notice }) => {
                 {monoRow("DATE", dateMono)}
                 {monoRow("COMPANY", done.tenant_name || done.tenant || companyCode)}
                 {done.request_id != null && monoRow("NO.", String(done.request_id).padStart(4, "0"))}
-                {monoRow("STATUS", "PENDING REVIEW")}
+                {monoRow("STATUS", done.status === "active" ? "ACTIVE" : "PENDING REVIEW")}
               </div>
               <div style={{ fontSize: 13.5, fontWeight: 650, lineHeight: 1.7 }}>{done.message || t("申請已提交")}</div>
-              <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.7 }}>{t("企業管理員審批通過後,即可用此帳號登入。")}</div>
+              <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.7 }}>{done.status === "active" ? t("账号已启用，无需等待审批。") : t("企業管理員審批通過後,即可用此帳號登入。")}</div>
               <Btn kind="primary" size="lg" type="button" style={{ width: "100%" }} onClick={() => switchMode("login")}>{t("返回登入")}</Btn>
             </div>
           ) : mode === "apply" ? ( /* ── 開通:如實兩段式引導(無公開開通端點) ── */
@@ -1208,7 +1239,14 @@ const Login2 = ({ onDone, notice }) => {
                   </div>
                 </section>
               )}
-              {mode === "join" && !isBiuCatalogue && F("部門 / 班組", "DEPARTMENT",
+              {mode === "join" && isCivilizationCatalogue && (
+                <section className="panel col g8" style={{ padding: "15px 16px", borderLeft: "4px solid var(--red)" }}>
+                  <Label red>DIRECT MEMBERSHIP · CIVILIZATION</Label>
+                  <strong>{t("文明读者与创作者")}</strong>
+                  <span className="muted" style={{ fontSize: 12, lineHeight: 1.7 }}>{t("无需选择部门、岗位或角色；注册完成后只开放文明阅读、个人笔记与主动分享能力。")}</span>
+                </section>
+              )}
+              {mode === "join" && !isBiuCatalogue && !isCivilizationCatalogue && F("部門 / 班組", "DEPARTMENT",
                 orgOptions && orgOptions.__error ? (
                   <div style={{ fontSize: 12, color: "var(--danger)", padding: "8px 0" }}>{t("部門與崗位載入失敗,請確認企業代碼後重試")}</div>
                 ) : orgUnits.length ? (
@@ -1217,25 +1255,25 @@ const Login2 = ({ onDone, notice }) => {
                     {orgUnits.map(u => <option key={u.unit_code} value={u.unit_code}>{u.unit_name || u.unit_code}</option>)}
                   </select>
                 ) : <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>{t(companyCode.trim().length >= 3 ? "部門與崗位載入中…" : "請先輸入企業代碼")}</div>)}
-              {mode === "join" && !isBiuCatalogue && orgUnits.length > 0 && !!orgUnitCode && F("期望崗位", "POSITION",
+              {mode === "join" && !isBiuCatalogue && !isCivilizationCatalogue && orgUnits.length > 0 && !!orgUnitCode && F("期望崗位", "POSITION",
                 <select className="field" value={positionCode} onChange={e => selectPosition(e.target.value)} disabled={!positionsForUnit.length}>
                   <option value="">{positionsForUnit.length ? t("(由管理員指定)") : t("該部門尚無預設崗位")}</option>
                   {positionsForUnit.map(p => <option key={p.position_code} value={p.position_code}>
                     {p.position_name || p.position_code}{p.role_name ? " · " + p.role_name : ""}
                   </option>)}
                 </select>)}
-              {mode === "join" && !isBiuCatalogue && F("期望角色", "ROLE",
+              {mode === "join" && !isBiuCatalogue && !isCivilizationCatalogue && F("期望角色", "ROLE",
                 <select className="field" value={roleId} onChange={e => setRoleId(e.target.value)} disabled={!!positionCode}>
                   <option value="">{t("(由管理員指定)")}</option>
                   {roles.map(r => <option key={r.id} value={r.id}>{r.role_name}</option>)}
                 </select>)}
-              {mode === "join" && F("聯繫方式", "CONTACT",
+              {mode === "join" && !isCivilizationCatalogue && F("聯繫方式", "CONTACT",
                 <input className="field" value={contact} onChange={e => setContact(e.target.value)} placeholder={t("方便管理員核實身份")}/>)}
-              {mode === "join" && F("申請理由", "REASON",
+              {mode === "join" && !isCivilizationCatalogue && F("申請理由", "REASON",
                 <textarea className="field" value={reason} onChange={e => setReason(e.target.value)} rows={2} style={{ height: "auto", padding: "8px 2px", resize: "none" }} placeholder={t("簡述用途,供審批參考")}/>)}
               {err && <div role="alert" style={{ fontSize: 12.5, color: "var(--danger)", fontWeight: 650 }}>⚠ {err}</div>}
               <Btn kind="primary" size="lg" disabled={busy} style={{ width: "100%" }}>
-                {busy && authAction !== "passkey" ? (mode === "join" ? t("提交中…") : t("登入中…")) : (mode === "join" ? t("提交申請") : t("進入系統"))}
+                {busy && authAction !== "passkey" ? (mode === "join" ? t("提交中…") : t("登入中…")) : (mode === "join" ? (isCivilizationCatalogue ? t("建立 CIVILIZATION 帐号") : t("提交申請")) : t("進入系統"))}
               </Btn>
               {mode === "login" && (
                 <div className="muted" style={{ fontSize: 11.5, textAlign: "center" }}>
@@ -1245,7 +1283,7 @@ const Login2 = ({ onDone, notice }) => {
               <div className="row spread" style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
                 {mode === "login"
                   ? <span>{t("系統初始化 · Warehouse OS 2.1")}</span>
-                  : <span className="mono" style={{ fontSize: 9, letterSpacing: ".16em" }}>ADMIN REVIEW</span>}
+                  : <span className="mono" style={{ fontSize: 9, letterSpacing: ".16em" }}>{isCivilizationCatalogue ? "DIRECT · ISOLATED" : "ADMIN REVIEW"}</span>}
                 <span className="mono" style={{ fontSize: 9, letterSpacing: ".16em" }}>AUDIT ON</span>
               </div>
               <div className="platform-service-line">

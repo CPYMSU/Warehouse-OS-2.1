@@ -17,7 +17,7 @@ from app.templates.industry_blueprints import get_blueprint
 WORKFLOW_BLUEPRINT_SCHEMA_VERSION = 1
 WORKFLOW_BLUEPRINT_REVISION = "2026.07.30.2"
 WORKFLOW_COMMAND_BINDING_SCHEMA_VERSION = 1
-NON_OPERATIONAL_TEMPLATE_KEYS = frozenset({"biu_legal_ethics_case_lab"})
+NON_OPERATIONAL_TEMPLATE_KEYS = frozenset({"biu_legal_ethics_case_lab", "civilization"})
 
 _RESPONSIBILITY_POSITIONS: dict[str, dict[str, str]] = {
     "generic_warehouse": {

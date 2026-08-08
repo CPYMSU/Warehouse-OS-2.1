@@ -1,3 +1,4 @@
+from app.api import full_stack_identity
 from app.templates.industry_blueprints import (
     INDUSTRY_BLUEPRINT_KEYS,
     assert_valid_blueprints,
@@ -13,12 +14,64 @@ from app.templates.workflow_blueprints import (
 from app.terminal.legacy_catalog import entry_by_tool_name
 
 
-def test_all_thirteen_legacy_blueprints_are_available() -> None:
+def test_all_built_in_blueprints_are_available() -> None:
     assert_valid_blueprints()
 
     templates = list_blueprints()
-    assert len(templates) == 13
+    assert len(templates) == 14
     assert tuple(template["key"] for template in templates) == INDUSTRY_BLUEPRINT_KEYS
+
+
+def test_civilization_is_a_creator_isolated_direct_registration_preset() -> None:
+    template = get_blueprint("civilization")
+    positions = {item["code"]: item for item in template["positions"]}
+    member = positions["civilization_member"]
+
+    assert template["enabled_modules"] == ["civilization", "perms", "settings"]
+    assert template["registration_policy"] == {
+        "mode": "direct",
+        "approval_required": False,
+        "default_position_code": "civilization_member",
+        "requested_position_policy": "ignore",
+        "audit_event": "civilization.registration.completed",
+    }
+    assert template["data_policy"]["draft_visibility"] == "creator_only"
+    assert set(member["permissions"]) == {"civilization.read", "civilization.write"}
+    assert member["public_entry"]["quick_registration"] is True
+    assert positions["civilization_system_admin"]["database_access_mode"] == "tenant_scoped"
+
+
+def test_direct_registration_is_resolved_from_the_reviewed_template_contract(monkeypatch) -> None:
+    blueprint = get_blueprint("civilization")
+    monkeypatch.setattr(
+        full_stack_identity,
+        "get_template_detail",
+        lambda _key: {"blueprint": blueprint},
+    )
+
+    policy = full_stack_identity._self_service_registration_policy(
+        {"industry_template_key": "civilization"}
+    )
+
+    assert policy is not None
+    assert policy["default_position_code"] == "civilization_member"
+
+    compromised = get_blueprint("civilization")
+    member = next(
+        item for item in compromised["positions"] if item["code"] == "civilization_member"
+    )
+    member["permissions"].append("settings.manage")
+    monkeypatch.setattr(
+        full_stack_identity,
+        "get_template_detail",
+        lambda _key: {"blueprint": compromised},
+    )
+    assert (
+        full_stack_identity._self_service_registration_policy(
+            {"industry_template_key": "civilization"}
+        )
+        is None
+    )
 
 
 def test_power_grid_blueprint_is_renamed_to_power_system() -> None:

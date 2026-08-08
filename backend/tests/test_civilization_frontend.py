@@ -38,14 +38,23 @@ PUBLIC_SHARING_MIGRATION = (
     / "versions"
     / "20260808_0086_civilization_public_shares.py"
 )
+COMPANY_PRESET_MIGRATION = (
+    ROOT
+    / "backend"
+    / "alembic"
+    / "versions"
+    / "20260808_0087_civilization_company_preset.py"
+)
 
 
 def test_civilization_navigation_sits_between_records_and_settings() -> None:
     ids = [str(item["id"]) for item in NAVIGATION_CATALOG]
 
     assert ids.index("cases") < ids.index("civilization") < ids.index("settings")
-    assert NAV_PERMISSION_RULES["civilization"] == ("overview.read",)
-    assert "civilization" in nav_modules_for_permissions({"overview.read"})
+    assert NAV_PERMISSION_RULES["civilization"] == ("civilization.read",)
+    assert "civilization" in nav_modules_for_permissions({"civilization.read"})
+    assert "dashboard" not in nav_modules_for_permissions({"civilization.read"})
+    assert "civilization" not in nav_modules_for_permissions({"overview.read"})
 
 
 def test_civilization_page_registers_all_three_swiss_views() -> None:
@@ -119,8 +128,9 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app5' in index
     assert 'pages/pages-civilization.jsx?v=20260808-civilization18' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
-    assert 'app.jsx?v=20260808-civilization-app1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization19' in index
+    assert 'pages/pages-perms.jsx?v=20260808-civilization-preset1' in index
+    assert 'app.jsx?v=20260808-civilization-app2' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization20' in index
     assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
         "pages/pages-civilization.jsx"
     )
@@ -255,6 +265,7 @@ def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
     empty_data_migration = EMPTY_DATA_MIGRATION.read_text(encoding="utf-8")
     publishing_migration = PUBLISHING_MIGRATION.read_text(encoding="utf-8")
     public_sharing_migration = PUBLIC_SHARING_MIGRATION.read_text(encoding="utf-8")
+    company_preset_migration = COMPANY_PRESET_MIGRATION.read_text(encoding="utf-8")
 
     assert 'warehouse_scope = "schema"' in schema_migration
     assert "CREATE TABLE civilization.thoughts" in schema_migration
@@ -277,3 +288,6 @@ def test_civilization_content_is_tenant_data_with_database_isolation() -> None:
     assert "published_content" not in public_sharing_migration
     assert "INSERT INTO civilization.public_shares" not in public_sharing_migration
     assert "UPDATE civilization.thoughts" not in public_sharing_migration
+    assert "app.current_actor_user_id()" in company_preset_migration
+    assert "created_by = app.current_actor_user_id()" in company_preset_migration
+    assert "'civilization'" in company_preset_migration

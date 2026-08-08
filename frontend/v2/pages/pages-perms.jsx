@@ -34,6 +34,10 @@ window.W2_LANG.addEN({
   "另將停用 {c} 個舊檔案分類和 {t} 個舊檔案類型;歷史檔案與類型版本不會刪除。": "{c} old record categories and {t} old record types will also be disabled; historical records and type revisions are retained.",
   "{o} 個公司自定義或已封存的同碼部門/崗位將保持不變;{c} 個舊部門因仍有下級部門而保留。": "{o} company-overridden or archived same-code departments/positions will remain unchanged; {c} old departments are retained because they still have child units.",
   "合併套用只同步模板管理的架構,保留公司自訂資料,不刪除既有業務記錄。": "Merge apply only synchronises template-managed structures, preserves company customisations, and does not delete existing business records.",
+  "免審批註冊": "Direct registration",
+  "新用戶註冊後直接成為「{position}」,不建立待審批申請。": "New users become “{position}” immediately; no approval request is created.",
+  "个人草稿仅创作者可见;已发布内容在公司内共享,公开网页仍需作者主动开启。": "Private drafts are visible only to their creator; published content is shared inside the company, and public pages still require explicit author opt-in.",
+  "既有成员、岗位与业务资料会保留;本预设只约束新注册成员与模板管理的组织结构。": "Existing members, positions and business data are preserved; this preset governs new registrations and template-managed organisation only.",
   "套用此模板": "Apply this template",
   "重新同步此模板": "Resynchronise this template",
   "確認套用「{name}」?": "Apply “{name}”?",
@@ -442,6 +446,8 @@ const TemplateConsole = ({ onApplied, refreshSeq, biu = false }) => {
   const preservedNavigation = num(summary.nav_ceilings_preserve_manual)
     + num(summary.position_nav_defaults_preserve_manual);
   const modules = preview && preview.template && Array.isArray(preview.template.enabled_modules) ? preview.template.enabled_modules : [];
+  const registrationPolicy = preview && preview.template && preview.template.registration_policy && typeof preview.template.registration_policy === "object" ? preview.template.registration_policy : null;
+  const dataPolicy = preview && preview.template && preview.template.data_policy && typeof preview.template.data_policy === "object" ? preview.template.data_policy : null;
 
   const selectTemplate = (key) => {
     setSelectedKey(key);
@@ -535,6 +541,12 @@ const TemplateConsole = ({ onApplied, refreshSeq, biu = false }) => {
                 </div>)}
               </div>
               {modules.length > 0 && <div className="row g4 wrap">{modules.map(module => <T key={module} tone="plain">{module}</T>)}</div>}
+              {registrationPolicy && registrationPolicy.mode === "direct" && registrationPolicy.approval_required === false && <div style={{ border: "1px solid var(--ink)", borderLeft: "5px solid var(--red)", padding: "13px 14px", background: "var(--paper)" }}>
+                <LB red>{t("免審批註冊")}</LB>
+                <div style={{ fontWeight: 750, fontSize: 13.5, marginTop: 7 }}>{t("新用戶註冊後直接成為「{position}」,不建立待審批申請。", { position: registrationPolicy.default_position_code || "member" })}</div>
+                {dataPolicy && dataPolicy.draft_visibility === "creator_only" && <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.65, marginTop: 6 }}>{t("个人草稿仅创作者可见;已发布内容在公司内共享,公开网页仍需作者主动开启。")}</div>}
+                <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.65, marginTop: 5 }}>{t("既有成员、岗位与业务资料会保留;本预设只约束新注册成员与模板管理的组织结构。")}</div>
+              </div>}
               {hasArchive && <div style={{ background: "var(--red-soft)", borderLeft: "3px solid var(--red)", padding: "10px 12px", color: "var(--ink-2)", fontSize: 12, lineHeight: 1.6 }}>
                 {t("將歸檔 {p} 個舊崗位、{d} 個舊部門和 {c} 個舊事務類型;有成員的崗位會保留。", { p: archive.positions, d: archive.departments, c: archive.cases })}
                 {(archive.recordCategories > 0 || archive.recordTypes > 0) && <div style={{ marginTop: 4 }}>{t("另將停用 {c} 個舊檔案分類和 {t} 個舊檔案類型;歷史檔案與類型版本不會刪除。", { c: archive.recordCategories, t: archive.recordTypes })}</div>}

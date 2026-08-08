@@ -17,7 +17,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 
 BLUEPRINT_SCHEMA_VERSION = 1
-BLUEPRINT_DATA_VERSION = "2026.08.01.1"
+BLUEPRINT_DATA_VERSION = "2026.08.08.1"
 DEFAULT_BLUEPRINT_KEY = "generic_warehouse"
 
 # The built-in application permissions that organisation templates may grant.
@@ -71,6 +71,8 @@ BLUEPRINT_PERMISSION_KEYS = frozenset(
         "research.read",
         "research.write",
         "research.review",
+        "civilization.read",
+        "civilization.write",
         "cases.read",
         "cases.create",
         "cases.process",
@@ -568,6 +570,13 @@ _BIU_SYSTEM_ADMIN = _permissions(
 )
 
 BIU_TEMPLATE_KEY = "biu_legal_ethics_case_lab"
+CIVILIZATION_TEMPLATE_KEY = "civilization"
+SELF_SERVICE_REGISTRATION_ALLOWED_PERMISSIONS = frozenset(
+    {
+        "civilization.read",
+        "civilization.write",
+    }
+)
 BIU_ENTRY_MODES = frozenset({"direct", "application", "exam", "appointment"})
 BIU_CATALOG_VISIBILITIES = frozenset({"public", "locked", "hidden"})
 BIU_PERMISSION_TIERS = frozenset({"P0", "P1", "P2", "P3", "P4", "P5"})
@@ -641,7 +650,7 @@ V2_NAV_MODULE_RULES = (
     ),
     ("logs", ("audit.read",), ()),
     ("cases", (), ("cases.read", "records.read")),
-    ("civilization", ("overview.read",), ()),
+    ("civilization", ("civilization.read",), ()),
     ("settings", ("settings.manage",), ()),
     ("terminal", ("terminal.use",), ()),
 )
@@ -873,13 +882,15 @@ def _blueprint(
     *,
     enabled_modules: Iterable[str] = _DEFAULT_ENABLED_MODULES,
     admin_position_code: Optional[str] = None,
+    registration_policy: Optional[Mapping[str, Any]] = None,
+    data_policy: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     if admin_position_code is None:
         admin_positions = [p for p in positions if p.get("role_name") == "系統管理員"]
         if len(admin_positions) != 1:
             raise ValueError(f"blueprint {key!r} must define exactly one 系統管理員 position")
         admin_position_code = str(admin_positions[0]["code"])
-    return {
+    blueprint = {
         "key": key,
         "name": name,
         "description": description,
@@ -890,6 +901,11 @@ def _blueprint(
         "admin_position_code": admin_position_code,
         "enabled_modules": list(enabled_modules),
     }
+    if registration_policy is not None:
+        blueprint["registration_policy"] = dict(registration_policy)
+    if data_policy is not None:
+        blueprint["data_policy"] = dict(data_policy)
+    return blueprint
 
 
 _BLUEPRINTS: dict[str, dict[str, Any]] = {}
@@ -2675,6 +2691,84 @@ _BLUEPRINTS["film_equipment"] = _blueprint(
             "film_hr_specialist", "人事行政專員", "hr_admin", "影視人事行政專員", 3, False, _HR_USER
         ),
     ],
+)
+
+
+_civilization_admin = _position(
+    "civilization_system_admin",
+    "CIVILIZATION 管理员",
+    "management",
+    "系統管理員",
+    10,
+    True,
+    _SYSTEM_ADMIN,
+    database_access_mode="tenant_scoped",
+    automatic_task_grants=False,
+)
+_civilization_admin["public_entry"] = {
+    "mode": "appointment",
+    "entry_mode": "appointment",
+    "visibility": "hidden",
+    "catalog_state": "hidden",
+    "summary": "维护公司模板、成员与发布治理；不开放自助注册。",
+    "requirements": ["由公司拥有者任命"],
+    "workflow_ref": "civilization_role_appointment",
+    "quick_registration": False,
+    "guest_enabled": False,
+    "selectable": False,
+}
+_civilization_member = _position(
+    "civilization_member",
+    "文明读者与创作者",
+    "civilization_community",
+    "CIVILIZATION 成员",
+    1,
+    False,
+    SELF_SERVICE_REGISTRATION_ALLOWED_PERMISSIONS,
+    automatic_task_grants=False,
+)
+_civilization_member["public_entry"] = {
+    "mode": "direct",
+    "entry_mode": "direct",
+    "visibility": "public",
+    "catalog_state": "public",
+    "summary": "注册后直接阅读公开内容，并创建、保存和分享自己的读书笔记。",
+    "requirements": ["建立平台身份", "同意内容与隐私规则"],
+    "workflow_ref": None,
+    "quick_registration": True,
+    "guest_enabled": False,
+    "selectable": False,
+}
+
+_BLUEPRINTS[CIVILIZATION_TEMPLATE_KEY] = _blueprint(
+    CIVILIZATION_TEMPLATE_KEY,
+    "CIVILIZATION · 文明",
+    "面向公开阅读与个人创作的文明共同体；普通成员仅进入文明模块，个人草稿按创作者隔离。",
+    [
+        _company(),
+        _department("management", "管理層", "公司模板、身份与内容治理。"),
+        _department(
+            "civilization_community",
+            "文明共同体",
+            "阅读公开内容，创建、维护与分享个人读书笔记。",
+        ),
+    ],
+    [_civilization_admin, _civilization_member],
+    enabled_modules=("civilization", "perms", "settings"),
+    admin_position_code="civilization_system_admin",
+    registration_policy={
+        "mode": "direct",
+        "approval_required": False,
+        "default_position_code": "civilization_member",
+        "requested_position_policy": "ignore",
+        "audit_event": "civilization.registration.completed",
+    },
+    data_policy={
+        "tenant_isolation": True,
+        "draft_visibility": "creator_only",
+        "published_visibility": "tenant_members",
+        "public_sharing": "explicit_snapshot_only",
+    },
 )
 
 
@@ -4477,6 +4571,7 @@ INDUSTRY_BLUEPRINT_KEYS = (
     "hotel_homestay",
     "it_office_asset",
     "film_equipment",
+    CIVILIZATION_TEMPLATE_KEY,
     "biu_legal_ethics_case_lab",
 )
 
@@ -4541,6 +4636,10 @@ def list_blueprints(*, schema_version: int = BLUEPRINT_SCHEMA_VERSION) -> list[d
             "revision": _BLUEPRINTS[key]["revision"],
             "department_count": len(_BLUEPRINTS[key]["departments"]),
             "position_count": len(_BLUEPRINTS[key]["positions"]),
+            "enabled_modules": list(_BLUEPRINTS[key].get("enabled_modules") or ()),
+            "registration_policy": deepcopy(
+                _BLUEPRINTS[key].get("registration_policy")
+            ),
         }
         for key in INDUSTRY_BLUEPRINT_KEYS
     ]
@@ -4839,12 +4938,12 @@ def validate_blueprints(
 
             database_access_mode = position.get("database_access_mode")
             if database_access_mode is not None and not (
-                input_key == BIU_TEMPLATE_KEY
+                input_key in {BIU_TEMPLATE_KEY, CIVILIZATION_TEMPLATE_KEY}
                 and code == str(blueprint.get("admin_position_code") or "")
                 and database_access_mode == "tenant_scoped"
             ):
                 errors.append(
-                    f"{item_prefix}.database_access_mode: tenant_scoped is reserved for the BIU system administrator"
+                    f"{item_prefix}.database_access_mode: tenant_scoped is reserved for an isolated-template system administrator"
                 )
 
             database_access = position.get("database_access")
@@ -5092,12 +5191,11 @@ def validate_blueprints(
                 errors.append(
                     f"{prefix}.admin_position_code: position must retain role_name '系統管理員'"
                 )
-            if (
-                input_key == BIU_TEMPLATE_KEY
-                and admin_position.get("database_access_mode") != "tenant_scoped"
+            if input_key in {BIU_TEMPLATE_KEY, CIVILIZATION_TEMPLATE_KEY} and (
+                admin_position.get("database_access_mode") != "tenant_scoped"
             ):
                 errors.append(
-                    f"{prefix}.admin_position_code: BIU system administrator must use tenant_scoped database access"
+                    f"{prefix}.admin_position_code: isolated-template system administrator must use tenant_scoped database access"
                 )
 
         if input_key == BIU_TEMPLATE_KEY:
@@ -5115,6 +5213,58 @@ def validate_blueprints(
                     errors.append(
                         f"{prefix}.enabled_modules: unknown WAREHOUSE OS 2.0 module {module_id!r}"
                     )
+
+        registration_policy = blueprint.get("registration_policy")
+        if registration_policy is not None:
+            if not isinstance(registration_policy, Mapping):
+                errors.append(f"{prefix}.registration_policy: must be a mapping")
+            else:
+                registration_mode = registration_policy.get("mode")
+                if registration_mode not in {"approval", "direct"}:
+                    errors.append(
+                        f"{prefix}.registration_policy.mode: expected 'approval' or 'direct'"
+                    )
+                approval_required = registration_policy.get("approval_required")
+                if type(approval_required) is not bool:
+                    errors.append(
+                        f"{prefix}.registration_policy.approval_required: must be boolean"
+                    )
+                elif approval_required is (registration_mode == "direct"):
+                    errors.append(
+                        f"{prefix}.registration_policy.approval_required: conflicts with mode"
+                    )
+                default_position_code = str(
+                    registration_policy.get("default_position_code") or ""
+                )
+                if registration_mode == "direct":
+                    default_position = position_by_code.get(default_position_code)
+                    if default_position is None:
+                        errors.append(
+                            f"{prefix}.registration_policy.default_position_code: unknown position"
+                        )
+                    else:
+                        public_entry = default_position.get("public_entry")
+                        permissions = set(default_position.get("permissions") or ())
+                        if (
+                            not isinstance(public_entry, Mapping)
+                            or public_entry.get("mode") != "direct"
+                            or public_entry.get("visibility") != "public"
+                            or public_entry.get("quick_registration") is not True
+                            or default_position.get("is_manager") is not False
+                            or int(default_position.get("level") or 0) > 3
+                        ):
+                            errors.append(
+                                f"{prefix}.registration_policy.default_position_code: "
+                                "must reference a public, direct, non-manager quick-registration position"
+                            )
+                        excess = permissions.difference(
+                            SELF_SERVICE_REGISTRATION_ALLOWED_PERMISSIONS
+                        )
+                        if excess:
+                            errors.append(
+                                f"{prefix}.registration_policy.default_position_code: "
+                                f"permissions exceed self-service boundary {sorted(excess)!r}"
+                            )
 
     return errors
 
@@ -5145,11 +5295,13 @@ __all__ = [
     "V2_NAV_MODULE_RULES",
     "V2_NAV_MODULE_IDS",
     "BIU_TEMPLATE_KEY",
+    "CIVILIZATION_TEMPLATE_KEY",
     "BIU_ENTRY_MODES",
     "BIU_CATALOG_VISIBILITIES",
     "BIU_PERMISSION_TIERS",
     "BIU_QUICK_REGISTRATION_TIERS",
     "BIU_QUICK_REGISTRATION_ALLOWED_PERMISSIONS",
+    "SELF_SERVICE_REGISTRATION_ALLOWED_PERMISSIONS",
     "BIU_DIRECT_ENTRY_FORBIDDEN_PERMISSIONS",
     "BIU_GUIDANCE_AXES",
     "BIU_GUIDANCE_POSITION_PROFILES",

@@ -33,9 +33,10 @@ SCOPE_PERMISSIONS = {
     "assistant": ("ai.use",),
     "terminal": ("terminal.use",),
     "research": ("research.read", "research.write", "research.review"),
-    # Civilization uses its domain service for creator/admin write checks. The
-    # key only opens this API audience and never snapshots or expands authority.
-    "civilization": ("overview.read",),
+    # The domain service still applies creator-only draft rules.  A company
+    # administrator keeps continuity through settings.manage without granting
+    # ordinary overview users access to Civilization.
+    "civilization": ("civilization.read", "civilization.write", "settings.manage"),
 }
 # Compatibility projection for callers and documentation that need one
 # representative permission name. Authorization uses ``SCOPE_PERMISSIONS``.

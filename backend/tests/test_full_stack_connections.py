@@ -789,6 +789,122 @@ def test_registration_and_join_approvals_share_the_real_membership_workflow() ->
         app.dependency_overrides.clear()
 
 
+def test_civilization_registration_activates_the_minimal_member_without_review() -> None:
+    tenant_id = uuid4()
+    slug = f"civilization-{tenant_id.hex[:12]}"
+    username = f"civilization-member-{uuid4().hex[:12]}"
+    with system_session() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO iam.tenants(id, slug, name, industry_template_key)
+                VALUES (:id, :slug, 'Civilization Community', 'civilization')
+                """
+            ),
+            {"id": tenant_id, "slug": slug},
+        )
+    with tenant_session(tenant_id) as session:
+        provision_tenant_template(
+            session,
+            tenant_id=tenant_id,
+            tenant_name="Civilization Community",
+            template_key="civilization",
+        )
+
+    client = TestClient(app)
+    registered = client.post(
+        "/api/auth/register",
+        json={
+            "tenant_slug": slug,
+            "username": username,
+            "display_name": "Civilization Reader",
+            "password": "civilization-password",
+            "requested_position_code": "civilization_system_admin",
+        },
+    )
+
+    assert registered.status_code == 201, registered.text
+    assert registered.json()["status"] == "active"
+    assert registered.json()["membership_active"] is True
+    assert "request_id" not in registered.json()
+    with tenant_session(tenant_id) as session:
+        membership = session.execute(
+            text(
+                """
+                SELECT membership.position_code, membership.role_level,
+                       appointment.appointment_type
+                FROM iam.memberships AS membership
+                JOIN iam.membership_positions AS appointment
+                  ON appointment.tenant_id = membership.tenant_id
+                 AND appointment.user_id = membership.user_id
+                 AND appointment.active
+                JOIN iam.users AS account ON account.id = membership.user_id
+                WHERE membership.tenant_id = :tenant_id AND account.username = :username
+                """
+            ),
+            {"tenant_id": tenant_id, "username": username},
+        ).mappings().one()
+    assert membership["position_code"] == "civilization_member"
+    assert int(membership["role_level"]) == 1
+    assert membership["appointment_type"] == "primary"
+
+    login = client.post(
+        "/api/auth/login",
+        json={"tenant": slug, "username": username, "password": "civilization-password"},
+    )
+    assert login.status_code == 200, login.text
+    me = client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {login.json()['token']}"},
+    )
+    assert me.status_code == 200, me.text
+    assert me.json()["user"]["allowed_nav"] == ["civilization"]
+
+    first_headers = {"Authorization": f"Bearer {login.json()['token']}"}
+    draft = client.post(
+        "/api/civilization/thoughts",
+        headers=first_headers,
+        json={
+            "domain": "time",
+            "title": "Private reading note",
+            "short": "Only its creator can see this draft.",
+            "thesis": "Creator isolation is enforced by service and database policy.",
+            "publish": False,
+        },
+    )
+    assert draft.status_code == 201, draft.text
+    draft_id = draft.json()["thought"]["id"]
+
+    second_username = f"civilization-member-{uuid4().hex[:12]}"
+    second = client.post(
+        "/api/auth/register",
+        json={
+            "tenant_slug": slug,
+            "username": second_username,
+            "display_name": "Second Civilization Reader",
+            "password": "second-civilization-password",
+        },
+    )
+    assert second.status_code == 201, second.text
+    second_login = client.post(
+        "/api/auth/login",
+        json={
+            "tenant": slug,
+            "username": second_username,
+            "password": "second-civilization-password",
+        },
+    )
+    second_headers = {"Authorization": f"Bearer {second_login.json()['token']}"}
+    second_list = client.get("/api/civilization/thoughts", headers=second_headers)
+    assert second_list.status_code == 200, second_list.text
+    assert draft_id not in {item["id"] for item in second_list.json()["thoughts"]}
+    assert client.get(
+        f"/api/civilization/thoughts/{draft_id}", headers=second_headers
+    ).status_code == 404
+    first_list = client.get("/api/civilization/thoughts", headers=first_headers)
+    assert draft_id in {item["id"] for item in first_list.json()["thoughts"]}
+
+
 def test_retained_first_write_profile_run_and_weather_paths_are_truthful(monkeypatch) -> None:
     actor = _actor()
     run_id = uuid4()

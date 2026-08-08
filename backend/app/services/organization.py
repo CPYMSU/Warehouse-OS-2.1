@@ -77,7 +77,7 @@ NAV_PERMISSION_RULES: dict[str, tuple[str, ...]] = {
     "gis": ("gis.read",),
     "reports": ("reports.read",),
     "logs": ("audit.read",),
-    "civilization": ("overview.read",),
+    "civilization": ("civilization.read",),
     "settings": ("settings.manage",),
     "terminal": ("terminal.use",),
 }
@@ -881,10 +881,19 @@ def template_preview(actor: ActorContext, template_key: str) -> dict[str, object
     existing_positions = {row["position_code"] for row in projection["positions"]}
     departments = list(blueprint.get("departments") or [])
     positions = list(blueprint.get("positions") or [])
+    template_projection = {
+        key: detail[key]
+        for key in ("key", "name", "description", "schema_version", "revision")
+    }
+    template_projection.update(
+        {
+            "enabled_modules": list(blueprint.get("enabled_modules") or ()),
+            "registration_policy": blueprint.get("registration_policy"),
+            "data_policy": blueprint.get("data_policy"),
+        }
+    )
     return {
-        "template": {
-            key: detail[key] for key in ("key", "name", "description", "schema_version", "revision")
-        },
+        "template": template_projection,
         "preview_token": _preview_token(actor, detail, projection),
         "can_apply": _permission(actor, "settings.manage"),
         "summary": {
@@ -905,7 +914,12 @@ def template_preview(actor: ActorContext, template_key: str) -> dict[str, object
             "roles_create": 0,
             "roles_reuse": len({str(item.get("role_name")) for item in positions}),
         },
-        "safety": {"mode": "merge", "archives": False, "preserves_custom_data": True},
+        "safety": {
+            "mode": "merge",
+            "archives": False,
+            "preserves_custom_data": True,
+            "preserves_existing_members": True,
+        },
     }
 
 
@@ -2089,6 +2103,17 @@ def apply_template(actor: ActorContext, payload: dict[str, object]) -> dict[str,
             session,
             actor,
             "organization.template_applied",
-            {"template_key": template_key, "mode": "merge"},
+            {
+                "template_key": template_key,
+                "mode": "merge",
+                "registration_policy": blueprint.get("registration_policy"),
+                "data_policy": blueprint.get("data_policy"),
+            },
         )
-    return {"ok": True, "template_key": template_key, "mode": "merge"}
+    return {
+        "ok": True,
+        "template_key": template_key,
+        "mode": "merge",
+        "registration_policy": blueprint.get("registration_policy"),
+        "data_policy": blueprint.get("data_policy"),
+    }

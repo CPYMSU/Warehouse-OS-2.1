@@ -26,13 +26,18 @@ from app.services.civilization import (
 from app.terminal.catalog import availability, entry_by_tool_name
 
 
-def _actor(*, role_level: int = 5, permissions: frozenset[str] = frozenset()) -> ActorContext:
+def _actor(
+    *,
+    role_level: int = 5,
+    permissions: frozenset[str] = frozenset(),
+    template_key: str = "general",
+) -> ActorContext:
     return ActorContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
         tenant_slug="civilization-test",
         tenant_name="Civilization Test",
-        industry_template_key="general",
+        industry_template_key=template_key,
         username="reader@example.test",
         display_name="Reader",
         role_level=role_level,
@@ -83,6 +88,7 @@ def test_delete_policy_allows_creator_and_company_administrator() -> None:
     assert _can_delete(member, another_user) is False
     assert _can_delete(_actor(role_level=10), another_user) is True
     assert _can_delete(_actor(permissions=frozenset({"settings.manage"})), another_user) is True
+    assert _can_delete(_actor(role_level=10, template_key="civilization"), another_user) is False
 
 
 def test_serialized_thought_exposes_exact_personal_ownership() -> None:

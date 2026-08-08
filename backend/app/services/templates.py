@@ -23,7 +23,10 @@ def list_template_summaries() -> list[dict[str, object]]:
                     """
                 SELECT template_key AS key, name, description, schema_version, revision,
                        jsonb_array_length(blueprint->'departments') AS department_count,
-                       jsonb_array_length(blueprint->'positions') AS position_count
+                       jsonb_array_length(blueprint->'positions') AS position_count,
+                       COALESCE(blueprint->'enabled_modules', '[]'::jsonb) AS enabled_modules,
+                       blueprint->'registration_policy' AS registration_policy,
+                       blueprint->'data_policy' AS data_policy
                 FROM iam.industry_templates
                 WHERE active
                 ORDER BY template_key
@@ -61,7 +64,10 @@ def get_template_summary(template_key: str) -> dict[str, object] | None:
             session.execute(
                 text(
                     """
-                SELECT template_key AS key, name, description, schema_version, revision
+                SELECT template_key AS key, name, description, schema_version, revision,
+                       COALESCE(blueprint->'enabled_modules', '[]'::jsonb) AS enabled_modules,
+                       blueprint->'registration_policy' AS registration_policy,
+                       blueprint->'data_policy' AS data_policy
                 FROM iam.industry_templates
                 WHERE template_key = :template_key AND active
                 """
