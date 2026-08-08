@@ -15,6 +15,11 @@
     --civ-mobile-orange: #BD5D19;
     --civ-mobile-purple: #75439A;
     --civ-mobile-rule: rgba(18, 18, 18, .24);
+    --civ-theme-primary: var(--civ-mobile-red);
+    --civ-theme-secondary: var(--civ-mobile-blue);
+    --civ-theme-highlight: var(--civ-mobile-yellow);
+    --civ-theme-ink: var(--civ-mobile-ink);
+    --civ-theme-paper: var(--civ-mobile-paper);
     min-width: 0; min-height: 100svh; padding-bottom: calc(70px + env(safe-area-inset-bottom)); position: relative; color: var(--civ-mobile-ink); background: var(--civ-mobile-paper);
   }
   .civ-mobile-a button, .civ-mobile-a input { color: inherit; font: inherit; touch-action: manipulation; }
@@ -91,21 +96,32 @@
   .civ-mobile-empty { min-height: 180px; padding: 26px 14px; color: var(--civ-mobile-muted); font: 800 10px var(--f-mono); }
 
   /* B · A real mobile chronology, not the desktop timeline squeezed into a phone. */
-  .civ-mobile-chronology { min-height: calc(100svh - 58px); border: 1px solid var(--civ-mobile-ink); border-top: 0; background: var(--civ-mobile-paper); }
-  .civ-mobile-chronology-head { min-height: 330px; position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 92px; color: var(--civ-mobile-ink); border-bottom: 2px solid var(--civ-mobile-ink); background-color: var(--civ-mobile-paper); background-image: linear-gradient(rgba(18,18,18,.14) 1px, transparent 1px), linear-gradient(90deg, rgba(18,18,18,.14) 1px, transparent 1px); background-size: 48px 48px; }
+  .civ-mobile-chronology { min-height: calc(100svh - 58px); color: var(--civ-theme-ink); border: 1px solid var(--civ-theme-ink); border-top: 0; background: var(--civ-theme-paper); transition: color .35s ease, background-color .35s ease; }
+  .civ-mobile-chronology-head { min-height: 330px; position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 92px; color: var(--civ-theme-ink); border-bottom: 2px solid var(--civ-theme-ink); background-color: var(--civ-theme-paper); background-image: linear-gradient(color-mix(in srgb, var(--civ-theme-ink) 14%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--civ-theme-ink) 14%, transparent) 1px, transparent 1px); background-size: 48px 48px; transition: color .35s ease, background-color .35s ease; }
   .civ-mobile-chronology-head > div { padding: 24px 17px 28px; position: relative; z-index: 8; display: flex; flex-direction: column; }
-  .civ-mobile-chronology-head > div > span { color: var(--civ-mobile-red); font: 850 8px var(--f-mono); letter-spacing: .12em; }
+  .civ-mobile-chronology-head > div > span { color: var(--civ-theme-primary); font: 850 8px var(--f-mono); letter-spacing: .12em; }
   .civ-mobile-chronology-head strong { max-width: 64%; margin-top: auto; font-size: clamp(48px, 15vw, 68px); line-height: .88; letter-spacing: -.09em; }
-  .civ-mobile-chronology-head p { max-width: 270px; margin: 18px 0 0; color: var(--civ-mobile-muted); font-size: 12px; line-height: 1.7; }
-  .civ-mobile-chronology-head > aside { padding: 20px 10px; position: relative; z-index: 8; display: flex; flex-direction: column; border-left: 1px solid var(--civ-mobile-ink); }
-  .civ-mobile-chronology-head > aside b { color: var(--civ-mobile-blue); font: 900 55px/.8 var(--f-mono); letter-spacing: -.12em; }
+  .civ-mobile-chronology-head p { max-width: 270px; margin: 18px 0 0; color: color-mix(in srgb, var(--civ-theme-ink) 68%, transparent); font-size: 12px; line-height: 1.7; }
+  .civ-mobile-chronology-head > aside { padding: 20px 10px; position: relative; z-index: 8; display: flex; flex-direction: column; border-left: 1px solid var(--civ-theme-ink); }
+  .civ-mobile-chronology-head > aside b { color: var(--civ-theme-secondary); font: 900 55px/.8 var(--f-mono); letter-spacing: -.12em; }
   .civ-mobile-chronology-head > aside span { margin-top: auto; font: 800 7px/1.55 var(--f-mono); letter-spacing: .08em; }
-  .civ-mobile-chrono-disc { width: 45%; aspect-ratio: 1; position: absolute; right: -7%; top: -4%; z-index: 1; border: 25px solid var(--civ-mobile-yellow); border-radius: 50%; box-shadow: 0 0 0 25px var(--civ-mobile-blue); opacity: .92; animation: civ-mobile-chrono-disc 7.2s ease-in-out infinite; }
-  .civ-mobile-chrono-frame { width: 38%; height: 76%; position: absolute; right: 9%; top: 12%; z-index: 3; border: 2px solid var(--civ-mobile-ink); animation: civ-mobile-chrono-frame 7.2s cubic-bezier(.3,.8,.2,1) infinite; }
+  .civ-mobile-chrono-disc { width: 45%; aspect-ratio: 1; position: absolute; right: -7%; top: -4%; z-index: 1; border: 25px solid var(--civ-theme-highlight); border-radius: 50%; box-shadow: 0 0 0 25px var(--civ-theme-secondary); opacity: .92; animation: civ-mobile-chrono-disc 7.2s ease-in-out infinite; }
+  .civ-mobile-chrono-frame { width: 38%; height: 76%; position: absolute; right: 9%; top: 12%; z-index: 3; border: 2px solid var(--civ-theme-ink); animation: civ-mobile-chrono-frame 7.2s cubic-bezier(.3,.8,.2,1) infinite; }
   .civ-mobile-chrono-bar { height: 12px; position: absolute; left: 42%; right: 5%; z-index: 5; transform: scaleX(0); transform-origin: left; animation: civ-mobile-chrono-bar 7.2s ease infinite; }
-  .civ-mobile-chrono-bar.is-red { top: 31%; background: var(--civ-mobile-red); }
-  .civ-mobile-chrono-bar.is-blue { top: 38%; background: var(--civ-mobile-blue); animation-delay: .22s; }
-  .civ-mobile-chrono-bar.is-green { top: 45%; background: var(--civ-mobile-green); animation-delay: .44s; }
+  .civ-mobile-chrono-bar.is-red { top: 31%; background: var(--civ-theme-primary); }
+  .civ-mobile-chrono-bar.is-blue { top: 38%; background: var(--civ-theme-secondary); animation-delay: .22s; }
+  .civ-mobile-chrono-bar.is-green { top: 45%; background: var(--civ-theme-highlight); animation-delay: .44s; }
+  .civ-mobile-chronology[data-domain="judgement"] .civ-mobile-chrono-disc { width: 22%; height: 70%; aspect-ratio: auto; right: 31%; top: 15%; border: 0; border-radius: 0; background: color-mix(in srgb, var(--civ-theme-primary) 22%, transparent); box-shadow: 72px 0 0 color-mix(in srgb, var(--civ-theme-secondary) 17%, transparent); animation-name: civ-mobile-chrono-judge; }
+  .civ-mobile-chronology[data-domain="judgement"] .civ-mobile-chrono-frame { width: 2px; height: 80%; right: 38%; top: 10%; border: 0; background: var(--civ-theme-ink); animation-name: civ-mobile-chrono-axis; }
+  .civ-mobile-chronology[data-domain="technology"] .civ-mobile-chrono-disc { width: 42%; right: -2%; top: -5%; border: 24px solid var(--civ-theme-primary); border-radius: 0; box-shadow: -22px 22px 0 color-mix(in srgb, var(--civ-theme-secondary) 46%, transparent); opacity: .3; animation-name: civ-mobile-chrono-tech; }
+  .civ-mobile-chronology[data-domain="technology"] .civ-mobile-chrono-frame { border-color: var(--civ-theme-secondary); box-shadow: 12px 12px 0 color-mix(in srgb, var(--civ-theme-highlight) 72%, transparent); animation-name: civ-mobile-chrono-tech-frame; }
+  .civ-mobile-chronology[data-domain="technology"] .civ-mobile-chrono-bar { height: 8px; }
+  .civ-mobile-chronology[data-domain="organization"] .civ-mobile-chrono-disc { width: 43%; right: -4%; top: 0; border: 22px solid var(--civ-theme-primary); box-shadow: 0 0 0 22px color-mix(in srgb, var(--civ-theme-secondary) 42%, transparent); opacity: .62; animation-name: civ-mobile-chrono-network; }
+  .civ-mobile-chronology[data-domain="organization"] .civ-mobile-chrono-frame { width: 28%; height: auto; aspect-ratio: 1; right: 31%; top: 27%; border-radius: 50%; border-color: var(--civ-theme-secondary); background: color-mix(in srgb, var(--civ-theme-highlight) 34%, transparent); animation-name: civ-mobile-chrono-node; }
+  .civ-mobile-chronology[data-domain="time"] .civ-mobile-chrono-disc { width: 47%; right: -7%; top: -3%; border-color: var(--civ-theme-primary); box-shadow: 0 0 0 22px color-mix(in srgb, var(--civ-theme-highlight) 72%, transparent); animation-name: civ-mobile-chrono-time-orbit; }
+  .civ-mobile-chronology[data-domain="time"] .civ-mobile-chrono-frame { width: 2px; height: 42%; right: 28%; top: 22%; border: 0; background: var(--civ-theme-ink); transform-origin: bottom; animation: civ-mobile-chrono-time-hand 8s linear infinite; }
+  .civ-mobile-chronology[data-domain="ethics"] .civ-mobile-chrono-disc { width: 35%; right: 4%; top: 8%; border: 18px solid var(--civ-theme-primary); background: color-mix(in srgb, var(--civ-theme-primary) 12%, transparent); box-shadow: -64px 38px 0 color-mix(in srgb, var(--civ-theme-secondary) 24%, transparent); animation-name: civ-mobile-chrono-ethics; }
+  .civ-mobile-chronology[data-domain="ethics"] .civ-mobile-chrono-frame { width: 2px; height: 82%; right: 39%; top: 9%; border: 0; background: var(--civ-theme-ink); animation-name: civ-mobile-chrono-axis; }
   .civ-mobile-timeline { margin: 0; padding: 26px 12px 34px; position: relative; list-style: none; }
   .civ-mobile-timeline::before { content: ""; width: 1px; position: absolute; left: 78px; top: 0; bottom: 0; background: var(--civ-mobile-ink); }
   .civ-mobile-timeline > li { --civ-signal: var(--civ-mobile-red); margin: 0 0 26px; display: grid; grid-template-columns: 67px minmax(0, 1fr); gap: 13px; position: relative; }
@@ -126,43 +142,53 @@
   .civ-mobile-time-card > footer b { color: var(--civ-signal); }
 
   /* C · Single-column long-form poster reader for touch and uninterrupted reading. */
-  .civ-mobile-reader { min-height: calc(100svh - 58px); border: 1px solid var(--civ-mobile-ink); border-top: 0; background: var(--civ-mobile-paper); }
-  .civ-mobile-reader-index { min-height: 52px; position: sticky; top: calc(58px + env(safe-area-inset-top)); z-index: 18; display: flex; overflow-x: auto; border-bottom: 2px solid var(--civ-mobile-ink); background: rgba(244,241,232,.96); scrollbar-width: none; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+  .civ-mobile-reader { min-height: calc(100svh - 58px); color: var(--civ-theme-ink); border: 1px solid var(--civ-theme-ink); border-top: 0; background: var(--civ-theme-paper); transition: color .35s ease, background-color .35s ease; }
+  .civ-mobile-reader-index { min-height: 52px; position: sticky; top: calc(58px + env(safe-area-inset-top)); z-index: 18; display: flex; overflow-x: auto; border-bottom: 2px solid var(--civ-theme-ink); background: color-mix(in srgb, var(--civ-theme-paper) 96%, transparent); scrollbar-width: none; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
   .civ-mobile-reader-index::-webkit-scrollbar { display: none; }
-  .civ-mobile-reader-index button { min-width: 66px; min-height: 52px; padding: 7px 8px; flex: 1 0 auto; border: 0; border-right: 1px solid var(--civ-mobile-ink); background: transparent; text-align: left; }
+  .civ-mobile-reader-index button { min-width: 66px; min-height: 52px; padding: 7px 8px; flex: 1 0 auto; border: 0; border-right: 1px solid var(--civ-theme-ink); background: transparent; text-align: left; }
   .civ-mobile-reader-index button b, .civ-mobile-reader-index button span { display: block; }
   .civ-mobile-reader-index button b { color: var(--civ-signal); font: 900 15px/.9 var(--f-mono); }
   .civ-mobile-reader-index button span { margin-top: 5px; font: 800 6.5px var(--f-mono); letter-spacing: .05em; }
-  .civ-mobile-reader-index button.is-active { color: var(--civ-mobile-paper); background: var(--civ-mobile-ink); }
-  .civ-mobile-reader-cover { --civ-signal: var(--civ-mobile-red); min-height: calc(100svh - 112px); padding: 16px; position: relative; overflow: hidden; display: flex; flex-direction: column; background-image: linear-gradient(rgba(18,18,18,.12) 1px, transparent 1px), linear-gradient(90deg, rgba(18,18,18,.12) 1px, transparent 1px); background-size: 44px 44px; }
+  .civ-mobile-reader-index button.is-active { color: var(--civ-theme-paper); background: var(--civ-theme-ink); }
+  .civ-mobile-reader-cover { min-height: calc(100svh - 112px); padding: 16px; position: relative; overflow: hidden; display: flex; flex-direction: column; background-color: var(--civ-theme-paper); background-image: linear-gradient(color-mix(in srgb, var(--civ-theme-ink) 12%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--civ-theme-ink) 12%, transparent) 1px, transparent 1px); background-size: 44px 44px; }
   .civ-mobile-reader-cover > header { display: flex; justify-content: space-between; gap: 10px; font: 850 7.5px var(--f-mono); letter-spacing: .08em; }
-  .civ-mobile-reader-figure { height: 162px; margin: 32px -16px 23px; padding: 0 16px; position: relative; display: flex; align-items: flex-end; border-top: 1px solid var(--civ-mobile-ink); border-bottom: 1px solid var(--civ-mobile-ink); }
-  .civ-mobile-reader-figure strong { position: relative; z-index: 3; color: var(--civ-signal); font: 900 120px/.68 var(--f-mono); letter-spacing: -.14em; }
+  .civ-mobile-reader-figure { height: 162px; margin: 32px -16px 23px; padding: 0 16px; position: relative; display: flex; align-items: flex-end; border-top: 1px solid var(--civ-theme-ink); border-bottom: 1px solid var(--civ-theme-ink); }
+  .civ-mobile-reader-figure strong { position: relative; z-index: 3; color: var(--civ-theme-primary); font: 900 120px/.68 var(--f-mono); letter-spacing: -.14em; }
   .civ-mobile-reader-figure span { margin: 0 0 12px auto; position: relative; z-index: 3; font: 850 7px/1.55 var(--f-mono); letter-spacing: .08em; text-align: right; }
-  .civ-mobile-reader-figure i { width: 168px; height: 168px; position: absolute; right: -40px; top: -22px; border: 34px solid color-mix(in srgb, var(--civ-signal) 70%, transparent); border-radius: 50%; opacity: .6; }
-  .civ-mobile-reader-kicker { color: var(--civ-signal); font: 850 7px var(--f-mono); letter-spacing: .11em; }
+  .civ-mobile-reader-figure i { width: 168px; height: 168px; position: absolute; right: -40px; top: -22px; border: 34px solid color-mix(in srgb, var(--civ-theme-primary) 70%, transparent); border-radius: 50%; box-shadow: 0 0 0 18px color-mix(in srgb, var(--civ-theme-secondary) 24%, transparent); opacity: .64; animation: civ-mobile-reader-orbit 12s linear infinite; }
+  .civ-mobile-reader-figure i::before, .civ-mobile-reader-figure i::after { content: ""; position: absolute; }
+  .civ-mobile-reader-kicker { color: var(--civ-theme-primary); font: 850 7px var(--f-mono); letter-spacing: .11em; }
   .civ-mobile-reader-cover h1 { max-width: 430px; margin: 18px 0 22px; overflow-wrap: anywhere; font-size: clamp(39px, 12vw, 58px); line-height: .98; letter-spacing: -.07em; }
-  .civ-mobile-reader-cover blockquote { margin: 0 0 20px; padding: 14px 15px 15px; position: relative; z-index: 2; border: 0; border-left: 5px solid var(--civ-signal); background: var(--civ-mobile-yellow); font-size: 16px; font-weight: 760; line-height: 1.55; }
+  .civ-mobile-reader-cover blockquote { margin: 0 0 20px; padding: 14px 15px 15px; position: relative; z-index: 2; color: var(--civ-theme-ink); border: 0; border-left: 5px solid var(--civ-theme-primary); background: var(--civ-theme-highlight); font-size: 16px; font-weight: 760; line-height: 1.55; }
   .civ-mobile-reader-cover blockquote span { margin-bottom: 8px; display: block; font: 850 7px var(--f-mono); letter-spacing: .1em; }
-  .civ-mobile-reader-cover > p { margin: 0 0 24px; color: var(--civ-mobile-muted); font-size: 15px; line-height: 1.82; }
-  .civ-mobile-reader-cover > footer { min-height: 48px; margin: auto -16px -16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); border-top: 1px solid var(--civ-mobile-ink); }
-  .civ-mobile-reader-cover > footer button { min-height: 48px; padding: 8px; border: 0; border-right: 1px solid var(--civ-mobile-ink); background: var(--civ-mobile-paper); font: 850 7.5px var(--f-mono); }
-  .civ-mobile-reader-cover > footer button:last-child { border-right: 0; color: var(--civ-mobile-paper); background: var(--civ-mobile-ink); }
-  .civ-mobile-reading-body { border-top: 8px solid var(--civ-mobile-ink); }
+  .civ-mobile-reader-cover > p { margin: 0 0 24px; color: color-mix(in srgb, var(--civ-theme-ink) 72%, transparent); font-size: 15px; line-height: 1.82; }
+  .civ-mobile-reader-cover > footer { min-height: 48px; margin: auto -16px -16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); border-top: 1px solid var(--civ-theme-ink); }
+  .civ-mobile-reader-cover > footer button { min-height: 48px; padding: 8px; border: 0; border-right: 1px solid var(--civ-theme-ink); background: var(--civ-theme-paper); font: 850 7.5px var(--f-mono); }
+  .civ-mobile-reader-cover > footer button:last-child { border-right: 0; color: var(--civ-theme-paper); background: var(--civ-theme-ink); }
+  .civ-mobile-reading-body { color: #141414; border-top: 8px solid var(--civ-theme-ink); background: #F4F1E8; }
   .civ-mobile-reading-body > header, .civ-mobile-lenses > header { min-height: 54px; padding: 12px 15px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid currentColor; font: 850 7.5px var(--f-mono); letter-spacing: .09em; }
   .civ-mobile-reading-section { padding: 30px 17px 34px; border-bottom: 1px solid var(--civ-mobile-ink); }
-  .civ-mobile-reading-section > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: end; gap: 12px; color: var(--civ-signal); }
+  .civ-mobile-reading-section > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: end; gap: 12px; color: var(--civ-theme-primary); }
   .civ-mobile-reading-section > div strong { font: 900 52px/.72 var(--f-mono); letter-spacing: -.1em; }
   .civ-mobile-reading-section > div span { padding-bottom: 2px; font: 850 7px var(--f-mono); letter-spacing: .08em; }
   .civ-mobile-reading-section h2 { margin: 24px 0 20px; overflow-wrap: anywhere; font-size: 27px; line-height: 1.12; letter-spacing: -.045em; }
   .civ-mobile-reading-section p { margin: 0 0 18px; font-size: 16px; line-height: 1.9; text-align: justify; text-justify: inter-ideograph; }
-  .civ-mobile-lenses { color: var(--civ-mobile-paper); background: var(--civ-mobile-ink); }
-  .civ-mobile-lenses > header b { color: var(--civ-mobile-yellow); font-size: 18px; }
+  .civ-mobile-lenses { color: var(--civ-theme-paper); background: var(--civ-theme-ink); }
+  .civ-mobile-lenses > header b { color: var(--civ-theme-highlight); font-size: 18px; }
   .civ-mobile-lenses > article { min-height: 120px; display: grid; grid-template-columns: 58px minmax(0, 1fr); border-bottom: 1px solid rgba(244,241,232,.35); }
-  .civ-mobile-lenses > article > strong { padding: 18px 10px; color: var(--civ-mobile-yellow); border-right: 1px solid rgba(244,241,232,.35); font: 900 25px/.9 var(--f-mono); }
+  .civ-mobile-lenses > article > strong { padding: 18px 10px; color: var(--civ-theme-highlight); border-right: 1px solid rgba(244,241,232,.35); font: 900 25px/.9 var(--f-mono); }
   .civ-mobile-lenses > article > div { padding: 18px 15px 20px; }
-  .civ-mobile-lenses h3 { margin: 0 0 10px; color: var(--civ-mobile-yellow); font-size: 18px; }
+  .civ-mobile-lenses h3 { margin: 0 0 10px; color: var(--civ-theme-highlight); font-size: 18px; }
   .civ-mobile-lenses p { margin: 0; color: rgba(244,241,232,.76); font-size: 13px; line-height: 1.75; }
+  .civ-mobile-reader[data-domain="judgement"] .civ-mobile-reader-figure i { width: 112px; height: 122px; right: 22px; top: 18px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--civ-theme-primary) 24%, transparent); box-shadow: 56px 0 0 color-mix(in srgb, var(--civ-theme-secondary) 18%, transparent); animation: civ-mobile-reader-balance 6.8s ease-in-out infinite; }
+  .civ-mobile-reader[data-domain="technology"] .civ-mobile-reader-figure i { width: 130px; height: 130px; right: -8px; top: 6px; border: 24px solid color-mix(in srgb, var(--civ-theme-primary) 72%, transparent); border-radius: 0; box-shadow: -22px 22px 0 color-mix(in srgb, var(--civ-theme-secondary) 36%, transparent); animation: civ-mobile-reader-tech 6.4s steps(4, end) infinite; }
+  .civ-mobile-reader[data-domain="organization"] .civ-mobile-reader-figure i { border-color: color-mix(in srgb, var(--civ-theme-primary) 72%, transparent); box-shadow: 0 0 0 20px color-mix(in srgb, var(--civ-theme-secondary) 25%, transparent); animation: civ-mobile-reader-network 7.6s ease-in-out infinite; }
+  .civ-mobile-reader[data-domain="organization"] .civ-mobile-reader-figure i::before, .civ-mobile-reader[data-domain="organization"] .civ-mobile-reader-figure i::after { width: 16px; height: 16px; border-radius: 50%; background: var(--civ-theme-highlight); box-shadow: 52px 36px 0 var(--civ-theme-secondary); }
+  .civ-mobile-reader[data-domain="organization"] .civ-mobile-reader-figure i::before { left: -34px; top: 34px; }
+  .civ-mobile-reader[data-domain="organization"] .civ-mobile-reader-figure i::after { right: 18px; bottom: -26px; }
+  .civ-mobile-reader[data-domain="time"] .civ-mobile-reader-figure i { border-color: color-mix(in srgb, var(--civ-theme-primary) 72%, transparent); box-shadow: 0 0 0 18px color-mix(in srgb, var(--civ-theme-highlight) 45%, transparent); animation: civ-mobile-reader-orbit 12s linear infinite; }
+  .civ-mobile-reader[data-domain="time"] .civ-mobile-reader-figure i::after { width: 2px; height: 58px; left: 50%; top: 50%; background: var(--civ-theme-ink); transform-origin: top; animation: civ-mobile-reader-hand 7s linear infinite; }
+  .civ-mobile-reader[data-domain="ethics"] .civ-mobile-reader-figure i { width: 132px; height: 132px; right: -2px; top: 10px; border: 20px solid color-mix(in srgb, var(--civ-theme-primary) 64%, transparent); box-shadow: -58px 28px 0 color-mix(in srgb, var(--civ-theme-secondary) 23%, transparent); animation: civ-mobile-reader-ethics 7.2s ease-in-out infinite; }
 
   .civ-mobile-bottom-nav {
     width: min(480px, 100vw); min-height: calc(58px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); position: fixed; left: 50%; bottom: 0; z-index: 60; transform: translateX(-50%); display: grid; grid-template-columns: repeat(4, 1fr);
@@ -192,10 +218,25 @@
   @keyframes civ-mobile-chrono-frame { 0%, 10% { transform: translate(45%, 0); } 27%, 72% { transform: translate(0, 0); } 88%, 100% { transform: translate(0, 110%); } }
   @keyframes civ-mobile-chrono-disc { 0%, 100% { transform: translate(18%, -12%) rotate(0); } 50% { transform: translate(-8%, 10%) rotate(24deg); } }
   @keyframes civ-mobile-chrono-bar { 0%, 8% { transform: scaleX(0); transform-origin: left; } 22%, 34% { transform: scaleX(1); transform-origin: left; } 35% { transform-origin: right; } 52%, 100% { transform: scaleX(0); transform-origin: right; } }
+  @keyframes civ-mobile-chrono-judge { 0%, 100% { transform: translateX(-12px); } 50% { transform: translateX(12px); } }
+  @keyframes civ-mobile-chrono-axis { 0%, 100% { transform: scaleY(.55); } 50% { transform: scaleY(1); } }
+  @keyframes civ-mobile-chrono-tech { 0%, 100% { transform: translate(16px, -10px) rotate(0); } 50% { transform: translate(-12px, 12px) rotate(90deg); } }
+  @keyframes civ-mobile-chrono-tech-frame { 0%, 100% { transform: translate(18px, -10px); } 50% { transform: translate(-12px, 14px); } }
+  @keyframes civ-mobile-chrono-network { 0%, 100% { transform: scale(.82); } 50% { transform: scale(1.08); } }
+  @keyframes civ-mobile-chrono-node { 0%, 100% { transform: translate(-8px, 8px) scale(.88); } 50% { transform: translate(12px, -8px) scale(1.04); } }
+  @keyframes civ-mobile-chrono-time-orbit { to { transform: rotate(360deg); } }
+  @keyframes civ-mobile-chrono-time-hand { to { transform: rotate(360deg); } }
+  @keyframes civ-mobile-chrono-ethics { 0%, 100% { transform: translateX(-8px); } 50% { transform: translateX(12px); } }
+  @keyframes civ-mobile-reader-orbit { to { transform: rotate(360deg); } }
+  @keyframes civ-mobile-reader-balance { 0%, 100% { transform: translateX(-8px); } 50% { transform: translateX(8px); } }
+  @keyframes civ-mobile-reader-tech { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(-18px, 12px); } }
+  @keyframes civ-mobile-reader-network { 0%, 100% { transform: scale(.88); } 50% { transform: scale(1.04); } }
+  @keyframes civ-mobile-reader-hand { to { transform: rotate(360deg); } }
+  @keyframes civ-mobile-reader-ethics { 0%, 100% { transform: translateX(-8px); } 50% { transform: translateX(10px); } }
 @media (max-width: 520px) {
   .civilization-page.civilization-app-page { width: 100%; margin: 0; box-shadow: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .civ-mobile-word-color, .civ-mobile-word-offset, .civ-mobile-word-bars b, .civ-mobile-geometry, .civ-mobile-chrono-disc, .civ-mobile-chrono-frame, .civ-mobile-chrono-bar { animation: none; }
+  .civ-mobile-word-color, .civ-mobile-word-offset, .civ-mobile-word-bars b, .civ-mobile-geometry, .civ-mobile-chrono-disc, .civ-mobile-chrono-frame, .civ-mobile-chrono-bar, .civ-mobile-reader-figure i, .civ-mobile-reader-figure i::before, .civ-mobile-reader-figure i::after { animation: none; }
 }

@@ -115,12 +115,12 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
     assert 'pages/pages-civilization.css?v=20260808-civilization13' in index
-    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app3' in index
-    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app3' in index
-    assert 'pages/pages-civilization.jsx?v=20260808-civilization16' in index
+    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app4' in index
+    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app4' in index
+    assert 'pages/pages-civilization.jsx?v=20260808-civilization17' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
     assert 'app.jsx?v=20260808-civilization-app1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization17' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization18' in index
     assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
         "pages/pages-civilization.jsx"
     )
@@ -153,7 +153,21 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert "civ-mobile-chrono-disc 7.2s" in style
     assert "civ-mobile-chrono-bar 7.2s" in style
     assert "background-size: 48px 48px" in style
-    assert "color: var(--civ-mobile-blue)" in style
+    assert 'data-domain={themeDomain.key}' in mobile
+    assert 'style={themeDomain.style}' in mobile
+    for domain in ("judgement", "technology", "organization", "time", "ethics"):
+        assert f'.civ-mobile-chronology[data-domain="{domain}"]' in style
+        assert f'.civ-mobile-reader[data-domain="{domain}"]' in style
+    for token in (
+        "--civ-theme-primary",
+        "--civ-theme-secondary",
+        "--civ-theme-highlight",
+        "--civ-theme-ink",
+        "--civ-theme-paper",
+    ):
+        assert token in source
+        assert token in style
+    assert ".civ-mobile-reading-body { color: #141414;" in style
     assert "position: fixed; left: 50%; bottom: 0" in style
     assert "width: min(480px, 100vw)" in style
     assert ".civ-mobile-only" not in style

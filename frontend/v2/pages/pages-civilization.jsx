@@ -57,12 +57,12 @@ window.W2_LANG.addEN({
 });
 
 const DOMAINS = [
-  { key: "all", zh: "全部", en: "All", color: "#D62B20", accent: "#F3CE1D", ink: "#141414", pale: "#F4F0E7" },
-  { key: "judgement", zh: "判斷", en: "Judgement", color: "#D62B20", accent: "#F3CE1D", ink: "#211A17", pale: "#F7E8D8" },
-  { key: "technology", zh: "技術", en: "Technology", color: "#1656A3", accent: "#64D1D4", ink: "#092840", pale: "#DDEDF2" },
-  { key: "organization", zh: "組織", en: "Organization", color: "#17694E", accent: "#F1C928", ink: "#102B22", pale: "#DCEBE1" },
-  { key: "time", zh: "時間", en: "Time", color: "#B45418", accent: "#F1CF75", ink: "#3A2416", pale: "#F4E8D8" },
-  { key: "ethics", zh: "倫理", en: "Ethics", color: "#6C3D8E", accent: "#F0A4C2", ink: "#28172E", pale: "#EDE1F0" },
+  { key: "all", zh: "全部", en: "All", color: "#D62B20", accent: "#F3CE1D", ink: "#141414", pale: "#F4F0E7", mobileSecondary: "#174A96", mobileHighlight: "#F3CE1D", mobileInk: "#141414", mobilePaper: "#F4F0E7" },
+  { key: "judgement", zh: "判斷", en: "Judgement", color: "#D62B20", accent: "#F3CE1D", ink: "#211A17", pale: "#F7E8D8", mobileSecondary: "#211A17", mobileHighlight: "#F2C94C", mobileInk: "#211A17", mobilePaper: "#F4EEE5" },
+  { key: "technology", zh: "技術", en: "Technology", color: "#1656A3", accent: "#64D1D4", ink: "#092840", pale: "#DDEDF2", mobileSecondary: "#2D7C8B", mobileHighlight: "#F3CE1D", mobileInk: "#10243E", mobilePaper: "#EAF0F7" },
+  { key: "organization", zh: "組織", en: "Organization", color: "#17694E", accent: "#F1C928", ink: "#102B22", pale: "#DCEBE1", mobileSecondary: "#D65A31", mobileHighlight: "#F3CE1D", mobileInk: "#12382C", mobilePaper: "#E8EFE8" },
+  { key: "time", zh: "時間", en: "Time", color: "#B45418", accent: "#F1CF75", ink: "#3A2416", pale: "#F4E8D8", mobileSecondary: "#7C3F22", mobileHighlight: "#E4B83A", mobileInk: "#412619", mobilePaper: "#F3E4D3" },
+  { key: "ethics", zh: "倫理", en: "Ethics", color: "#6C3D8E", accent: "#F0A4C2", ink: "#28172E", pale: "#EDE1F0", mobileSecondary: "#C0475D", mobileHighlight: "#F1D35C", mobileInk: "#291936", mobilePaper: "#EFE8F3" },
 ];
 const domainOf = key => DOMAINS.find(item => item.key === key) || DOMAINS[1];
 const domainStyle = domain => ({
@@ -70,6 +70,11 @@ const domainStyle = domain => ({
   "--civ-accent": domain.accent,
   "--civ-domain-ink": domain.ink,
   "--civ-domain-pale": domain.pale,
+  "--civ-theme-primary": domain.color,
+  "--civ-theme-secondary": domain.mobileSecondary || domain.ink,
+  "--civ-theme-highlight": domain.mobileHighlight || domain.accent,
+  "--civ-theme-ink": domain.mobileInk || domain.ink,
+  "--civ-theme-paper": domain.mobilePaper || domain.pale,
 });
 const localText = value => {
   if (value == null) return "";

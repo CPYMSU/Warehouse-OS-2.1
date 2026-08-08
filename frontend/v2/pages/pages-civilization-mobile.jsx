@@ -48,7 +48,9 @@ const MobileThought = ({ thought, onRead, onShare, onEdit }) => <article classNa
 
 const MobileDomainStrip = ({ domains, activeFilter, onFilter }) => <nav className="civ-mobile-domains" aria-label={t("篩選")}>{domains.map(domain => <button type="button" key={domain.key} data-domain={domain.key} style={domain.style} className={activeFilter === domain.key ? "is-active" : ""} onClick={() => onFilter(domain.key)}>{domain.label}</button>)}</nav>;
 
-const MobileChronology = ({ thoughts, domains, activeFilter, onFilter, selectedId, loadError, onRetry, onRead }) => <section className="civ-mobile-chronology">
+const MobileChronology = ({ thoughts, domains, activeFilter, onFilter, selectedId, loadError, onRetry, onRead }) => {
+  const themeDomain = domains.find(domain => domain.key === activeFilter) || domains[0];
+  return <section className="civ-mobile-chronology" data-domain={themeDomain.key} style={themeDomain.style}>
   <header className="civ-mobile-chronology-head">
     <div><span>B / CHRONOLOGY</span><strong>{t("思想如何形成")}</strong><p>{t("按時間閱讀問題如何被提出、修正與連接。")}</p></div>
     <aside><b>{String(thoughts.length).padStart(2, "0")}</b><span>QUESTION<br/>OBJECTS</span></aside>
@@ -71,6 +73,7 @@ const MobileChronology = ({ thoughts, domains, activeFilter, onFilter, selectedI
     </button>
   </li>)}</ol>}
 </section>;
+};
 
 const MobileReader = ({ reader, thoughts, onSelect, onBack, onShare, onEdit }) => {
   if (!reader) return <div className="civ-mobile-empty">{t("尚無可閱讀內容")}</div>;
