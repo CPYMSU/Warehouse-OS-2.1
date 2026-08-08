@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Civilization · Mobile Chronology Motion Demos</title>
+<style>
+  :root { color-scheme: light; font-family: Arial, "PingFang TC", "Noto Sans CJK TC", sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #111; background: #d9d7d0; }
+  button { color: inherit; font: inherit; }
+  .lab-head { min-height: 84px; padding: 18px 24px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; border-bottom: 1px solid #111; background: #f4f1e8; }
+  .lab-head span, .meta, .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 800; letter-spacing: .11em; }
+  .lab-head h1 { margin: 4px 0 0; font-size: 28px; line-height: 1; letter-spacing: -.055em; }
+  .lab-head p { max-width: 430px; margin: 0; color: #68645e; font-size: 12px; line-height: 1.6; }
+  .gallery { padding: 22px; display: grid; grid-template-columns: repeat(3, minmax(320px, 1fr)); gap: 18px; align-items: start; }
+  .option { min-width: 0; margin: 0; }
+  .option figcaption { min-height: 66px; padding: 12px 14px; display: grid; grid-template-columns: 34px 1fr; gap: 12px; border: 1px solid #111; border-bottom: 0; background: #f4f1e8; }
+  .option figcaption b { font: 900 24px/.8 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .option figcaption strong { display: block; font-size: 14px; }
+  .option figcaption span { margin-top: 4px; display: block; color: #68645e; font-size: 10.5px; line-height: 1.45; }
+  .poster { width: 100%; aspect-ratio: 480 / 330; position: relative; overflow: hidden; border: 1px solid #111; isolation: isolate; }
+  .poster .meta { position: absolute; left: 18px; top: 18px; z-index: 8; }
+  .poster h2 { margin: 0; position: absolute; left: 18px; bottom: 72px; z-index: 8; font-size: clamp(39px, 5.7vw, 68px); line-height: .88; letter-spacing: -.09em; }
+  .poster > p { margin: 0; position: absolute; left: 18px; right: 86px; bottom: 28px; z-index: 8; font-size: clamp(10px, 1vw, 13px); line-height: 1.5; }
+  .poster .count { position: absolute; right: 17px; top: 18px; z-index: 8; font: 900 clamp(48px, 5vw, 72px)/.75 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.14em; }
+  .poster .objects { position: absolute; right: 18px; bottom: 24px; z-index: 8; font: 850 8px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
+
+  /* A · bright International Typographic Style: grid, signal bars and registration marks. */
+  .a { color: #111; background-color: #f4f0e7; background-image: linear-gradient(rgba(17,17,17,.14) 1px,transparent 1px),linear-gradient(90deg,rgba(17,17,17,.14) 1px,transparent 1px); background-size: 48px 48px; }
+  .a .meta { color: #d52b1e; }
+  .a .count { color: #174a96; }
+  .a h2 { max-width: 64%; }
+  .a > p { color: #5f5a53; }
+  .a .frame { width: 38%; height: 76%; position: absolute; right: 9%; top: 12%; border: 2px solid #111; animation: a-frame 7.2s cubic-bezier(.3,.8,.2,1) infinite; }
+  .a .disc { width: 45%; aspect-ratio: 1; position: absolute; right: -7%; top: -4%; border-radius: 50%; border: 25px solid #f3ce1d; box-shadow: 0 0 0 25px #174a96; opacity: .92; animation: a-disc 7.2s ease-in-out infinite; }
+  .a .bar { height: 12px; position: absolute; left: 42%; right: 5%; z-index: 5; transform: scaleX(0); transform-origin: left; }
+  .a .bar.one { top: 31%; background: #d52b1e; animation: a-bar 7.2s ease infinite; }
+  .a .bar.two { top: 38%; background: #174a96; animation: a-bar 7.2s .22s ease infinite; }
+  .a .bar.three { top: 45%; background: #1f704f; animation: a-bar 7.2s .44s ease infinite; }
+  @keyframes a-frame { 0%,10% { transform: translate(45%,0); } 27%,72% { transform: translate(0,0); } 88%,100% { transform: translate(0,110%); } }
+  @keyframes a-disc { 0%,100% { transform: translate(18%,-12%) rotate(0); } 50% { transform: translate(-8%,10%) rotate(24deg); } }
+  @keyframes a-bar { 0%,8% { transform: scaleX(0); transform-origin:left; } 22%,34% { transform:scaleX(1); transform-origin:left; } 35% { transform-origin:right; } 52%,100% { transform:scaleX(0); transform-origin:right; } }
+
+  /* B · airy cobalt orbit: softer field, geometric time movement, less visual weight. */
+  .b { color: #10203c; background: #e8eef5; }
+  .b::before { content:""; position:absolute; inset:0; background: linear-gradient(115deg,transparent 0 56%,rgba(19,64,133,.07) 56% 74%,transparent 74%); }
+  .b .meta { color: #134085; }
+  .b .count { color: #f0442d; }
+  .b h2 { max-width: 62%; }
+  .b > p { color: #4f5c70; }
+  .b .orbit { width: 58%; aspect-ratio:1; position:absolute; right:-6%; top:-12%; border-radius:50%; background: conic-gradient(from 25deg,#134085 0 19%,transparent 19% 35%,#f0442d 35% 53%,transparent 53% 70%,#f0c617 70% 84%,transparent 84%); -webkit-mask: radial-gradient(circle,transparent 0 51%,#000 52% 61%,transparent 62%); animation: b-orbit 12s linear infinite; }
+  .b .orbit::after { content:""; width:7px; height:7px; position:absolute; left:49%; top:2%; border-radius:50%; background:#10203c; box-shadow:0 0 0 8px rgba(19,64,133,.15); }
+  .b .axis { width: 1px; position:absolute; right:19%; top:0; bottom:0; background:#134085; }
+  .b .axis::before { content:""; width:18px; height:18px; position:absolute; left:-8px; top:20%; border-radius:50%; background:#f0442d; animation:b-node 6s cubic-bezier(.4,0,.2,1) infinite; }
+  .b .block { width: 23%; height: 22%; position:absolute; right:20%; bottom:13%; background:#134085; opacity:.12; animation:b-block 6s ease-in-out infinite alternate; }
+  @keyframes b-orbit { to { transform:rotate(360deg); } }
+  @keyframes b-node { 0%,100% { top:12%; } 50% { top:78%; } }
+  @keyframes b-block { to { transform:translate(42%,-28%) rotate(-5deg); background:#f0442d; opacity:.18; } }
+
+  /* C · warm editorial sequence: paper, numbered rhythm and modular movement. */
+  .c { color: #193a31; background: #f2e4d2; }
+  .c .meta { color: #a94726; }
+  .c .count { color: #193a31; }
+  .c h2 { max-width: 66%; }
+  .c > p { color: #68594c; }
+  .c .rail { width: 43%; position:absolute; right:0; top:0; bottom:0; display:flex; align-items:flex-end; gap:6px; padding:0 18px 0 10px; border-left:1px solid #193a31; }
+  .c .rail i { flex:1; background:#a94726; transform-origin:bottom; animation:c-rise 6.4s cubic-bezier(.2,.85,.2,1) infinite; }
+  .c .rail i:nth-child(1) { height:28%; animation-delay:0s; }
+  .c .rail i:nth-child(2) { height:62%; background:#193a31; animation-delay:.18s; }
+  .c .rail i:nth-child(3) { height:42%; background:#255b9b; animation-delay:.36s; }
+  .c .rail i:nth-child(4) { height:76%; background:#f0c617; animation-delay:.54s; }
+  .c .rail i:nth-child(5) { height:51%; animation-delay:.72s; }
+  .c .cursor { width:39%; height:2px; position:absolute; right:2%; top:26%; background:#193a31; animation:c-scan 6.4s ease-in-out infinite; }
+  .c .cursor::after { content:""; width:11px; height:11px; position:absolute; right:0; top:-5px; border-radius:50%; background:#a94726; }
+  .c .stamp { width:96px; height:96px; position:absolute; right:23%; top:31%; border:2px solid #a94726; transform:rotate(8deg); animation:c-stamp 6.4s ease-in-out infinite; }
+  @keyframes c-rise { 0%,12%,100% { transform:scaleY(.08); } 34%,72% { transform:scaleY(1); } 88% { transform:scaleY(.2); } }
+  @keyframes c-scan { 0%,100% { transform:translateY(0); } 50% { transform:translateY(165px); } }
+  @keyframes c-stamp { 0%,100% { transform:translate(18px,-15px) rotate(8deg); opacity:.35; } 50% { transform:translate(-16px,13px) rotate(-4deg); opacity:.8; } }
+
+  @media (max-width: 1080px) { .gallery { grid-template-columns: 1fr; } .option { width:min(100%,720px); margin:auto; } .poster h2 { font-size:clamp(50px,10vw,82px); } }
+  @media (prefers-reduced-motion: reduce) { .poster * { animation:none !important; } }
+</style>
+</head>
+<body>
+  <header class="lab-head"><div><span>DESIGN LAB / 2026—08</span><h1>文明 · 思想时间轴动画提案</h1></div><p>三种方案只改变时间轴首屏的色彩与几何运动。文字、数据、筛选和后端接口均不参与 Demo。</p></header>
+  <main class="gallery">
+    <figure class="option"><figcaption><b>A</b><div><strong>SIGNAL PAPER / 信号纸面</strong><span>最典型的 Swiss：米白网格、红蓝黄注册色、印刷套色移动。</span></div></figcaption><section class="poster a"><span class="meta">B / CHRONOLOGY</span><span class="count">10</span><h2>思想如何<br/>形成</h2><p>按时间阅读问题如何被提出、修正与连接。</p><span class="objects">QUESTION<br/>OBJECTS</span><i class="disc"></i><i class="frame"></i><i class="bar one"></i><i class="bar two"></i><i class="bar three"></i></section></figure>
+    <figure class="option"><figcaption><b>B</b><div><strong>COBALT ORBIT / 钴蓝轨道</strong><span>更轻、更科技：浅蓝纸面、钴蓝轨道、红色时间节点缓慢移动。</span></div></figcaption><section class="poster b"><span class="meta">B / CHRONOLOGY</span><span class="count">10</span><h2>思想如何<br/>形成</h2><p>按时间阅读问题如何被提出、修正与连接。</p><span class="objects">QUESTION<br/>OBJECTS</span><i class="orbit"></i><i class="axis"></i><i class="block"></i></section></figure>
+    <figure class="option"><figcaption><b>C</b><div><strong>EDITORIAL SEQUENCE / 编辑序列</strong><span>更人文、更温暖：纸张、陶土红、森林绿与时间柱列。</span></div></figcaption><section class="poster c"><span class="meta">B / CHRONOLOGY</span><span class="count">10</span><h2>思想如何<br/>形成</h2><p>按时间阅读问题如何被提出、修正与连接。</p><span class="objects">QUESTION<br/>OBJECTS</span><span class="rail"><i></i><i></i><i></i><i></i><i></i></span><i class="cursor"></i><i class="stamp"></i></section></figure>
+  </main>
+</body>
+</html>

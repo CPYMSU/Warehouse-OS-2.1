@@ -92,15 +92,20 @@
 
   /* B · A real mobile chronology, not the desktop timeline squeezed into a phone. */
   .civ-mobile-chronology { min-height: calc(100svh - 58px); border: 1px solid var(--civ-mobile-ink); border-top: 0; background: var(--civ-mobile-paper); }
-  .civ-mobile-chronology-head { min-height: 330px; position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 92px; color: var(--civ-mobile-paper); background: var(--civ-mobile-ink); border-bottom: 2px solid var(--civ-mobile-ink); }
-  .civ-mobile-chronology-head > div { padding: 24px 17px 28px; position: relative; z-index: 2; display: flex; flex-direction: column; }
-  .civ-mobile-chronology-head > div > span { color: var(--civ-mobile-yellow); font: 850 8px var(--f-mono); letter-spacing: .12em; }
-  .civ-mobile-chronology-head strong { max-width: 280px; margin-top: auto; font-size: clamp(48px, 15vw, 68px); line-height: .9; letter-spacing: -.085em; }
-  .civ-mobile-chronology-head p { max-width: 270px; margin: 18px 0 0; color: rgba(244,241,232,.72); font-size: 12px; line-height: 1.7; }
-  .civ-mobile-chronology-head > aside { padding: 20px 10px; position: relative; z-index: 2; display: flex; flex-direction: column; border-left: 1px solid rgba(244,241,232,.35); }
-  .civ-mobile-chronology-head > aside b { color: var(--civ-mobile-yellow); font: 900 55px/.8 var(--f-mono); letter-spacing: -.12em; }
+  .civ-mobile-chronology-head { min-height: 330px; position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 92px; color: var(--civ-mobile-ink); border-bottom: 2px solid var(--civ-mobile-ink); background-color: var(--civ-mobile-paper); background-image: linear-gradient(rgba(18,18,18,.14) 1px, transparent 1px), linear-gradient(90deg, rgba(18,18,18,.14) 1px, transparent 1px); background-size: 48px 48px; }
+  .civ-mobile-chronology-head > div { padding: 24px 17px 28px; position: relative; z-index: 8; display: flex; flex-direction: column; }
+  .civ-mobile-chronology-head > div > span { color: var(--civ-mobile-red); font: 850 8px var(--f-mono); letter-spacing: .12em; }
+  .civ-mobile-chronology-head strong { max-width: 64%; margin-top: auto; font-size: clamp(48px, 15vw, 68px); line-height: .88; letter-spacing: -.09em; }
+  .civ-mobile-chronology-head p { max-width: 270px; margin: 18px 0 0; color: var(--civ-mobile-muted); font-size: 12px; line-height: 1.7; }
+  .civ-mobile-chronology-head > aside { padding: 20px 10px; position: relative; z-index: 8; display: flex; flex-direction: column; border-left: 1px solid var(--civ-mobile-ink); }
+  .civ-mobile-chronology-head > aside b { color: var(--civ-mobile-blue); font: 900 55px/.8 var(--f-mono); letter-spacing: -.12em; }
   .civ-mobile-chronology-head > aside span { margin-top: auto; font: 800 7px/1.55 var(--f-mono); letter-spacing: .08em; }
-  .civ-mobile-chronology-head > i { width: 190px; height: 190px; position: absolute; right: 45px; top: 45px; border: 1px solid rgba(244,241,232,.44); border-radius: 50%; box-shadow: 0 0 0 35px rgba(220,42,32,.18), 0 0 0 70px rgba(33,97,169,.12); animation: civ-mobile-time-orbit 14s linear infinite; }
+  .civ-mobile-chrono-disc { width: 45%; aspect-ratio: 1; position: absolute; right: -7%; top: -4%; z-index: 1; border: 25px solid var(--civ-mobile-yellow); border-radius: 50%; box-shadow: 0 0 0 25px var(--civ-mobile-blue); opacity: .92; animation: civ-mobile-chrono-disc 7.2s ease-in-out infinite; }
+  .civ-mobile-chrono-frame { width: 38%; height: 76%; position: absolute; right: 9%; top: 12%; z-index: 3; border: 2px solid var(--civ-mobile-ink); animation: civ-mobile-chrono-frame 7.2s cubic-bezier(.3,.8,.2,1) infinite; }
+  .civ-mobile-chrono-bar { height: 12px; position: absolute; left: 42%; right: 5%; z-index: 5; transform: scaleX(0); transform-origin: left; animation: civ-mobile-chrono-bar 7.2s ease infinite; }
+  .civ-mobile-chrono-bar.is-red { top: 31%; background: var(--civ-mobile-red); }
+  .civ-mobile-chrono-bar.is-blue { top: 38%; background: var(--civ-mobile-blue); animation-delay: .22s; }
+  .civ-mobile-chrono-bar.is-green { top: 45%; background: var(--civ-mobile-green); animation-delay: .44s; }
   .civ-mobile-timeline { margin: 0; padding: 26px 12px 34px; position: relative; list-style: none; }
   .civ-mobile-timeline::before { content: ""; width: 1px; position: absolute; left: 78px; top: 0; bottom: 0; background: var(--civ-mobile-ink); }
   .civ-mobile-timeline > li { --civ-signal: var(--civ-mobile-red); margin: 0 0 26px; display: grid; grid-template-columns: 67px minmax(0, 1fr); gap: 13px; position: relative; }
@@ -184,11 +189,13 @@
   @keyframes civ-mobile-bar-blue { 0%, 2.08% { transform: scaleX(0); transform-origin: left; opacity: .8; } 11.11% { transform: scaleX(1); transform-origin: left; opacity: .8; } 11.28% { transform: scaleX(1); transform-origin: right; opacity: .8; } 19.44%, 100% { transform: scaleX(0); transform-origin: right; opacity: 0; } }
   @keyframes civ-mobile-bar-green { 0%, 3.61% { transform: scaleX(0); transform-origin: left; opacity: .8; } 12.64% { transform: scaleX(1); transform-origin: left; opacity: .8; } 12.81% { transform: scaleX(1); transform-origin: right; opacity: .8; } 20.97%, 100% { transform: scaleX(0); transform-origin: right; opacity: 0; } }
   @keyframes civ-mobile-geometry { to { transform: translate(-12px, 12px) rotate(6deg); } }
-  @keyframes civ-mobile-time-orbit { to { transform: rotate(360deg); } }
+  @keyframes civ-mobile-chrono-frame { 0%, 10% { transform: translate(45%, 0); } 27%, 72% { transform: translate(0, 0); } 88%, 100% { transform: translate(0, 110%); } }
+  @keyframes civ-mobile-chrono-disc { 0%, 100% { transform: translate(18%, -12%) rotate(0); } 50% { transform: translate(-8%, 10%) rotate(24deg); } }
+  @keyframes civ-mobile-chrono-bar { 0%, 8% { transform: scaleX(0); transform-origin: left; } 22%, 34% { transform: scaleX(1); transform-origin: left; } 35% { transform-origin: right; } 52%, 100% { transform: scaleX(0); transform-origin: right; } }
 @media (max-width: 520px) {
   .civilization-page.civilization-app-page { width: 100%; margin: 0; box-shadow: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .civ-mobile-word-color, .civ-mobile-word-offset, .civ-mobile-word-bars b, .civ-mobile-geometry, .civ-mobile-chronology-head > i { animation: none; opacity: 0; }
+  .civ-mobile-word-color, .civ-mobile-word-offset, .civ-mobile-word-bars b, .civ-mobile-geometry, .civ-mobile-chrono-disc, .civ-mobile-chrono-frame, .civ-mobile-chrono-bar { animation: none; }
 }

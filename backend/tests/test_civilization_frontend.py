@@ -115,12 +115,12 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     index = INDEX.read_text(encoding="utf-8")
 
     assert 'pages/pages-civilization.css?v=20260808-civilization13' in index
-    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app2' in index
-    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app2' in index
+    assert 'pages/pages-civilization-mobile.css?v=20260808-mobile-app3' in index
+    assert 'pages/pages-civilization-mobile.jsx?v=20260808-mobile-app3' in index
     assert 'pages/pages-civilization.jsx?v=20260808-civilization16' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
     assert 'app.jsx?v=20260808-civilization-app1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization16' in index
+    assert 'dist/app.bundle.js?v=20260808-civilization17' in index
     assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
         "pages/pages-civilization.jsx"
     )
@@ -146,6 +146,14 @@ def test_civilization_mobile_a_reuses_the_desktop_controller_and_api_contract() 
     assert "const MobileReader" in mobile
     assert 'className="civ-mobile-timeline"' in mobile
     assert 'className="civ-mobile-reader-cover"' in mobile
+    assert 'className="civ-mobile-chrono-disc"' in mobile
+    assert 'className="civ-mobile-chrono-frame"' in mobile
+    assert 'className="civ-mobile-chrono-bar is-red"' in mobile
+    assert "civ-mobile-chrono-frame 7.2s" in style
+    assert "civ-mobile-chrono-disc 7.2s" in style
+    assert "civ-mobile-chrono-bar 7.2s" in style
+    assert "background-size: 48px 48px" in style
+    assert "color: var(--civ-mobile-blue)" in style
     assert "position: fixed; left: 50%; bottom: 0" in style
     assert "width: min(480px, 100vw)" in style
     assert ".civ-mobile-only" not in style

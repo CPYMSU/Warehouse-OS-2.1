@@ -52,7 +52,11 @@ const MobileChronology = ({ thoughts, domains, activeFilter, onFilter, selectedI
   <header className="civ-mobile-chronology-head">
     <div><span>B / CHRONOLOGY</span><strong>{t("思想如何形成")}</strong><p>{t("按時間閱讀問題如何被提出、修正與連接。")}</p></div>
     <aside><b>{String(thoughts.length).padStart(2, "0")}</b><span>QUESTION<br/>OBJECTS</span></aside>
-    <i aria-hidden="true"/>
+    <i className="civ-mobile-chrono-disc" aria-hidden="true"/>
+    <i className="civ-mobile-chrono-frame" aria-hidden="true"/>
+    <i className="civ-mobile-chrono-bar is-red" aria-hidden="true"/>
+    <i className="civ-mobile-chrono-bar is-blue" aria-hidden="true"/>
+    <i className="civ-mobile-chrono-bar is-green" aria-hidden="true"/>
   </header>
   <MobileDomainStrip domains={domains} activeFilter={activeFilter} onFilter={onFilter}/>
   {loadError && <div className="civ-mobile-error" role="alert"><span>{loadError}</span><button type="button" onClick={onRetry}>{t("重新載入")}</button></div>}
