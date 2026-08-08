@@ -1,7 +1,8 @@
 from datetime import date, datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -21,6 +22,10 @@ from app.services.civilization import (
     _merged_localized,
     _merged_relations,
     _serialize,
+    create_thought,
+    get_thought,
+    list_thoughts,
+    save_draft,
     template_catalog,
 )
 from app.terminal.catalog import availability, entry_by_tool_name
@@ -80,6 +85,68 @@ def _database_actor() -> ActorContext:
     return actor
 
 
+def _persisted_actor(slug: str, *, template_key: str = "generic_warehouse") -> ActorContext:
+    tenant_id = uuid4()
+    tenant_name = slug.replace("-", " ").title()
+    with system_session() as session:
+        existing = session.execute(
+            text(
+                """
+                SELECT id, name, industry_template_key
+                FROM iam.tenants WHERE slug = :slug
+                """
+            ),
+            {"slug": slug},
+        ).mappings().one_or_none()
+        if existing is None:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO iam.tenants(id, slug, name, industry_template_key)
+                    VALUES (:id, :slug, :name, :template_key)
+                    """
+                ),
+                {
+                    "id": tenant_id,
+                    "slug": slug,
+                    "name": tenant_name,
+                    "template_key": template_key,
+                },
+            )
+        else:
+            tenant_id = existing["id"]
+            tenant_name = str(existing["name"])
+            template_key = str(existing["industry_template_key"])
+        actor = ActorContext(
+            user_id=uuid4(),
+            tenant_id=tenant_id,
+            tenant_slug=slug,
+            tenant_name=tenant_name,
+            industry_template_key=template_key,
+            username=f"{slug}-{uuid4().hex[:8]}@example.test",
+            display_name=slug.title(),
+            role_level=5,
+            topology_level=5,
+            topology_title=None,
+            permissions=frozenset({"civilization.read", "civilization.write"}),
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO iam.users(id, username, display_name, password_hash)
+                VALUES (:id, :username, :display_name, :password_hash)
+                """
+            ),
+            {
+                "id": actor.user_id,
+                "username": actor.username,
+                "display_name": actor.display_name,
+                "password_hash": hash_password("test-password"),
+            },
+        )
+    return actor
+
+
 def test_delete_policy_allows_creator_and_company_administrator() -> None:
     member = _actor()
     another_user = uuid4()
@@ -97,6 +164,7 @@ def test_serialized_thought_exposes_exact_personal_ownership() -> None:
     now = datetime.now(timezone.utc)
     row = {
         "id": uuid4(),
+        "tenant_id": owner.tenant_id,
         "stable_key": "thought-personal-note",
         "domain": "judgement",
         "title": {"zh": "读书笔记"},
@@ -373,6 +441,104 @@ def test_direct_publish_stores_sql_null_draft_and_creates_revision() -> None:
     assert stored["publication_status"] == "published"
     assert stored["published_revision"] == 1
     assert revision_count == 1
+
+
+@pytest.mark.integration
+def test_bonfire_published_feed_is_visible_but_read_only_in_every_company() -> None:
+    bonfire = _persisted_actor("bonfire")
+    civilization_company = _persisted_actor(
+        f"civilization-reader-{uuid4().hex[:8]}", template_key="civilization"
+    )
+    another_company = _persisted_actor(f"civilization-other-{uuid4().hex[:8]}")
+
+    platform_post = create_thought(
+        bonfire,
+        {
+            "domain": "judgement",
+            "title": "平台公共问题",
+            "short": "Bonfire 发布后进入所有公司的文明信息流。",
+            "thesis": "公共内容可阅读，但不能跨公司编辑。",
+            "publish": True,
+        },
+    )["thought"]
+    platform_draft = create_thought(
+        bonfire,
+        {
+            "domain": "time",
+            "title": "平台未发布草稿",
+            "short": "其他公司不能读取。",
+            "thesis": "草稿仍然属于 Bonfire。",
+            "publish": False,
+        },
+    )["thought"]
+    save_draft(
+        bonfire,
+        UUID(platform_post["id"]),
+        {
+            "expected_revision": platform_post["revision"],
+            "domain": "time",
+            "relations": ["尚未发布的关系"],
+            "content": {
+                "title": "尚未发布的新标题",
+                "short": "这部分不能进入其他公司。",
+                "thesis": "发布投影不能包含作者的新草稿。",
+            },
+        },
+    )
+    company_post = create_thought(
+        civilization_company,
+        {
+            "domain": "organization",
+            "title": "本公司的读书笔记",
+            "short": "仅本公司成员读取。",
+            "thesis": "普通公司发布不自动成为平台公共内容。",
+            "publish": True,
+        },
+    )["thought"]
+
+    reader_feed = list_thoughts(civilization_company)
+    reader_items = {item["id"]: item for item in reader_feed["thoughts"]}
+    assert set(reader_items) == {platform_post["id"], company_post["id"]}
+    assert platform_draft["id"] not in reader_items
+    assert reader_items[platform_post["id"]]["source_scope"] == "platform_public"
+    assert reader_items[platform_post["id"]]["source_tenant"]["slug"] == "bonfire"
+    assert reader_items[platform_post["id"]]["read_only_source"] is True
+    assert reader_items[platform_post["id"]]["can_edit"] is False
+    assert reader_items[platform_post["id"]]["domain"] == "judgement"
+    assert reader_items[platform_post["id"]]["relations"] == []
+    assert reader_items[platform_post["id"]]["draft_content"] is None
+    assert (
+        reader_items[platform_post["id"]]["content"]["locales"]["zh"]["title"]
+        == "平台公共问题"
+    )
+    assert reader_items[company_post["id"]]["source_scope"] == "company"
+    assert reader_feed["feed"] == {
+        "scope": "platform_plus_company",
+        "platform_source": "bonfire",
+        "platform_count": 1,
+        "company_count": 1,
+    }
+    assert get_thought(civilization_company, UUID(platform_post["id"]))["thought"][
+        "read_only_source"
+    ] is True
+    with pytest.raises(HTTPException) as blocked_edit:
+        save_draft(
+            civilization_company,
+            UUID(platform_post["id"]),
+            {
+                "expected_revision": platform_post["revision"],
+                "content": {
+                    "title": "不允许修改",
+                    "short": "跨公司只读",
+                    "thesis": "编辑必须留在来源公司。",
+                },
+            },
+        )
+    assert blocked_edit.value.status_code == 403
+
+    other_feed_ids = {item["id"] for item in list_thoughts(another_company)["thoughts"]}
+    assert other_feed_ids == {platform_post["id"]}
+    assert company_post["id"] not in other_feed_ids
 
 
 def test_public_civilization_page_is_auth_free_validated_and_metadata_safe(monkeypatch) -> None:

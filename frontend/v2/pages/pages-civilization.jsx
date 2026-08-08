@@ -375,14 +375,14 @@ const Page = ({ civilizationApp = false } = {}) => {
         return <button type="button" className="civ-thought-row" data-domain={domain.key} style={domainStyle(domain)} key={thought.id} aria-selected={selected && thought.id === selected.id} onClick={() => selectThought(thought.id)}>
           <span className="civ-row-no">{thought.no}</span>
           <span className="civ-row-domain"><DomainGlyph domain={domain}/>{lang() === "en" ? domain.en : t(domain.zh)}<br/>{domain.en.toUpperCase()}</span>
-          <span className="civ-row-copy"><small>QUESTION OBJECT</small><h2>{thoughtText(thought, "title")}</h2><p>{thoughtText(thought, "short")}</p></span>
+          <span className="civ-row-copy"><small>{thought.source_scope === "platform_public" ? "BONFIRE · PUBLIC SOURCE" : "COMPANY · READING NOTE"}</small><h2>{thoughtText(thought, "title")}</h2><p>{thoughtText(thought, "short")}</p></span>
           <span className="civ-row-links"><small>{t("連接到").toUpperCase()}</small><b>{thoughtRelations(thought).map((item, index) => <React.Fragment key={index}>↳ {localText(item)}{index < thoughtRelations(thought).length - 1 && <br/>}</React.Fragment>)}</b></span>
           <span className="civ-row-year">{thought.year}</span>
         </button>;
       })}
     </div>
     {selected && <aside className="civ-atlas-detail" data-domain={selectedDomain.key} style={domainStyle(selectedDomain)}>
-      <div className="civ-detail-meta"><span>{selectedDomain.en.toUpperCase()} / {selected.date}</span><span>{t("選中").toUpperCase()}</span></div>
+      <div className="civ-detail-meta"><span>{selectedDomain.en.toUpperCase()} / {selected.date}</span><span>{selected.source_scope === "platform_public" ? "BONFIRE / PUBLIC" : t("本公司筆記").toUpperCase()}</span></div>
       <div className="civ-detail-figure"><div className="civ-detail-no">{selected.no}</div><DomainGlyph domain={selectedDomain} large/></div><span className="civ-micro">{t("當前問題")}</span>
       <h2>{thoughtText(selected, "title")}</h2>
       {selectedQuote && <blockquote className="civ-detail-quote"><span>READING QUOTE / {t("閱讀引語")}</span>{selectedQuote}</blockquote>}

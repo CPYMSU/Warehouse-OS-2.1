@@ -1,4 +1,9 @@
-"""Tenant-owned, fixed-template publishing service for Civilization."""
+"""Federated, fixed-template publishing service for Civilization.
+
+Bonfire is the platform publication source.  Every company may read its
+published Civilization posts while drafts and company-authored notes remain
+isolated by PostgreSQL RLS.
+"""
 
 from __future__ import annotations
 
@@ -18,17 +23,34 @@ from app.templates.industry_blueprints import CIVILIZATION_TEMPLATE_KEY
 TEMPLATE_KEY = "swiss_b_longform_v1"
 CONTENT_SCHEMA = "warehouse.civilization.content.v1"
 _DOMAINS = frozenset({"judgement", "technology", "organization", "time", "ethics"})
+PLATFORM_CIVILIZATION_TENANT_SLUG = "bonfire"
 _THOUGHT_COLUMNS = """
-id, stable_key, domain, title, prompt, thesis, relations, lenses,
+id, tenant_id, stable_key, domain, title, prompt, thesis, relations, lenses,
 occurred_on, display_order, source, created_by, created_at, updated_at,
 revision, template_key, published_content, draft_content,
 publication_status, published_revision, published_at,
 public_share_enabled, public_share_key, public_shared_at
 """
+_PLATFORM_FEED_COLUMNS = """
+thought_id AS id, source_tenant_id AS tenant_id, stable_key, domain,
+title, prompt, thesis, relations, lenses, occurred_on, display_order,
+source, NULL::uuid AS created_by, created_at, updated_at, revision,
+template_key, published_content, NULL::jsonb AS draft_content,
+'published'::text AS publication_status, published_revision, published_at,
+public_share_enabled, public_share_key, public_shared_at
+"""
 _PUBLIC_SHARE_RE = re.compile(r"^[a-z0-9_-]{12,64}$")
 
 
-def _can_manage(actor: ActorContext, created_by: UUID | None) -> bool:
+def _can_manage(
+    actor: ActorContext,
+    created_by: UUID | None,
+    tenant_id: UUID | None = None,
+) -> bool:
+    # A global identity may belong to several companies.  Ownership of a post
+    # is therefore the pair (tenant, creator), never the creator UUID alone.
+    if tenant_id is not None and tenant_id != actor.tenant_id:
+        return False
     if actor.industry_template_key == CIVILIZATION_TEMPLATE_KEY:
         return created_by == actor.user_id
     return (
@@ -38,8 +60,12 @@ def _can_manage(actor: ActorContext, created_by: UUID | None) -> bool:
     )
 
 
-def _can_delete(actor: ActorContext, created_by: UUID | None) -> bool:
-    return _can_manage(actor, created_by)
+def _can_delete(
+    actor: ActorContext,
+    created_by: UUID | None,
+    tenant_id: UUID | None = None,
+) -> bool:
+    return _can_manage(actor, created_by, tenant_id)
 
 
 def _require_read(actor: ActorContext) -> None:
@@ -392,14 +418,20 @@ def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> d
     created_at = row["created_at"]
     updated_at = row["updated_at"]
     created_by = row.get("created_by")
+    tenant_id = row.get("tenant_id")
     published_at = row.get("published_at")
     public_shared_at = row.get("public_shared_at")
     assert isinstance(occurred_on, date)
     assert isinstance(created_at, datetime)
     assert isinstance(updated_at, datetime)
     assert created_by is None or isinstance(created_by, UUID)
-    can_manage = _can_manage(actor, created_by)
-    is_mine = created_by == actor.user_id
+    assert isinstance(tenant_id, UUID)
+    is_local = tenant_id == actor.tenant_id
+    is_platform_source = (
+        not is_local or actor.tenant_slug == PLATFORM_CIVILIZATION_TENANT_SLUG
+    )
+    can_manage = _can_manage(actor, created_by, tenant_id)
+    is_mine = is_local and created_by == actor.user_id
     public_share_enabled = bool(row.get("public_share_enabled"))
     public_share_key = str(row.get("public_share_key") or "")
     return {
@@ -415,6 +447,16 @@ def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> d
         "date": f"{occurred_on.year:04d}—{occurred_on.month:02d}",
         "year": str(occurred_on.year),
         "source": str(row["source"]),
+        "source_scope": "platform_public" if is_platform_source else "company",
+        "source_tenant": {
+            "slug": (
+                PLATFORM_CIVILIZATION_TENANT_SLUG
+                if is_platform_source
+                else actor.tenant_slug
+            ),
+            "name": "Bonfire" if is_platform_source else actor.tenant_name,
+        },
+        "read_only_source": not is_local,
         "created_by": str(created_by) if created_by else None,
         "is_mine": is_mine,
         "created_at": created_at.isoformat(),
@@ -431,7 +473,7 @@ def _serialize(row: dict[str, object], actor: ActorContext, *, number: int) -> d
         "has_draft": bool(row.get("draft_content")),
         "can_edit": can_manage,
         "can_publish": can_manage,
-        "can_delete": _can_delete(actor, created_by),
+        "can_delete": _can_delete(actor, created_by, tenant_id),
         "public_share_enabled": public_share_enabled,
         "public_path": (
             f"/civilization/p/{public_share_key}"
@@ -530,6 +572,103 @@ def _write_public_snapshot(
     )
 
 
+def _write_platform_publication(
+    session: Session,
+    actor: ActorContext,
+    row: dict[str, object],
+) -> None:
+    """Synchronize Bonfire's immutable, draft-free cross-company projection."""
+
+    if actor.tenant_slug != PLATFORM_CIVILIZATION_TENANT_SLUG:
+        return
+    if str(row.get("publication_status")) != "published":
+        session.execute(
+            text(
+                """
+                DELETE FROM civilization.platform_publications
+                WHERE thought_id = :thought_id
+                """
+            ),
+            {"thought_id": row["id"]},
+        )
+        return
+    public_share_enabled = bool(row.get("public_share_enabled"))
+    session.execute(
+        text(
+            """
+            INSERT INTO civilization.platform_publications(
+              thought_id, source_tenant_id, stable_key, domain,
+              title, prompt, thesis, relations, lenses,
+              occurred_on, display_order, source, created_at, updated_at,
+              revision, template_key, published_content,
+              published_revision, published_at,
+              public_share_enabled, public_share_key, public_shared_at,
+              projected_at
+            ) VALUES (
+              :thought_id, :source_tenant_id, :stable_key, :domain,
+              CAST(:title AS jsonb), CAST(:prompt AS jsonb), CAST(:thesis AS jsonb),
+              CAST(:relations AS jsonb), CAST(:lenses AS jsonb),
+              :occurred_on, :display_order, :source, :created_at, :updated_at,
+              :revision, :template_key, CAST(:published_content AS jsonb),
+              :published_revision, :published_at,
+              :public_share_enabled, :public_share_key, :public_shared_at, now()
+            )
+            ON CONFLICT (thought_id) DO UPDATE SET
+              source_tenant_id = EXCLUDED.source_tenant_id,
+              stable_key = EXCLUDED.stable_key,
+              domain = EXCLUDED.domain,
+              title = EXCLUDED.title,
+              prompt = EXCLUDED.prompt,
+              thesis = EXCLUDED.thesis,
+              relations = EXCLUDED.relations,
+              lenses = EXCLUDED.lenses,
+              occurred_on = EXCLUDED.occurred_on,
+              display_order = EXCLUDED.display_order,
+              source = EXCLUDED.source,
+              created_at = EXCLUDED.created_at,
+              updated_at = EXCLUDED.updated_at,
+              revision = EXCLUDED.revision,
+              template_key = EXCLUDED.template_key,
+              published_content = EXCLUDED.published_content,
+              published_revision = EXCLUDED.published_revision,
+              published_at = EXCLUDED.published_at,
+              public_share_enabled = EXCLUDED.public_share_enabled,
+              public_share_key = EXCLUDED.public_share_key,
+              public_shared_at = EXCLUDED.public_shared_at,
+              projected_at = now()
+            """
+        ),
+        {
+            "thought_id": row["id"],
+            "source_tenant_id": actor.tenant_id,
+            "stable_key": str(row["stable_key"]),
+            "domain": str(row["domain"]),
+            "title": json.dumps(row.get("title") or {}, ensure_ascii=False),
+            "prompt": json.dumps(row.get("prompt") or {}, ensure_ascii=False),
+            "thesis": json.dumps(row.get("thesis") or {}, ensure_ascii=False),
+            "relations": json.dumps(row.get("relations") or [], ensure_ascii=False),
+            "lenses": json.dumps(row.get("lenses") or [], ensure_ascii=False),
+            "occurred_on": row["occurred_on"],
+            "display_order": int(row["display_order"]),
+            "source": str(row["source"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "revision": int(row["revision"]),
+            "template_key": str(row.get("template_key") or TEMPLATE_KEY),
+            "published_content": json.dumps(_effective_content(row), ensure_ascii=False),
+            "published_revision": int(row.get("published_revision") or 0),
+            "published_at": row["published_at"],
+            "public_share_enabled": public_share_enabled,
+            "public_share_key": (
+                str(row.get("public_share_key") or "") or None
+                if public_share_enabled
+                else None
+            ),
+            "public_shared_at": row.get("public_shared_at"),
+        },
+    )
+
+
 def template_catalog(actor: ActorContext) -> dict[str, object]:
     return {
         "templates": [
@@ -559,10 +698,32 @@ def template_catalog(actor: ActorContext) -> dict[str, object]:
     }
 
 
+def _raise_local_thought_unavailable(session: Session, thought_id: UUID) -> None:
+    """Distinguish an immutable platform-feed object from an unknown UUID."""
+
+    is_platform_publication = session.execute(
+        text(
+            """
+            SELECT EXISTS (
+              SELECT 1 FROM civilization.platform_feed
+              WHERE thought_id = :thought_id
+            )
+            """
+        ),
+        {"thought_id": thought_id},
+    ).scalar_one()
+    if is_platform_publication:
+        raise HTTPException(
+            status_code=403,
+            detail="Bonfire public-source posts are read-only outside the source company",
+        )
+    raise HTTPException(status_code=404, detail="Thought not found")
+
+
 def list_thoughts(actor: ActorContext) -> dict[str, object]:
     _require_read(actor)
     with tenant_session(actor.tenant_id, actor.user_id) as session:
-        rows = (
+        local_rows = (
             session.execute(
                 text(
                     f"""
@@ -575,16 +736,58 @@ def list_thoughts(actor: ActorContext) -> dict[str, object]:
             .mappings()
             .all()
         )
+        platform_rows = []
+        if actor.tenant_slug != PLATFORM_CIVILIZATION_TENANT_SLUG:
+            platform_rows = (
+                session.execute(
+                    text(
+                        f"""
+                        SELECT {_PLATFORM_FEED_COLUMNS}
+                        FROM civilization.platform_feed
+                        ORDER BY occurred_on, display_order, thought_id
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    rows = sorted(
+        [dict(row) for row in (*local_rows, *platform_rows)],
+        key=lambda row: (
+            row["occurred_on"],
+            row["tenant_id"] == actor.tenant_id,
+            int(row["display_order"]),
+            str(row["id"]),
+        ),
+    )
     visible = [
-        dict(row)
+        row
         for row in rows
         if str(row["publication_status"]) == "published"
-        or _can_manage(actor, row.get("created_by"))
+        or _can_manage(actor, row.get("created_by"), row.get("tenant_id"))
+    ]
+    serialized = [
+        _serialize(row, actor, number=index)
+        for index, row in enumerate(visible, start=1)
     ]
     return {
-        "thoughts": [_serialize(row, actor, number=int(row["display_order"])) for row in visible],
-        "can_create": True,
+        "thoughts": serialized,
+        "can_create": (
+            actor.role_level >= 10
+            or "settings.manage" in actor.permissions
+            or "civilization.write" in actor.permissions
+        ),
         "template_key": TEMPLATE_KEY,
+        "feed": {
+            "scope": "platform_plus_company",
+            "platform_source": PLATFORM_CIVILIZATION_TENANT_SLUG,
+            "platform_count": sum(
+                1 for item in serialized if item["source_scope"] == "platform_public"
+            ),
+            "company_count": sum(
+                1 for item in serialized if item["source_scope"] == "company"
+            ),
+        },
     }
 
 
@@ -601,10 +804,27 @@ def get_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
             .mappings()
             .one_or_none()
         )
+        if row is None and actor.tenant_slug != PLATFORM_CIVILIZATION_TENANT_SLUG:
+            row = (
+                session.execute(
+                    text(
+                        f"""
+                        SELECT {_PLATFORM_FEED_COLUMNS}
+                        FROM civilization.platform_feed
+                        WHERE thought_id = :thought_id
+                        """
+                    ),
+                    {"thought_id": thought_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
     if row is None:
         raise HTTPException(status_code=404, detail="Thought not found")
     data = dict(row)
-    if data["publication_status"] != "published" and not _can_manage(actor, data.get("created_by")):
+    if data["publication_status"] != "published" and not _can_manage(
+        actor, data.get("created_by"), data.get("tenant_id")
+    ):
         raise HTTPException(status_code=404, detail="Thought not found")
     return {"thought": _serialize(data, actor, number=int(data["display_order"]))}
 
@@ -699,6 +919,7 @@ def create_thought(actor: ActorContext, payload: dict[str, object]) -> dict[str,
         )
         if publish:
             _insert_revision(session, actor, row)
+            _write_platform_publication(session, actor, row)
         _audit(
             session,
             actor,
@@ -752,9 +973,9 @@ def save_draft(
             .one_or_none()
         )
         if current is None:
-            raise HTTPException(status_code=404, detail="Thought not found")
+            _raise_local_thought_unavailable(session, thought_id)
         data = dict(current)
-        if not _can_manage(actor, data.get("created_by")):
+        if not _can_manage(actor, data.get("created_by"), data.get("tenant_id")):
             raise HTTPException(
                 status_code=403,
                 detail="Only the creator or a company administrator can edit this thought",
@@ -899,9 +1120,9 @@ def publish_thought(
             .one_or_none()
         )
         if current is None:
-            raise HTTPException(status_code=404, detail="Thought not found")
+            _raise_local_thought_unavailable(session, thought_id)
         data = dict(current)
-        if not _can_manage(actor, data.get("created_by")):
+        if not _can_manage(actor, data.get("created_by"), data.get("tenant_id")):
             raise HTTPException(
                 status_code=403,
                 detail="Only the creator or a company administrator can publish this thought",
@@ -949,6 +1170,7 @@ def publish_thought(
         )
         _insert_revision(session, actor, row)
         _write_public_snapshot(session, actor, row)
+        _write_platform_publication(session, actor, row)
         _audit(
             session,
             actor,
@@ -1026,9 +1248,9 @@ def restore_revision(
             .one_or_none()
         )
         if current is None:
-            raise HTTPException(status_code=404, detail="Thought not found")
+            _raise_local_thought_unavailable(session, thought_id)
         data = dict(current)
-        if not _can_manage(actor, data.get("created_by")):
+        if not _can_manage(actor, data.get("created_by"), data.get("tenant_id")):
             raise HTTPException(
                 status_code=403,
                 detail="Only the creator or a company administrator can restore this thought",
@@ -1118,9 +1340,9 @@ def upsert_lens(
             .one_or_none()
         )
         if current is None:
-            raise HTTPException(status_code=404, detail="Thought not found")
+            _raise_local_thought_unavailable(session, thought_id)
         data = dict(current)
-        if not _can_manage(actor, data.get("created_by")):
+        if not _can_manage(actor, data.get("created_by"), data.get("tenant_id")):
             raise HTTPException(
                 status_code=403,
                 detail="Only the creator or a company administrator can edit lenses",
@@ -1193,9 +1415,9 @@ def configure_public_share(
             .one_or_none()
         )
         if current is None:
-            raise HTTPException(status_code=404, detail="Thought not found")
+            _raise_local_thought_unavailable(session, thought_id)
         data = dict(current)
-        if not _can_manage(actor, data.get("created_by")):
+        if not _can_manage(actor, data.get("created_by"), data.get("tenant_id")):
             raise HTTPException(
                 status_code=403,
                 detail="Only the creator or a company administrator can configure sharing",
@@ -1227,6 +1449,7 @@ def configure_public_share(
                     ),
                     {"tenant_id": actor.tenant_id, "thought_id": thought_id},
                 )
+            _write_platform_publication(session, actor, data)
             return {
                 "ok": True,
                 "status": "public" if enabled_value else "private",
@@ -1277,6 +1500,7 @@ def configure_public_share(
                 ),
                 {"tenant_id": actor.tenant_id, "thought_id": thought_id},
             )
+        _write_platform_publication(session, actor, row)
         _audit(
             session,
             actor,
@@ -1342,7 +1566,7 @@ def delete_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
             session.execute(
                 text(
                     """
-                    SELECT id, stable_key, created_by
+                    SELECT id, tenant_id, stable_key, created_by
                     FROM civilization.thoughts
                     WHERE id = :thought_id
                     """
@@ -1353,11 +1577,21 @@ def delete_thought(actor: ActorContext, thought_id: UUID) -> dict[str, object]:
             .one_or_none()
         )
         if row is None:
-            raise HTTPException(status_code=404, detail="Thought not found")
-        if not _can_delete(actor, row["created_by"]):
+            _raise_local_thought_unavailable(session, thought_id)
+        if not _can_delete(actor, row["created_by"], row["tenant_id"]):
             raise HTTPException(
                 status_code=403,
                 detail="Only the creator or a company administrator can delete this thought",
+            )
+        if actor.tenant_slug == PLATFORM_CIVILIZATION_TENANT_SLUG:
+            session.execute(
+                text(
+                    """
+                    DELETE FROM civilization.platform_publications
+                    WHERE thought_id = :thought_id
+                    """
+                ),
+                {"thought_id": thought_id},
             )
         session.execute(
             text("DELETE FROM civilization.thoughts WHERE id = :thought_id"),
