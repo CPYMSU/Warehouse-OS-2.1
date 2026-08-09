@@ -4911,10 +4911,9 @@ const CollaborativeDocumentCursorLayer = ({ visualRef, projection, editors }) =>
   ))}</div>;
 };
 
-const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotations, activeId, onOpen }) => {
+const CollaborativeDocumentAnnotationLayer = ({ visual, projection, annotations, activeId, onOpen }) => {
   const [markers, setMarkers] = S([]);
   LE(() => {
-    const visual = visualRef.current;
     if (!visual || !arr(annotations).length || !document.createRange) {
       setMarkers([]);
       return undefined;
@@ -4924,8 +4923,8 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
     let retryCount = 0;
     const measure = () => {
       frame = null;
-      const currentVisual = visualRef.current;
-      if (!currentVisual || disposed) return;
+      const currentVisual = visual;
+      if (!currentVisual.isConnected || disposed) return;
       const visualRect = currentVisual.getBoundingClientRect();
       const textBlocks = projection.blocks.filter(block => block.type === "text");
       const next = [];
@@ -5007,7 +5006,7 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
       if (observer) observer.disconnect();
       if (mutationObserver) mutationObserver.disconnect();
     };
-  }, [visualRef, projection, annotations, activeId]);
+  }, [visual, projection, annotations, activeId]);
   if (!markers.length) return null;
   return <div className="task-collab-annotation-layer">{markers.map(marker => (
     <span key={marker.key} className={(marker.status === "resolved" ? "is-resolved" : "") + (marker.kind === "suggestion" ? " is-review-change is-" + marker.reviewState : "") + (marker.active ? " is-active" : "") + (marker.first ? " is-first" : "")} style={{ left: marker.left, top: marker.top, width: marker.width, height: marker.height }}>
@@ -5024,6 +5023,11 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
     projection.blocks.filter(block => block.type === "text").map(block => [number(block.lineIndex), block])
   ), [projection]);
   const visualRef = R(null);
+  const [visualElement, setVisualElement] = S(null);
+  const attachVisual = C(node => {
+    visualRef.current = node;
+    setVisualElement(current => current === node ? current : node);
+  }, []);
   const documentIsEmpty = projection.blocks.length === 1
     && projection.blocks[0].type === "text"
     && !projection.blocks[0].value
@@ -5338,8 +5342,8 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
     if (typeof onSelectionChange === "function") onSelectionChange({ selection: normalized, rect: null });
   };
   const imageBudget = { count: 0 };
-  return <div ref={visualRef} className="task-collab-document-visual" aria-label={t("視覺共編")} onMouseUp={captureVisualSelection} onKeyUp={captureVisualSelection}>
-    <CollaborativeDocumentAnnotationLayer visualRef={visualRef} projection={projection} annotations={annotations} activeId={activeAnnotationId} onOpen={onAnnotationOpen}/>
+  return <div ref={attachVisual} className="task-collab-document-visual" aria-label={t("視覺共編")} onMouseUp={captureVisualSelection} onKeyUp={captureVisualSelection}>
+    <CollaborativeDocumentAnnotationLayer visual={visualElement} projection={projection} annotations={annotations} activeId={activeAnnotationId} onOpen={onAnnotationOpen}/>
     <CollaborativeDocumentCursorLayer visualRef={visualRef} projection={projection} editors={remoteEditors}/>
     <div className={`task-collab-document-canvas is-font-${projection.style.font} is-size-${projection.style.size}${readOnly ? " is-readonly" : ""}`} onClick={focusDocumentEnd}>
       {visualGroups.map((block, index) => {

@@ -100,14 +100,14 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260809-task-review-changes8' in index
-    assert 'pages/pages-tasks.jsx?v=20260809-task-review-changes8' in index
+    assert 'pages/pages-tasks.css?v=20260810-task-annotation-hydrate1' in index
+    assert 'pages/pages-tasks.jsx?v=20260810-task-annotation-hydrate1' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260809-task-review-changes8' in index
+    assert 'dist/app.bundle.js?v=20260810-task-annotation-hydrate1' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -195,6 +195,10 @@ def test_task_coediting_anchors_annotations_and_threaded_discussion():
     assert 'collaboration/annotations?status=all' in source
     assert "client_annotation_id" in source
     assert "CollaborativeDocumentAnnotationLayer" in source
+    assert "const [visualElement, setVisualElement] = S(null);" in source
+    assert "const attachVisual = C(node =>" in source
+    assert "ref={attachVisual}" in source
+    assert "CollaborativeDocumentAnnotationLayer visual={visualElement}" in source
     assert 'className="task-collab-selection-dock"' in source
     assert 'className="task-collab-selection-overlay"' in source
     assert 'className="task-collab-selection-composer is-docked"' in source
