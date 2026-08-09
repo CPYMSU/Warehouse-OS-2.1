@@ -4927,7 +4927,9 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
   }, [visualRef, projection, annotations, activeId]);
   if (!markers.length) return null;
   return <div className="task-collab-annotation-layer">{markers.map(marker => (
-    <button type="button" key={marker.key} aria-label={t("打開標註討論") + "：" + marker.quote} title={t("打開標註討論")} className={(marker.status === "resolved" ? "is-resolved" : "") + (marker.active ? " is-active" : "") + (marker.first ? " is-first" : "")} style={{ left: marker.left, top: marker.top, width: marker.width, height: marker.height }} onPointerDown={event => { event.preventDefault(); event.stopPropagation(); }} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); if (typeof onOpen === "function") onOpen(marker.annotationId); }}/>
+    <span key={marker.key} className={(marker.status === "resolved" ? "is-resolved" : "") + (marker.active ? " is-active" : "") + (marker.first ? " is-first" : "")} style={{ left: marker.left, top: marker.top, width: marker.width, height: marker.height }}>
+      <button type="button" aria-label={t("打開標註討論") + "：" + marker.quote} title={t("打開標註討論")} onPointerDown={event => { event.preventDefault(); event.stopPropagation(); }} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); if (typeof onOpen === "function") onOpen(marker.annotationId); }}/>
+    </span>
   ))}</div>;
 };
 
