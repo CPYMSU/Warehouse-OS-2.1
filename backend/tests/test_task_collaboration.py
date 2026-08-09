@@ -418,6 +418,18 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         )
         assert resolved.status_code == 200
         assert resolved.json()["annotation"]["status"] == "resolved"
+        reopened = client.post(
+            f"/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/status",
+            json={"status": "open"},
+        )
+        assert reopened.status_code == 200
+        assert reopened.json()["annotation"]["status"] == "open"
+        assert reopened.json()["annotation"]["resolved_at"] is None
+        open_annotations = client.get(
+            f"/api/tasks/{task_id}/collaboration/annotations?status=open"
+        )
+        assert open_annotations.status_code == 200
+        assert annotation_id in {item["id"] for item in open_annotations.json()["items"]}
         updated = client.post(
             f"/api/tasks/{task_id}/status",
             json={"status": "in_progress", "expected_version": task["version"]},

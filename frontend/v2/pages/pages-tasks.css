@@ -1121,9 +1121,24 @@
 }
 .task-collab-cursor-layer { position: absolute; inset: 0; z-index: 6; overflow: hidden; pointer-events: none; }
 .task-collab-annotation-layer { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; }
-.task-collab-annotation-layer > span { position: absolute; background: color-mix(in srgb, #f1c40f 26%, transparent); border-bottom: 2px solid #d2a900; }
-.task-collab-annotation-layer > span.is-active { background: color-mix(in srgb, #ef3340 19%, transparent); border-bottom-color: var(--task-red); }
-.task-collab-annotation-layer > span.is-resolved { background: color-mix(in srgb, var(--ink-4) 10%, transparent); border-bottom-color: var(--ink-4); border-bottom-style: dotted; }
+.task-collab-annotation-layer > button {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  pointer-events: auto;
+  cursor: pointer;
+  border: 0;
+  border-bottom: 2px solid #d2a900;
+  border-radius: 0;
+  outline: 0;
+  background: color-mix(in srgb, #f1c40f 26%, transparent);
+}
+.task-collab-annotation-layer > button:hover,
+.task-collab-annotation-layer > button:focus-visible { background: color-mix(in srgb, #f1c40f 42%, transparent); box-shadow: inset 0 0 0 1px #d2a900; }
+.task-collab-annotation-layer > button:focus-visible { outline: 2px solid var(--task-red); outline-offset: 2px; }
+.task-collab-annotation-layer > button.is-active { background: color-mix(in srgb, #ef3340 22%, #f1c40f 16%); border-bottom-color: var(--task-red); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--task-red) 72%, transparent); }
+.task-collab-annotation-layer > button.is-resolved { background: color-mix(in srgb, var(--ink-4) 10%, transparent); border-bottom-color: var(--ink-4); border-bottom-style: dotted; }
 .task-collab-remote-cursor {
   position: absolute;
   width: 2px;
