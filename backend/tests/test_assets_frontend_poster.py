@@ -100,14 +100,14 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260809-task-annotation-chat1' in index
-    assert 'pages/pages-tasks.jsx?v=20260809-task-annotation-chat1' in index
+    assert 'pages/pages-tasks.css?v=20260809-task-collab-fullscreen1' in index
+    assert 'pages/pages-tasks.jsx?v=20260809-task-collab-fullscreen1' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260809-task-annotation-chat1' in index
+    assert 'dist/app.bundle.js?v=20260809-task-collab-fullscreen1' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -188,6 +188,18 @@ def test_task_coediting_anchors_annotations_and_threaded_discussion():
     assert ".task-collab-annotation-layer" in css
     assert ".task-collab-chat-annotation-thread" in css
     assert ".task-collab-selection-toolbar" in css
+
+
+def test_task_collaboration_workspace_supports_swiss_immersive_fullscreen():
+    source = TASKS.read_text(encoding="utf-8")
+    css = TASKS_CSS.read_text(encoding="utf-8")
+
+    assert 'const [isFullscreen, setIsFullscreen] = S(false)' in source
+    assert 'className="task-collab-fullscreen-toggle"' in source
+    assert 'isFullscreen ? " is-fullscreen" : ""' in source
+    assert 'if (isFullscreen)' in source
+    assert ".task-collab-workspace.is-fullscreen" in css
+    assert ".task-collab-fullscreen-toggle[aria-pressed=\"true\"]" in css
 
 
 def test_business_action_command_topology_exposes_runtime_execution_contract():

@@ -437,6 +437,17 @@
   box-shadow: 14px 14px 0 rgba(0,0,0,.2);
   animation: taskSheetIn .22s cubic-bezier(.2,.7,.3,1) both;
 }
+.task-collab-workspace.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 100dvh;
+  border: 0;
+  box-shadow: none;
+  animation: none;
+}
+.task-collab-workspace.is-fullscreen .task-collab-document { width: min(1180px, 100%); }
 .task-collab-workspace-head {
   min-height: 94px;
   padding: 16px 18px;
@@ -446,7 +457,7 @@
   gap: 18px;
   border-bottom: 2px solid var(--task-rule);
 }
-.task-collab-workspace-head > div { min-width: 0; }
+.task-collab-workspace-head > div:first-child { min-width: 0; flex: 1 1 auto; }
 .task-collab-workspace-head h2 { margin: 7px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 25px; letter-spacing: -.04em; }
 .task-collab-workspace-head p { margin: 5px 0 0; color: var(--ink-3); font: 650 9px/1 var(--f-mono); }
 .task-collab-workspace-meta { margin-top: 5px; display: flex; align-items: center; flex-wrap: wrap; gap: 7px 12px; }
@@ -460,7 +471,15 @@
 .task-collab-realtime.is-fallback > i { background: #b77708; }
 .task-collab-realtime.is-offline { color: var(--task-red); border-color: var(--task-red); }
 .task-collab-realtime.is-offline > i { background: var(--task-red); }
-.task-collab-workspace-head > button { width: 46px; height: 46px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--task-hair); }
+.task-collab-workspace-head-actions { flex: 0 0 auto; display: flex; align-items: stretch; }
+.task-collab-workspace-head-actions > button { height: 46px; flex: 0 0 auto; border: 1px solid var(--task-hair); background: var(--paper); color: var(--ink); }
+.task-collab-workspace-close { width: 46px; display: grid; place-items: center; }
+.task-collab-fullscreen-toggle { min-width: 88px; margin-right: -1px; padding: 0 11px; display: grid; grid-template-columns: auto auto; place-items: center; gap: 8px; }
+.task-collab-fullscreen-toggle > span { color: var(--task-red); font: 800 17px/1 var(--f-mono); }
+.task-collab-fullscreen-toggle > small { font: 750 8px/1 var(--f-mono); }
+.task-collab-fullscreen-toggle[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.task-collab-fullscreen-toggle[aria-pressed="true"] > span { color: #f1c40f; }
+.task-collab-workspace-head-actions > button:focus-visible { position: relative; z-index: 1; outline: 3px solid var(--task-red); outline-offset: 2px; }
 .task-collab-tabs { min-height: 52px; padding: 0 18px; display: flex; border-bottom: 1px solid var(--task-hair); }
 .task-collab-tabs button { position: relative; min-width: 112px; min-height: 51px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ink-3); font-size: 10.5px; font-weight: 700; }
 .task-collab-tabs button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1521,6 +1540,7 @@
   .task-collab-workspace { width: 100%; height: 100dvh; min-height: 100dvh; border: 0; box-shadow: none; }
   .task-collab-workspace-head { min-height: calc(82px + env(safe-area-inset-top, 0px)); padding: max(14px, env(safe-area-inset-top, 0px)) 14px 12px; }
   .task-collab-workspace-head h2 { font-size: 20px; }
+  .task-collab-fullscreen-toggle { display: none; }
   .task-collab-workspace-meta { gap: 6px; }
   .task-collab-realtime { max-width: min(68vw, 310px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .task-collab-tabs { padding: 0; }

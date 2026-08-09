@@ -8698,6 +8698,7 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
   const [busy, setBusy] = S(false);
   const [error, setError] = S("");
   const [tab, setTab] = S("overview");
+  const [isFullscreen, setIsFullscreen] = S(false);
   const [chatAnnotationFocusId, setChatAnnotationFocusId] = S("");
   const [documentAnnotationFocusId, setDocumentAnnotationFocusId] = S("");
   const [relationOverride, setRelationOverride] = S(() => key(first(obj(target).relation, obj(obj(target).raw).relation)));
@@ -8780,10 +8781,18 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
   }, [taskId, tenant, seedTask]);
   E(() => { load(); }, [load]);
   E(() => {
-    const closeOnEscape = event => { if (event.key === "Escape") onClose(); };
+    const closeOnEscape = event => {
+      if (event.key !== "Escape") return;
+      if (isFullscreen) {
+        event.preventDefault();
+        setIsFullscreen(false);
+        return;
+      }
+      onClose();
+    };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [onClose, isFullscreen]);
   const mutate = C(async (path, body) => {
     if (busyGuard.current || busy || taskId == null) return false;
     busyGuard.current = true;
@@ -9003,10 +9012,13 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
     {canLeave && <button type="button" className="danger" disabled={busy} onClick={leave}>{t("離開協作")}</button>}
   </div>;
   return <div className="task-collab-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="task-collab-workspace" role="dialog" aria-modal="true" aria-labelledby="task-collab-title">
+    <section className={"task-collab-workspace" + (isFullscreen ? " is-fullscreen" : "")} role="dialog" aria-modal="true" aria-labelledby="task-collab-title">
       <header className="task-collab-workspace-head">
         <div><L red>COLLABORATION WORKSPACE</L><h2 id="task-collab-title">{task.title}</h2><div className="task-collab-workspace-meta"><p>{t("協作工作間")} · #{taskId}</p>{canRead && <span className={"task-collab-realtime is-" + realtime.transport} role="status" aria-live="polite" aria-atomic="true"><i aria-hidden="true"/>{collabRealtimeLabel(realtime.transport, realtime.onlineCount)}</span>}</div></div>
-        <button type="button" onClick={onClose} aria-label={t("關閉")}><I name="x" size={17}/></button>
+        <div className="task-collab-workspace-head-actions">
+          <button type="button" className="task-collab-fullscreen-toggle" aria-pressed={isFullscreen} onClick={() => setIsFullscreen(current => !current)}><span aria-hidden="true">{isFullscreen ? "↙" : "↗"}</span><small>{isFullscreen ? t("退出全屏") : t("全屏")}</small></button>
+          <button type="button" className="task-collab-workspace-close" onClick={onClose} aria-label={t("關閉")}><I name="x" size={17}/></button>
+        </div>
       </header>
       {loading && !detail ? <div className="task-loading"><span/><span/><span/><small>{t("同步中")}</small></div>
       : <><nav className="task-collab-tabs" role="tablist" aria-label={t("協作工作間")}>{tabs.map(([id, label, icon], index) => <button type="button" role="tab" id={"task-collab-tab-" + taskId + "-" + id} aria-controls={"task-collab-panel-" + taskId} aria-selected={tab === id} tabIndex={tab === id ? 0 : -1} className={tab === id ? "on" : ""} key={id} onClick={() => setTab(id)} onKeyDown={event => onTabKeyDown(event, index)}><I name={icon} size={14}/><span>{t(label)}</span>{id === "members" && realtime.transport === COLLAB_REALTIME_STATES.LIVE && <b className="task-collab-online-count">{realtime.onlineCount}</b>}</button>)}</nav>
