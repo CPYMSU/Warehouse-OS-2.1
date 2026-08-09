@@ -3956,7 +3956,7 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
         rect = { left: measured.left, top: measured.top, right: measured.right, bottom: measured.bottom, width: measured.width, height: measured.height };
       }
     } catch (error) {}
-    onSelectionActivity(rect ? { selection: { ...selected }, rect } : null);
+    onSelectionActivity({ selection: { ...selected }, rect });
     return observed;
   };
   const commitRoot = fallbackSelection => {
@@ -4993,7 +4993,7 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
             }
           } catch (error) {}
         }
-        onSelectionChange(rect ? { selection: { ...selectionRef.current }, rect } : null);
+        onSelectionChange({ selection: { ...selectionRef.current }, rect });
       }
     };
     let finalSelectionFrame = null;
@@ -5217,8 +5217,32 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
     }
     return committed;
   };
+  const captureVisualSelection = () => {
+    const visual = visualRef.current;
+    const nativeSelection = window.getSelection && window.getSelection();
+    if (!visual || !nativeSelection || nativeSelection.rangeCount < 1 || nativeSelection.isCollapsed) {
+      if (typeof onSelectionChange === "function") onSelectionChange(null);
+      return;
+    }
+    const range = nativeSelection.getRangeAt(0);
+    if (!visual.contains(range.commonAncestorContainer)) return;
+    const selected = resolveTextSelection();
+    if (!selected || selected.end <= selected.start) return;
+    const current = selectionRef.current;
+    const normalized = current && current.start === selected.start && current.end === selected.end
+      ? { ...current }
+      : {
+        type: "text", lineIndex: selected.startLineIndex, endLineIndex: selected.endLineIndex,
+        startVisible: selected.startVisible, endVisible: selected.endVisible,
+        crossBlock: selected.crossBlock, start: selected.start, end: selected.end,
+        startAffinity: selected.startAffinity, endAffinity: selected.endAffinity,
+        direction: selected.direction || "none", active: true, restoring: false, pending: false,
+      };
+    selectionRef.current = normalized;
+    if (typeof onSelectionChange === "function") onSelectionChange({ selection: normalized, rect: null });
+  };
   const imageBudget = { count: 0 };
-  return <div ref={visualRef} className="task-collab-document-visual" aria-label={t("視覺共編")}>
+  return <div ref={visualRef} className="task-collab-document-visual" aria-label={t("視覺共編")} onMouseUp={captureVisualSelection} onKeyUp={captureVisualSelection}>
     <CollaborativeDocumentAnnotationLayer visualRef={visualRef} projection={projection} annotations={annotations} activeId={activeAnnotationId}/>
     <CollaborativeDocumentCursorLayer visualRef={visualRef} projection={projection} editors={remoteEditors}/>
     <div className={`task-collab-document-canvas is-font-${projection.style.font} is-size-${projection.style.size}${readOnly ? " is-readonly" : ""}`} onClick={focusDocumentEnd}>
@@ -5314,7 +5338,7 @@ const CollaborativeDocument = ({
   const placeSelectionToolbar = C(payload => {
     const selected = obj(obj(payload).selection);
     const rect = obj(obj(payload).rect);
-    if (number(selected.end) <= number(selected.start) || (!number(rect.width) && !number(rect.height))) {
+    if (number(selected.end) <= number(selected.start)) {
       setSelectionToolbar(null);
       return;
     }
@@ -5327,6 +5351,7 @@ const CollaborativeDocument = ({
       left: clamp(center, 112, sectionWidth - 112),
       top: Math.max(54, number(rect.top) - sectionTop - 10),
       characters: number(selected.end) - number(selected.start),
+      quote: contentRef.current.slice(number(selected.start), number(selected.end)),
     });
   }, []);
 
@@ -6585,10 +6610,10 @@ const CollaborativeDocument = ({
         <I name="image" size={13}/><span>{collabDocumentAssetAlt(asset)}</span><small>{number(asset.width)}×{number(asset.height)}</small>
       </button>)}</div>
     </details>}
-    {selectionToolbar && !annotationComposer && mode === "edit" && capabilities.can_edit === true && !offline && <div className="task-collab-selection-toolbar" role="toolbar" aria-label={t("選取文字工具")} style={{ left: selectionToolbar.left, top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
-      <span aria-hidden="true">01</span><small>{t("已選")} {selectionToolbar.characters} {t("字")}</small><button type="button" onClick={beginAnnotation}>＋ {t("標註")}</button>
+    {selectionToolbar && !annotationComposer && mode === "edit" && capabilities.can_edit === true && !offline && <div className="task-collab-selection-dock" role="toolbar" aria-label={t("選取文字工具")} onPointerDown={event => event.preventDefault()}>
+      <span>SELECTED · {selectionToolbar.characters} CHAR</span><q>{selectionToolbar.quote}</q><button type="button" onClick={beginAnnotation}>＋ {t("加批注")}</button><button type="button" className="clear" aria-label={t("清除選取")} onClick={() => setSelectionToolbar(null)}>×</button>
     </div>}
-    {annotationComposer && <form className="task-collab-selection-composer" onSubmit={submitAnnotation} style={annotationComposer.placement ? { left: annotationComposer.placement.left, top: annotationComposer.placement.top } : undefined}>
+    {annotationComposer && <form className="task-collab-selection-composer is-docked" onSubmit={submitAnnotation}>
       <header><span>ANNOTATION / 01</span><button type="button" aria-label={t("關閉")} disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); }}>×</button></header>
       <blockquote>{annotationComposer.quote}</blockquote>
       <label><span>{t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
