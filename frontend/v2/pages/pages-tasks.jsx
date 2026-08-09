@@ -4860,10 +4860,12 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
       return undefined;
     }
     let frame = null;
+    let disposed = false;
+    let retryCount = 0;
     const measure = () => {
       frame = null;
       const currentVisual = visualRef.current;
-      if (!currentVisual) return;
+      if (!currentVisual || disposed) return;
       const visualRect = currentVisual.getBoundingClientRect();
       const textBlocks = projection.blocks.filter(block => block.type === "text");
       const next = [];
@@ -4907,22 +4909,41 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
           });
         } catch (error) {}
       });
+      if (!next.length && arr(annotations).length && retryCount < 8) {
+        retryCount += 1;
+        frame = window.requestAnimationFrame(measure);
+        return;
+      }
+      retryCount = 0;
       setMarkers(next);
     };
     const schedule = () => {
+      retryCount = 0;
       if (frame == null) frame = window.requestAnimationFrame(measure);
     };
     schedule();
     const scroller = visual.closest(".task-collab-workspace-body");
+    const canvas = visual.querySelector(".task-collab-document-canvas");
     window.addEventListener("resize", schedule);
     if (scroller) scroller.addEventListener("scroll", schedule, { passive: true });
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
-    if (observer) observer.observe(visual);
+    if (observer) {
+      observer.observe(visual);
+      if (canvas) observer.observe(canvas);
+    }
+    const mutationObserver = typeof MutationObserver === "function" && canvas
+      ? new MutationObserver(schedule) : null;
+    if (mutationObserver) mutationObserver.observe(canvas, { childList: true, subtree: true, characterData: true });
+    if (document.fonts && document.fonts.ready) {
+      Promise.resolve(document.fonts.ready).then(() => { if (!disposed) schedule(); }).catch(() => {});
+    }
     return () => {
+      disposed = true;
       if (frame != null) window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", schedule);
       if (scroller) scroller.removeEventListener("scroll", schedule);
       if (observer) observer.disconnect();
+      if (mutationObserver) mutationObserver.disconnect();
     };
   }, [visualRef, projection, annotations, activeId]);
   if (!markers.length) return null;
