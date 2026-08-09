@@ -396,11 +396,19 @@ def _event_view(task_id: UUID, row: dict[str, object]) -> dict[str, object]:
         "annotation_created",
         "annotation_message_created",
         "annotation_status_changed",
+        "review_change_created",
+        "review_change_accepted",
+        "review_change_rejected",
+        "review_change_conflicted",
     }:
         event = "annotation.changed"
         safe_payload = {
             "annotation_id": payload.get("annotation_id"),
             "status": payload.get("status"),
+            "review_state": event_type.removeprefix("review_change_")
+            if event_type.startswith("review_change_")
+            else None,
+            "document_sequence": payload.get("accepted_sequence"),
         }
     else:
         event = "workspace.changed"

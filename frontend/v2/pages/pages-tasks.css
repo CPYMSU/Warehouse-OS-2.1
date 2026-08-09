@@ -872,6 +872,26 @@
 .task-collab-chat-annotation-thread button { min-height: 40px; padding: 0 12px; border: 1px solid var(--task-rule); background: var(--paper); color: var(--ink); font-size: 8.5px; font-weight: 750; }
 .task-collab-chat-annotation-thread button:disabled { opacity: .4; }
 .task-collab-chat-annotation-resolve { margin-top: 8px; color: var(--task-red) !important; }
+.task-collab-chat-annotation-list > article.is-review-change:not(.is-resolved) { box-shadow: inset 4px 0 0 #146b50; }
+.task-collab-chat-annotation-list > article.is-review-change.is-conflicted { box-shadow: inset 4px 0 0 #dc6d18; }
+.task-collab-review-change { margin-bottom: 12px; border: 1px solid var(--task-rule); background: var(--task-soft); }
+.task-collab-review-change > header { min-height: 40px; padding: 8px 10px; align-items: center !important; background: #111; color: #fff !important; }
+.task-collab-review-change > header b { color: #f1c40f; font: 800 8px/1.2 var(--f-mono); letter-spacing: .08em; }
+.task-collab-review-change > header span { font: 750 8px/1.2 var(--f-mono); }
+.task-collab-review-change > div:not(:last-child) { padding: 10px; display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: start; gap: 10px; border-top: 1px solid var(--task-hair); }
+.task-collab-review-change label { color: var(--ink-4); font: 750 7.5px/1.2 var(--f-mono); text-transform: uppercase; }
+.task-collab-review-change del,
+.task-collab-review-change ins { white-space: pre-wrap; overflow-wrap: anywhere; font: 600 12px/1.55 var(--f-text); }
+.task-collab-review-change del { color: #952a2a; text-decoration-color: #d72d24; text-decoration-thickness: 2px; }
+.task-collab-review-change ins { padding-left: 8px; border-left: 4px solid #1f966b; color: #0f6548; text-decoration: none; }
+.task-collab-review-change > small { padding: 8px 10px; display: block; border-top: 1px solid var(--task-hair); color: var(--ink-4); font: 700 7.5px/1.3 var(--f-mono); }
+.task-collab-review-conflict { margin: 0 !important; padding: 10px; border-top: 1px solid #dc6d18; background: #fff1df; color: #7a3909 !important; font: 650 10px/1.5 var(--f-text) !important; }
+.task-collab-review-conflict q { margin-left: 5px; }
+.task-collab-review-change > footer { min-height: 54px; padding: 8px 8px 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--task-rule); }
+.task-collab-review-change > footer > small { max-width: 360px; color: var(--ink-4); font: 650 7.5px/1.35 var(--f-mono); }
+.task-collab-review-change > footer > div { display: flex; gap: 6px; }
+.task-collab-review-change button.accept { background: #146b50; border-color: #146b50; color: #fff; }
+.task-collab-review-change button.reject { color: #9d271f; border-color: #9d271f; }
 
 /* Shared RGA draft · Swiss structure with a restrained spectral sync mark. */
 .task-collab-document { position: relative; width: min(900px, 100%); min-height: 100%; margin: 0 auto; }
@@ -983,7 +1003,7 @@
   margin: 0;
   padding: 8px 10px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto 34px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto 34px;
   align-items: center;
   gap: 8px;
   border: 1px solid var(--task-rule);
@@ -996,6 +1016,8 @@
 .task-collab-selection-dock q { overflow: hidden; text-overflow: ellipsis; font: 650 9px/1.3 var(--f-mono); white-space: nowrap; }
 .task-collab-selection-dock button { min-height: 34px; padding: 0 12px; border: 1px solid #111; background: transparent; color: #111; font: 800 8px/1 var(--f-mono); }
 .task-collab-selection-dock button:hover { background: #111; color: #fff; }
+.task-collab-selection-dock button.review { background: #111; color: #fff; }
+.task-collab-selection-dock button.review:hover { background: #146b50; border-color: #146b50; }
 .task-collab-selection-dock button.clear { padding: 0; font-size: 16px; }
 .task-collab-selection-toolbar {
   position: absolute;
@@ -1031,6 +1053,10 @@
 .task-collab-selection-composer > header span { color: #f1c40f; font: 800 8px/1 var(--f-mono); letter-spacing: .08em; }
 .task-collab-selection-composer > header button { width: 40px; align-self: stretch; border: 0; border-left: 1px solid rgba(255,255,255,.32); background: transparent; color: #fff; font-size: 18px; }
 .task-collab-selection-composer blockquote { max-height: 92px; margin: 0; padding: 13px 14px; overflow: auto; border-bottom: 1px solid var(--task-rule); border-left: 5px solid #f1c40f; background: var(--task-soft); color: var(--ink-2); font: 650 11px/1.55 var(--f-text); }
+.task-collab-review-composer-diff { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--task-rule); }
+.task-collab-review-composer-diff label + label { border-left: 1px solid var(--task-rule); }
+.task-collab-review-composer-diff del { padding: 11px; background: #fff0ef; color: #952a2a; font: 600 12px/1.55 var(--f-text); text-decoration-thickness: 2px; }
+.task-collab-review-composer-diff textarea { min-height: 88px; border-color: #146b50; background: #eef8f3; }
 .task-collab-selection-composer label { padding: 12px 13px 10px; display: grid; gap: 6px; color: var(--ink-3); font: 750 8px/1.2 var(--f-mono); }
 .task-collab-selection-composer textarea { width: 100%; min-height: 76px; padding: 10px; resize: vertical; border: 1px solid var(--task-rule); border-radius: 0; outline: 0; background: var(--paper); color: var(--ink); font: 400 12px/1.5 var(--f-text); }
 .task-collab-selection-composer textarea:focus { box-shadow: inset 3px 0 0 var(--task-red); }
@@ -1147,6 +1173,9 @@
 .task-collab-annotation-layer > span:focus-within { outline: 2px solid var(--task-red); outline-offset: 2px; }
 .task-collab-annotation-layer > span.is-active { background: rgba(239, 51, 64, .22); background: color-mix(in srgb, #ef3340 22%, #f1c40f 16%); border-bottom-color: var(--task-red); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--task-red) 72%, transparent); }
 .task-collab-annotation-layer > span.is-resolved { background: rgba(100, 100, 100, .1); background: color-mix(in srgb, var(--ink-4) 10%, transparent); border-bottom-color: var(--ink-4); border-bottom-style: dotted; }
+.task-collab-annotation-layer > span.is-review-change { background: rgba(31, 150, 107, .2); background: color-mix(in srgb, #1f966b 20%, transparent); border-bottom-color: #146b50; }
+.task-collab-annotation-layer > span.is-review-change:hover { background: rgba(31, 150, 107, .34); background: color-mix(in srgb, #1f966b 34%, transparent); box-shadow: inset 0 0 0 1px #146b50; }
+.task-collab-annotation-layer > span.is-review-change.is-conflicted { background: rgba(220, 109, 24, .22); background: color-mix(in srgb, #dc6d18 22%, transparent); border-bottom-color: #dc6d18; border-bottom-style: dashed; }
 .task-collab-remote-cursor {
   position: absolute;
   width: 2px;
@@ -1684,7 +1713,7 @@
   .task-collab-document-insert button { min-height: 46px; }
   .task-collab-document-insert small { width: 100%; margin-left: 0; }
   .task-collab-selection-overlay { top: -16px; }
-  .task-collab-selection-dock { top: 0; grid-template-columns: minmax(0, 1fr) auto 42px; }
+  .task-collab-selection-dock { top: 0; grid-template-columns: minmax(0, 1fr) auto auto 42px; }
   .task-collab-selection-dock > span { display: none; }
   .task-collab-selection-dock button { min-height: 42px; }
   .task-collab-selection-toolbar {
@@ -1713,6 +1742,10 @@
     transform: none;
   }
   .task-collab-selection-composer textarea { font-size: 16px; }
+  .task-collab-review-composer-diff { grid-template-columns: 1fr; }
+  .task-collab-review-composer-diff label + label { border-left: 0; border-top: 1px solid var(--task-rule); }
+  .task-collab-review-change > footer { align-items: stretch; flex-direction: column; }
+  .task-collab-review-change > footer > div { display: grid; grid-template-columns: 1fr 1fr; }
   .task-collab-selection-composer footer { align-items: stretch; flex-direction: column; padding-left: 0; }
   .task-collab-selection-composer footer small { padding: 10px 12px 0; }
   .task-collab-selection-composer footer button { min-height: 48px; border-left: 0; border-top: 1px solid var(--task-rule); }

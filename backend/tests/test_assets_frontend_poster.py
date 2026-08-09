@@ -100,18 +100,35 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260809-task-annotation-automeasure7' in index
-    assert 'pages/pages-tasks.jsx?v=20260809-task-annotation-automeasure7' in index
+    assert 'pages/pages-tasks.css?v=20260809-task-review-changes8' in index
+    assert 'pages/pages-tasks.jsx?v=20260809-task-review-changes8' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260809-task-annotation-automeasure7' in index
+    assert 'dist/app.bundle.js?v=20260809-task-review-changes8' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
     assert 'core.jsx?v=20260806-pages-actions1' in PERSONAL.read_text(encoding="utf-8")
+
+
+def test_task_review_changes_share_the_document_and_auto_runtime_contract():
+    source = TASKS.read_text(encoding="utf-8")
+    css = TASKS_CSS.read_text(encoding="utf-8")
+
+    for endpoint in (
+        "/collaboration/review-changes`",
+        "/collaboration/review-changes/${encodeURIComponent(annotationId)}/${decision}`",
+    ):
+        assert endpoint in source
+    assert 'beginAnnotation("suggestion")' in source
+    assert 'annotation.kind === "suggestion"' in source
+    assert 't("接受修改")' in source
+    assert 't("拒絕修改")' in source
+    assert ".task-collab-review-change" in css
+    assert ".task-collab-review-composer-diff" in css
 
 
 def test_login_poster_uses_bonfire_platform_identity_and_modular_motion():

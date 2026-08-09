@@ -1085,6 +1085,65 @@ COMMANDS = [
         "examples": ["task collab document export --id 12"],
     },
     {
+        "command": "task collab review propose",
+        "tool_name": "task_collab_review_propose",
+        "description": "對 TASK 共編稿的 CRDT 錨定文字提出 Word Track Changes 式修訂；原文、建議與討論共用同一生命週期",
+        "api_method": "POST",
+        "api_path": "/api/tasks/{id}/collaboration/review-changes",
+        "permission": "tasks.read",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("id", "path.id", "TASK UUID", required=True),
+            _p("client-annotation-id", "body.client_annotation_id", "修訂冪等鍵", required=True),
+            _p("client-message-id", "body.client_message_id", "首則討論冪等鍵", required=True),
+            _p("start-anchor", "body.start_anchor", "CRDT 起點 anchor", ptype="object", required=True),
+            _p("end-anchor", "body.end_anchor", "CRDT 終點 anchor", ptype="object", required=True),
+            _p("start-offset", "body.start_offset", "原始起點 UTF-16 offset", ptype="int", required=True),
+            _p("end-offset", "body.end_offset", "原始終點 UTF-16 offset", ptype="int", required=True),
+            _p("sequence", "body.document_sequence", "提出時的 document sequence", ptype="int", required=True),
+            _p("quote", "body.quote", "精確原文", required=True),
+            _p("proposed", "body.proposed_text", "建議替換文字，可為空字串表示刪除", required=True),
+            _p("note", "body.body", "修訂理由或討論起點", required=True),
+        ],
+        "examples": [
+            "task collab review propose --id 12 --client-annotation-id ai-review-01 "
+            "--client-message-id ai-review-message-01 --start-anchor '{\"left_id\":\"^\",\"right_id\":\"client:1\",\"affinity\":\"forward\",\"fallback\":0}' "
+            "--end-anchor '{\"left_id\":\"client:1\",\"right_id\":null,\"affinity\":\"backward\",\"fallback\":1}' "
+            "--start-offset 0 --end-offset 1 --sequence 1 --quote 稿 --proposed 文稿 --note 用詞更精確"
+        ],
+    },
+    {
+        "command": "task collab review accept",
+        "tool_name": "task_collab_review_accept",
+        "description": "接受一項待審修訂；只在錨定原文仍完全一致時原子更新工作稿並完成生命週期，否則保留衝突而不覆寫",
+        "api_method": "POST",
+        "api_path": "/api/tasks/{id}/collaboration/review-changes/{annotation_id}/accept",
+        "permission": "tasks.read",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("id", "path.id", "TASK UUID", required=True),
+            _p("review", "path.annotation_id", "修訂 annotation UUID", required=True),
+        ],
+        "examples": ["task collab review accept --id 12 --review 00000000-0000-0000-0000-000000000000"],
+    },
+    {
+        "command": "task collab review reject",
+        "tool_name": "task_collab_review_reject",
+        "description": "拒絕一項待審或衝突修訂；不改工作稿，保留審計後退出活動標註狀態",
+        "api_method": "POST",
+        "api_path": "/api/tasks/{id}/collaboration/review-changes/{annotation_id}/reject",
+        "permission": "tasks.read",
+        "writes": True,
+        "risk": "normal",
+        "params": [
+            _p("id", "path.id", "TASK UUID", required=True),
+            _p("review", "path.annotation_id", "修訂 annotation UUID", required=True),
+        ],
+        "examples": ["task collab review reject --id 12 --review 00000000-0000-0000-0000-000000000000"],
+    },
+    {
         "command": "inv list",
         "tool_name": "inventory_list",
         "description": "查詢庫存主數據與庫存餘額",

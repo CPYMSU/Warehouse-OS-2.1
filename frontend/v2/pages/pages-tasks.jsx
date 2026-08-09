@@ -235,6 +235,20 @@ window.W2_LANG.addEN({
   "先選取工作稿中的文字，再建立標註。": "Select text in the draft before creating an annotation.",
   "寫下這段文字需要討論的問題或建議。": "Add the question or suggestion to discuss for this passage.",
   "送出標註": "Post annotation",
+  "建議修改": "Suggest edit",
+  "原文版本": "Original",
+  "建議版本": "Proposed",
+  "修訂說明": "Review note",
+  "送出建議": "Propose change",
+  "接受修改": "Accept change",
+  "拒絕修改": "Reject change",
+  "等待審閱": "Pending review",
+  "修改已接受": "Change accepted",
+  "修改已拒絕": "Change rejected",
+  "原文已變更": "Source changed",
+  "原文已被其他協作者修改，系統沒有覆寫新內容。": "The source was changed by another collaborator. No newer content was overwritten.",
+  "接受後會原子更新工作稿並完成此修訂。": "Accepting atomically updates the draft and completes this review change.",
+  "建議內容必須與原文不同。": "The proposed text must differ from the original.",
   "回覆討論": "Reply to discussion",
   "輸入回覆": "Write a reply",
   "已解決": "Resolved",
@@ -763,8 +777,19 @@ const normalizeCollabAnnotation = value => {
     endOffset: end,
     documentSequence: clamp(number(annotation.document_sequence), 0, Number.MAX_SAFE_INTEGER),
     quote: optionalText(annotation.quote),
+    currentQuote: optionalText(annotation.current_quote),
+    anchorState: key(annotation.anchor_state || "exact"),
+    kind: key(annotation.kind) === "suggestion" ? "suggestion" : "comment",
+    proposedText: String(annotation.proposed_text == null ? "" : annotation.proposed_text),
+    reviewState: key(annotation.review_state || "none"),
+    effectiveReviewState: key(first(annotation.effective_review_state, annotation.review_state, "none")),
     status: key(annotation.status) === "resolved" ? "resolved" : "open",
     canResolve: annotation.can_resolve === true,
+    canAccept: annotation.can_accept === true,
+    canReject: annotation.can_reject === true,
+    reviewedByName: optionalText(annotation.reviewed_by_name),
+    reviewedAt: optionalText(annotation.reviewed_at),
+    acceptedSequence: annotation.accepted_sequence == null ? null : number(annotation.accepted_sequence),
     resolvedByName: optionalText(annotation.resolved_by_name),
     resolvedAt: optionalText(annotation.resolved_at),
     createdAt: optionalText(annotation.created_at),
@@ -2016,6 +2041,33 @@ const CollaborationChat = ({
       if (mounted.current) setAnnotationBusy(false);
     }
   };
+  const setReviewDecision = async (annotationId, decision) => {
+    if (!annotationId || !["accept", "reject"].includes(decision) || annotationBusy || offline) return;
+    setAnnotationBusy(true);
+    setAnnotationError("");
+    try {
+      const result = await W2.post(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/review-changes/${encodeURIComponent(annotationId)}/${decision}`,
+        {}
+      );
+      if (!mounted.current || tenant !== W2.tenant()) return;
+      const updated = normalizeCollabAnnotation(obj(collabData(result).annotation));
+      if (updated) {
+        setAnnotations(current => current.map(annotation => (
+          annotation.id === updated.id ? updated : annotation
+        )));
+        setActiveAnnotationId(updated.status === "resolved" ? "" : updated.id);
+      }
+      await loadAnnotations({ quiet: true });
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant()) {
+        await loadAnnotations({ quiet: true });
+        setAnnotationError(exception.message || t("標註同步失敗"));
+      }
+    } finally {
+      if (mounted.current) setAnnotationBusy(false);
+    }
+  };
   const typingUsers = Object.values(obj(presence)).filter(item => (
     item.typing
     && item.typingExpiresAt > Date.now()
@@ -2061,14 +2113,22 @@ const CollaborationChat = ({
       <header><div><span>{t("標註討論")}</span><strong>{annotations.filter(item => item.status === "open").length}</strong><small>{t("未解決")}</small></div>{annotations.some(item => item.status === "resolved") && <label><input type="checkbox" checked={showResolvedAnnotations} onChange={event => setShowResolvedAnnotations(event.currentTarget.checked)}/>{t("顯示已解決")}</label>}</header>
       {annotationsLoading && !annotations.length ? <div className="task-collab-annotation-empty">{t("同步中")}</div>
       : !visibleAnnotations.length ? <div className="task-collab-annotation-empty"><strong>{t("目前沒有標註")}</strong><p>{t("在共編文件中選取文字，即可建立討論。")}</p></div>
-      : <div className="task-collab-chat-annotation-list">{visibleAnnotations.map((annotation, index) => <article key={annotation.id} className={(annotation.id === activeAnnotationId ? "is-active " : "") + (annotation.status === "resolved" ? "is-resolved" : "")}>
+      : <div className="task-collab-chat-annotation-list">{visibleAnnotations.map((annotation, index) => <article key={annotation.id} className={(annotation.id === activeAnnotationId ? "is-active " : "") + (annotation.status === "resolved" ? "is-resolved " : "") + (annotation.kind === "suggestion" ? "is-review-change is-" + annotation.effectiveReviewState : "")}>
         <header>
           <button type="button" className="task-collab-chat-annotation-summary" onClick={() => { setActiveAnnotationId(current => current === annotation.id ? "" : annotation.id); setAnnotationReply(""); }}>
-            <span>{String(index + 1).padStart(2, "0")}</span><blockquote>{annotation.quote}</blockquote><small>{annotation.authorName} · {collabTime(annotation.createdAt)} · {annotation.messages.length} {t("則討論")}</small>
+            <span>{String(index + 1).padStart(2, "0")}</span><blockquote>{annotation.quote}</blockquote><small>{annotation.kind === "suggestion" ? "TRACK CHANGE" : "ANNOTATION"} · {annotation.authorName} · {collabTime(annotation.createdAt)} · {annotation.messages.length} {t("則討論")}</small>
           </button>
-          <button type="button" className="task-collab-chat-annotation-source" onClick={() => typeof onOpenAnnotation === "function" && onOpenAnnotation(annotation.id)}>{t("回到原文")} ↗</button>
+          {!(annotation.kind === "suggestion" && ["accepted", "rejected"].includes(annotation.reviewState)) && <button type="button" className="task-collab-chat-annotation-source" onClick={() => typeof onOpenAnnotation === "function" && onOpenAnnotation(annotation.id)}>{t("回到原文")} ↗</button>}
         </header>
         {annotation.id === activeAnnotationId && <div className="task-collab-chat-annotation-thread">
+          {annotation.kind === "suggestion" && <section className="task-collab-review-change" aria-label={t("建議修改")}>
+            <header><b>REVIEW / {annotation.effectiveReviewState.toUpperCase()}</b><span>{t(annotation.effectiveReviewState === "accepted" ? "修改已接受" : annotation.effectiveReviewState === "rejected" ? "修改已拒絕" : annotation.effectiveReviewState === "conflicted" ? "原文已變更" : "等待審閱")}</span></header>
+            <div><label>{t("原文版本")}</label><del>{annotation.quote}</del></div>
+            <div><label>{t("建議版本")}</label><ins>{annotation.proposedText || "∅"}</ins></div>
+            {annotation.effectiveReviewState === "conflicted" && <p className="task-collab-review-conflict">{t("原文已被其他協作者修改，系統沒有覆寫新內容。")} {annotation.currentQuote && <q>{annotation.currentQuote}</q>}</p>}
+            {["accepted", "rejected"].includes(annotation.reviewState) && <small>{annotation.reviewedByName} · {collabTime(annotation.reviewedAt)}{annotation.acceptedSequence != null ? ` · SEQ ${annotation.acceptedSequence}` : ""}</small>}
+            {(annotation.canAccept || annotation.canReject) && <footer><small>{t("接受後會原子更新工作稿並完成此修訂。")}</small><div>{annotation.canReject && <button type="button" className="reject" disabled={annotationBusy || offline} onClick={() => setReviewDecision(annotation.id, "reject")}>{t("拒絕修改")}</button>}{annotation.canAccept && <button type="button" className="accept" disabled={annotationBusy || offline} onClick={() => setReviewDecision(annotation.id, "accept")}>{annotationBusy ? "…" : t("接受修改")}</button>}</div></footer>}
+          </section>}
           <div>{annotation.messages.map(message => <section key={message.id}><header><b>{message.authorName}</b><time>{collabTime(message.createdAt)}</time></header><p>{message.body}</p></section>)}</div>
           {canSend && <form onSubmit={submitAnnotationReply}><label><span className="sr-only">{t("輸入回覆")}</span><textarea value={annotationReply} maxLength="4000" rows="2" placeholder={offline ? t("目前離線，草稿已保留") : t("針對這段原文回覆")} onChange={event => setAnnotationReply(event.currentTarget.value)}/></label><button type="submit" disabled={annotationBusy || offline || !annotationReply.trim()}>{annotationBusy ? "…" : t("回覆討論")}</button></form>}
           {annotation.canResolve && <button type="button" className="task-collab-chat-annotation-resolve" disabled={annotationBusy || offline} onClick={() => setAnnotationStatus(annotation.id, annotation.status === "resolved" ? "open" : "resolved")}>{annotation.status === "resolved" ? t("重新開啟") : t("標記已解決")}</button>}
@@ -4901,6 +4961,8 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
               width: rect.width,
               height: rect.height,
               status: annotation.status,
+              kind: annotation.kind,
+              reviewState: annotation.effectiveReviewState,
               active: annotation.id === activeId,
               annotationId: annotation.id,
               quote: annotation.quote,
@@ -4948,7 +5010,7 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
   }, [visualRef, projection, annotations, activeId]);
   if (!markers.length) return null;
   return <div className="task-collab-annotation-layer">{markers.map(marker => (
-    <span key={marker.key} className={(marker.status === "resolved" ? "is-resolved" : "") + (marker.active ? " is-active" : "") + (marker.first ? " is-first" : "")} style={{ left: marker.left, top: marker.top, width: marker.width, height: marker.height }}>
+    <span key={marker.key} className={(marker.status === "resolved" ? "is-resolved" : "") + (marker.kind === "suggestion" ? " is-review-change is-" + marker.reviewState : "") + (marker.active ? " is-active" : "") + (marker.first ? " is-first" : "")} style={{ left: marker.left, top: marker.top, width: marker.width, height: marker.height }}>
       <button type="button" aria-label={t("打開標註討論") + "：" + marker.quote} title={t("打開標註討論")} onPointerDown={event => { event.preventDefault(); event.stopPropagation(); }} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); if (typeof onOpen === "function") onOpen(marker.annotationId); }}/>
     </span>
   ))}</div>;
@@ -5365,6 +5427,7 @@ const CollaborativeDocument = ({
   const [annotationBusy, setAnnotationBusy] = S(false);
   const [annotationComposer, setAnnotationComposer] = S(null);
   const [annotationDraft, setAnnotationDraft] = S("");
+  const [annotationProposal, setAnnotationProposal] = S("");
   const [activeAnnotationId, setActiveAnnotationId] = S("");
   const [selectionToolbar, setSelectionToolbar] = S(null);
   const lastAnnotationSignal = R(annotationSignal);
@@ -5967,7 +6030,10 @@ const CollaborativeDocument = ({
 
   const resolvedAnnotations = M(() => {
     const selectionIndex = collabDocumentSelectionIndex(nodesRef.current);
-    return annotations.map(annotation => {
+    return annotations.filter(annotation => !(
+      annotation.kind === "suggestion"
+      && ["accepted", "rejected"].includes(annotation.reviewState)
+    )).map(annotation => {
       const resolvedStart = collabDocumentResolveBoundary(
         selectionIndex,
         collabPositionInternalAnchor(annotation.startAnchor),
@@ -5986,6 +6052,7 @@ const CollaborativeDocument = ({
     if (!annotationId) return;
     setActiveAnnotationId(String(annotationId));
     setAnnotationComposer(null);
+    setAnnotationProposal("");
     setSelectionToolbar(null);
     visualSelectionRef.current = null;
     if (typeof onAnnotationDiscussion === "function") {
@@ -5993,7 +6060,7 @@ const CollaborativeDocument = ({
     }
   }, [onAnnotationDiscussion]);
 
-  const beginAnnotation = () => {
+  const beginAnnotation = (kindValue = "comment") => {
     if (capabilities.can_edit !== true || loading || annotationBusy) return;
     const selected = mode === "edit" && editorView === "source"
       ? sourceSelectionRef.current : visualSelectionRef.current;
@@ -6013,6 +6080,7 @@ const CollaborativeDocument = ({
     const startAnchor = collabDocumentCaptureBoundary(selectionIndex, start, startAffinity);
     const endAnchor = collabDocumentCaptureBoundary(selectionIndex, end, endAffinity);
     setAnnotationComposer({
+      kind: kindValue === "suggestion" ? "suggestion" : "comment",
       startOffset: start,
       endOffset: end,
       startAnchor: collabPositionPublicAnchor(startAnchor),
@@ -6023,18 +6091,26 @@ const CollaborativeDocument = ({
     });
     setSelectionToolbar(null);
     setAnnotationDraft("");
+    setAnnotationProposal(kindValue === "suggestion" ? contentRef.current.slice(start, end) : "");
     setActiveAnnotationId("");
     setError("");
   };
   const submitAnnotation = async event => {
     event.preventDefault();
     const composer = annotationComposer;
-    const body = annotationDraft.trim();
+    const suggestion = composer && composer.kind === "suggestion";
+    const body = annotationDraft.trim() || (suggestion ? t("建議修改") : "");
     if (!composer || !body || annotationBusy || !networkOnline) return;
+    if (suggestion && annotationProposal === composer.quote) {
+      setError(t("建議內容必須與原文不同。"));
+      return;
+    }
     setAnnotationBusy(true);
     try {
       const result = await W2.post(
-        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations`,
+        suggestion
+          ? `/api/tasks/${encodeURIComponent(taskId)}/collaboration/review-changes`
+          : `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations`,
         {
           client_annotation_id: clientRequestId(),
           client_message_id: clientRequestId(),
@@ -6044,6 +6120,7 @@ const CollaborativeDocument = ({
           end_offset: composer.endOffset,
           document_sequence: composer.documentSequence,
           quote: composer.quote,
+          ...(suggestion ? { proposed_text: annotationProposal } : {}),
           body,
         }
       );
@@ -6051,6 +6128,7 @@ const CollaborativeDocument = ({
       const created = normalizeCollabAnnotation(obj(collabData(result).annotation));
       setAnnotationComposer(null);
       setAnnotationDraft("");
+      setAnnotationProposal("");
       if (created) {
         visitAnnotationDiscussion(created.id);
       }
@@ -6067,6 +6145,7 @@ const CollaborativeDocument = ({
     if (!annotation) return;
     setActiveAnnotationId(annotation.id);
     setAnnotationComposer(null);
+    setAnnotationProposal("");
     setSelectionToolbar(null);
     setMode("edit");
     setEditorView("visual");
@@ -6647,13 +6726,13 @@ const CollaborativeDocument = ({
     </details>}
     {((selectionToolbar && mode === "edit" && capabilities.can_edit === true && !offline) || annotationComposer) && <div className="task-collab-selection-overlay">
       {selectionToolbar && !annotationComposer && mode === "edit" && capabilities.can_edit === true && !offline && <div className="task-collab-selection-dock" role="toolbar" aria-label={t("選取文字工具")} onPointerDown={event => event.preventDefault()}>
-        <span>SELECTED · {selectionToolbar.characters} CHAR</span><q>{selectionToolbar.quote}</q><button type="button" onClick={beginAnnotation}>＋ {t("加批注")}</button><button type="button" className="clear" aria-label={t("清除選取")} onClick={() => setSelectionToolbar(null)}>×</button>
+        <span>SELECTED · {selectionToolbar.characters} CHAR</span><q>{selectionToolbar.quote}</q><button type="button" onClick={() => beginAnnotation("comment")}>＋ {t("加批注")}</button><button type="button" className="review" onClick={() => beginAnnotation("suggestion")}>± {t("建議修改")}</button><button type="button" className="clear" aria-label={t("清除選取")} onClick={() => setSelectionToolbar(null)}>×</button>
       </div>}
       {annotationComposer && <form className="task-collab-selection-composer is-docked" onSubmit={submitAnnotation}>
-        <header><span>ANNOTATION / 01</span><button type="button" aria-label={t("關閉")} disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); }}>×</button></header>
-        <blockquote>{annotationComposer.quote}</blockquote>
-        <label><span>{t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
-        <footer><small>{t("送出後將在對話中繼續討論")}</small><button type="submit" disabled={annotationBusy || !annotationDraft.trim() || offline}>{annotationBusy ? "…" : t("送出標註")} →</button></footer>
+        <header><span>{annotationComposer.kind === "suggestion" ? "TRACK CHANGE / 01" : "ANNOTATION / 01"}</span><button type="button" aria-label={t("關閉")} disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); setAnnotationProposal(""); }}>×</button></header>
+        {annotationComposer.kind === "suggestion" ? <div className="task-collab-review-composer-diff"><label><span>{t("原文版本")}</span><del>{annotationComposer.quote}</del></label><label><span>{t("建議版本")}</span><textarea value={annotationProposal} maxLength="2000" rows="3" autoFocus onChange={event => setAnnotationProposal(event.currentTarget.value)}/></label></div> : <blockquote>{annotationComposer.quote}</blockquote>}
+        <label><span>{annotationComposer.kind === "suggestion" ? t("修訂說明") : t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus={annotationComposer.kind !== "suggestion"} placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
+        <footer><small>{annotationComposer.kind === "suggestion" ? t("接受後會原子更新工作稿並完成此修訂。") : t("送出後將在對話中繼續討論")}</small><button type="submit" disabled={annotationBusy || offline || (annotationComposer.kind === "suggestion" ? annotationProposal === annotationComposer.quote : !annotationDraft.trim())}>{annotationBusy ? "…" : t(annotationComposer.kind === "suggestion" ? "送出建議" : "送出標註")} →</button></footer>
       </form>}
     </div>}
     {loading ? <div className="task-loading" aria-live="polite"><span/><span/><span/><small>{t("同步中")}</small></div>

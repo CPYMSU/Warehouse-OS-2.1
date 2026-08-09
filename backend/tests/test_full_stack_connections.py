@@ -154,7 +154,7 @@ def test_identity_settings_cases_records_and_files_round_trip(monkeypatch) -> No
         response = client.get("/api/runtime/skills")
         assert response.status_code == 200
         skills = response.json()
-        assert skills["total"] == 562
+        assert skills["total"] == 565
         assert skills["skills"][0]["invocation"] == "goal_guided"
         assert "api_path" not in skills["skills"][0]
 
@@ -1623,7 +1623,7 @@ def test_auto_runtime_distils_all_company_authority_and_capability_genes(monkeyp
         result.observations["context_strategy"]
         == "domain_then_family_then_exact_tool_then_live_data"
     )
-    assert result.observations["capability_genes"] == 556
+    assert result.observations["capability_genes"] == 559
     assert result.observations["authority_world"]["positions"] >= 1
     assert result.distillation["selected_tool_names"] == ["warehouse_list"]
     assert result.decisions[0]["judgment"] == "ask_person"

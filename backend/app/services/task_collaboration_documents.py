@@ -552,81 +552,128 @@ def get_document(actor: ActorContext, task_id: str) -> dict[str, object]:
         return _document_view(session, task, member, document)
 
 
-def append_update(
-    actor: ActorContext, task_id: str, payload: dict[str, object]
+def append_update_in_session(
+    session: Session,
+    actor: ActorContext,
+    task: dict[str, object],
+    space: dict[str, object],
+    member: dict[str, object],
+    document: dict[str, object],
+    *,
+    client_id: str,
+    client_update_id: str,
+    operations: list[dict[str, object]],
 ) -> dict[str, object]:
-    target_id = _uuid(task_id, "task id")
-    client_id = _identifier(payload.get("client_id"), "client_id")
-    client_update_id = _identifier(payload.get("client_update_id"), "client_update_id")
-    operations = _normalise_operations(payload.get("ops"))
     update_value = {"format": CRDT_FORMAT, "ops": operations}
     update_json = _canonical(update_value)
     update_bytes = len(update_json.encode("utf-8"))
     if update_bytes > MAX_UPDATE_BYTES:
         raise _error(413, "Collaboration update is too large")
     update_hash = _hash(update_json)
-    with tenant_session(actor.tenant_id) as session:
-        task, space, member = _context(session, actor, target_id)
-        document = _ensure_document(session, actor, space, lock=True)
-        existing = (
-            session.execute(
-                text(
-                    """
-                    SELECT sequence, client_id, update_payload, update_hash
-                    FROM workflow.task_collaboration_document_updates
-                    WHERE document_id = :document_id
-                      AND actor_user_id = :actor_user_id
-                      AND client_update_id = :client_update_id
-                    """
-                ),
-                {
-                    "document_id": document["id"],
-                    "actor_user_id": actor.user_id,
-                    "client_update_id": client_update_id,
-                },
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if existing is not None:
-            if existing["client_id"] != client_id or existing["update_hash"] != update_hash:
-                raise _error(409, "client_update_id was already used for another update")
-            response = _document_view(session, task, member, document)
-            return response | {
-                "result": "idempotent",
-                "idempotent": True,
-                "accepted_sequence": int(existing["sequence"]),
-            }
-        _writable(task)
-        if member["role"] not in EDITABLE_ROLES:
-            raise _error(403, "Observer membership cannot edit the collaboration document")
-        if document["state"] != "active":
-            raise _error(409, "Collaboration document is read-only")
-        nodes, _ = _verified_state(session, document)
-        next_nodes, content, changed = _apply_operations(nodes, operations)
-        previous_sequence = int(document["latest_sequence"])
-        if not changed:
-            response = _document_view(
-                session, task, member, document, verified=(nodes, content)
-            )
-            return response | {
-                "result": "converged_noop",
-                "idempotent": True,
-                "accepted_sequence": previous_sequence,
-            }
-        if previous_sequence >= MAX_UPDATES_PER_DOCUMENT:
-            raise _error(409, "Collaboration document update limit reached; export and archive it")
-        _, snapshot_json, snapshot_hash = _snapshot(next_nodes)
-        sequence = previous_sequence + 1
+    existing = (
         session.execute(
             text(
                 """
-                INSERT INTO workflow.task_collaboration_document_updates(
-                  tenant_id, document_id, sequence, actor_user_id, client_id,
-                  client_update_id, update_payload, update_hash, byte_size
+                SELECT sequence, client_id, update_payload, update_hash
+                FROM workflow.task_collaboration_document_updates
+                WHERE document_id = :document_id
+                  AND actor_user_id = :actor_user_id
+                  AND client_update_id = :client_update_id
+                """
+            ),
+            {
+                "document_id": document["id"],
+                "actor_user_id": actor.user_id,
+                "client_update_id": client_update_id,
+            },
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if existing is not None:
+        if existing["client_id"] != client_id or existing["update_hash"] != update_hash:
+            raise _error(409, "client_update_id was already used for another update")
+        response = _document_view(session, task, member, document)
+        return response | {
+            "result": "idempotent",
+            "idempotent": True,
+            "accepted_sequence": int(existing["sequence"]),
+        }
+    _writable(task)
+    if member["role"] not in EDITABLE_ROLES:
+        raise _error(403, "Observer membership cannot edit the collaboration document")
+    if document["state"] != "active":
+        raise _error(409, "Collaboration document is read-only")
+    nodes, _ = _verified_state(session, document)
+    next_nodes, content, changed = _apply_operations(nodes, operations)
+    previous_sequence = int(document["latest_sequence"])
+    if not changed:
+        response = _document_view(
+            session, task, member, document, verified=(nodes, content)
+        )
+        return response | {
+            "result": "converged_noop",
+            "idempotent": True,
+            "accepted_sequence": previous_sequence,
+        }
+    if previous_sequence >= MAX_UPDATES_PER_DOCUMENT:
+        raise _error(409, "Collaboration document update limit reached; export and archive it")
+    _, snapshot_json, snapshot_hash = _snapshot(next_nodes)
+    sequence = previous_sequence + 1
+    session.execute(
+        text(
+            """
+            INSERT INTO workflow.task_collaboration_document_updates(
+              tenant_id, document_id, sequence, actor_user_id, client_id,
+              client_update_id, update_payload, update_hash, byte_size
+            ) VALUES (
+              :tenant_id, :document_id, :sequence, :actor_user_id, :client_id,
+              :client_update_id, CAST(:update AS jsonb), :update_hash, :byte_size
+            )
+            """
+        ),
+        {
+            "tenant_id": actor.tenant_id,
+            "document_id": document["id"],
+            "sequence": sequence,
+            "actor_user_id": actor.user_id,
+            "client_id": client_id,
+            "client_update_id": client_update_id,
+            "update": update_json,
+            "update_hash": update_hash,
+            "byte_size": update_bytes,
+        },
+    )
+    session.execute(
+        text(
+            """
+            UPDATE workflow.task_collaboration_documents
+            SET latest_sequence = :sequence, snapshot = CAST(:snapshot AS jsonb),
+                snapshot_hash = :snapshot_hash, visible_length = :visible_length,
+                node_count = :node_count, updated_by_user_id = :user_id
+            WHERE id = :document_id
+            """
+        ),
+        {
+            "sequence": sequence,
+            "snapshot": snapshot_json,
+            "snapshot_hash": snapshot_hash,
+            "visible_length": len(content),
+            "node_count": len(next_nodes),
+            "user_id": actor.user_id,
+            "document_id": document["id"],
+        },
+    )
+    if sequence % SNAPSHOT_INTERVAL == 0:
+        session.execute(
+            text(
+                """
+                INSERT INTO workflow.task_collaboration_document_snapshots(
+                  tenant_id, document_id, sequence, snapshot, snapshot_hash,
+                  visible_length, node_count, created_by_user_id
                 ) VALUES (
-                  :tenant_id, :document_id, :sequence, :actor_user_id, :client_id,
-                  :client_update_id, CAST(:update AS jsonb), :update_hash, :byte_size
+                  :tenant_id, :document_id, :sequence, CAST(:snapshot AS jsonb),
+                  :snapshot_hash, :visible_length, :node_count, :user_id
                 )
                 """
             ),
@@ -634,76 +681,54 @@ def append_update(
                 "tenant_id": actor.tenant_id,
                 "document_id": document["id"],
                 "sequence": sequence,
-                "actor_user_id": actor.user_id,
-                "client_id": client_id,
-                "client_update_id": client_update_id,
-                "update": update_json,
-                "update_hash": update_hash,
-                "byte_size": update_bytes,
-            },
-        )
-        session.execute(
-            text(
-                """
-                UPDATE workflow.task_collaboration_documents
-                SET latest_sequence = :sequence, snapshot = CAST(:snapshot AS jsonb),
-                    snapshot_hash = :snapshot_hash, visible_length = :visible_length,
-                    node_count = :node_count, updated_by_user_id = :user_id
-                WHERE id = :document_id
-                """
-            ),
-            {
-                "sequence": sequence,
                 "snapshot": snapshot_json,
                 "snapshot_hash": snapshot_hash,
                 "visible_length": len(content),
                 "node_count": len(next_nodes),
                 "user_id": actor.user_id,
-                "document_id": document["id"],
             },
         )
-        if sequence % SNAPSHOT_INTERVAL == 0:
-            session.execute(
-                text(
-                    """
-                    INSERT INTO workflow.task_collaboration_document_snapshots(
-                      tenant_id, document_id, sequence, snapshot, snapshot_hash,
-                      visible_length, node_count, created_by_user_id
-                    ) VALUES (
-                      :tenant_id, :document_id, :sequence, CAST(:snapshot AS jsonb),
-                      :snapshot_hash, :visible_length, :node_count, :user_id
-                    )
-                    """
-                ),
-                {
-                    "tenant_id": actor.tenant_id,
-                    "document_id": document["id"],
-                    "sequence": sequence,
-                    "snapshot": snapshot_json,
-                    "snapshot_hash": snapshot_hash,
-                    "visible_length": len(content),
-                    "node_count": len(next_nodes),
-                    "user_id": actor.user_id,
-                },
-            )
-        _event(
+    _event(
+        session,
+        actor,
+        space,
+        "document_updated",
+        subject_user_id=actor.user_id,
+        payload={"document_id": str(document["id"]), "sequence": sequence},
+    )
+    document = _document_row(session, UUID(str(space["id"])))
+    assert document is not None
+    response = _document_view(
+        session, task, member, document, verified=(next_nodes, content)
+    )
+    return response | {
+        "result": "updated",
+        "idempotent": False,
+        "accepted_sequence": sequence,
+    }
+
+
+def append_update(
+    actor: ActorContext, task_id: str, payload: dict[str, object]
+) -> dict[str, object]:
+    target_id = _uuid(task_id, "task id")
+    client_id = _identifier(payload.get("client_id"), "client_id")
+    client_update_id = _identifier(payload.get("client_update_id"), "client_update_id")
+    operations = _normalise_operations(payload.get("ops"))
+    with tenant_session(actor.tenant_id) as session:
+        task, space, member = _context(session, actor, target_id)
+        document = _ensure_document(session, actor, space, lock=True)
+        return append_update_in_session(
             session,
             actor,
+            task,
             space,
-            "document_updated",
-            subject_user_id=actor.user_id,
-            payload={"document_id": str(document["id"]), "sequence": sequence},
+            member,
+            document,
+            client_id=client_id,
+            client_update_id=client_update_id,
+            operations=operations,
         )
-        document = _document_row(session, UUID(str(space["id"])))
-        assert document is not None
-        response = _document_view(
-            session, task, member, document, verified=(next_nodes, content)
-        )
-        return response | {
-            "result": "updated",
-            "idempotent": False,
-            "accepted_sequence": sequence,
-        }
 
 
 def export_document(actor: ActorContext, task_id: str) -> dict[str, object]:
@@ -922,6 +947,7 @@ __all__ = [
     "_snapshot",
     "_snapshot_nodes",
     "append_update",
+    "append_update_in_session",
     "export_document",
     "get_document",
     "image_descriptor",

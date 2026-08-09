@@ -33,6 +33,15 @@ COLLABORATION_CONTRACTS = {
     ("get", "/api/tasks/{task_id}/collaboration/position"),
     ("get", "/api/tasks/{task_id}/collaboration/annotations"),
     ("post", "/api/tasks/{task_id}/collaboration/annotations"),
+    ("post", "/api/tasks/{task_id}/collaboration/review-changes"),
+    (
+        "post",
+        "/api/tasks/{task_id}/collaboration/review-changes/{annotation_id}/accept",
+    ),
+    (
+        "post",
+        "/api/tasks/{task_id}/collaboration/review-changes/{annotation_id}/reject",
+    ),
     (
         "post",
         "/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/messages",
@@ -370,6 +379,35 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         )
         assert replayed_annotation.status_code == 201
         assert replayed_annotation.json()["result"] == "idempotent"
+        review_response = client.post(
+            f"/api/tasks/{task_id}/collaboration/review-changes",
+            json={
+                "client_annotation_id": "member-review-1",
+                "client_message_id": "member-review-message-1",
+                "start_anchor": {
+                    "left_id": "^",
+                    "right_id": "integration:1",
+                    "affinity": "forward",
+                    "fallback": 0,
+                },
+                "end_anchor": {
+                    "left_id": "integration:1",
+                    "right_id": None,
+                    "affinity": "backward",
+                    "fallback": 1,
+                },
+                "start_offset": 0,
+                "end_offset": 1,
+                "document_sequence": 1,
+                "quote": "稿",
+                "proposed_text": "文稿",
+                "body": "Expand this term.",
+            },
+        )
+        assert review_response.status_code == 201
+        review_id = review_response.json()["annotation"]["id"]
+        assert review_response.json()["annotation"]["review_state"] == "pending"
+        assert review_response.json()["annotation"]["can_accept"] is False
 
         sent = client.post(
             f"/api/tasks/{task_id}/collaboration/messages",
@@ -430,6 +468,89 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         )
         assert open_annotations.status_code == 200
         assert annotation_id in {item["id"] for item in open_annotations.json()["items"]}
+        accepted = client.post(
+            f"/api/tasks/{task_id}/collaboration/review-changes/{review_id}/accept"
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["annotation"]["review_state"] == "accepted"
+        assert accepted.json()["annotation"]["status"] == "resolved"
+        assert accepted.json()["annotation"]["accepted_sequence"] == 2
+        assert client.get(
+            f"/api/tasks/{task_id}/collaboration/document"
+        ).json()["content"] == "文稿"
+        accepted_replay = client.post(
+            f"/api/tasks/{task_id}/collaboration/review-changes/{review_id}/accept"
+        )
+        assert accepted_replay.status_code == 200
+        assert accepted_replay.json()["result"] == "idempotent"
+
+        first_review_node = f"review-{review_id.replace('-', '')}:0"
+        second_review_node = f"review-{review_id.replace('-', '')}:1"
+        conflicted_review = client.post(
+            f"/api/tasks/{task_id}/collaboration/review-changes",
+            json={
+                "client_annotation_id": "owner-review-conflict-1",
+                "client_message_id": "owner-review-conflict-message-1",
+                "start_anchor": {
+                    "left_id": "^",
+                    "right_id": first_review_node,
+                    "affinity": "forward",
+                    "fallback": 0,
+                },
+                "end_anchor": {
+                    "left_id": first_review_node,
+                    "right_id": second_review_node,
+                    "affinity": "backward",
+                    "fallback": 1,
+                },
+                "start_offset": 0,
+                "end_offset": 1,
+                "document_sequence": 2,
+                "quote": "文",
+                "proposed_text": "新",
+                "body": "This proposal will encounter a concurrent edit.",
+            },
+        )
+        assert conflicted_review.status_code == 201
+        conflicted_review_id = conflicted_review.json()["annotation"]["id"]
+        concurrent_update = client.post(
+            f"/api/tasks/{task_id}/collaboration/document/updates",
+            json={
+                "client_id": "owner-editor",
+                "client_update_id": "owner-conflict-change-1",
+                "ops": [
+                    {"type": "delete", "id": first_review_node},
+                    {
+                        "type": "insert",
+                        "id": "owner-conflict:1",
+                        "after": "^",
+                        "value": "改",
+                        "clock": 4,
+                    },
+                ],
+            },
+        )
+        assert concurrent_update.status_code == 200
+        conflict = client.post(
+            f"/api/tasks/{task_id}/collaboration/review-changes/{conflicted_review_id}/accept"
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["reason"] == "source_changed"
+        review_items = client.get(
+            f"/api/tasks/{task_id}/collaboration/annotations?status=all"
+        ).json()["items"]
+        conflicted_item = next(
+            item for item in review_items if item["id"] == conflicted_review_id
+        )
+        assert conflicted_item["review_state"] == "conflicted"
+        rejected = client.post(
+            f"/api/tasks/{task_id}/collaboration/review-changes/{conflicted_review_id}/reject"
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["annotation"]["review_state"] == "rejected"
+        assert client.get(
+            f"/api/tasks/{task_id}/collaboration/document"
+        ).json()["content"] == "改稿"
         updated = client.post(
             f"/api/tasks/{task_id}/status",
             json={"status": "in_progress", "expected_version": task["version"]},

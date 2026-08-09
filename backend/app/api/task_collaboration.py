@@ -32,9 +32,12 @@ from app.services.task_collaboration_documents import (
     register_image,
 )
 from app.services.task_collaboration_annotations import (
+    accept_review_change,
     add_annotation_message,
     create_annotation,
+    create_review_change,
     list_annotations,
+    reject_review_change,
     update_annotation_status,
 )
 from app.services.task_collaboration_realtime import (
@@ -202,6 +205,40 @@ def collaboration_annotation_create(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     return create_annotation(actor, task_id, payload)
+
+
+@router.post(
+    "/api/tasks/{task_id}/collaboration/review-changes",
+    status_code=status.HTTP_201_CREATED,
+)
+def collaboration_review_change_create(
+    task_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return create_review_change(actor, task_id, payload)
+
+
+@router.post(
+    "/api/tasks/{task_id}/collaboration/review-changes/{annotation_id}/accept"
+)
+def collaboration_review_change_accept(
+    task_id: str,
+    annotation_id: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return accept_review_change(actor, task_id, annotation_id)
+
+
+@router.post(
+    "/api/tasks/{task_id}/collaboration/review-changes/{annotation_id}/reject"
+)
+def collaboration_review_change_reject(
+    task_id: str,
+    annotation_id: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return reject_review_change(actor, task_id, annotation_id)
 
 
 @router.post(
