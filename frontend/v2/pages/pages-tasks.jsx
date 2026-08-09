@@ -6610,15 +6610,17 @@ const CollaborativeDocument = ({
         <I name="image" size={13}/><span>{collabDocumentAssetAlt(asset)}</span><small>{number(asset.width)}×{number(asset.height)}</small>
       </button>)}</div>
     </details>}
-    {selectionToolbar && !annotationComposer && mode === "edit" && capabilities.can_edit === true && !offline && <div className="task-collab-selection-dock" role="toolbar" aria-label={t("選取文字工具")} onPointerDown={event => event.preventDefault()}>
-      <span>SELECTED · {selectionToolbar.characters} CHAR</span><q>{selectionToolbar.quote}</q><button type="button" onClick={beginAnnotation}>＋ {t("加批注")}</button><button type="button" className="clear" aria-label={t("清除選取")} onClick={() => setSelectionToolbar(null)}>×</button>
+    {((selectionToolbar && mode === "edit" && capabilities.can_edit === true && !offline) || annotationComposer) && <div className="task-collab-selection-overlay">
+      {selectionToolbar && !annotationComposer && mode === "edit" && capabilities.can_edit === true && !offline && <div className="task-collab-selection-dock" role="toolbar" aria-label={t("選取文字工具")} onPointerDown={event => event.preventDefault()}>
+        <span>SELECTED · {selectionToolbar.characters} CHAR</span><q>{selectionToolbar.quote}</q><button type="button" onClick={beginAnnotation}>＋ {t("加批注")}</button><button type="button" className="clear" aria-label={t("清除選取")} onClick={() => setSelectionToolbar(null)}>×</button>
+      </div>}
+      {annotationComposer && <form className="task-collab-selection-composer is-docked" onSubmit={submitAnnotation}>
+        <header><span>ANNOTATION / 01</span><button type="button" aria-label={t("關閉")} disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); }}>×</button></header>
+        <blockquote>{annotationComposer.quote}</blockquote>
+        <label><span>{t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
+        <footer><small>{t("送出後將在對話中繼續討論")}</small><button type="submit" disabled={annotationBusy || !annotationDraft.trim() || offline}>{annotationBusy ? "…" : t("送出標註")} →</button></footer>
+      </form>}
     </div>}
-    {annotationComposer && <form className="task-collab-selection-composer is-docked" onSubmit={submitAnnotation}>
-      <header><span>ANNOTATION / 01</span><button type="button" aria-label={t("關閉")} disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); }}>×</button></header>
-      <blockquote>{annotationComposer.quote}</blockquote>
-      <label><span>{t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
-      <footer><small>{t("送出後將在對話中繼續討論")}</small><button type="submit" disabled={annotationBusy || !annotationDraft.trim() || offline}>{annotationBusy ? "…" : t("送出標註")} →</button></footer>
-    </form>}
     {loading ? <div className="task-loading" aria-live="polite"><span/><span/><span/><small>{t("同步中")}</small></div>
     : mode === "edit" && editorView === "source" ? <label className="task-collab-document-editor"><span className="sr-only">{t("輸入協作工作稿")}</span><textarea ref={editorRef} value={content} rows="18" readOnly={capabilities.can_edit !== true} aria-readonly={capabilities.can_edit !== true} spellCheck="true" onCompositionStart={onCompositionStart} onCompositionEnd={onCompositionEnd} onChange={onChange} onFocus={event => rememberSourceSelection(event, true)} onSelect={event => rememberSourceSelection(event, true)} onBlur={event => { rememberSourceSelection(event, false); flushDocumentOnBlur(); }} placeholder={t("開始整理共同目標、決定與下一步。")}/></label>
     : mode === "edit" ? <CollaborativeDocumentVisualEditor taskId={taskId} content={content} assets={assets} readOnly={capabilities.can_edit !== true} selectionRef={visualSelectionRef} remoteEditors={remoteEditors} annotations={resolvedAnnotations} activeAnnotationId={activeAnnotationId} onSelectionChange={placeSelectionToolbar} onReplace={replaceDocumentRange} onSplices={applyDocumentSplices} onComposeStart={onVisualCompositionStart} onComposeEnd={onVisualCompositionEnd} onBlur={flushDocumentOnBlur}/>
