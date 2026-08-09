@@ -4934,7 +4934,7 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
       const current = selectionRef.current;
       if (current && (current.pending === true || current.restoring === true)) return;
       const visual = visualRef.current;
-      if (!visual || !visual.contains(document.activeElement)) {
+      if (!visual) {
         if (typeof onSelectionChange === "function") onSelectionChange(null);
         return;
       }
@@ -4972,8 +4972,28 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
         onSelectionChange(rect ? { selection: { ...selectionRef.current }, rect } : null);
       }
     };
+    let finalSelectionFrame = null;
+    const finalizeSelection = () => {
+      if (finalSelectionFrame != null) window.cancelAnimationFrame(finalSelectionFrame);
+      finalSelectionFrame = window.requestAnimationFrame(() => {
+        finalSelectionFrame = null;
+        selectionChanged();
+      });
+    };
+    const visual = visualRef.current;
     document.addEventListener("selectionchange", selectionChanged);
-    return () => document.removeEventListener("selectionchange", selectionChanged);
+    if (visual) {
+      visual.addEventListener("pointerup", finalizeSelection);
+      visual.addEventListener("keyup", finalizeSelection);
+    }
+    return () => {
+      if (finalSelectionFrame != null) window.cancelAnimationFrame(finalSelectionFrame);
+      document.removeEventListener("selectionchange", selectionChanged);
+      if (visual) {
+        visual.removeEventListener("pointerup", finalizeSelection);
+        visual.removeEventListener("keyup", finalizeSelection);
+      }
+    };
   }, [projection, selectionRef, onSelectionChange]);
   E(() => {
     const selected = selectionRef.current ? { ...selectionRef.current } : null;
