@@ -1621,7 +1621,8 @@ const CollaborationPlaza = ({ onOpen, refreshSignal = 0 }) => {
 
 const CollaborationChat = ({
   taskId, active, canSend, viewerUserId, realtimeState, presence,
-  members, messageSignal, onTyping, lastMessageIdRef,
+  members, messageSignal, annotationSignal, annotationFocusId, onOpenAnnotation,
+  onTyping, lastMessageIdRef,
 }) => {
   const tenant = W2.tenant();
   const [messages, setMessages] = S([]);
@@ -1630,6 +1631,14 @@ const CollaborationChat = ({
   const [sending, setSending] = S(false);
   const [error, setError] = S("");
   const [newMessageCount, setNewMessageCount] = S(0);
+  const [chatScope, setChatScope] = S("all");
+  const [annotations, setAnnotations] = S([]);
+  const [annotationsLoading, setAnnotationsLoading] = S(false);
+  const [annotationError, setAnnotationError] = S("");
+  const [activeAnnotationId, setActiveAnnotationId] = S("");
+  const [annotationReply, setAnnotationReply] = S("");
+  const [annotationBusy, setAnnotationBusy] = S(false);
+  const [showResolvedAnnotations, setShowResolvedAnnotations] = S(false);
   const mounted = R(true);
   const polling = R(false);
   const pendingLoad = R(false);
@@ -1652,6 +1661,32 @@ const CollaborationChat = ({
   const typingStopTimer = R(null);
   const typingCallback = R(onTyping);
   E(() => { typingCallback.current = onTyping; }, [onTyping]);
+  const loadAnnotations = C(async ({ quiet = false } = {}) => {
+    if (!active || taskId == null) return false;
+    if (!quiet) setAnnotationsLoading(true);
+    try {
+      const raw = await collabJson(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations?status=all`,
+        { cache: "no-store" }
+      );
+      if (!mounted.current || tenant !== W2.tenant()) return false;
+      const items = arr(first(collabData(raw).items, obj(raw).items))
+        .map(normalizeCollabAnnotation).filter(Boolean);
+      setAnnotations(items);
+      setActiveAnnotationId(current => (
+        current && items.some(item => item.id === current) ? current : ""
+      ));
+      setAnnotationError("");
+      return true;
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant() && !quiet) {
+        setAnnotationError(exception.message || t("標註同步失敗"));
+      }
+      return false;
+    } finally {
+      if (mounted.current) setAnnotationsLoading(false);
+    }
+  }, [active, taskId, tenant]);
   const clearTypingTimers = C(() => {
     if (typingStartTimer.current) window.clearTimeout(typingStartTimer.current);
     if (typingRefreshTimer.current) window.clearTimeout(typingRefreshTimer.current);
@@ -1859,6 +1894,24 @@ const CollaborationChat = ({
   E(() => {
     if (active && messageSignal > 0) loadMessages(false);
   }, [active, messageSignal, loadMessages]);
+  E(() => {
+    if (!active || taskId == null) return;
+    setAnnotations([]);
+    setActiveAnnotationId("");
+    setAnnotationReply("");
+    setAnnotationError("");
+    loadAnnotations();
+  }, [active, taskId, tenant, loadAnnotations]);
+  E(() => {
+    if (active && annotationSignal > 0) loadAnnotations({ quiet: true });
+  }, [active, annotationSignal, loadAnnotations]);
+  E(() => {
+    if (!active || !annotationFocusId) return;
+    setChatScope("annotations");
+    setActiveAnnotationId(String(annotationFocusId));
+    setAnnotationReply("");
+    loadAnnotations({ quiet: true });
+  }, [active, annotationFocusId, loadAnnotations]);
   const scrollToBottom = C(() => {
     if (!listRef.current) return;
     listRef.current.scrollTop = listRef.current.scrollHeight;
@@ -1915,6 +1968,46 @@ const CollaborationChat = ({
       if (mounted.current) setSending(false);
     }
   };
+  const submitAnnotationReply = async event => {
+    event.preventDefault();
+    const body = annotationReply.trim();
+    if (!activeAnnotationId || !body || annotationBusy || !canSend || offline) return;
+    setAnnotationBusy(true);
+    setAnnotationError("");
+    try {
+      await W2.post(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations/${encodeURIComponent(activeAnnotationId)}/messages`,
+        { client_message_id: clientRequestId(), body }
+      );
+      if (!mounted.current || tenant !== W2.tenant()) return;
+      setAnnotationReply("");
+      await loadAnnotations({ quiet: true });
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant()) {
+        setAnnotationError(exception.message || t("標註同步失敗"));
+      }
+    } finally {
+      if (mounted.current) setAnnotationBusy(false);
+    }
+  };
+  const setAnnotationStatus = async (annotationId, statusValue) => {
+    if (!annotationId || annotationBusy || !canSend || offline) return;
+    setAnnotationBusy(true);
+    setAnnotationError("");
+    try {
+      await W2.post(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations/${encodeURIComponent(annotationId)}/status`,
+        { status: statusValue }
+      );
+      if (mounted.current && tenant === W2.tenant()) await loadAnnotations({ quiet: true });
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant()) {
+        setAnnotationError(exception.message || t("標註同步失敗"));
+      }
+    } finally {
+      if (mounted.current) setAnnotationBusy(false);
+    }
+  };
   const typingUsers = Object.values(obj(presence)).filter(item => (
     item.typing
     && item.typingExpiresAt > Date.now()
@@ -1927,28 +2020,60 @@ const CollaborationChat = ({
   }).join("、");
   const typingExtra = Math.max(0, typingUsers.length - 2);
   const offline = realtimeState === COLLAB_REALTIME_STATES.OFFLINE;
+  const visibleAnnotations = annotations.filter(annotation => (
+    showResolvedAnnotations || annotation.status !== "resolved"
+  ));
   return <section className="task-collab-chat">
-    {error && <div className="task-inline-error" role="alert"><span>{error}</span><button type="button" onClick={() => loadMessages(false)}>{t("重新載入")}</button></div>}
-    <div className="task-collab-message-window">
-      <div className="task-collab-messages" ref={listRef} role="log" aria-label={t("聊天訊息")} aria-live="polite" aria-relevant="additions text" aria-atomic="false" aria-busy={loading} tabIndex="0" onScroll={onMessageScroll}>
-        {loading && !messages.length
-          ? <div className="task-collab-chat-empty">{t("同步中")}</div>
-          : messages.length ? messages.map(message => {
-            const senderId = first(message.sender_user_id, obj(message.sender).user_id, obj(message.sender).id);
-            const mine = message.is_mine === true || (viewerUserId != null && String(senderId) === String(viewerUserId));
-            return <article className={"task-collab-message" + (mine ? " mine" : "")} key={collabMessageId(message)}>
-              <header><strong>{collabDisplayName(first(message.sender, { display_name: message.sender_name }), t("協作者"))}</strong><time>{collabTime(first(message.created_at, message.sent_at))}</time></header>
-              <p>{optionalText(message.body, message.message)}</p>
-            </article>;
-          }) : <div className="task-collab-chat-empty">{t("目前沒有訊息")}</div>}
+    <header className="task-collab-chat-head">
+      <div><L red>CONVERSATION / CONTEXT</L><h3>{t("協作對話")}</h3></div>
+      <nav className="task-collab-chat-filters" aria-label={t("對話範圍")}>
+        {[["all", "全部對話"], ["workspace", "工作區對話"], ["annotations", "標註討論"]].map(([id, label]) => <button type="button" key={id} className={chatScope === id ? "on" : ""} aria-pressed={chatScope === id} onClick={() => setChatScope(id)}>{t(label)}{id === "annotations" && <b>{annotations.filter(item => item.status === "open").length}</b>}</button>)}
+      </nav>
+    </header>
+    {error && chatScope !== "annotations" && <div className="task-inline-error" role="alert"><span>{error}</span><button type="button" onClick={() => loadMessages(false)}>{t("重新載入")}</button></div>}
+    {annotationError && chatScope !== "workspace" && <div className="task-inline-error" role="alert"><span>{annotationError}</span><button type="button" onClick={() => loadAnnotations()}>{t("重新載入")}</button></div>}
+    {chatScope !== "annotations" && <>
+      <div className="task-collab-message-window">
+        <div className="task-collab-messages" ref={listRef} role="log" aria-label={t("聊天訊息")} aria-live="polite" aria-relevant="additions text" aria-atomic="false" aria-busy={loading} tabIndex="0" onScroll={onMessageScroll}>
+          {loading && !messages.length
+            ? <div className="task-collab-chat-empty">{t("同步中")}</div>
+            : messages.length ? messages.map(message => {
+              const senderId = first(message.sender_user_id, obj(message.sender).user_id, obj(message.sender).id);
+              const mine = message.is_mine === true || (viewerUserId != null && String(senderId) === String(viewerUserId));
+              return <article className={"task-collab-message" + (mine ? " mine" : "")} key={collabMessageId(message)}>
+                <header><strong>{collabDisplayName(first(message.sender, { display_name: message.sender_name }), t("協作者"))}</strong><time>{collabTime(first(message.created_at, message.sent_at))}</time></header>
+                <p>{optionalText(message.body, message.message)}</p>
+              </article>;
+            }) : <div className="task-collab-chat-empty">{t("目前沒有訊息")}</div>}
+        </div>
+        {newMessageCount > 0 && <button type="button" className="task-collab-new-messages" onClick={scrollToBottom} aria-label={newMessageCount + " " + t("則新訊息")}>{newMessageCount} {t("則新訊息")} · {t("查看新訊息")}</button>}
       </div>
-      {newMessageCount > 0 && <button type="button" className="task-collab-new-messages" onClick={scrollToBottom} aria-label={newMessageCount + " " + t("則新訊息")}>{newMessageCount} {t("則新訊息")} · {t("查看新訊息")}</button>}
-    </div>
-    <div className="task-collab-typing" role="status" aria-live="polite" aria-atomic="true">{typingUsers.length ? <span><strong>{typingNames}</strong>{typingExtra > 0 && <b> +{typingExtra}</b>} {t("正在輸入訊息")}…</span> : null}</div>
-    {canSend && <form className="task-collab-compose" onSubmit={send}>
-      <label><span className="sr-only">{t("輸入訊息")}</span><textarea rows="2" maxLength="4000" value={draft} onChange={event => { setDraft(event.target.value); queueTyping(event.target.value); }} onBlur={() => stopTyping(true)} placeholder={offline ? t("目前離線，草稿已保留") : t("輸入訊息")}/></label>
-      <B type="submit" kind="primary" disabled={sending || offline || !draft.trim()}>{sending ? "…" : t("發送")}</B>
-    </form>}
+    </>}
+    {chatScope !== "workspace" && <section className="task-collab-chat-annotations" aria-label={t("標註討論")}>
+      <header><div><span>{t("標註討論")}</span><strong>{annotations.filter(item => item.status === "open").length}</strong><small>{t("未解決")}</small></div>{annotations.some(item => item.status === "resolved") && <label><input type="checkbox" checked={showResolvedAnnotations} onChange={event => setShowResolvedAnnotations(event.currentTarget.checked)}/>{t("顯示已解決")}</label>}</header>
+      {annotationsLoading && !annotations.length ? <div className="task-collab-annotation-empty">{t("同步中")}</div>
+      : !visibleAnnotations.length ? <div className="task-collab-annotation-empty"><strong>{t("目前沒有標註")}</strong><p>{t("在共編文件中選取文字，即可建立討論。")}</p></div>
+      : <div className="task-collab-chat-annotation-list">{visibleAnnotations.map((annotation, index) => <article key={annotation.id} className={(annotation.id === activeAnnotationId ? "is-active " : "") + (annotation.status === "resolved" ? "is-resolved" : "")}>
+        <header>
+          <button type="button" className="task-collab-chat-annotation-summary" onClick={() => { setActiveAnnotationId(current => current === annotation.id ? "" : annotation.id); setAnnotationReply(""); }}>
+            <span>{String(index + 1).padStart(2, "0")}</span><blockquote>{annotation.quote}</blockquote><small>{annotation.authorName} · {collabTime(annotation.createdAt)} · {annotation.messages.length} {t("則討論")}</small>
+          </button>
+          <button type="button" className="task-collab-chat-annotation-source" onClick={() => typeof onOpenAnnotation === "function" && onOpenAnnotation(annotation.id)}>{t("回到原文")} ↗</button>
+        </header>
+        {annotation.id === activeAnnotationId && <div className="task-collab-chat-annotation-thread">
+          <div>{annotation.messages.map(message => <section key={message.id}><header><b>{message.authorName}</b><time>{collabTime(message.createdAt)}</time></header><p>{message.body}</p></section>)}</div>
+          {canSend && <form onSubmit={submitAnnotationReply}><label><span className="sr-only">{t("輸入回覆")}</span><textarea value={annotationReply} maxLength="4000" rows="2" placeholder={offline ? t("目前離線，草稿已保留") : t("針對這段原文回覆")} onChange={event => setAnnotationReply(event.currentTarget.value)}/></label><button type="submit" disabled={annotationBusy || offline || !annotationReply.trim()}>{annotationBusy ? "…" : t("回覆討論")}</button></form>}
+          {annotation.canResolve && <button type="button" className="task-collab-chat-annotation-resolve" disabled={annotationBusy || offline} onClick={() => setAnnotationStatus(annotation.id, annotation.status === "resolved" ? "open" : "resolved")}>{annotation.status === "resolved" ? t("重新開啟") : t("標記已解決")}</button>}
+        </div>}
+      </article>)}</div>}
+    </section>}
+    {chatScope !== "annotations" && <>
+      <div className="task-collab-typing" role="status" aria-live="polite" aria-atomic="true">{typingUsers.length ? <span><strong>{typingNames}</strong>{typingExtra > 0 && <b> +{typingExtra}</b>} {t("正在輸入訊息")}…</span> : null}</div>
+      {canSend && <form className="task-collab-compose" onSubmit={send}>
+        <label><span className="sr-only">{t("輸入訊息")}</span><textarea rows="2" maxLength="4000" value={draft} onChange={event => { setDraft(event.target.value); queueTyping(event.target.value); }} onBlur={() => stopTyping(true)} placeholder={offline ? t("目前離線，草稿已保留") : t("輸入訊息")}/></label>
+        <B type="submit" kind="primary" disabled={sending || offline || !draft.trim()}>{sending ? "…" : t("發送")}</B>
+      </form>}
+    </>}
   </section>;
 };
 
@@ -4771,7 +4896,7 @@ const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotatio
   ))}</div>;
 };
 
-const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, selectionRef, remoteEditors, annotations, activeAnnotationId, onReplace, onSplices, onComposeStart, onComposeEnd, onBlur }) => {
+const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, selectionRef, remoteEditors, annotations, activeAnnotationId, onSelectionChange, onReplace, onSplices, onComposeStart, onComposeEnd, onBlur }) => {
   const projection = M(() => collabDocumentParseBlocks(content), [content]);
   const visualGroups = M(() => collabDocumentVisualGroups(projection.blocks), [projection]);
   const assetMap = M(() => new Map(arr(assets).map(asset => [asset.asset_key, asset])), [assets]);
@@ -4809,9 +4934,15 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
       const current = selectionRef.current;
       if (current && (current.pending === true || current.restoring === true)) return;
       const visual = visualRef.current;
-      if (!visual || !visual.contains(document.activeElement)) return;
+      if (!visual || !visual.contains(document.activeElement)) {
+        if (typeof onSelectionChange === "function") onSelectionChange(null);
+        return;
+      }
       const selected = resolveTextSelection();
-      if (!selected) return;
+      if (!selected) {
+        if (typeof onSelectionChange === "function") onSelectionChange(null);
+        return;
+      }
       const preserveAnchors = current && current.start === selected.start && current.end === selected.end;
       const startBlock = projection.blocks.find(block => block.type === "text" && block.lineIndex === selected.startLineIndex);
       selectionRef.current = {
@@ -4825,10 +4956,25 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
         level: startBlock ? startBlock.level : 0,
         active: true, restoring: false, pending: false,
       };
+      if (typeof onSelectionChange === "function") {
+        let rect = null;
+        if (selected.end > selected.start) {
+          try {
+            const nativeSelection = window.getSelection();
+            const range = nativeSelection && nativeSelection.rangeCount > 0
+              ? nativeSelection.getRangeAt(0) : null;
+            const measured = range && range.getBoundingClientRect();
+            if (measured && (measured.width > 0 || measured.height > 0)) {
+              rect = { left: measured.left, top: measured.top, right: measured.right, bottom: measured.bottom, width: measured.width, height: measured.height };
+            }
+          } catch (error) {}
+        }
+        onSelectionChange(rect ? { selection: { ...selectionRef.current }, rect } : null);
+      }
     };
     document.addEventListener("selectionchange", selectionChanged);
     return () => document.removeEventListener("selectionchange", selectionChanged);
-  }, [projection, selectionRef]);
+  }, [projection, selectionRef, onSelectionChange]);
   E(() => {
     const selected = selectionRef.current ? { ...selectionRef.current } : null;
     if (!selected || selected.active !== true || selected.pending !== true) return;
@@ -5052,6 +5198,7 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
 const CollaborativeDocument = ({
   taskId, task, role, viewerUserId, clientId, realtimeState, presence,
   resumePosition, onPosition, documentSignal, documentSequence, annotationSignal,
+  focusAnnotationId, onAnnotationCreated, onAnnotationFocusHandled,
 }) => {
   const tenant = W2.tenant();
   const initialQueue = R(null);
@@ -5112,14 +5259,32 @@ const CollaborativeDocument = ({
   onPositionRef.current = onPosition;
   const [positionRestored, setPositionRestored] = S(false);
   const [annotations, setAnnotations] = S([]);
-  const [annotationsLoading, setAnnotationsLoading] = S(true);
+  const [, setAnnotationsLoading] = S(true);
   const [annotationBusy, setAnnotationBusy] = S(false);
   const [annotationComposer, setAnnotationComposer] = S(null);
   const [annotationDraft, setAnnotationDraft] = S("");
-  const [annotationReply, setAnnotationReply] = S("");
   const [activeAnnotationId, setActiveAnnotationId] = S("");
-  const [showResolvedAnnotations, setShowResolvedAnnotations] = S(false);
+  const [selectionToolbar, setSelectionToolbar] = S(null);
   const lastAnnotationSignal = R(annotationSignal);
+
+  const placeSelectionToolbar = C(payload => {
+    const selected = obj(obj(payload).selection);
+    const rect = obj(obj(payload).rect);
+    if (number(selected.end) <= number(selected.start) || (!number(rect.width) && !number(rect.height))) {
+      setSelectionToolbar(null);
+      return;
+    }
+    const sectionRect = sectionRef.current && sectionRef.current.getBoundingClientRect();
+    const sectionLeft = sectionRect ? sectionRect.left : 0;
+    const sectionTop = sectionRect ? sectionRect.top : 0;
+    const sectionWidth = Math.max(320, number(sectionRect && sectionRect.width) || number(window.innerWidth));
+    const center = number(rect.left) + number(rect.width) / 2 - sectionLeft;
+    setSelectionToolbar({
+      left: clamp(center, 112, sectionWidth - 112),
+      top: Math.max(54, number(rect.top) - sectionTop - 10),
+      characters: number(selected.end) - number(selected.start),
+    });
+  }, []);
 
   const persistQueue = C(() => {
     const saved = collabDocumentSaveQueue(tenant, taskId, viewerUserId, queueRef.current);
@@ -5713,9 +5878,6 @@ const CollaborativeDocument = ({
       return { ...annotation, resolvedStart, resolvedEnd };
     });
   }, [annotations, content]);
-  const visibleAnnotations = M(() => resolvedAnnotations.filter(annotation => (
-    showResolvedAnnotations || annotation.status !== "resolved"
-  )), [resolvedAnnotations, showResolvedAnnotations]);
 
   const beginAnnotation = () => {
     if (capabilities.can_edit !== true || loading || annotationBusy) return;
@@ -5743,7 +5905,9 @@ const CollaborativeDocument = ({
       endAnchor: collabPositionPublicAnchor(endAnchor),
       documentSequence: Math.max(0, number(adoptedSequence.current)),
       quote: contentRef.current.slice(start, end),
+      placement: selectionToolbar,
     });
+    setSelectionToolbar(null);
     setAnnotationDraft("");
     setActiveAnnotationId("");
     setError("");
@@ -5773,46 +5937,11 @@ const CollaborativeDocument = ({
       const created = normalizeCollabAnnotation(obj(collabData(result).annotation));
       setAnnotationComposer(null);
       setAnnotationDraft("");
-      if (created) setActiveAnnotationId(created.id);
-      await loadAnnotations({ quiet: true });
-    } catch (exception) {
-      if (mounted.current && tenant === W2.tenant()) {
-        setError(exception.message || t("標註同步失敗"));
+      if (created) {
+        setActiveAnnotationId(created.id);
+        if (typeof onAnnotationCreated === "function") onAnnotationCreated(created.id);
       }
-    } finally {
-      if (mounted.current) setAnnotationBusy(false);
-    }
-  };
-  const submitAnnotationReply = async event => {
-    event.preventDefault();
-    const body = annotationReply.trim();
-    if (!activeAnnotationId || !body || annotationBusy || !networkOnline) return;
-    setAnnotationBusy(true);
-    try {
-      await W2.post(
-        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations/${encodeURIComponent(activeAnnotationId)}/messages`,
-        { client_message_id: clientRequestId(), body }
-      );
-      if (!mounted.current || tenant !== W2.tenant()) return;
-      setAnnotationReply("");
-      await loadAnnotations({ quiet: true });
-    } catch (exception) {
-      if (mounted.current && tenant === W2.tenant()) {
-        setError(exception.message || t("標註同步失敗"));
-      }
-    } finally {
-      if (mounted.current) setAnnotationBusy(false);
-    }
-  };
-  const setAnnotationStatus = async (annotationId, statusValue) => {
-    if (!annotationId || annotationBusy || !networkOnline) return;
-    setAnnotationBusy(true);
-    try {
-      await W2.post(
-        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations/${encodeURIComponent(annotationId)}/status`,
-        { status: statusValue }
-      );
-      if (mounted.current && tenant === W2.tenant()) await loadAnnotations({ quiet: true });
+      if (mounted.current) await loadAnnotations({ quiet: true });
     } catch (exception) {
       if (mounted.current && tenant === W2.tenant()) {
         setError(exception.message || t("標註同步失敗"));
@@ -5825,7 +5954,7 @@ const CollaborativeDocument = ({
     if (!annotation) return;
     setActiveAnnotationId(annotation.id);
     setAnnotationComposer(null);
-    setAnnotationReply("");
+    setSelectionToolbar(null);
     setMode("edit");
     setEditorView("visual");
     const blocks = collabDocumentParseBlocks(contentRef.current).blocks;
@@ -5852,6 +5981,13 @@ const CollaborativeDocument = ({
       if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
     }));
   };
+  E(() => {
+    if (!focusAnnotationId || loading || !documentMeta.id) return;
+    const annotation = resolvedAnnotations.find(item => item.id === String(focusAnnotationId));
+    if (!annotation) return;
+    openAnnotation(annotation);
+    if (typeof onAnnotationFocusHandled === "function") onAnnotationFocusHandled(annotation.id);
+  }, [focusAnnotationId, loading, documentMeta.id, resolvedAnnotations, onAnnotationFocusHandled]);
 
   const validateDocumentText = nextText => {
     if (capabilities.can_edit !== true || loading) return false;
@@ -6158,6 +6294,22 @@ const CollaborativeDocument = ({
       startAnchor: preserveAnchors ? current.startAnchor : null,
       endAnchor: preserveAnchors ? current.endAnchor : null,
     };
+    if (activeValue !== false && end > start) {
+      const rect = editor.getBoundingClientRect();
+      placeSelectionToolbar({
+        selection: sourceSelectionRef.current,
+        rect: {
+          left: rect.left,
+          top: rect.top + Math.min(80, rect.height * .2),
+          right: rect.right,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: Math.min(28, rect.height),
+        },
+      });
+    } else if (!annotationComposer) {
+      setSelectionToolbar(null);
+    }
   };
   const onChange = event => {
     rememberSourceSelection(event, true, true);
@@ -6348,7 +6500,6 @@ const CollaborativeDocument = ({
     : observer ? t("觀察者可閱讀工作稿，但不能修改。") : "";
   const documentStyle = collabDocumentStyle(content);
   const visualToolsDisabled = capabilities.can_edit !== true || loading || mode !== "edit" || editorView !== "visual";
-  const resolvedAnnotationCount = resolvedAnnotations.filter(annotation => annotation.status === "resolved").length;
 
   return <section ref={sectionRef} className="task-collab-document" data-sequence={number(documentMeta.latest_sequence)} onPointerDownCapture={() => { interactionObserved.current = true; }} onKeyDownCapture={() => { interactionObserved.current = true; }}>
     <header className="task-collab-document-head">
@@ -6372,7 +6523,6 @@ const CollaborativeDocument = ({
       <button type="button" disabled={capabilities.can_edit !== true || loading} onClick={insertFormula}><span aria-hidden="true">∑</span><span>{t("插入公式")}</span></button>
       <button type="button" disabled={visualToolsDisabled} aria-pressed={toolPanel === "format"} onClick={() => setToolPanel(current => current === "format" ? "" : "format")}><span aria-hidden="true">B</span><span>{t("格式")}</span></button>
       <button type="button" disabled={visualToolsDisabled} aria-pressed={toolPanel === "type"} onClick={() => setToolPanel(current => current === "type" ? "" : "type")}><span aria-hidden="true">Aa</span><span>{t("字體")}</span></button>
-      <button type="button" disabled={capabilities.can_edit !== true || loading || mode !== "edit" || offline} onPointerDown={event => event.preventDefault()} onClick={beginAnnotation}><span aria-hidden="true">＋</span><span>{t("標註")}</span></button>
       <button type="button" disabled={loading || mode !== "edit"} aria-pressed={editorView === "source"} onClick={() => { setEditorView(current => current === "source" ? "visual" : "source"); setToolPanel(""); }}><span aria-hidden="true">&lt;/&gt;</span><span>{editorView === "source" ? t("回到視覺共編") : t("原文")}</span></button>
       <small>{t("只支援 PNG、JPEG 或 WebP 圖片，最大 2MB。")}</small>
     </div>
@@ -6391,27 +6541,18 @@ const CollaborativeDocument = ({
         <I name="image" size={13}/><span>{collabDocumentAssetAlt(asset)}</span><small>{number(asset.width)}×{number(asset.height)}</small>
       </button>)}</div>
     </details>}
-    <section className="task-collab-annotations" aria-label={t("標註與討論")}>
-      <header><div><L red>ANNOTATION / THREAD</L><h4>{t("標註與討論")}</h4></div><div><b>{resolvedAnnotations.filter(annotation => annotation.status === "open").length}</b><span>{t("未解決")}</span>{resolvedAnnotationCount > 0 && <label><input type="checkbox" checked={showResolvedAnnotations} onChange={event => setShowResolvedAnnotations(event.currentTarget.checked)}/>{t("顯示已解決")}</label>}</div></header>
-      {annotationComposer && <form className="task-collab-annotation-composer" onSubmit={submitAnnotation}>
-        <blockquote>{annotationComposer.quote}</blockquote>
-        <label><span>{t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
-        <div><button type="button" disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); }}>{t("關閉")}</button><button type="submit" className="primary" disabled={annotationBusy || !annotationDraft.trim() || offline}>{annotationBusy ? "…" : t("送出標註")}</button></div>
-      </form>}
-      {annotationsLoading && !resolvedAnnotations.length ? <div className="task-collab-annotation-empty">{t("同步中")}</div>
-      : !visibleAnnotations.length ? <div className="task-collab-annotation-empty"><strong>{t("目前沒有標註")}</strong><p>{t("選取一段文字並按下標註，協作者便能針對同一位置討論。")}</p></div>
-      : <div className="task-collab-annotation-list">{visibleAnnotations.map((annotation, index) => <article key={annotation.id} className={(annotation.id === activeAnnotationId ? "is-active " : "") + (annotation.status === "resolved" ? "is-resolved" : "")}>
-        <button type="button" className="task-collab-annotation-anchor" onClick={() => openAnnotation(annotation)}><span>{String(index + 1).padStart(2, "0")}</span><blockquote>{annotation.quote}</blockquote><small>{annotation.authorName} · {collabTime(annotation.createdAt)}</small></button>
-        {annotation.id === activeAnnotationId && <div className="task-collab-annotation-thread">
-          <div>{annotation.messages.map(message => <section key={message.id}><header><b>{message.authorName}</b><time>{collabTime(message.createdAt)}</time></header><p>{message.body}</p></section>)}</div>
-          {capabilities.can_edit === true && <form onSubmit={submitAnnotationReply}><label><span className="sr-only">{t("輸入回覆")}</span><textarea value={annotationReply} maxLength="4000" rows="2" placeholder={t("輸入回覆")} onChange={event => setAnnotationReply(event.currentTarget.value)}/></label><button type="submit" disabled={annotationBusy || offline || !annotationReply.trim()}>{annotationBusy ? "…" : t("回覆討論")}</button></form>}
-          {annotation.canResolve && <button type="button" className="task-collab-annotation-resolve" disabled={annotationBusy || offline} onClick={() => setAnnotationStatus(annotation.id, annotation.status === "resolved" ? "open" : "resolved")}>{annotation.status === "resolved" ? t("重新開啟") : t("標記已解決")}</button>}
-        </div>}
-      </article>)}</div>}
-    </section>
+    {selectionToolbar && !annotationComposer && mode === "edit" && capabilities.can_edit === true && !offline && <div className="task-collab-selection-toolbar" role="toolbar" aria-label={t("選取文字工具")} style={{ left: selectionToolbar.left, top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
+      <span aria-hidden="true">01</span><small>{t("已選")} {selectionToolbar.characters} {t("字")}</small><button type="button" onClick={beginAnnotation}>＋ {t("標註")}</button>
+    </div>}
+    {annotationComposer && <form className="task-collab-selection-composer" onSubmit={submitAnnotation} style={annotationComposer.placement ? { left: annotationComposer.placement.left, top: annotationComposer.placement.top } : undefined}>
+      <header><span>ANNOTATION / 01</span><button type="button" aria-label={t("關閉")} disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); }}>×</button></header>
+      <blockquote>{annotationComposer.quote}</blockquote>
+      <label><span>{t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
+      <footer><small>{t("送出後將在對話中繼續討論")}</small><button type="submit" disabled={annotationBusy || !annotationDraft.trim() || offline}>{annotationBusy ? "…" : t("送出標註")} →</button></footer>
+    </form>}
     {loading ? <div className="task-loading" aria-live="polite"><span/><span/><span/><small>{t("同步中")}</small></div>
     : mode === "edit" && editorView === "source" ? <label className="task-collab-document-editor"><span className="sr-only">{t("輸入協作工作稿")}</span><textarea ref={editorRef} value={content} rows="18" readOnly={capabilities.can_edit !== true} aria-readonly={capabilities.can_edit !== true} spellCheck="true" onCompositionStart={onCompositionStart} onCompositionEnd={onCompositionEnd} onChange={onChange} onFocus={event => rememberSourceSelection(event, true)} onSelect={event => rememberSourceSelection(event, true)} onBlur={event => { rememberSourceSelection(event, false); flushDocumentOnBlur(); }} placeholder={t("開始整理共同目標、決定與下一步。")}/></label>
-    : mode === "edit" ? <CollaborativeDocumentVisualEditor taskId={taskId} content={content} assets={assets} readOnly={capabilities.can_edit !== true} selectionRef={visualSelectionRef} remoteEditors={remoteEditors} annotations={resolvedAnnotations} activeAnnotationId={activeAnnotationId} onReplace={replaceDocumentRange} onSplices={applyDocumentSplices} onComposeStart={onVisualCompositionStart} onComposeEnd={onVisualCompositionEnd} onBlur={flushDocumentOnBlur}/>
+    : mode === "edit" ? <CollaborativeDocumentVisualEditor taskId={taskId} content={content} assets={assets} readOnly={capabilities.can_edit !== true} selectionRef={visualSelectionRef} remoteEditors={remoteEditors} annotations={resolvedAnnotations} activeAnnotationId={activeAnnotationId} onSelectionChange={placeSelectionToolbar} onReplace={replaceDocumentRange} onSplices={applyDocumentSplices} onComposeStart={onVisualCompositionStart} onComposeEnd={onVisualCompositionEnd} onBlur={flushDocumentOnBlur}/>
     : <div className="task-collab-document-preview" aria-label={t("預覽")}>{content ? <CollaborativeDocumentPreview taskId={taskId} content={content} assets={assets}/> : <div className="task-collab-document-empty"><strong>{t("工作稿尚未有內容")}</strong><p>{t("開始整理共同目標、決定與下一步。")}</p></div>}</div>}
   </section>;
 };
@@ -8557,6 +8698,8 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
   const [busy, setBusy] = S(false);
   const [error, setError] = S("");
   const [tab, setTab] = S("overview");
+  const [chatAnnotationFocusId, setChatAnnotationFocusId] = S("");
+  const [documentAnnotationFocusId, setDocumentAnnotationFocusId] = S("");
   const [relationOverride, setRelationOverride] = S(() => key(first(obj(target).relation, obj(obj(target).raw).relation)));
   const [accessRestricted, setAccessRestricted] = S(false);
   const mounted = R(true);
@@ -8835,6 +8978,22 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
       if (nextTab) nextTab.focus();
     });
   };
+  const openAnnotationDiscussion = C(annotationId => {
+    if (!annotationId) return;
+    setChatAnnotationFocusId(String(annotationId));
+    setDocumentAnnotationFocusId("");
+    setTab("chat");
+  }, []);
+  const openAnnotationSource = C(annotationId => {
+    if (!annotationId) return;
+    setDocumentAnnotationFocusId(String(annotationId));
+    setTab("document");
+  }, []);
+  const annotationSourceHandled = C(annotationId => {
+    setDocumentAnnotationFocusId(current => (
+      current === String(annotationId) ? "" : current
+    ));
+  }, []);
   const overviewActions = !notOpened && <div className="task-collab-actions">
     {invitationId != null && relation === "invited" && canDeclineInvitation && <button type="button" disabled={busy} onClick={() => respond(invitationId, "decline")}>{t("婉拒邀請")}</button>}
     {invitationId != null && relation === "invited" && canAcceptInvitation && <button type="button" className="primary" disabled={busy} onClick={() => respond(invitationId, "accept")}>{t("接受邀請")}</button>}
@@ -8858,10 +9017,10 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
             <section><L red>{t(collabScopeLabel(space.discoverability))}</L><h3>{task.title}</h3>{task.description && <p>{task.description}</p>}<div className="task-collab-facts"><span>{t(collabJoinLabel(space.join_policy))}</span><span>{number(first(space.member_count, collabMembers(detail).length))} {t("人參與")}</span>{task.due_at && <span>{t("截止")} · {collabTime(task.due_at)}</span>}</div></section>
             {overviewActions}
           </div>
-          : tab === "document" ? <CollaborativeDocument key={String(tenant) + ":" + String(taskId) + ":" + String(viewerUserId)} taskId={taskId} task={task} role={first(membership.role, membership.member_role)} viewerUserId={viewerUserId} clientId={realtime.clientId} realtimeState={realtime.transport} presence={realtime.presence} resumePosition={realtime.resumePosition} onPosition={realtime.sendPosition} documentSignal={realtime.documentSignal} documentSequence={realtime.documentSequence} annotationSignal={realtime.annotationSignal}/>
+          : tab === "document" ? <CollaborativeDocument key={String(tenant) + ":" + String(taskId) + ":" + String(viewerUserId)} taskId={taskId} task={task} role={first(membership.role, membership.member_role)} viewerUserId={viewerUserId} clientId={realtime.clientId} realtimeState={realtime.transport} presence={realtime.presence} resumePosition={realtime.resumePosition} onPosition={realtime.sendPosition} documentSignal={realtime.documentSignal} documentSequence={realtime.documentSequence} annotationSignal={realtime.annotationSignal} focusAnnotationId={documentAnnotationFocusId} onAnnotationCreated={openAnnotationDiscussion} onAnnotationFocusHandled={annotationSourceHandled}/>
           : tab === "members" ? <CollaborationMembers detail={detail} meta={meta} busy={busy} onInvite={invite} onDecision={decide} onTransferOwnership={transferOwnership} realtimeState={realtime.transport} presence={realtime.presence}/>
           : tab === "meeting" ? <CollaborationMeeting meeting={meeting} canShare={canShareScreen}/>
-          : <CollaborationChat key={String(taskId)} taskId={taskId} active={tab === "chat"} canSend={canSend} viewerUserId={viewerUserId} realtimeState={realtime.transport} presence={realtime.presence} members={collabMembers(detail)} messageSignal={realtime.messageSignal} onTyping={realtime.sendTyping} lastMessageIdRef={lastMessageIdRef}/>}
+          : <CollaborationChat key={String(taskId)} taskId={taskId} active={tab === "chat"} canSend={canSend} viewerUserId={viewerUserId} realtimeState={realtime.transport} presence={realtime.presence} members={collabMembers(detail)} messageSignal={realtime.messageSignal} annotationSignal={realtime.annotationSignal} annotationFocusId={chatAnnotationFocusId} onOpenAnnotation={openAnnotationSource} onTyping={realtime.sendTyping} lastMessageIdRef={lastMessageIdRef}/>}
         </div>
       </>}
       {meeting.joined && <CollaborationMeetingAudioHost meeting={meeting}/>}
