@@ -31,9 +31,16 @@ from app.services.task_collaboration_documents import (
     image_descriptor,
     register_image,
 )
+from app.services.task_collaboration_annotations import (
+    add_annotation_message,
+    create_annotation,
+    list_annotations,
+    update_annotation_status,
+)
 from app.services.task_collaboration_realtime import (
     authorize_stream,
     event_stream,
+    get_position,
     update_presence,
 )
 
@@ -166,6 +173,58 @@ def collaboration_presence_update(
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
     return update_presence(actor, task_id, payload)
+
+
+@router.get("/api/tasks/{task_id}/collaboration/position")
+def collaboration_position_get(
+    task_id: str,
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return get_position(actor, task_id)
+
+
+@router.get("/api/tasks/{task_id}/collaboration/annotations")
+def collaboration_annotations(
+    task_id: str,
+    annotation_status: str = Query(default="all", alias="status"),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return list_annotations(actor, task_id, annotation_status)
+
+
+@router.post(
+    "/api/tasks/{task_id}/collaboration/annotations",
+    status_code=status.HTTP_201_CREATED,
+)
+def collaboration_annotation_create(
+    task_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return create_annotation(actor, task_id, payload)
+
+
+@router.post(
+    "/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/messages",
+    status_code=status.HTTP_201_CREATED,
+)
+def collaboration_annotation_message(
+    task_id: str,
+    annotation_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return add_annotation_message(actor, task_id, annotation_id, payload)
+
+
+@router.post("/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/status")
+def collaboration_annotation_status(
+    task_id: str,
+    annotation_id: str,
+    payload: dict[str, object] = Body(default={}),
+    actor: ActorContext = Depends(current_actor),
+) -> dict[str, object]:
+    return update_annotation_status(actor, task_id, annotation_id, payload)
 
 
 @router.get("/api/tasks/{task_id}/collaboration/events")

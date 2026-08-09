@@ -100,14 +100,14 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260804-task-actions1' in index
-    assert 'pages/pages-tasks.jsx?v=20260804-task-actions1' in index
+    assert 'pages/pages-tasks.css?v=20260809-task-collab2' in index
+    assert 'pages/pages-tasks.jsx?v=20260809-task-collab2' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260808-civilization21' in index
+    assert 'dist/app.bundle.js?v=20260809-task-collab2' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -153,6 +153,35 @@ def test_task_cards_expose_complete_edit_and_confirmed_delete_actions():
     assert "TaskDeleteDialog" in source
     assert ".task-action-edit" in css
     assert ".task-delete-dialog" in css
+
+
+def test_task_coediting_restores_each_member_and_renders_live_cursors():
+    source = TASKS.read_text(encoding="utf-8")
+    css = TASKS_CSS.read_text(encoding="utf-8")
+
+    assert 'const COLLAB_POSITION_FORMAT = "document-cursor-v1"' in source
+    assert '"/collaboration/position"' in source
+    assert "resumePosition={realtime.resumePosition}" in source
+    assert "onPosition={realtime.sendPosition}" in source
+    assert "collabDocumentCaptureBoundary" in source
+    assert "CollaborativeDocumentCursorLayer" in source
+    assert 'className="task-collab-cursor-register"' in source
+    assert ".task-collab-cursor-layer" in css
+    assert ".task-collab-remote-cursor" in css
+
+
+def test_task_coediting_anchors_annotations_and_threaded_discussion():
+    source = TASKS.read_text(encoding="utf-8")
+    css = TASKS_CSS.read_text(encoding="utf-8")
+
+    assert '"annotation.changed"' in source
+    assert 'collaboration/annotations?status=all' in source
+    assert "client_annotation_id" in source
+    assert "CollaborativeDocumentAnnotationLayer" in source
+    assert 'className="task-collab-annotations"' in source
+    assert "annotationSignal={realtime.annotationSignal}" in source
+    assert ".task-collab-annotation-layer" in css
+    assert ".task-collab-annotation-thread" in css
 
 
 def test_business_action_command_topology_exposes_runtime_execution_contract():

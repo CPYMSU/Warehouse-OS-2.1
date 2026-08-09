@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -10,6 +11,7 @@ from app.api.deps import ActorContext, current_actor
 from app.core.security import hash_password
 from app.db.session import system_session, tenant_session
 from app.main import app
+from app.services.task_collaboration_realtime import _position_payload
 
 COLLABORATION_CONTRACTS = {
     ("get", "/api/task-collaboration/discover"),
@@ -28,6 +30,17 @@ COLLABORATION_CONTRACTS = {
     ("post", "/api/tasks/{task_id}/collaboration/messages"),
     ("post", "/api/tasks/{task_id}/collaboration/read"),
     ("post", "/api/tasks/{task_id}/collaboration/presence"),
+    ("get", "/api/tasks/{task_id}/collaboration/position"),
+    ("get", "/api/tasks/{task_id}/collaboration/annotations"),
+    ("post", "/api/tasks/{task_id}/collaboration/annotations"),
+    (
+        "post",
+        "/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/messages",
+    ),
+    (
+        "post",
+        "/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/status",
+    ),
     ("get", "/api/tasks/{task_id}/collaboration/events"),
     ("get", "/api/tasks/{task_id}/collaboration/document"),
     ("post", "/api/tasks/{task_id}/collaboration/document/updates"),
@@ -35,6 +48,31 @@ COLLABORATION_CONTRACTS = {
     ("get", "/api/tasks/{task_id}/collaboration/document/images/{asset_key}"),
     ("get", "/api/tasks/{task_id}/collaboration/document/export"),
 }
+
+
+def test_task_collaboration_position_contract_is_bounded() -> None:
+    position = {
+        "format": "document-cursor-v1",
+        "mode": "visual",
+        "cursor_start": 8,
+        "cursor_end": 12,
+        "line_index": 2,
+        "scroll_top": 420,
+        "document_sequence": 7,
+        "active": True,
+        "start_anchor": {
+            "left_id": "client:7",
+            "right_id": "client:8",
+            "affinity": "forward",
+            "fallback": 8,
+        },
+        "end_anchor": None,
+    }
+    assert _position_payload(position) == position
+    with pytest.raises(HTTPException, match="cursor range"):
+        _position_payload({**position, "cursor_start": 13})
+    with pytest.raises(HTTPException, match="position"):
+        _position_payload({**position, "selected_text": "must never leave the editor"})
 
 
 def test_task_collaboration_contracts_are_native_and_authenticated() -> None:
@@ -242,6 +280,97 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         assert joined.status_code == 200
         assert joined.json()["relation"] == "member"
 
+        member_position = {
+            "format": "document-cursor-v1",
+            "mode": "visual",
+            "cursor_start": 1,
+            "cursor_end": 1,
+            "line_index": 0,
+            "scroll_top": 88,
+            "document_sequence": 1,
+            "active": True,
+            "start_anchor": {
+                "left_id": "integration:1",
+                "right_id": None,
+                "affinity": "backward",
+                "fallback": 1,
+            },
+            "end_anchor": {
+                "left_id": "integration:1",
+                "right_id": None,
+                "affinity": "backward",
+                "fallback": 1,
+            },
+        }
+        member_presence = client.post(
+            f"/api/tasks/{task_id}/collaboration/presence",
+            json={
+                "client_id": "member-editor",
+                "state": "active",
+                "typing": False,
+                "position": member_position,
+                "persist_position": True,
+            },
+        )
+        assert member_presence.status_code == 200
+        resumed = client.get(f"/api/tasks/{task_id}/collaboration/position")
+        assert resumed.status_code == 200
+        assert resumed.json()["position"]["cursor_start"] == 1
+        assert resumed.json()["position"]["scroll_top"] == 88
+
+        annotation_response = client.post(
+            f"/api/tasks/{task_id}/collaboration/annotations",
+            json={
+                "client_annotation_id": "member-note-1",
+                "client_message_id": "member-note-message-1",
+                "start_anchor": {
+                    "left_id": "^",
+                    "right_id": "integration:1",
+                    "affinity": "forward",
+                    "fallback": 0,
+                },
+                "end_anchor": {
+                    "left_id": "integration:1",
+                    "right_id": None,
+                    "affinity": "backward",
+                    "fallback": 1,
+                },
+                "start_offset": 0,
+                "end_offset": 1,
+                "document_sequence": 1,
+                "quote": "稿",
+                "body": "Should this term be more specific?",
+            },
+        )
+        assert annotation_response.status_code == 201
+        annotation_id = annotation_response.json()["annotation"]["id"]
+        replayed_annotation = client.post(
+            f"/api/tasks/{task_id}/collaboration/annotations",
+            json={
+                "client_annotation_id": "member-note-1",
+                "client_message_id": "member-note-message-1",
+                "start_anchor": {
+                    "left_id": "^",
+                    "right_id": "integration:1",
+                    "affinity": "forward",
+                    "fallback": 0,
+                },
+                "end_anchor": {
+                    "left_id": "integration:1",
+                    "right_id": None,
+                    "affinity": "backward",
+                    "fallback": 1,
+                },
+                "start_offset": 0,
+                "end_offset": 1,
+                "document_sequence": 1,
+                "quote": "稿",
+                "body": "Should this term be more specific?",
+            },
+        )
+        assert replayed_annotation.status_code == 201
+        assert replayed_annotation.json()["result"] == "idempotent"
+
         sent = client.post(
             f"/api/tasks/{task_id}/collaboration/messages",
             json={"body": "The durable workspace is connected.", "client_message_id": "test-1"},
@@ -260,6 +389,35 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         )
 
         active_actor = owner
+        owner_presence = client.post(
+            f"/api/tasks/{task_id}/collaboration/presence",
+            json={"client_id": "owner-editor", "state": "active", "typing": False},
+        )
+        assert owner_presence.status_code == 200
+        visible_member = next(
+            item
+            for item in owner_presence.json()["presence"]
+            if item["user_id"] == str(member.user_id)
+        )
+        assert visible_member["position"]["line_index"] == 0
+        annotation_list = client.get(
+            f"/api/tasks/{task_id}/collaboration/annotations"
+        )
+        assert annotation_list.status_code == 200
+        assert annotation_list.json()["items"][0]["quote"] == "稿"
+        assert annotation_list.json()["items"][0]["messages"][0]["author_name"] == "Task Member"
+        reply = client.post(
+            f"/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/messages",
+            json={"client_message_id": "owner-reply-1", "body": "Yes, please clarify it."},
+        )
+        assert reply.status_code == 201
+        assert len(reply.json()["annotation"]["messages"]) == 2
+        resolved = client.post(
+            f"/api/tasks/{task_id}/collaboration/annotations/{annotation_id}/status",
+            json={"status": "resolved"},
+        )
+        assert resolved.status_code == 200
+        assert resolved.json()["annotation"]["status"] == "resolved"
         updated = client.post(
             f"/api/tasks/{task_id}/status",
             json={"status": "in_progress", "expected_version": task["version"]},
@@ -274,6 +432,8 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         active_actor = outsider
         assert client.get("/api/task-collaboration/discover").json()["items"] == []
         assert client.get(f"/api/tasks/{task_id}/collaboration").status_code == 404
+        assert client.get(f"/api/tasks/{task_id}/collaboration/position").status_code == 404
+        assert client.get(f"/api/tasks/{task_id}/collaboration/annotations").status_code == 404
 
         active_actor = owner
         edited = client.patch(

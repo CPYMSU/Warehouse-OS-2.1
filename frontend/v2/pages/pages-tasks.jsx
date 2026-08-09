@@ -226,6 +226,27 @@ window.W2_LANG.addEN({
   "開始整理共同目標、決定與下一步。": "Start capturing shared goals, decisions, and next steps.",
   "輸入協作工作稿": "Write in the shared working draft",
   "工作稿已同步": "Draft synced",
+  "上次編輯位置已恢復": "Last editing position restored",
+  "正在共編": "Co-editing now",
+  "標註": "Annotate",
+  "標註與討論": "Annotations & discussion",
+  "新增標註": "Add annotation",
+  "標註內容": "Annotation note",
+  "先選取工作稿中的文字，再建立標註。": "Select text in the draft before creating an annotation.",
+  "寫下這段文字需要討論的問題或建議。": "Add the question or suggestion to discuss for this passage.",
+  "送出標註": "Post annotation",
+  "回覆討論": "Reply to discussion",
+  "輸入回覆": "Write a reply",
+  "已解決": "Resolved",
+  "未解決": "Open",
+  "顯示已解決": "Show resolved",
+  "標記已解決": "Mark resolved",
+  "重新開啟": "Reopen",
+  "目前沒有標註": "No annotations yet",
+  "選取一段文字並按下標註，協作者便能針對同一位置討論。": "Select a passage and choose Annotate so collaborators can discuss that exact location.",
+  "標註同步失敗": "Could not sync annotations",
+  "標註最多選取 2000 個字": "Annotations can select up to 2,000 characters",
+  "討論": "Discussion",
   "正在同步工作稿": "Syncing draft",
   "等待同步": "Waiting to sync",
   "唯讀模式": "Read-only",
@@ -594,7 +615,7 @@ const COLLAB_REALTIME_STATES = Object.freeze({
   OFFLINE: "offline",
 });
 const COLLAB_REALTIME_TYPES = new Set([
-  "ready", "message.created", "workspace.changed", "task.status.changed", "document.updated", "presence.changed",
+  "ready", "message.created", "workspace.changed", "task.status.changed", "document.updated", "annotation.changed", "presence.changed",
   "heartbeat", "reconnect", "access.revoked", "resync", "resync.required",
   "rtc.room.snapshot", "rtc.signal",
 ]);
@@ -668,6 +689,94 @@ const collabPresenceEntries = value => {
   if (Object.keys(candidate).length) return [{ ...payload, user: candidate }];
   return first(payload.user_id, payload.member_user_id) != null ? [payload] : [];
 };
+const COLLAB_POSITION_FORMAT = "document-cursor-v1";
+const collabPositionAnchor = value => {
+  const anchor = obj(value);
+  const leftId = optionalText(first(anchor.left_id, anchor.leftId, "^"));
+  const rightValue = first(anchor.right_id, anchor.rightId);
+  const rightId = rightValue == null || rightValue === "" ? null : optionalText(rightValue);
+  if (!leftId || !COLLAB_DOCUMENT_ID_RE.test(leftId === "^" ? "root" : leftId)) return null;
+  if (rightId != null && !COLLAB_DOCUMENT_ID_RE.test(rightId)) return null;
+  return {
+    left_id: leftId === "root" ? "^" : leftId,
+    right_id: rightId,
+    affinity: key(anchor.affinity) === "forward" ? "forward" : "backward",
+    fallback: clamp(number(anchor.fallback), 0, COLLAB_DOCUMENT_MAX_CHARACTERS),
+  };
+};
+const normalizeCollabPosition = value => {
+  const position = obj(value);
+  const mode = key(position.mode);
+  if (position.format !== COLLAB_POSITION_FORMAT || !["visual", "source", "preview"].includes(mode)) return null;
+  const start = clamp(number(position.cursor_start), 0, COLLAB_DOCUMENT_MAX_CHARACTERS);
+  const end = clamp(number(position.cursor_end), start, COLLAB_DOCUMENT_MAX_CHARACTERS);
+  return {
+    format: COLLAB_POSITION_FORMAT,
+    mode,
+    cursor_start: start,
+    cursor_end: end,
+    line_index: clamp(number(position.line_index), 0, 50000),
+    scroll_top: clamp(Math.round(number(position.scroll_top)), 0, 2000000),
+    document_sequence: clamp(number(position.document_sequence), 0, Number.MAX_SAFE_INTEGER),
+    active: position.active === true,
+    start_anchor: collabPositionAnchor(position.start_anchor),
+    end_anchor: collabPositionAnchor(position.end_anchor),
+    updated_at: optionalText(position.updated_at),
+  };
+};
+const collabPositionInternalAnchor = value => {
+  const anchor = collabPositionAnchor(value);
+  return anchor ? {
+    leftId: anchor.left_id,
+    rightId: anchor.right_id,
+    affinity: anchor.affinity,
+    fallback: anchor.fallback,
+  } : null;
+};
+const collabPositionPublicAnchor = value => {
+  const anchor = obj(value);
+  const leftId = optionalText(first(anchor.leftId, anchor.left_id, "^"));
+  const rightValue = first(anchor.rightId, anchor.right_id);
+  return collabPositionAnchor({
+    left_id: leftId,
+    right_id: rightValue == null ? null : rightValue,
+    affinity: anchor.affinity,
+    fallback: anchor.fallback,
+  });
+};
+const normalizeCollabAnnotation = value => {
+  const annotation = obj(value);
+  const id = optionalText(annotation.id);
+  const startAnchor = collabPositionAnchor(annotation.start_anchor);
+  const endAnchor = collabPositionAnchor(annotation.end_anchor);
+  const start = clamp(number(annotation.start_offset), 0, COLLAB_DOCUMENT_MAX_CHARACTERS);
+  const end = clamp(number(annotation.end_offset), start, COLLAB_DOCUMENT_MAX_CHARACTERS);
+  if (!id || !startAnchor || !endAnchor || end <= start) return null;
+  return {
+    id,
+    documentId: optionalText(annotation.document_id),
+    authorUserId: optionalText(annotation.author_user_id),
+    authorName: optionalText(annotation.author_name, annotation.author_user_id),
+    startAnchor,
+    endAnchor,
+    startOffset: start,
+    endOffset: end,
+    documentSequence: clamp(number(annotation.document_sequence), 0, Number.MAX_SAFE_INTEGER),
+    quote: optionalText(annotation.quote),
+    status: key(annotation.status) === "resolved" ? "resolved" : "open",
+    canResolve: annotation.can_resolve === true,
+    resolvedByName: optionalText(annotation.resolved_by_name),
+    resolvedAt: optionalText(annotation.resolved_at),
+    createdAt: optionalText(annotation.created_at),
+    messages: arr(annotation.messages).map(message => ({
+      id: number(obj(message).id),
+      authorUserId: optionalText(obj(message).author_user_id),
+      authorName: optionalText(obj(message).author_name, obj(message).author_user_id),
+      body: optionalText(obj(message).body),
+      createdAt: optionalText(obj(message).created_at),
+    })).filter(message => message.id > 0 && message.body),
+  };
+};
 const normalizeCollabPresence = (value, now = Date.now()) => {
   const item = obj(value);
   const user = obj(first(item.user, item.member, item.profile));
@@ -679,6 +788,7 @@ const normalizeCollabPresence = (value, now = Date.now()) => {
     displayName: collabDisplayName(first(user, item), ""),
     state: ["offline", "left", "inactive"].includes(state) ? "offline" : "active",
     typing: item.typing === true,
+    position: normalizeCollabPosition(item.position),
     expiresAt: now + 45000,
     typingExpiresAt: item.typing === true ? now + 7000 : 0,
   };
@@ -695,9 +805,11 @@ const collabRealtimeLabel = (state, onlineCount = 0) => {
 const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
   const [transport, setTransport] = S(COLLAB_REALTIME_STATES.IDLE);
   const [presence, setPresence] = S({});
+  const [resumePosition, setResumePosition] = S(null);
   const [messageSignal, setMessageSignal] = S(0);
   const [workspaceSignal, setWorkspaceSignal] = S(0);
   const [documentSignal, setDocumentSignal] = S(0);
+  const [annotationSignal, setAnnotationSignal] = S(0);
   const [documentSequence, setDocumentSequence] = S(0);
   const [restartSignal, setRestartSignal] = S(0);
   const [networkOnline, setNetworkOnline] = S(() => !window.navigator || window.navigator.onLine !== false);
@@ -711,6 +823,9 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
   const lastSignalId = R(0);
   const blocked = R(false);
   const selfTyping = R(false);
+  const selfPosition = R(null);
+  const lastPositionDigest = R("");
+  const lastPositionPersistedAt = R(0);
   const clientId = R(clientRequestId());
   const rtcListeners = R(new Set());
   const realtimeContext = R({ taskId, tenant });
@@ -719,6 +834,10 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
     lastEventId.current = 0;
     lastSignalId.current = 0;
     setDocumentSequence(0);
+    setResumePosition(null);
+    selfPosition.current = null;
+    lastPositionDigest.current = "";
+    lastPositionPersistedAt.current = 0;
   }, [taskId, tenant]);
 
   const contextMatches = C(() => (
@@ -784,7 +903,10 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
   const postPresence = C(async (
     state = "active",
     typing = false,
-    { keepalive = false, suppressRevoke = false } = {}
+    {
+      keepalive = false, suppressRevoke = false, position = null,
+      persistPosition = false,
+    } = {}
   ) => {
     if (taskId == null || tenant !== W2.tenant()) return false;
     const requestGeneration = generation.current;
@@ -800,10 +922,13 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
     ) return false;
     selfTyping.current = state === "active" && typing === true;
     try {
+      const body = { client_id: clientId.current, state, typing: typing === true };
+      if (position) body.position = position;
+      if (position && persistPosition) body.persist_position = true;
       const response = await W2.fetch("/api/tasks/" + encodeURIComponent(taskId) + "/collaboration/presence", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: clientId.current, state, typing: typing === true }),
+        body: JSON.stringify(body),
         keepalive,
       });
       const currentContext = realtimeContext.current;
@@ -828,6 +953,20 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
       return false;
     }
   }, [taskId, tenant]);
+
+  E(() => {
+    if (!enabled || taskId == null || tenant !== W2.tenant()) return undefined;
+    let disposed = false;
+    collabJson(
+      "/api/tasks/" + encodeURIComponent(taskId) + "/collaboration/position",
+      { cache: "no-store" }
+    ).then(raw => {
+      if (disposed || tenant !== W2.tenant()) return;
+      const position = normalizeCollabPosition(obj(collabData(raw)).position);
+      if (position) setResumePosition(position);
+    }).catch(() => {});
+    return () => { disposed = true; };
+  }, [enabled, taskId, tenant]);
 
   E(() => {
     const online = () => setNetworkOnline(true);
@@ -954,6 +1093,8 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
           failures.current = 0;
           setTransport(COLLAB_REALTIME_STATES.LIVE);
           updatePresence(event, true);
+          const readyPosition = normalizeCollabPosition(collabRealtimePayload(event).resume_position);
+          if (readyPosition) setResumePosition(readyPosition);
           postPresence("active", selfTyping.current).catch(() => {});
           rtcListeners.current.forEach(listener => {
             try { listener(event); } catch (ignored) {}
@@ -964,6 +1105,8 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
           const sequence = collabDocumentSequence(event);
           if (sequence > 0) setDocumentSequence(current => Math.max(current, sequence));
           else setDocumentSignal(current => current + 1);
+        } else if (type === "annotation.changed") {
+          setAnnotationSignal(current => current + 1);
         } else if (type === "workspace.changed" || type === "task.status.changed") {
           setWorkspaceSignal(current => current + 1);
           if (type === "task.status.changed") setDocumentSignal(current => current + 1);
@@ -980,6 +1123,7 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
           setMessageSignal(current => current + 1);
           setWorkspaceSignal(current => current + 1);
           setDocumentSignal(current => current + 1);
+          setAnnotationSignal(current => current + 1);
         } else if (type === "access.revoked") {
           accessRevoked = true;
           blocked.current = true;
@@ -1090,6 +1234,8 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
         postPresence("offline", false, {
           keepalive: true,
           suppressRevoke: true,
+          position: selfPosition.current,
+          persistPosition: !!selfPosition.current,
         }).catch(() => {});
       }
       selfTyping.current = false;
@@ -1119,14 +1265,43 @@ const useCollaborationRealtime = ({ taskId, tenant, enabled }) => {
     if (!contextMatches() || transport !== COLLAB_REALTIME_STATES.LIVE) return Promise.resolve(false);
     return postPresence("active", active === true);
   }, [contextMatches, transport, postPresence]);
+  const sendPosition = C((value, options = {}) => {
+    if (!contextMatches() || transport === COLLAB_REALTIME_STATES.OFFLINE) return Promise.resolve(false);
+    const normalized = normalizeCollabPosition(value);
+    if (!normalized) return Promise.resolve(false);
+    const position = {
+      format: normalized.format,
+      mode: normalized.mode,
+      cursor_start: normalized.cursor_start,
+      cursor_end: normalized.cursor_end,
+      line_index: normalized.line_index,
+      scroll_top: normalized.scroll_top,
+      document_sequence: normalized.document_sequence,
+      active: normalized.active,
+      start_anchor: normalized.start_anchor,
+      end_anchor: normalized.end_anchor,
+    };
+    const digest = JSON.stringify(position);
+    const now = Date.now();
+    const persistPosition = options.persist === true || now - lastPositionPersistedAt.current >= 2500;
+    if (digest === lastPositionDigest.current && !persistPosition && options.force !== true) return Promise.resolve(true);
+    selfPosition.current = position;
+    lastPositionDigest.current = digest;
+    if (persistPosition) lastPositionPersistedAt.current = now;
+    return postPresence("active", selfTyping.current, {
+      keepalive: options.keepalive === true,
+      position,
+      persistPosition,
+    });
+  }, [contextMatches, transport, postPresence]);
   const onlineCount = transport === COLLAB_REALTIME_STATES.LIVE
     ? Object.values(presence).filter(item => item.state === "active" && item.expiresAt > Date.now()).length
     : 0;
   return {
-    transport, presence, onlineCount, messageSignal, workspaceSignal, documentSignal, documentSequence,
+    transport, presence, resumePosition, onlineCount, messageSignal, workspaceSignal, documentSignal, documentSequence, annotationSignal,
     clientId: clientId.current, subscribeRtc, setRtcSignalCursor,
     confirmRtcSignalCursor,
-    sendTyping, reconnect,
+    sendTyping, sendPosition, reconnect,
   };
 };
 
@@ -4420,7 +4595,183 @@ const CollaborativeDocumentSourceEditor = ({ block, readOnly, selectionRef, onRe
     onBlur={event => { remember(event, false); onBlur(); }}/>
 };
 
-const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, selectionRef, onReplace, onSplices, onComposeStart, onComposeEnd, onBlur }) => {
+const COLLAB_CURSOR_COLORS = Object.freeze([
+  "#0A66C2", "#0A8F5B", "#7A3FC1", "#D14A00", "#C51F3A", "#007C91",
+]);
+const collabCursorColor = userId => {
+  let hash = 0;
+  String(userId || "").split("").forEach(character => {
+    hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  });
+  return COLLAB_CURSOR_COLORS[Math.abs(hash) % COLLAB_CURSOR_COLORS.length];
+};
+const CollaborativeDocumentCursorLayer = ({ visualRef, projection, editors }) => {
+  const [markers, setMarkers] = S([]);
+  LE(() => {
+    const visual = visualRef.current;
+    if (!visual || !arr(editors).length) {
+      setMarkers([]);
+      return undefined;
+    }
+    let frame = null;
+    const measure = () => {
+      frame = null;
+      const currentVisual = visualRef.current;
+      if (!currentVisual) return;
+      const visualRect = currentVisual.getBoundingClientRect();
+      const textBlocks = projection.blocks.filter(block => block.type === "text");
+      const next = arr(editors).slice(0, 8).map(editor => {
+        const position = obj(editor.position);
+        const cursor = clamp(number(position.cursor_end), 0, Number.MAX_SAFE_INTEGER);
+        let block = textBlocks.find(item => item.lineIndex === number(position.line_index));
+        if (!block || cursor < block.sourceStart || cursor > block.sourceEnd) {
+          block = textBlocks.find(item => cursor >= item.sourceStart && cursor <= item.sourceEnd)
+            || [...textBlocks].reverse().find(item => cursor >= item.sourceStart)
+            || textBlocks[0];
+        }
+        let rect = null;
+        let height = 20;
+        if (block) {
+          const root = currentVisual.querySelector(`[data-collab-line-index="${block.lineIndex}"]`);
+          if (root) {
+            const visible = collabDocumentInlineVisibleOffset(
+              block.value, clamp(cursor - block.sourceStart, 0, block.value.length)
+            );
+            const point = collabDocumentDomPoint(root, visible, "backward");
+            if (point && document.createRange) {
+              try {
+                const range = document.createRange();
+                range.setStart(point[0], point[1]);
+                range.collapse(true);
+                rect = range.getBoundingClientRect();
+              } catch (error) {}
+            }
+            if (!rect || (!rect.left && !rect.top && !rect.height)) rect = root.getBoundingClientRect();
+            height = Math.max(18, number(rect.height) || Number.parseFloat(window.getComputedStyle(root).lineHeight) || 20);
+          }
+        }
+        if (!rect) {
+          const structured = currentVisual.querySelector(
+            `[data-collab-block-line-index="${number(position.line_index)}"]`
+          );
+          if (!structured) return null;
+          rect = structured.getBoundingClientRect();
+          height = Math.max(18, Math.min(32, number(rect.height)));
+        }
+        return {
+          userId: editor.userId,
+          name: editor.displayName,
+          color: editor.color,
+          left: clamp(rect.left - visualRect.left, 0, Math.max(0, visualRect.width - 3)),
+          top: Math.max(0, rect.top - visualRect.top),
+          height,
+        };
+      }).filter(Boolean);
+      setMarkers(next);
+    };
+    const schedule = () => {
+      if (frame != null) return;
+      frame = window.requestAnimationFrame(measure);
+    };
+    schedule();
+    const scroller = visual.closest(".task-collab-workspace-body");
+    window.addEventListener("resize", schedule);
+    if (scroller) scroller.addEventListener("scroll", schedule, { passive: true });
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+    if (observer) observer.observe(visual);
+    return () => {
+      if (frame != null) window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", schedule);
+      if (scroller) scroller.removeEventListener("scroll", schedule);
+      if (observer) observer.disconnect();
+    };
+  }, [projection, editors, visualRef]);
+  if (!markers.length) return null;
+  return <div className="task-collab-cursor-layer" aria-hidden="true">{markers.map(marker => (
+    <span className="task-collab-remote-cursor" key={marker.userId} style={{ left: marker.left, top: marker.top, height: marker.height, "--collab-cursor": marker.color }}>
+      <b>{marker.name}</b>
+    </span>
+  ))}</div>;
+};
+
+const CollaborativeDocumentAnnotationLayer = ({ visualRef, projection, annotations, activeId }) => {
+  const [markers, setMarkers] = S([]);
+  LE(() => {
+    const visual = visualRef.current;
+    if (!visual || !arr(annotations).length || !document.createRange) {
+      setMarkers([]);
+      return undefined;
+    }
+    let frame = null;
+    const measure = () => {
+      frame = null;
+      const currentVisual = visualRef.current;
+      if (!currentVisual) return;
+      const visualRect = currentVisual.getBoundingClientRect();
+      const textBlocks = projection.blocks.filter(block => block.type === "text");
+      const next = [];
+      arr(annotations).slice(0, 200).forEach(annotation => {
+        const start = clamp(number(annotation.resolvedStart), 0, Number.MAX_SAFE_INTEGER);
+        const end = clamp(number(annotation.resolvedEnd), start, Number.MAX_SAFE_INTEGER);
+        if (end <= start) return;
+        const startBlock = textBlocks.find(block => start >= block.sourceStart && start <= block.sourceEnd);
+        const endBlock = [...textBlocks].reverse().find(block => end >= block.sourceStart && end <= block.sourceEnd);
+        if (!startBlock || !endBlock) return;
+        const startRoot = currentVisual.querySelector(`[data-collab-line-index="${startBlock.lineIndex}"]`);
+        const endRoot = currentVisual.querySelector(`[data-collab-line-index="${endBlock.lineIndex}"]`);
+        if (!startRoot || !endRoot) return;
+        const startVisible = collabDocumentInlineVisibleOffset(
+          startBlock.value, clamp(start - startBlock.sourceStart, 0, startBlock.value.length)
+        );
+        const endVisible = collabDocumentInlineVisibleOffset(
+          endBlock.value, clamp(end - endBlock.sourceStart, 0, endBlock.value.length)
+        );
+        const startPoint = collabDocumentDomPoint(startRoot, startVisible, "forward");
+        const endPoint = collabDocumentDomPoint(endRoot, endVisible, "backward");
+        if (!startPoint || !endPoint) return;
+        try {
+          const range = document.createRange();
+          range.setStart(startPoint[0], startPoint[1]);
+          range.setEnd(endPoint[0], endPoint[1]);
+          Array.from(range.getClientRects()).slice(0, 80).forEach((rect, index) => {
+            if (rect.width <= 0 || rect.height <= 0) return;
+            next.push({
+              key: `${annotation.id}-${index}`,
+              left: rect.left - visualRect.left,
+              top: rect.top - visualRect.top,
+              width: rect.width,
+              height: rect.height,
+              status: annotation.status,
+              active: annotation.id === activeId,
+            });
+          });
+        } catch (error) {}
+      });
+      setMarkers(next);
+    };
+    const schedule = () => {
+      if (frame == null) frame = window.requestAnimationFrame(measure);
+    };
+    schedule();
+    const scroller = visual.closest(".task-collab-workspace-body");
+    window.addEventListener("resize", schedule);
+    if (scroller) scroller.addEventListener("scroll", schedule, { passive: true });
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+    if (observer) observer.observe(visual);
+    return () => {
+      if (frame != null) window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", schedule);
+      if (scroller) scroller.removeEventListener("scroll", schedule);
+      if (observer) observer.disconnect();
+    };
+  }, [visualRef, projection, annotations, activeId]);
+  if (!markers.length) return null;
+  return <div className="task-collab-annotation-layer" aria-hidden="true">{markers.map(marker => (
+    <span key={marker.key} className={(marker.status === "resolved" ? "is-resolved" : "") + (marker.active ? " is-active" : "")} style={{ left: marker.left, top: marker.top, width: marker.width, height: marker.height }}/>
+  ))}</div>;
+};
+
+const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, selectionRef, remoteEditors, annotations, activeAnnotationId, onReplace, onSplices, onComposeStart, onComposeEnd, onBlur }) => {
   const projection = M(() => collabDocumentParseBlocks(content), [content]);
   const visualGroups = M(() => collabDocumentVisualGroups(projection.blocks), [projection]);
   const assetMap = M(() => new Map(arr(assets).map(asset => [asset.asset_key, asset])), [assets]);
@@ -4678,6 +5029,8 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
   };
   const imageBudget = { count: 0 };
   return <div ref={visualRef} className="task-collab-document-visual" aria-label={t("視覺共編")}>
+    <CollaborativeDocumentAnnotationLayer visualRef={visualRef} projection={projection} annotations={annotations} activeId={activeAnnotationId}/>
+    <CollaborativeDocumentCursorLayer visualRef={visualRef} projection={projection} editors={remoteEditors}/>
     <div className={`task-collab-document-canvas is-font-${projection.style.font} is-size-${projection.style.size}${readOnly ? " is-readonly" : ""}`} onClick={focusDocumentEnd}>
       {visualGroups.map((block, index) => {
         if (block.type === "text-surface") return <CollaborativeDocumentTextSurface key={`text-surface-${index}`} blocks={block.blocks} documentContent={content} readOnly={readOnly} showPlaceholder={documentIsEmpty && index === 0} selectionRef={selectionRef} resolveSelection={resolveTextSelection} onCopySelection={copyTextSelection} onReplace={onReplace} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
@@ -4696,7 +5049,10 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
   </div>;
 };
 
-const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, realtimeState, documentSignal, documentSequence }) => {
+const CollaborativeDocument = ({
+  taskId, task, role, viewerUserId, clientId, realtimeState, presence,
+  resumePosition, onPosition, documentSignal, documentSequence, annotationSignal,
+}) => {
   const tenant = W2.tenant();
   const initialQueue = R(null);
   if (!initialQueue.current) initialQueue.current = collabDocumentReadQueue(tenant, taskId, viewerUserId, clientId);
@@ -4705,6 +5061,7 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
   const adoptedSequence = R(0);
   const contentRef = R("");
   const editorRef = R(null);
+  const sectionRef = R(null);
   const sourceSelectionRef = R(null);
   const restoringSourceSelection = R(false);
   const visualSelectionRef = R(null);
@@ -4748,6 +5105,21 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
   ));
   const [networkOnline, setNetworkOnline] = S(() => !window.navigator || window.navigator.onLine !== false);
   const previousNetworkOnline = R(networkOnline);
+  const resumeApplied = R(false);
+  const interactionObserved = R(false);
+  const latestPosition = R(null);
+  const onPositionRef = R(onPosition);
+  onPositionRef.current = onPosition;
+  const [positionRestored, setPositionRestored] = S(false);
+  const [annotations, setAnnotations] = S([]);
+  const [annotationsLoading, setAnnotationsLoading] = S(true);
+  const [annotationBusy, setAnnotationBusy] = S(false);
+  const [annotationComposer, setAnnotationComposer] = S(null);
+  const [annotationDraft, setAnnotationDraft] = S("");
+  const [annotationReply, setAnnotationReply] = S("");
+  const [activeAnnotationId, setActiveAnnotationId] = S("");
+  const [showResolvedAnnotations, setShowResolvedAnnotations] = S(false);
+  const lastAnnotationSignal = R(annotationSignal);
 
   const persistQueue = C(() => {
     const saved = collabDocumentSaveQueue(tenant, taskId, viewerUserId, queueRef.current);
@@ -4896,6 +5268,31 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
       if (mounted.current && request === generation.current) setLoading(false);
     }
   }, [taskId, tenant, adopt]);
+  const loadAnnotations = C(async ({ quiet = false } = {}) => {
+    if (taskId == null) return false;
+    if (!quiet) setAnnotationsLoading(true);
+    try {
+      const raw = await collabJson(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations?status=all`,
+        { cache: "no-store" }
+      );
+      if (!mounted.current || tenant !== W2.tenant()) return false;
+      const items = arr(first(collabData(raw).items, obj(raw).items))
+        .map(normalizeCollabAnnotation).filter(Boolean);
+      setAnnotations(items);
+      setActiveAnnotationId(current => (
+        current && items.some(item => item.id === current) ? current : ""
+      ));
+      return true;
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant() && !quiet) {
+        setError(exception.message || t("標註同步失敗"));
+      }
+      return false;
+    } finally {
+      if (mounted.current) setAnnotationsLoading(false);
+    }
+  }, [taskId, tenant]);
   const clearScheduledFlush = C(() => {
     if (flushTimer.current != null) window.clearTimeout(flushTimer.current);
     if (retryTimer.current != null) window.clearTimeout(retryTimer.current);
@@ -5049,6 +5446,7 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
 
   E(() => {
     mounted.current = true;
+    loadAnnotations();
     loadDocument().then(loaded => {
       if (loaded && queueRef.current.updates.length && (!window.navigator || window.navigator.onLine !== false)) scheduleFlush(0);
     });
@@ -5079,7 +5477,7 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
       reloadAfterFlush.current = false;
       reloadDocumentLatest.current = null;
     };
-  }, [loadDocument, scheduleFlush, clearScheduledFlush]);
+  }, [loadDocument, loadAnnotations, scheduleFlush, clearScheduledFlush]);
   E(() => {
     const online = () => setNetworkOnline(true);
     const offline = () => setNetworkOnline(false);
@@ -5113,6 +5511,11 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
     if (documentSequence <= adoptedSequence.current) return;
     scheduleDocumentReload();
   }, [documentSequence, scheduleDocumentReload]);
+  E(() => {
+    if (annotationSignal <= lastAnnotationSignal.current) return;
+    lastAnnotationSignal.current = annotationSignal;
+    loadAnnotations({ quiet: true });
+  }, [annotationSignal, loadAnnotations]);
   const documentReconcileDelay = realtimeState === COLLAB_REALTIME_STATES.LIVE
     ? 30000
     : realtimeState === COLLAB_REALTIME_STATES.FALLBACK ? 4000
@@ -5135,6 +5538,320 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [documentReconcileDelay, networkOnline, loadDocument, scheduleFlush]);
+  E(() => {
+    if (!networkOnline) return undefined;
+    const delay = realtimeState === COLLAB_REALTIME_STATES.LIVE ? 30000 : 6000;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadAnnotations({ quiet: true });
+    }, delay);
+    return () => window.clearInterval(timer);
+  }, [networkOnline, realtimeState, loadAnnotations]);
+
+  const buildDocumentPosition = C((activeOverride = null) => {
+    const selection = mode === "edit" && editorView === "source"
+      ? sourceSelectionRef.current : visualSelectionRef.current;
+    const prior = latestPosition.current;
+    const valueLength = String(contentRef.current || "").length;
+    const start = clamp(number(first(selection && selection.start, prior && prior.cursor_start, 0)), 0, valueLength);
+    const end = clamp(number(first(selection && selection.end, prior && prior.cursor_end, start)), start, valueLength);
+    const selectionIndex = collabDocumentSelectionIndex(nodesRef.current);
+    const startAffinity = key(selection && selection.startAffinity) === "forward" ? "forward" : "backward";
+    const endAffinity = key(selection && selection.endAffinity) === "forward" ? "forward" : "backward";
+    const startAnchor = collabDocumentCaptureBoundary(selectionIndex, start, startAffinity);
+    const endAnchor = collabDocumentCaptureBoundary(selectionIndex, end, endAffinity);
+    if (selection) {
+      selection.startAnchor = startAnchor;
+      selection.endAnchor = endAnchor;
+    }
+    const blocks = collabDocumentParseBlocks(contentRef.current).blocks;
+    const block = blocks.find(item => end >= item.start && end <= item.end)
+      || [...blocks].reverse().find(item => end >= item.start) || blocks[0];
+    const scroller = sectionRef.current && sectionRef.current.closest(".task-collab-workspace-body");
+    const active = activeOverride == null
+      ? mode === "edit" && !!(selection && selection.active === true)
+      : activeOverride === true;
+    const position = {
+      format: COLLAB_POSITION_FORMAT,
+      mode: mode === "preview" ? "preview" : editorView === "source" ? "source" : "visual",
+      cursor_start: start,
+      cursor_end: end,
+      line_index: number(first(selection && selection.lineIndex, block && block.lineIndex, 0)),
+      scroll_top: clamp(Math.round(number(scroller && scroller.scrollTop)), 0, 2000000),
+      document_sequence: Math.max(0, number(adoptedSequence.current)),
+      active,
+      start_anchor: collabPositionPublicAnchor(startAnchor),
+      end_anchor: collabPositionPublicAnchor(endAnchor),
+    };
+    latestPosition.current = position;
+    return position;
+  }, [mode, editorView]);
+
+  E(() => {
+    if (loading || typeof onPositionRef.current !== "function") return undefined;
+    const publish = () => {
+      if (!mounted.current || typeof onPositionRef.current !== "function") return;
+      onPositionRef.current(buildDocumentPosition()).catch(() => {});
+    };
+    publish();
+    const timer = window.setInterval(publish, 650);
+    return () => window.clearInterval(timer);
+  }, [loading, buildDocumentPosition]);
+
+  E(() => () => {
+    if (!latestPosition.current || typeof onPositionRef.current !== "function") return;
+    onPositionRef.current(
+      { ...latestPosition.current, active: false },
+      { persist: true, keepalive: true, force: true }
+    ).catch(() => {});
+  }, []);
+
+  E(() => {
+    const stored = normalizeCollabPosition(resumePosition);
+    if (!stored || loading || resumeApplied.current || interactionObserved.current) return undefined;
+    resumeApplied.current = true;
+    const selectionIndex = collabDocumentSelectionIndex(nodesRef.current);
+    const startAnchor = collabPositionInternalAnchor(stored.start_anchor);
+    const endAnchor = collabPositionInternalAnchor(stored.end_anchor);
+    const start = collabDocumentResolveBoundary(selectionIndex, startAnchor, stored.cursor_start);
+    const end = Math.max(start, collabDocumentResolveBoundary(selectionIndex, endAnchor, stored.cursor_end));
+    const blocks = collabDocumentParseBlocks(contentRef.current).blocks;
+    const startBlock = blocks.find(item => start >= item.start && start <= item.end)
+      || [...blocks].reverse().find(item => start >= item.start) || blocks[0];
+    const endBlock = [...blocks].reverse().find(item => end >= item.start && end <= item.end) || startBlock;
+    const restoredSelection = {
+      type: startBlock ? startBlock.type : "text",
+      lineIndex: number(first(startBlock && startBlock.lineIndex, stored.line_index, 0)),
+      endLineIndex: number(first(endBlock && endBlock.lineIndex, stored.line_index, 0)),
+      start, end,
+      startAffinity: startAnchor && startAnchor.affinity || "backward",
+      endAffinity: endAnchor && endAnchor.affinity || "backward",
+      direction: "none",
+      startAnchor,
+      endAnchor,
+      active: stored.mode !== "preview",
+      restoring: false,
+      pending: stored.mode !== "preview",
+    };
+    if (stored.mode === "preview") setMode("preview");
+    else {
+      setMode("edit");
+      setEditorView(stored.mode === "source" ? "source" : "visual");
+      if (stored.mode === "source") sourceSelectionRef.current = restoredSelection;
+      else visualSelectionRef.current = restoredSelection;
+    }
+    latestPosition.current = { ...stored, cursor_start: start, cursor_end: end, active: stored.mode !== "preview" };
+    let secondFrame = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const scroller = sectionRef.current && sectionRef.current.closest(".task-collab-workspace-body");
+        if (stored.mode === "source") {
+          const editor = editorRef.current;
+          if (editor) {
+            try {
+              editor.focus({ preventScroll: true });
+              editor.setSelectionRange(start, end, "none");
+            } catch (error) {}
+          }
+        }
+        if (scroller) scroller.scrollTop = stored.scroll_top;
+        setPositionRestored(true);
+      });
+    });
+    const noticeTimer = window.setTimeout(() => setPositionRestored(false), 3600);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame != null) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(noticeTimer);
+    };
+  }, [resumePosition, loading]);
+
+  const remoteEditors = M(() => {
+    const selectionIndex = collabDocumentSelectionIndex(nodesRef.current);
+    const blocks = collabDocumentParseBlocks(content).blocks;
+    return Object.values(obj(presence)).filter(item => (
+      item && item.userId !== String(viewerUserId)
+      && item.state === "active" && item.expiresAt > Date.now()
+      && item.position && item.position.active === true
+    )).map(item => {
+      const position = normalizeCollabPosition(item.position);
+      if (!position) return null;
+      const start = collabDocumentResolveBoundary(
+        selectionIndex, collabPositionInternalAnchor(position.start_anchor), position.cursor_start
+      );
+      const end = Math.max(start, collabDocumentResolveBoundary(
+        selectionIndex, collabPositionInternalAnchor(position.end_anchor), position.cursor_end
+      ));
+      const block = blocks.find(candidate => end >= candidate.start && end <= candidate.end)
+        || [...blocks].reverse().find(candidate => end >= candidate.start) || blocks[0];
+      return {
+        userId: item.userId,
+        displayName: item.displayName || item.userId,
+        color: collabCursorColor(item.userId),
+        position: {
+          ...position,
+          cursor_start: start,
+          cursor_end: end,
+          line_index: number(first(block && block.lineIndex, position.line_index, 0)),
+        },
+      };
+    }).filter(Boolean);
+  }, [presence, content, viewerUserId]);
+
+  const resolvedAnnotations = M(() => {
+    const selectionIndex = collabDocumentSelectionIndex(nodesRef.current);
+    return annotations.map(annotation => {
+      const resolvedStart = collabDocumentResolveBoundary(
+        selectionIndex,
+        collabPositionInternalAnchor(annotation.startAnchor),
+        annotation.startOffset
+      );
+      const resolvedEnd = Math.max(resolvedStart, collabDocumentResolveBoundary(
+        selectionIndex,
+        collabPositionInternalAnchor(annotation.endAnchor),
+        annotation.endOffset
+      ));
+      return { ...annotation, resolvedStart, resolvedEnd };
+    });
+  }, [annotations, content]);
+  const visibleAnnotations = M(() => resolvedAnnotations.filter(annotation => (
+    showResolvedAnnotations || annotation.status !== "resolved"
+  )), [resolvedAnnotations, showResolvedAnnotations]);
+
+  const beginAnnotation = () => {
+    if (capabilities.can_edit !== true || loading || annotationBusy) return;
+    const selected = mode === "edit" && editorView === "source"
+      ? sourceSelectionRef.current : visualSelectionRef.current;
+    const start = clamp(number(selected && selected.start), 0, contentRef.current.length);
+    const end = clamp(number(selected && selected.end), start, contentRef.current.length);
+    if (end <= start) {
+      setError(t("先選取工作稿中的文字，再建立標註。"));
+      return;
+    }
+    if (end - start > 2000) {
+      setError(t("標註最多選取 2000 個字"));
+      return;
+    }
+    const selectionIndex = collabDocumentSelectionIndex(nodesRef.current);
+    const startAffinity = key(selected && selected.startAffinity) === "backward" ? "backward" : "forward";
+    const endAffinity = key(selected && selected.endAffinity) === "forward" ? "forward" : "backward";
+    const startAnchor = collabDocumentCaptureBoundary(selectionIndex, start, startAffinity);
+    const endAnchor = collabDocumentCaptureBoundary(selectionIndex, end, endAffinity);
+    setAnnotationComposer({
+      startOffset: start,
+      endOffset: end,
+      startAnchor: collabPositionPublicAnchor(startAnchor),
+      endAnchor: collabPositionPublicAnchor(endAnchor),
+      documentSequence: Math.max(0, number(adoptedSequence.current)),
+      quote: contentRef.current.slice(start, end),
+    });
+    setAnnotationDraft("");
+    setActiveAnnotationId("");
+    setError("");
+  };
+  const submitAnnotation = async event => {
+    event.preventDefault();
+    const composer = annotationComposer;
+    const body = annotationDraft.trim();
+    if (!composer || !body || annotationBusy || !networkOnline) return;
+    setAnnotationBusy(true);
+    try {
+      const result = await W2.post(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations`,
+        {
+          client_annotation_id: clientRequestId(),
+          client_message_id: clientRequestId(),
+          start_anchor: composer.startAnchor,
+          end_anchor: composer.endAnchor,
+          start_offset: composer.startOffset,
+          end_offset: composer.endOffset,
+          document_sequence: composer.documentSequence,
+          quote: composer.quote,
+          body,
+        }
+      );
+      if (!mounted.current || tenant !== W2.tenant()) return;
+      const created = normalizeCollabAnnotation(obj(collabData(result).annotation));
+      setAnnotationComposer(null);
+      setAnnotationDraft("");
+      if (created) setActiveAnnotationId(created.id);
+      await loadAnnotations({ quiet: true });
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant()) {
+        setError(exception.message || t("標註同步失敗"));
+      }
+    } finally {
+      if (mounted.current) setAnnotationBusy(false);
+    }
+  };
+  const submitAnnotationReply = async event => {
+    event.preventDefault();
+    const body = annotationReply.trim();
+    if (!activeAnnotationId || !body || annotationBusy || !networkOnline) return;
+    setAnnotationBusy(true);
+    try {
+      await W2.post(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations/${encodeURIComponent(activeAnnotationId)}/messages`,
+        { client_message_id: clientRequestId(), body }
+      );
+      if (!mounted.current || tenant !== W2.tenant()) return;
+      setAnnotationReply("");
+      await loadAnnotations({ quiet: true });
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant()) {
+        setError(exception.message || t("標註同步失敗"));
+      }
+    } finally {
+      if (mounted.current) setAnnotationBusy(false);
+    }
+  };
+  const setAnnotationStatus = async (annotationId, statusValue) => {
+    if (!annotationId || annotationBusy || !networkOnline) return;
+    setAnnotationBusy(true);
+    try {
+      await W2.post(
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/annotations/${encodeURIComponent(annotationId)}/status`,
+        { status: statusValue }
+      );
+      if (mounted.current && tenant === W2.tenant()) await loadAnnotations({ quiet: true });
+    } catch (exception) {
+      if (mounted.current && tenant === W2.tenant()) {
+        setError(exception.message || t("標註同步失敗"));
+      }
+    } finally {
+      if (mounted.current) setAnnotationBusy(false);
+    }
+  };
+  const openAnnotation = annotation => {
+    if (!annotation) return;
+    setActiveAnnotationId(annotation.id);
+    setAnnotationComposer(null);
+    setAnnotationReply("");
+    setMode("edit");
+    setEditorView("visual");
+    const blocks = collabDocumentParseBlocks(contentRef.current).blocks;
+    const startBlock = blocks.find(block => annotation.resolvedStart >= block.start && annotation.resolvedStart <= block.end)
+      || blocks[0];
+    const endBlock = [...blocks].reverse().find(block => annotation.resolvedEnd >= block.start && annotation.resolvedEnd <= block.end)
+      || startBlock;
+    visualSelectionRef.current = {
+      type: startBlock ? startBlock.type : "text",
+      lineIndex: number(startBlock && startBlock.lineIndex),
+      endLineIndex: number(endBlock && endBlock.lineIndex),
+      start: annotation.resolvedStart,
+      end: annotation.resolvedEnd,
+      startAffinity: "forward",
+      endAffinity: "backward",
+      active: true,
+      restoring: false,
+      pending: true,
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = sectionRef.current && sectionRef.current.querySelector(
+        `[data-collab-line-index="${number(startBlock && startBlock.lineIndex)}"]`
+      );
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }));
+  };
 
   const validateDocumentText = nextText => {
     if (capabilities.can_edit !== true || loading) return false;
@@ -5631,8 +6348,9 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
     : observer ? t("觀察者可閱讀工作稿，但不能修改。") : "";
   const documentStyle = collabDocumentStyle(content);
   const visualToolsDisabled = capabilities.can_edit !== true || loading || mode !== "edit" || editorView !== "visual";
+  const resolvedAnnotationCount = resolvedAnnotations.filter(annotation => annotation.status === "resolved").length;
 
-  return <section className="task-collab-document" data-sequence={number(documentMeta.latest_sequence)}>
+  return <section ref={sectionRef} className="task-collab-document" data-sequence={number(documentMeta.latest_sequence)} onPointerDownCapture={() => { interactionObserved.current = true; }} onKeyDownCapture={() => { interactionObserved.current = true; }}>
     <header className="task-collab-document-head">
       <div><L red>SHARED · RGA/01</L><h3>{t("協作工作稿")}</h3><p>{t("所有協作者可在同一份工作稿中安全共編。")}</p></div>
       <div className="task-collab-document-tools">
@@ -5643,7 +6361,8 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
         <button type="button" className="task-collab-document-export" disabled={exporting || pendingCount > 0 || saving || offline || capabilities.can_export === false || !documentMeta.id} onClick={exportDocument}><I name="arrow" size={12}/>{exporting ? "…" : t("匯出")}</button>
       </div>
     </header>
-    <div className={"task-collab-document-status is-" + state} role="status" aria-live="polite" aria-atomic="true"><i aria-hidden="true"/><span>{statusLabel}</span>{pendingCount > 0 && <b>{pendingCount}</b>}</div>
+    <div className={"task-collab-document-status is-" + state} role="status" aria-live="polite" aria-atomic="true"><i aria-hidden="true"/><span>{positionRestored ? t("上次編輯位置已恢復") : statusLabel}</span>{pendingCount > 0 && <b>{pendingCount}</b>}</div>
+    {!!remoteEditors.length && <div className="task-collab-cursor-register" aria-label={t("正在共編")}><L red>{t("正在共編")}</L><div>{remoteEditors.map(editor => <span key={editor.userId} style={{ "--collab-cursor": editor.color }}><i aria-hidden="true"/><b>{editor.displayName}</b><small>L{String(number(editor.position.line_index) + 1).padStart(2, "0")}</small></span>)}</div></div>}
     {(error || storageWarning) && <div className="task-inline-error" role="alert"><span>{storageWarning || error}</span><button type="button" onClick={retryDocument}>{t("重新載入")}</button></div>}
     {readOnlyMessage && <p className="task-collab-document-readonly">{readOnlyMessage}</p>}
     <div className="task-collab-document-insert" role="toolbar" aria-label={t("協作工作稿")}>
@@ -5653,6 +6372,7 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
       <button type="button" disabled={capabilities.can_edit !== true || loading} onClick={insertFormula}><span aria-hidden="true">∑</span><span>{t("插入公式")}</span></button>
       <button type="button" disabled={visualToolsDisabled} aria-pressed={toolPanel === "format"} onClick={() => setToolPanel(current => current === "format" ? "" : "format")}><span aria-hidden="true">B</span><span>{t("格式")}</span></button>
       <button type="button" disabled={visualToolsDisabled} aria-pressed={toolPanel === "type"} onClick={() => setToolPanel(current => current === "type" ? "" : "type")}><span aria-hidden="true">Aa</span><span>{t("字體")}</span></button>
+      <button type="button" disabled={capabilities.can_edit !== true || loading || mode !== "edit" || offline} onPointerDown={event => event.preventDefault()} onClick={beginAnnotation}><span aria-hidden="true">＋</span><span>{t("標註")}</span></button>
       <button type="button" disabled={loading || mode !== "edit"} aria-pressed={editorView === "source"} onClick={() => { setEditorView(current => current === "source" ? "visual" : "source"); setToolPanel(""); }}><span aria-hidden="true">&lt;/&gt;</span><span>{editorView === "source" ? t("回到視覺共編") : t("原文")}</span></button>
       <small>{t("只支援 PNG、JPEG 或 WebP 圖片，最大 2MB。")}</small>
     </div>
@@ -5671,9 +6391,27 @@ const CollaborativeDocument = ({ taskId, task, role, viewerUserId, clientId, rea
         <I name="image" size={13}/><span>{collabDocumentAssetAlt(asset)}</span><small>{number(asset.width)}×{number(asset.height)}</small>
       </button>)}</div>
     </details>}
+    <section className="task-collab-annotations" aria-label={t("標註與討論")}>
+      <header><div><L red>ANNOTATION / THREAD</L><h4>{t("標註與討論")}</h4></div><div><b>{resolvedAnnotations.filter(annotation => annotation.status === "open").length}</b><span>{t("未解決")}</span>{resolvedAnnotationCount > 0 && <label><input type="checkbox" checked={showResolvedAnnotations} onChange={event => setShowResolvedAnnotations(event.currentTarget.checked)}/>{t("顯示已解決")}</label>}</div></header>
+      {annotationComposer && <form className="task-collab-annotation-composer" onSubmit={submitAnnotation}>
+        <blockquote>{annotationComposer.quote}</blockquote>
+        <label><span>{t("標註內容")}</span><textarea value={annotationDraft} maxLength="4000" rows="3" autoFocus placeholder={t("寫下這段文字需要討論的問題或建議。")} onChange={event => setAnnotationDraft(event.currentTarget.value)}/></label>
+        <div><button type="button" disabled={annotationBusy} onClick={() => { setAnnotationComposer(null); setAnnotationDraft(""); }}>{t("關閉")}</button><button type="submit" className="primary" disabled={annotationBusy || !annotationDraft.trim() || offline}>{annotationBusy ? "…" : t("送出標註")}</button></div>
+      </form>}
+      {annotationsLoading && !resolvedAnnotations.length ? <div className="task-collab-annotation-empty">{t("同步中")}</div>
+      : !visibleAnnotations.length ? <div className="task-collab-annotation-empty"><strong>{t("目前沒有標註")}</strong><p>{t("選取一段文字並按下標註，協作者便能針對同一位置討論。")}</p></div>
+      : <div className="task-collab-annotation-list">{visibleAnnotations.map((annotation, index) => <article key={annotation.id} className={(annotation.id === activeAnnotationId ? "is-active " : "") + (annotation.status === "resolved" ? "is-resolved" : "")}>
+        <button type="button" className="task-collab-annotation-anchor" onClick={() => openAnnotation(annotation)}><span>{String(index + 1).padStart(2, "0")}</span><blockquote>{annotation.quote}</blockquote><small>{annotation.authorName} · {collabTime(annotation.createdAt)}</small></button>
+        {annotation.id === activeAnnotationId && <div className="task-collab-annotation-thread">
+          <div>{annotation.messages.map(message => <section key={message.id}><header><b>{message.authorName}</b><time>{collabTime(message.createdAt)}</time></header><p>{message.body}</p></section>)}</div>
+          {capabilities.can_edit === true && <form onSubmit={submitAnnotationReply}><label><span className="sr-only">{t("輸入回覆")}</span><textarea value={annotationReply} maxLength="4000" rows="2" placeholder={t("輸入回覆")} onChange={event => setAnnotationReply(event.currentTarget.value)}/></label><button type="submit" disabled={annotationBusy || offline || !annotationReply.trim()}>{annotationBusy ? "…" : t("回覆討論")}</button></form>}
+          {annotation.canResolve && <button type="button" className="task-collab-annotation-resolve" disabled={annotationBusy || offline} onClick={() => setAnnotationStatus(annotation.id, annotation.status === "resolved" ? "open" : "resolved")}>{annotation.status === "resolved" ? t("重新開啟") : t("標記已解決")}</button>}
+        </div>}
+      </article>)}</div>}
+    </section>
     {loading ? <div className="task-loading" aria-live="polite"><span/><span/><span/><small>{t("同步中")}</small></div>
     : mode === "edit" && editorView === "source" ? <label className="task-collab-document-editor"><span className="sr-only">{t("輸入協作工作稿")}</span><textarea ref={editorRef} value={content} rows="18" readOnly={capabilities.can_edit !== true} aria-readonly={capabilities.can_edit !== true} spellCheck="true" onCompositionStart={onCompositionStart} onCompositionEnd={onCompositionEnd} onChange={onChange} onFocus={event => rememberSourceSelection(event, true)} onSelect={event => rememberSourceSelection(event, true)} onBlur={event => { rememberSourceSelection(event, false); flushDocumentOnBlur(); }} placeholder={t("開始整理共同目標、決定與下一步。")}/></label>
-    : mode === "edit" ? <CollaborativeDocumentVisualEditor taskId={taskId} content={content} assets={assets} readOnly={capabilities.can_edit !== true} selectionRef={visualSelectionRef} onReplace={replaceDocumentRange} onSplices={applyDocumentSplices} onComposeStart={onVisualCompositionStart} onComposeEnd={onVisualCompositionEnd} onBlur={flushDocumentOnBlur}/>
+    : mode === "edit" ? <CollaborativeDocumentVisualEditor taskId={taskId} content={content} assets={assets} readOnly={capabilities.can_edit !== true} selectionRef={visualSelectionRef} remoteEditors={remoteEditors} annotations={resolvedAnnotations} activeAnnotationId={activeAnnotationId} onReplace={replaceDocumentRange} onSplices={applyDocumentSplices} onComposeStart={onVisualCompositionStart} onComposeEnd={onVisualCompositionEnd} onBlur={flushDocumentOnBlur}/>
     : <div className="task-collab-document-preview" aria-label={t("預覽")}>{content ? <CollaborativeDocumentPreview taskId={taskId} content={content} assets={assets}/> : <div className="task-collab-document-empty"><strong>{t("工作稿尚未有內容")}</strong><p>{t("開始整理共同目標、決定與下一步。")}</p></div>}</div>}
   </section>;
 };
@@ -8120,7 +8858,7 @@ const CollaborationWorkspace = ({ target, meta, onClose, onChanged }) => {
             <section><L red>{t(collabScopeLabel(space.discoverability))}</L><h3>{task.title}</h3>{task.description && <p>{task.description}</p>}<div className="task-collab-facts"><span>{t(collabJoinLabel(space.join_policy))}</span><span>{number(first(space.member_count, collabMembers(detail).length))} {t("人參與")}</span>{task.due_at && <span>{t("截止")} · {collabTime(task.due_at)}</span>}</div></section>
             {overviewActions}
           </div>
-          : tab === "document" ? <CollaborativeDocument key={String(tenant) + ":" + String(taskId) + ":" + String(viewerUserId)} taskId={taskId} task={task} role={first(membership.role, membership.member_role)} viewerUserId={viewerUserId} clientId={realtime.clientId} realtimeState={realtime.transport} documentSignal={realtime.documentSignal} documentSequence={realtime.documentSequence}/>
+          : tab === "document" ? <CollaborativeDocument key={String(tenant) + ":" + String(taskId) + ":" + String(viewerUserId)} taskId={taskId} task={task} role={first(membership.role, membership.member_role)} viewerUserId={viewerUserId} clientId={realtime.clientId} realtimeState={realtime.transport} presence={realtime.presence} resumePosition={realtime.resumePosition} onPosition={realtime.sendPosition} documentSignal={realtime.documentSignal} documentSequence={realtime.documentSequence} annotationSignal={realtime.annotationSignal}/>
           : tab === "members" ? <CollaborationMembers detail={detail} meta={meta} busy={busy} onInvite={invite} onDecision={decide} onTransferOwnership={transferOwnership} realtimeState={realtime.transport} presence={realtime.presence}/>
           : tab === "meeting" ? <CollaborationMeeting meeting={meeting} canShare={canShareScreen}/>
           : <CollaborationChat key={String(taskId)} taskId={taskId} active={tab === "chat"} canSend={canSend} viewerUserId={viewerUserId} realtimeState={realtime.transport} presence={realtime.presence} members={collabMembers(detail)} messageSignal={realtime.messageSignal} onTyping={realtime.sendTyping} lastMessageIdRef={lastMessageIdRef}/>}

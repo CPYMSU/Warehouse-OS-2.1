@@ -874,6 +874,32 @@
 .task-collab-document-status.is-readonly > i { background: var(--ink-4); }
 .task-collab-document-status.is-error { border-color: var(--task-red); color: var(--task-red); }
 .task-collab-document-status.is-error > i { background: var(--task-red); }
+.task-collab-cursor-register {
+  min-height: 42px;
+  margin: -3px 0 12px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--task-hair);
+  background: var(--paper);
+}
+.task-collab-cursor-register > div { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.task-collab-cursor-register > div > span {
+  min-height: 24px;
+  padding: 0 7px 0 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--collab-cursor) 36%, var(--task-hair));
+  background: color-mix(in srgb, var(--collab-cursor) 7%, var(--paper));
+  color: var(--ink-2);
+  font-size: 8.5px;
+}
+.task-collab-cursor-register i { width: 6px; height: 14px; background: var(--collab-cursor); }
+.task-collab-cursor-register b { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-collab-cursor-register small { color: var(--collab-cursor); font: 750 7.5px/1 var(--f-mono); }
 .task-collab-document-readonly { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--ink-4); background: var(--task-soft); color: var(--ink-3); font-size: 9.5px; line-height: 1.5; }
 .task-collab-document-insert { min-height: 48px; margin: 0 0 10px; display: flex; align-items: center; gap: 7px; }
 .task-collab-document-insert button { min-height: 42px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--task-rule); background: var(--paper); color: var(--ink); font-size: 9px; font-weight: 750; }
@@ -887,6 +913,44 @@
 .task-collab-document-assets button:disabled { opacity: .42; }
 .task-collab-document-assets button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .task-collab-document-assets button small { color: var(--ink-4); font: 650 7.5px/1 var(--f-mono); }
+.task-collab-annotations { margin: 0 0 12px; border: 1px solid var(--task-rule); background: var(--paper); }
+.task-collab-annotations > header { min-height: 58px; padding: 9px 12px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--task-rule); }
+.task-collab-annotations > header h4 { margin: 3px 0 0; font-size: 15px; letter-spacing: -.02em; }
+.task-collab-annotations > header > div:last-child { display: flex; align-items: center; gap: 7px; color: var(--ink-3); font: 700 8px/1.2 var(--f-mono); }
+.task-collab-annotations > header > div:last-child > b { min-width: 28px; color: var(--task-red); font-size: 24px; line-height: 1; }
+.task-collab-annotations > header label { min-height: 32px; margin-left: 8px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; border-left: 1px solid var(--task-hair); cursor: pointer; }
+.task-collab-annotations > header input { accent-color: var(--task-red); }
+.task-collab-annotation-composer { padding: 12px; display: grid; grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.2fr); gap: 10px 14px; border-bottom: 1px solid var(--task-rule); background: var(--task-soft); }
+.task-collab-annotation-composer blockquote { margin: 0; padding: 11px 12px; border-left: 4px solid #f1c40f; background: var(--paper); color: var(--ink-2); font: 600 11px/1.55 var(--f-text); }
+.task-collab-annotation-composer label { display: grid; gap: 5px; color: var(--ink-3); font: 750 8px/1.2 var(--f-mono); }
+.task-collab-annotation-composer textarea,
+.task-collab-annotation-thread textarea { width: 100%; padding: 10px; resize: vertical; border: 1px solid var(--task-rule); border-radius: 0; outline: 0; background: var(--paper); color: var(--ink); font: 400 12px/1.5 var(--f-text); }
+.task-collab-annotation-composer textarea:focus,
+.task-collab-annotation-thread textarea:focus { box-shadow: inset 3px 0 0 var(--task-red); }
+.task-collab-annotation-composer > div { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 7px; }
+.task-collab-annotation-composer button,
+.task-collab-annotation-thread button { min-height: 36px; padding: 0 12px; border: 1px solid var(--task-rule); background: var(--paper); color: var(--ink); font-size: 8.5px; font-weight: 750; }
+.task-collab-annotation-composer button.primary { background: var(--task-red); border-color: var(--task-red); color: #fff; }
+.task-collab-annotation-composer button:disabled,
+.task-collab-annotation-thread button:disabled { opacity: .4; }
+.task-collab-annotation-empty { min-height: 92px; padding: 18px; display: grid; place-content: center; text-align: center; color: var(--ink-3); }
+.task-collab-annotation-empty strong { color: var(--ink); font-size: 12px; }
+.task-collab-annotation-empty p { max-width: 540px; margin: 5px 0 0; font-size: 9.5px; line-height: 1.5; }
+.task-collab-annotation-list { max-height: 420px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(310px, 100%), 1fr)); }
+.task-collab-annotation-list > article { min-width: 0; border-right: 1px solid var(--task-hair); border-bottom: 1px solid var(--task-hair); }
+.task-collab-annotation-list > article.is-active { grid-column: 1 / -1; box-shadow: inset 4px 0 0 var(--task-red); }
+.task-collab-annotation-list > article.is-resolved { opacity: .62; }
+.task-collab-annotation-anchor { width: 100%; min-height: 94px; padding: 11px; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 4px 10px; border: 0; background: transparent; color: var(--ink); text-align: left; }
+.task-collab-annotation-anchor:hover { background: var(--task-soft); }
+.task-collab-annotation-anchor > span { grid-row: 1 / 3; color: var(--task-red); font: 800 22px/1 var(--f-mono); }
+.task-collab-annotation-anchor blockquote { max-height: 50px; margin: 0; overflow: hidden; color: var(--ink-2); font: 650 11px/1.45 var(--f-text); }
+.task-collab-annotation-anchor small { color: var(--ink-4); font: 650 7.5px/1.3 var(--f-mono); }
+.task-collab-annotation-thread { padding: 0 12px 12px 56px; }
+.task-collab-annotation-thread > div > section { padding: 10px 0; border-top: 1px solid var(--task-hair); }
+.task-collab-annotation-thread section header { display: flex; justify-content: space-between; gap: 10px; color: var(--ink-3); font: 700 7.5px/1.2 var(--f-mono); }
+.task-collab-annotation-thread section p { margin: 6px 0 0; white-space: pre-wrap; color: var(--ink-2); font-size: 10.5px; line-height: 1.55; }
+.task-collab-annotation-thread > form { padding-top: 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; border-top: 1px solid var(--task-hair); }
+.task-collab-annotation-resolve { margin-top: 8px; color: var(--task-red) !important; }
 .task-collab-document-editor { display: block; }
 .task-collab-document-editor textarea {
   width: 100%;
@@ -907,10 +971,49 @@
 
 /* Visual co-editing keeps the existing draft frame and Swiss control language. */
 .task-collab-document-visual {
+  position: relative;
   min-height: 410px;
   border: 1px solid var(--task-rule);
   background: var(--paper);
 }
+.task-collab-cursor-layer { position: absolute; inset: 0; z-index: 6; overflow: hidden; pointer-events: none; }
+.task-collab-annotation-layer { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; }
+.task-collab-annotation-layer > span { position: absolute; background: color-mix(in srgb, #f1c40f 26%, transparent); border-bottom: 2px solid #d2a900; }
+.task-collab-annotation-layer > span.is-active { background: color-mix(in srgb, #ef3340 19%, transparent); border-bottom-color: var(--task-red); }
+.task-collab-annotation-layer > span.is-resolved { background: color-mix(in srgb, var(--ink-4) 10%, transparent); border-bottom-color: var(--ink-4); border-bottom-style: dotted; }
+.task-collab-remote-cursor {
+  position: absolute;
+  width: 2px;
+  min-height: 18px;
+  background: var(--collab-cursor);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--paper) 72%, transparent);
+  transform: translateX(-1px);
+}
+.task-collab-remote-cursor::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 6px;
+  height: 6px;
+  background: var(--collab-cursor);
+}
+.task-collab-remote-cursor b {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: 150px;
+  min-height: 19px;
+  padding: 4px 6px;
+  overflow: hidden;
+  transform: translateY(-100%);
+  background: var(--collab-cursor);
+  color: #fff;
+  font: 750 8px/1.3 var(--f-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-collab-remote-cursor:nth-child(even) b { transform: translateY(0); }
 .task-collab-document-canvas {
   min-height: 408px;
   padding: clamp(18px, 3vw, 30px);
@@ -1403,6 +1506,15 @@
   .task-collab-document-insert { flex-wrap: wrap; }
   .task-collab-document-insert button { min-height: 46px; }
   .task-collab-document-insert small { width: 100%; margin-left: 0; }
+  .task-collab-annotations > header { align-items: flex-start; flex-direction: column; }
+  .task-collab-annotations > header label { min-height: 28px; margin-left: 0; padding-left: 0; border-left: 0; }
+  .task-collab-annotation-composer { grid-template-columns: 1fr; }
+  .task-collab-annotation-composer textarea,
+  .task-collab-annotation-thread textarea { font-size: 16px; }
+  .task-collab-annotation-thread { padding-left: 12px; }
+  .task-collab-annotation-thread > form { grid-template-columns: 1fr; }
+  .task-collab-annotation-composer button,
+  .task-collab-annotation-thread button { min-height: 44px; }
   .task-calendar > header { min-height: 64px; }
   .task-calendar h2 { font-size: 20px; }
   .task-month-grid > button { min-height: 54px; padding: 5px; }
