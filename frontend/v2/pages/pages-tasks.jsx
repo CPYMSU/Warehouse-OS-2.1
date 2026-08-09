@@ -3865,7 +3865,7 @@ const CollaborativeDocumentPreview = ({ taskId, content, assets }) => {
   return <div className={`task-collab-document-rich ${fontClass}`}><L dim>{t("安全圖文預覽")}</L>{rendered}</div>;
 };
 
-const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, showPlaceholder, selectionRef, resolveSelection, onCopySelection, onReplace, onComposeStart, onComposeEnd, onBlur }) => {
+const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, showPlaceholder, selectionRef, resolveSelection, onCopySelection, onSelectionActivity, onReplace, onComposeStart, onComposeEnd, onBlur }) => {
   const rootRef = R(null);
   const compositionActive = R(false);
   const postCompositionValue = R(null);
@@ -3934,6 +3934,30 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
       level: startBlock.level, active: activeValue !== false, restoring: false, pending: false,
     };
     return selection;
+  };
+  const reportSelection = () => {
+    const observed = rememberSelection(true);
+    const selected = selectionRef.current;
+    if (
+      observed.unresolved === true || !selected
+      || number(selected.end) <= number(selected.start)
+      || typeof onSelectionActivity !== "function"
+    ) {
+      if (typeof onSelectionActivity === "function") onSelectionActivity(null);
+      return observed;
+    }
+    let rect = null;
+    try {
+      const nativeSelection = window.getSelection();
+      const range = nativeSelection && nativeSelection.rangeCount > 0
+        ? nativeSelection.getRangeAt(0) : null;
+      const measured = range && range.getBoundingClientRect();
+      if (measured && (measured.width > 0 || measured.height > 0)) {
+        rect = { left: measured.left, top: measured.top, right: measured.right, bottom: measured.bottom, width: measured.width, height: measured.height };
+      }
+    } catch (error) {}
+    onSelectionActivity(rect ? { selection: { ...selected }, rect } : null);
+    return observed;
   };
   const commitRoot = fallbackSelection => {
     const root = rootRef.current;
@@ -4406,9 +4430,9 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
     data-collab-text-surface="true"
     spellCheck="true"
     onFocus={() => rememberSelection(true)}
-    onSelect={() => rememberSelection(true)}
-    onKeyUp={() => rememberSelection(true)}
-    onMouseUp={() => rememberSelection(true)}
+    onSelect={reportSelection}
+    onKeyUp={reportSelection}
+    onMouseUp={reportSelection}
     onKeyDown={handleTextKeyDown}
     onInput={event => {
       const nativeEvent = event.nativeEvent || event;
@@ -5199,7 +5223,7 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
     <CollaborativeDocumentCursorLayer visualRef={visualRef} projection={projection} editors={remoteEditors}/>
     <div className={`task-collab-document-canvas is-font-${projection.style.font} is-size-${projection.style.size}${readOnly ? " is-readonly" : ""}`} onClick={focusDocumentEnd}>
       {visualGroups.map((block, index) => {
-        if (block.type === "text-surface") return <CollaborativeDocumentTextSurface key={`text-surface-${index}`} blocks={block.blocks} documentContent={content} readOnly={readOnly} showPlaceholder={documentIsEmpty && index === 0} selectionRef={selectionRef} resolveSelection={resolveTextSelection} onCopySelection={copyTextSelection} onReplace={onReplace} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
+        if (block.type === "text-surface") return <CollaborativeDocumentTextSurface key={`text-surface-${index}`} blocks={block.blocks} documentContent={content} readOnly={readOnly} showPlaceholder={documentIsEmpty && index === 0} selectionRef={selectionRef} resolveSelection={resolveTextSelection} onCopySelection={copyTextSelection} onSelectionActivity={onSelectionChange} onReplace={onReplace} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
         if (block.type === "table") return <CollaborativeDocumentTableEditor key={`table-${block.lineIndex}`} block={block} readOnly={readOnly} selectionRef={selectionRef} onReplace={onReplace} onSplices={onSplices} onRemove={removeStructuredBlock} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
         if (block.type === "formula") return <CollaborativeDocumentFormulaEditor key={`formula-${block.lineIndex}`} block={block} readOnly={readOnly} selectionRef={selectionRef} onReplace={onReplace} onRemove={removeStructuredBlock} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
         if (block.type === "image") {

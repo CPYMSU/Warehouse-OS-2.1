@@ -100,14 +100,14 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260809-task-selection-safari1' in index
-    assert 'pages/pages-tasks.jsx?v=20260809-task-selection-safari1' in index
+    assert 'pages/pages-tasks.css?v=20260809-task-selection-direct2' in index
+    assert 'pages/pages-tasks.jsx?v=20260809-task-selection-direct2' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260809-task-selection-safari1' in index
+    assert 'dist/app.bundle.js?v=20260809-task-selection-direct2' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -190,6 +190,8 @@ def test_task_coediting_anchors_annotations_and_threaded_discussion():
     assert ".task-collab-selection-toolbar" in css
     assert 'visual.addEventListener("pointerup", finalizeSelection)' in source
     assert '!visual || !visual.contains(document.activeElement)' not in source
+    assert "onSelectionActivity={onSelectionChange}" in source
+    assert "onMouseUp={reportSelection}" in source
 
 
 def test_task_collaboration_workspace_supports_swiss_immersive_fullscreen():
