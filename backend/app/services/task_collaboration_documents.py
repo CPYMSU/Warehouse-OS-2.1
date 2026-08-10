@@ -37,6 +37,7 @@ MAX_NODES = 50_000
 MAX_UPDATE_OPERATIONS = 1_000
 MAX_UPDATE_BYTES = 96 * 1024
 MAX_UPDATES_PER_DOCUMENT = 20_000
+MAX_INCREMENTAL_UPDATES = 500
 SNAPSHOT_INTERVAL = 50
 MAX_CLOCK = 9_007_199_254_740_991
 MAX_IMAGE_ASSET_BYTES = 2 * 1024 * 1024
@@ -544,12 +545,104 @@ def _document_view(
     }
 
 
-def get_document(actor: ActorContext, task_id: str) -> dict[str, object]:
+def get_document(
+    actor: ActorContext,
+    task_id: str,
+    *,
+    after_sequence: int | None = None,
+    document_id: str | None = None,
+) -> dict[str, object]:
     target_id = _uuid(task_id, "task id")
+    if after_sequence is not None and after_sequence < 0:
+        raise _error(422, "Invalid collaboration document sequence")
+    requested_document_id = (
+        _uuid(document_id, "document id") if document_id is not None else None
+    )
     with tenant_session(actor.tenant_id) as session:
         task, space, member = _context(session, actor, target_id)
         document = _ensure_document(session, actor, space)
-        return _document_view(session, task, member, document)
+        verified = _verified_state(session, document)
+        response = _document_view(
+            session, task, member, document, verified=verified
+        )
+        latest_sequence = int(document["latest_sequence"])
+        if after_sequence is None:
+            response["sync"] = {
+                "mode": "snapshot",
+                "base_sequence": 0,
+                "latest_sequence": latest_sequence,
+                "updates": [],
+            }
+            return response
+
+        reset_reason = None
+        if requested_document_id is None:
+            reset_reason = "document_id_required"
+        elif requested_document_id != UUID(str(document["id"])):
+            reset_reason = "document_changed"
+        elif after_sequence > latest_sequence:
+            reset_reason = "client_ahead"
+        elif latest_sequence - after_sequence > MAX_INCREMENTAL_UPDATES:
+            reset_reason = "delta_limit"
+        if reset_reason is not None:
+            response["sync"] = {
+                "mode": "reset",
+                "reason": reset_reason,
+                "base_sequence": 0,
+                "latest_sequence": latest_sequence,
+                "updates": [],
+            }
+            return response
+
+        updates: list[dict[str, object]] = []
+        if after_sequence < latest_sequence:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT sequence, update_payload, update_hash
+                    FROM workflow.task_collaboration_document_updates
+                    WHERE document_id = :document_id AND sequence > :after_sequence
+                    ORDER BY sequence
+                    LIMIT :limit
+                    """
+                ),
+                {
+                    "document_id": document["id"],
+                    "after_sequence": after_sequence,
+                    "limit": MAX_INCREMENTAL_UPDATES + 1,
+                },
+            ).mappings()
+            expected_sequence = after_sequence + 1
+            for row in rows:
+                payload = row["update_payload"]
+                if (
+                    int(row["sequence"]) != expected_sequence
+                    or not isinstance(payload, dict)
+                    or payload.get("format") != CRDT_FORMAT
+                    or not isinstance(payload.get("ops"), list)
+                    or _hash(_canonical(payload)) != row["update_hash"]
+                ):
+                    raise _error(500, "Collaboration document update history is corrupt")
+                updates.append(
+                    {
+                        "sequence": expected_sequence,
+                        "update_hash": row["update_hash"],
+                        "payload": payload,
+                    }
+                )
+                expected_sequence += 1
+            if expected_sequence - 1 != latest_sequence:
+                raise _error(500, "Collaboration document update history is incomplete")
+
+        response.pop("snapshot", None)
+        response.pop("content", None)
+        response["sync"] = {
+            "mode": "delta" if updates else "current",
+            "base_sequence": after_sequence,
+            "latest_sequence": latest_sequence,
+            "updates": updates,
+        }
+        return response
 
 
 def append_update_in_session(

@@ -544,6 +544,14 @@ const collabDisplayName = (value, fallback = "") => optionalText(
   obj(value).email,
   fallback
 );
+const collabShortDisplayName = (value, fallback = "") => {
+  const displayName = optionalText(value);
+  if (!displayName || /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(displayName)) return fallback;
+  const firstCharacter = Array.from(displayName)[0] || "";
+  if (/[\u3400-\u9fff]/.test(firstCharacter)) return firstCharacter;
+  const firstWord = displayName.split(/\s+/)[0] || fallback;
+  return firstWord.includes("@") ? firstWord.split("@")[0] : firstWord;
+};
 const collabViewer = value => obj(first(
   collabData(value).membership,
   collabWorkspace(value).membership,
@@ -810,7 +818,7 @@ const normalizeCollabPresence = (value, now = Date.now()) => {
   const state = key(first(item.state, item.presence_state, item.status, "active"));
   return {
     userId: String(userId),
-    displayName: collabDisplayName(first(user, item), ""),
+    displayName: collabDisplayName(user, collabDisplayName(item, "")),
     state: ["offline", "left", "inactive"].includes(state) ? "offline" : "active",
     typing: item.typing === true,
     position: normalizeCollabPosition(item.position),
@@ -2167,6 +2175,11 @@ const COLLAB_DOCUMENT_GET_TIMEOUT_MS = 15000;
 const COLLAB_DOCUMENT_UPDATE_TIMEOUT_MS = 20000;
 const COLLAB_DOCUMENT_MAX_TRANSIENT_RETRIES = 5;
 const COLLAB_DOCUMENT_QUEUE_VERSION = 1;
+const COLLAB_DOCUMENT_CACHE_VERSION = 1;
+const COLLAB_DOCUMENT_CACHE_DATABASE = "warehouse-task-collaboration";
+const COLLAB_DOCUMENT_CACHE_STORE = "documents";
+const COLLAB_DOCUMENT_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const COLLAB_DOCUMENT_CACHE_MAX_BYTES = 12 * 1024 * 1024;
 const COLLAB_DOCUMENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,179}$/;
 const collabDocumentValidCharacter = value => {
   const text = String(value == null ? "" : value);
@@ -2353,6 +2366,16 @@ const collabDocumentView = nodes => {
     maxClock: ordered.reduce((maximum, node) => Math.max(maximum, number(node.clock)), 0),
   };
 };
+const collabDocumentSnapshot = nodes => ({
+  format: COLLAB_DOCUMENT_FORMAT,
+  nodes: collabDocumentOrderedNodes(nodes).map(node => ({
+    id: node.id,
+    after: node.after,
+    value: node.deleted ? "" : node.value,
+    clock: node.clock,
+    deleted: node.deleted === true,
+  })),
+});
 const collabDocumentApply = (sourceNodes, operations) => {
   const nodes = Object.create(null);
   Object.entries(obj(sourceNodes)).forEach(([id, node]) => { nodes[id] = { ...node }; });
@@ -2558,6 +2581,19 @@ const collabDocumentMergePendingUpdates = (queue, incomingUpdates, lockFirst) =>
 };
 const collabDocumentResponse = value => {
   const data = collabData(value);
+  const rawSync = obj(data.sync);
+  const syncMode = ["snapshot", "reset", "delta", "current"].includes(key(rawSync.mode))
+    ? key(rawSync.mode) : (data.snapshot == null ? "" : "snapshot");
+  const syncUpdates = arr(rawSync.updates).map(rawUpdate => {
+    const update = obj(rawUpdate);
+    const payload = obj(update.payload);
+    return {
+      sequence: number(update.sequence),
+      update_hash: optionalText(update.update_hash),
+      format: optionalText(payload.format),
+      ops: arr(payload.ops),
+    };
+  });
   const seenAssets = new Set();
   const assets = arr(first(data.assets, obj(data.document).assets)).map(rawAsset => {
     const asset = obj(rawAsset);
@@ -2582,11 +2618,183 @@ const collabDocumentResponse = value => {
   }).filter(Boolean);
   return {
     document: obj(data.document),
-    snapshot: obj(first(data.snapshot, obj(data.document).snapshot, { format: COLLAB_DOCUMENT_FORMAT, nodes: [] })),
-    content: optionalText(data.content),
+    snapshot: data.snapshot == null && obj(data.document).snapshot == null
+      ? null : obj(first(data.snapshot, obj(data.document).snapshot)),
+    content: data.content == null ? null : optionalText(data.content),
     capabilities: obj(first(data.capabilities, obj(data.document).capabilities)),
     assets,
+    sync: {
+      mode: syncMode,
+      reason: optionalText(rawSync.reason),
+      base_sequence: number(rawSync.base_sequence),
+      latest_sequence: number(first(rawSync.latest_sequence, obj(data.document).latest_sequence)),
+      updates: syncUpdates,
+    },
   };
+};
+
+let collabDocumentCacheDatabasePromise = null;
+const collabDocumentCacheIdentity = (tenant, taskId, viewerUserId) => ({
+  key: JSON.stringify([String(tenant || ""), String(taskId || ""), String(viewerUserId || "")]),
+  tenant: String(tenant || ""),
+  task_id: String(taskId || ""),
+  viewer_user_id: String(viewerUserId || ""),
+});
+const collabDocumentOpenCache = () => {
+  if (!window.indexedDB) return Promise.resolve(null);
+  if (collabDocumentCacheDatabasePromise) return collabDocumentCacheDatabasePromise;
+  collabDocumentCacheDatabasePromise = new Promise(resolve => {
+    let request;
+    try {
+      request = window.indexedDB.open(COLLAB_DOCUMENT_CACHE_DATABASE, COLLAB_DOCUMENT_CACHE_VERSION);
+    } catch (error) {
+      resolve(null);
+      return;
+    }
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(COLLAB_DOCUMENT_CACHE_STORE)) {
+        database.createObjectStore(COLLAB_DOCUMENT_CACHE_STORE, { keyPath: "key" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+  return collabDocumentCacheDatabasePromise;
+};
+const collabDocumentDeleteCache = async identity => {
+  const database = await collabDocumentOpenCache();
+  if (!database) return false;
+  return new Promise(resolve => {
+    try {
+      const transaction = database.transaction(COLLAB_DOCUMENT_CACHE_STORE, "readwrite");
+      transaction.objectStore(COLLAB_DOCUMENT_CACHE_STORE).delete(identity.key);
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = () => resolve(false);
+      transaction.onabort = () => resolve(false);
+    } catch (error) {
+      resolve(false);
+    }
+  });
+};
+const collabDocumentNormalizeCache = (rawValue, identity) => {
+  const stored = obj(rawValue);
+  if (
+    stored.version !== COLLAB_DOCUMENT_CACHE_VERSION
+    || stored.key !== identity.key
+    || stored.tenant !== identity.tenant
+    || stored.task_id !== identity.task_id
+    || stored.viewer_user_id !== identity.viewer_user_id
+    || !Number.isFinite(stored.stored_at)
+    || stored.stored_at > Date.now() + 5 * 60 * 1000
+    || Date.now() - stored.stored_at > COLLAB_DOCUMENT_CACHE_MAX_AGE_MS
+  ) throw new Error("invalid collaboration document cache header");
+  const response = collabDocumentResponse(stored.response);
+  const sequence = number(response.document.latest_sequence);
+  if (
+    !COLLAB_DOCUMENT_ID_RE.test(String(response.document.id || ""))
+    || !Number.isSafeInteger(sequence)
+    || sequence < 0
+    || response.snapshot == null
+    || response.content == null
+  ) throw new Error("invalid collaboration document cache document");
+  const nodes = collabDocumentNodes(response.snapshot);
+  if (collabDocumentView(nodes).content !== response.content) {
+    throw new Error("collaboration document cache projection mismatch");
+  }
+  const annotations = arr(stored.annotations).map(normalizeCollabAnnotation).filter(Boolean);
+  return { response, annotations, storedAt: stored.stored_at };
+};
+const collabDocumentReadCache = async identity => {
+  const database = await collabDocumentOpenCache();
+  if (!database) return null;
+  const stored = await new Promise(resolve => {
+    try {
+      const transaction = database.transaction(COLLAB_DOCUMENT_CACHE_STORE, "readonly");
+      const request = transaction.objectStore(COLLAB_DOCUMENT_CACHE_STORE).get(identity.key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => resolve(null);
+    } catch (error) {
+      resolve(null);
+    }
+  });
+  if (!stored) return null;
+  try {
+    return collabDocumentNormalizeCache(stored, identity);
+  } catch (error) {
+    collabDocumentDeleteCache(identity);
+    return null;
+  }
+};
+const collabDocumentAnnotationCacheValue = annotationValue => {
+  const annotation = obj(annotationValue);
+  return {
+    id: annotation.id,
+    document_id: annotation.documentId,
+    author_user_id: annotation.authorUserId,
+    author_name: annotation.authorName,
+    start_anchor: annotation.startAnchor,
+    end_anchor: annotation.endAnchor,
+    start_offset: annotation.startOffset,
+    end_offset: annotation.endOffset,
+    document_sequence: annotation.documentSequence,
+    quote: annotation.quote,
+    current_quote: annotation.currentQuote,
+    anchor_state: annotation.anchorState,
+    kind: annotation.kind,
+    proposed_text: annotation.proposedText,
+    review_state: annotation.reviewState,
+    effective_review_state: annotation.effectiveReviewState,
+    status: annotation.status,
+    can_resolve: annotation.canResolve === true,
+    can_accept: annotation.canAccept === true,
+    can_reject: annotation.canReject === true,
+    reviewed_by_name: annotation.reviewedByName,
+    reviewed_at: annotation.reviewedAt,
+    accepted_sequence: annotation.acceptedSequence,
+    resolved_by_name: annotation.resolvedByName,
+    resolved_at: annotation.resolvedAt,
+    created_at: annotation.createdAt,
+    messages: arr(annotation.messages).map(message => ({
+      id: message.id,
+      author_user_id: message.authorUserId,
+      author_name: message.authorName,
+      body: message.body,
+      created_at: message.createdAt,
+    })),
+  };
+};
+const collabDocumentWriteCache = async (identity, responseValue, annotationsValue) => {
+  const response = collabDocumentResponse(responseValue);
+  if (response.snapshot == null || response.content == null) return false;
+  const stored = {
+    version: COLLAB_DOCUMENT_CACHE_VERSION,
+    ...identity,
+    stored_at: Date.now(),
+    response,
+    annotations: arr(annotationsValue).map(collabDocumentAnnotationCacheValue),
+  };
+  let serialized;
+  try {
+    serialized = JSON.stringify(stored);
+  } catch (error) {
+    return false;
+  }
+  if (new Blob([serialized]).size > COLLAB_DOCUMENT_CACHE_MAX_BYTES) return false;
+  const database = await collabDocumentOpenCache();
+  if (!database) return false;
+  return new Promise(resolve => {
+    try {
+      const transaction = database.transaction(COLLAB_DOCUMENT_CACHE_STORE, "readwrite");
+      transaction.objectStore(COLLAB_DOCUMENT_CACHE_STORE).put(stored);
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = () => resolve(false);
+      transaction.onabort = () => resolve(false);
+    } catch (error) {
+      resolve(false);
+    }
+  });
 };
 
 const collabDocumentAssetToken = /!\[([^\]\n]{0,160})\]\(w2-image:(img_[A-Za-z0-9_-]{20,80})\)/g;
@@ -5372,9 +5580,13 @@ const CollaborativeDocument = ({
   const initialQueue = R(null);
   if (!initialQueue.current) initialQueue.current = collabDocumentReadQueue(tenant, taskId, viewerUserId, clientId);
   const queueRef = R(initialQueue.current);
+  const canonicalNodesRef = R({});
   const nodesRef = R({});
   const adoptedSequence = R(0);
   const contentRef = R("");
+  const documentMetaRef = R({});
+  const cacheIdentityRef = R(collabDocumentCacheIdentity(tenant, taskId, viewerUserId));
+  cacheIdentityRef.current = collabDocumentCacheIdentity(tenant, taskId, viewerUserId);
   const editorRef = R(null);
   const sectionRef = R(null);
   const sourceSelectionRef = R(null);
@@ -5403,6 +5615,8 @@ const CollaborativeDocument = ({
   const lastDocumentSequence = R(documentSequence);
   const [content, setContent] = S("");
   const [assets, setAssets] = S([]);
+  const assetsRef = R([]);
+  assetsRef.current = assets;
   const [mode, setMode] = S("edit");
   const [editorView, setEditorView] = S("visual");
   const [toolPanel, setToolPanel] = S("");
@@ -5427,6 +5641,8 @@ const CollaborativeDocument = ({
   onPositionRef.current = onPosition;
   const [positionRestored, setPositionRestored] = S(false);
   const [annotations, setAnnotations] = S([]);
+  const annotationsRef = R([]);
+  annotationsRef.current = annotations;
   const [, setAnnotationsLoading] = S(true);
   const [annotationBusy, setAnnotationBusy] = S(false);
   const [annotationComposer, setAnnotationComposer] = S(null);
@@ -5461,15 +5677,84 @@ const CollaborativeDocument = ({
     setStorageWarning(saved ? "" : t("本機儲存空間不足，請先保持此頁開啟並重新連線。"));
     return saved;
   }, [tenant, taskId, viewerUserId]);
-  const adopt = C((rawResponse, pendingUpdates = queueRef.current.updates) => {
+  const persistDocumentCache = C((annotationsValue = annotationsRef.current) => {
+    const documentValue = documentMetaRef.current;
+    if (!documentValue.id) return false;
+    try {
+      const snapshot = collabDocumentSnapshot(canonicalNodesRef.current);
+      const view = collabDocumentView(canonicalNodesRef.current);
+      collabDocumentWriteCache(
+        cacheIdentityRef.current,
+        {
+          document: documentValue,
+          snapshot,
+          content: view.content,
+          assets: assetsRef.current,
+          capabilities: capabilitiesRef.current,
+          sync: {
+            mode: "snapshot",
+            base_sequence: 0,
+            latest_sequence: adoptedSequence.current,
+            updates: [],
+          },
+        },
+        annotationsValue
+      );
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }, []);
+  const adopt = C((rawResponse, pendingUpdates = queueRef.current.updates, options = {}) => {
     const response = collabDocumentResponse(rawResponse);
     const sequence = number(response.document.latest_sequence);
-    if (sequence < adoptedSequence.current) return null;
+    const responseDocumentId = String(response.document.id || "");
+    const currentDocumentId = String(documentMetaRef.current.id || "");
+    const syncMode = response.sync.mode;
+    const incremental = ["delta", "current"].includes(syncMode);
+    if (
+      sequence < adoptedSequence.current
+      && responseDocumentId === currentDocumentId
+      && syncMode !== "reset"
+    ) return null;
     if (composing.current) {
       reloadAfterComposition.current = true;
       return response;
     }
-    let nodes = collabDocumentNodes(response.snapshot);
+    let canonicalNodes;
+    if (incremental) {
+      if (
+        !currentDocumentId
+        || responseDocumentId !== currentDocumentId
+        || response.sync.base_sequence !== adoptedSequence.current
+      ) throw new Error("collaboration document delta base mismatch");
+      canonicalNodes = canonicalNodesRef.current;
+      let expectedSequence = response.sync.base_sequence + 1;
+      response.sync.updates.forEach(update => {
+        if (
+          !Number.isSafeInteger(update.sequence)
+          || update.sequence !== expectedSequence
+          || update.format !== COLLAB_DOCUMENT_FORMAT
+          || !Array.isArray(update.ops)
+          || !update.ops.length
+        ) throw new Error("invalid collaboration document delta");
+        canonicalNodes = collabDocumentApply(canonicalNodes, update.ops);
+        expectedSequence += 1;
+      });
+      if (
+        expectedSequence - 1 !== sequence
+        || response.sync.latest_sequence !== sequence
+      ) throw new Error("incomplete collaboration document delta");
+    } else {
+      if (response.snapshot == null || response.content == null) {
+        throw new Error("collaboration document snapshot is missing");
+      }
+      canonicalNodes = collabDocumentNodes(response.snapshot);
+      if (collabDocumentView(canonicalNodes).content !== response.content) {
+        throw new Error("collaboration document snapshot projection mismatch");
+      }
+    }
+    let nodes = canonicalNodes;
     pendingUpdates.forEach(update => { nodes = collabDocumentApply(nodes, update.ops); });
     const view = collabDocumentView(nodes);
     const editor = editorRef.current;
@@ -5500,13 +5785,24 @@ const CollaborativeDocument = ({
         anchor,
       };
     };
+    canonicalNodesRef.current = canonicalNodes;
     nodesRef.current = nodes;
     adoptedSequence.current = sequence;
-    capabilitiesRef.current = response.capabilities;
+    documentMetaRef.current = response.document;
+    const trustedCapabilities = options.trustedCapabilities !== false;
+    const effectiveCapabilities = trustedCapabilities ? response.capabilities : {
+      can_read: true,
+      can_edit: false,
+      can_export: false,
+      can_manage: false,
+      read_only: true,
+    };
+    capabilitiesRef.current = effectiveCapabilities;
     contentRef.current = view.content;
+    assetsRef.current = response.assets;
     setContent(view.content);
     setAssets(response.assets);
-    setCapabilities(response.capabilities);
+    setCapabilities(effectiveCapabilities);
     setDocumentMeta(response.document);
     if (visualSelection) {
       const mappedStart = mapPoint(
@@ -5568,8 +5864,11 @@ const CollaborativeDocument = ({
         window.requestAnimationFrame(() => { restoringSourceSelection.current = false; });
       });
     }
+    if (options.persist !== false && trustedCapabilities) {
+      window.requestAnimationFrame(() => persistDocumentCache());
+    }
     return response;
-  }, []);
+  }, [persistDocumentCache]);
   const loadDocument = C(async ({ quiet = false } = {}) => {
     if (taskId == null) return false;
     const request = ++generation.current;
@@ -5583,8 +5882,13 @@ const CollaborativeDocument = ({
     }, COLLAB_DOCUMENT_GET_TIMEOUT_MS);
     if (!quiet) setLoading(true);
     try {
+      const knownDocument = documentMetaRef.current;
+      const knownSequence = adoptedSequence.current;
+      const syncQuery = knownDocument.id && Number.isSafeInteger(knownSequence) && knownSequence >= 0
+        ? `?after_sequence=${encodeURIComponent(knownSequence)}&document_id=${encodeURIComponent(knownDocument.id)}`
+        : "";
       const response = await collabJson(
-        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/document`,
+        `/api/tasks/${encodeURIComponent(taskId)}/collaboration/document${syncQuery}`,
         { signal: controller.signal, cache: "no-store" }
       );
       if (!mounted.current || request !== generation.current || tenant !== W2.tenant()) return false;
@@ -5594,6 +5898,19 @@ const CollaborativeDocument = ({
     } catch (exception) {
       if (exception && exception.name === "AbortError" && !timedOut) return false;
       if (mounted.current && request === generation.current && tenant === W2.tenant()) {
+        if (exception && [403, 404].includes(exception.status)) {
+          collabDocumentDeleteCache(cacheIdentityRef.current);
+          canonicalNodesRef.current = {};
+          nodesRef.current = {};
+          adoptedSequence.current = 0;
+          documentMetaRef.current = {};
+          contentRef.current = "";
+          capabilitiesRef.current = { can_read: false, can_edit: false, can_export: false, read_only: true };
+          setContent("");
+          setAssets([]);
+          setDocumentMeta({});
+          setCapabilities(capabilitiesRef.current);
+        }
         setError(timedOut ? t("工作稿連線逾時，將稍後重試。") : (exception.message || t("工作稿載入失敗")));
       }
       return false;
@@ -5614,7 +5931,9 @@ const CollaborativeDocument = ({
       if (!mounted.current || tenant !== W2.tenant()) return false;
       const items = arr(first(collabData(raw).items, obj(raw).items))
         .map(normalizeCollabAnnotation).filter(Boolean);
+      annotationsRef.current = items;
       setAnnotations(items);
+      persistDocumentCache(items);
       setActiveAnnotationId(current => (
         current && items.some(item => item.id === current) ? current : ""
       ));
@@ -5627,7 +5946,7 @@ const CollaborativeDocument = ({
     } finally {
       if (mounted.current) setAnnotationsLoading(false);
     }
-  }, [taskId, tenant]);
+  }, [taskId, tenant, persistDocumentCache]);
   const clearScheduledFlush = C(() => {
     if (flushTimer.current != null) window.clearTimeout(flushTimer.current);
     if (retryTimer.current != null) window.clearTimeout(retryTimer.current);
@@ -5781,11 +6100,46 @@ const CollaborativeDocument = ({
 
   E(() => {
     mounted.current = true;
-    loadAnnotations();
-    loadDocument().then(loaded => {
-      if (loaded && queueRef.current.updates.length && (!window.navigator || window.navigator.onLine !== false)) scheduleFlush(0);
-    });
+    let cancelled = false;
+    const initialize = async () => {
+      const cached = await collabDocumentReadCache(cacheIdentityRef.current);
+      if (cancelled || !mounted.current || tenant !== W2.tenant()) return;
+      let hydrated = false;
+      if (cached) {
+        try {
+          const cachedAnnotations = cached.annotations.map(annotation => ({
+            ...annotation,
+            canResolve: false,
+            canAccept: false,
+            canReject: false,
+          }));
+          annotationsRef.current = cachedAnnotations;
+          setAnnotations(cachedAnnotations);
+          adopt(cached.response, queueRef.current.updates, {
+            trustedCapabilities: false,
+            persist: false,
+          });
+          hydrated = true;
+          setLoading(false);
+        } catch (error) {
+          collabDocumentDeleteCache(cacheIdentityRef.current);
+          annotationsRef.current = [];
+          setAnnotations([]);
+        }
+      }
+      const [loaded] = await Promise.all([
+        loadDocument({ quiet: hydrated }),
+        loadAnnotations({ quiet: hydrated }),
+      ]);
+      if (
+        loaded
+        && queueRef.current.updates.length
+        && (!window.navigator || window.navigator.onLine !== false)
+      ) scheduleFlush(0);
+    };
+    initialize();
     return () => {
+      cancelled = true;
       mounted.current = false;
       generation.current += 1;
       if (loadController.current) loadController.current.abort();
@@ -5795,9 +6149,13 @@ const CollaborativeDocument = ({
       updateController.current = null;
       assetUploadController.current = null;
       clearScheduledFlush();
+      canonicalNodesRef.current = {};
       nodesRef.current = {};
       adoptedSequence.current = 0;
       contentRef.current = "";
+      documentMetaRef.current = {};
+      assetsRef.current = [];
+      annotationsRef.current = [];
       editorRef.current = null;
       sourceSelectionRef.current = null;
       restoringSourceSelection.current = false;
@@ -5812,7 +6170,7 @@ const CollaborativeDocument = ({
       reloadAfterFlush.current = false;
       reloadDocumentLatest.current = null;
     };
-  }, [loadDocument, loadAnnotations, scheduleFlush, clearScheduledFlush]);
+  }, [loadDocument, loadAnnotations, scheduleFlush, clearScheduledFlush, adopt, tenant]);
   E(() => {
     const online = () => setNetworkOnline(true);
     const offline = () => setNetworkOnline(false);
@@ -6020,7 +6378,7 @@ const CollaborativeDocument = ({
         || [...blocks].reverse().find(candidate => end >= candidate.start) || blocks[0];
       return {
         userId: item.userId,
-        displayName: item.displayName || item.userId,
+        displayName: collabShortDisplayName(item.displayName, t("協作者")),
         color: collabCursorColor(item.userId),
         position: {
           ...position,

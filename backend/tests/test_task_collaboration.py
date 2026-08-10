@@ -247,6 +247,8 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         document = client.get(f"/api/tasks/{task_id}/collaboration/document")
         assert document.status_code == 200
         assert document.json()["snapshot"] == {"format": "rga-v1", "nodes": []}
+        assert document.json()["sync"]["mode"] == "snapshot"
+        document_id = document.json()["document"]["id"]
         draft_update = {
             "client_id": "integration-client",
             "client_update_id": "integration-update-1",
@@ -266,6 +268,33 @@ def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
         )
         assert updated_document.status_code == 200
         assert updated_document.json()["content"] == "稿"
+        delta = client.get(
+            f"/api/tasks/{task_id}/collaboration/document",
+            params={"after_sequence": 0, "document_id": document_id},
+        )
+        assert delta.status_code == 200
+        assert delta.json()["sync"]["mode"] == "delta"
+        assert delta.json()["sync"]["base_sequence"] == 0
+        assert delta.json()["sync"]["latest_sequence"] == 1
+        assert delta.json()["sync"]["updates"][0]["payload"]["ops"] == draft_update["ops"]
+        assert "snapshot" not in delta.json()
+        assert "content" not in delta.json()
+        current = client.get(
+            f"/api/tasks/{task_id}/collaboration/document",
+            params={"after_sequence": 1, "document_id": document_id},
+        )
+        assert current.status_code == 200
+        assert current.json()["sync"]["mode"] == "current"
+        assert current.json()["sync"]["updates"] == []
+        assert "snapshot" not in current.json()
+        reset = client.get(
+            f"/api/tasks/{task_id}/collaboration/document",
+            params={"after_sequence": 2, "document_id": document_id},
+        )
+        assert reset.status_code == 200
+        assert reset.json()["sync"]["mode"] == "reset"
+        assert reset.json()["sync"]["reason"] == "client_ahead"
+        assert reset.json()["content"] == "稿"
         replay = client.post(
             f"/api/tasks/{task_id}/collaboration/document/updates",
             json=draft_update,

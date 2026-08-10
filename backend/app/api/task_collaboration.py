@@ -383,9 +383,16 @@ def _image_dimensions(data: bytes, mime_type: str) -> tuple[int, int]:
 @router.get("/api/tasks/{task_id}/collaboration/document")
 def collaboration_document_get(
     task_id: str,
+    after_sequence: int | None = Query(default=None, ge=0),
+    document_id: str | None = Query(default=None, min_length=36, max_length=36),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
-    return get_document(actor, task_id)
+    return get_document(
+        actor,
+        task_id,
+        after_sequence=after_sequence,
+        document_id=document_id,
+    )
 
 
 @router.post("/api/tasks/{task_id}/collaboration/document/updates")
