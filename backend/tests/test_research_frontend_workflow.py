@@ -8,6 +8,7 @@ RESEARCH_STYLE = ROOT / "frontend/v2/pages/pages-research.css"
 RESEARCH_SELECTION_STYLE = ROOT / "frontend/v2/pages/pages-research-selection.css"
 RESEARCH_CONTINUITY_STYLE = ROOT / "frontend/v2/pages/pages-research-continuity.css"
 RESEARCH_TYPOGRAPHY_STYLE = ROOT / "frontend/v2/pages/pages-research-typography.css"
+CORE = ROOT / "frontend/v2/core.jsx"
 INDEX_HTML = ROOT / "frontend/v2/index.html"
 
 
@@ -27,6 +28,17 @@ def test_research_page_guides_paper_construction_through_real_capabilities() -> 
     assert "research execution submit" in source
     assert "research review submit" in source
     assert "research release create" in source
+
+
+def test_research_reads_recover_after_short_service_restarts() -> None:
+    source = RESEARCH_PAGE.read_text(encoding="utf-8")
+    core = CORE.read_text(encoding="utf-8")
+    assert "const researchRead" in source
+    assert "transientGetRetries: 6" in source
+    assert 'cache: "no-store"' in source
+    assert "setError(\"\")" in source
+    assert "catch (error)" in core
+    assert "attempt >= transientGetRetries" in core
 
 
 def test_run_composer_exposes_actual_version_selection_contract() -> None:

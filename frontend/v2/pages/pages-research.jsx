@@ -6,6 +6,11 @@ const { useState, useEffect, useLayoutEffect, useMemo, useRef } = React;
 const { Folio, Band } = W2;
 
 const clean = value => value == null ? "" : String(value);
+const researchRead = (path, options = {}) => W2.json(path, {
+  cache: "no-store",
+  transientGetRetries: 6,
+  ...options,
+});
 const compact = value => {
   const size = Number(value) || 0;
   if (size >= 1024 * 1024 * 1024) return (size / 1024 / 1024 / 1024).toFixed(1) + " GB";
@@ -1737,7 +1742,7 @@ const Page = () => {
   };
 
   const loadProjects = async preferred => {
-    const data = await W2.json("/api/research/projects");
+    const data = await researchRead("/api/research/projects");
     const next = Array.isArray(data.projects) ? data.projects : [];
     setProjects(next);
     setProjectId(current => {
@@ -1747,6 +1752,7 @@ const Page = () => {
       if (selected) rememberResearchSelection({ projectId: selected, section });
       return selected;
     });
+    setError("");
     return next;
   };
   const loadDetail = async id => {
@@ -1754,7 +1760,7 @@ const Page = () => {
     if (!id) { setDetail(null); setFileId(""); setDetailBusy(false); return null; }
     setDetailBusy(true);
     try {
-      const data = await W2.json("/api/research/projects/" + encodeURIComponent(id));
+      const data = await researchRead("/api/research/projects/" + encodeURIComponent(id));
       if (request !== detailRequestSerial.current) return null;
       setDetail(data);
       const files = Array.isArray(data.files) ? data.files : [];
@@ -1769,6 +1775,7 @@ const Page = () => {
         if (selected) rememberResearchSelection({ projectId: id, fileId: selected, tab: nextTab, section });
         return selected;
       });
+      setError("");
       return data;
     } finally {
       if (request === detailRequestSerial.current) setDetailBusy(false);
@@ -1778,14 +1785,14 @@ const Page = () => {
     if (!id) { setWorkflow(null); return; }
     setWorkflowBusy(true);
     try {
-      setWorkflow(await W2.json("/api/research/projects/" + encodeURIComponent(id) + "/workflow"));
+      setWorkflow(await researchRead("/api/research/projects/" + encodeURIComponent(id) + "/workflow"));
     } finally {
       setWorkflowBusy(false);
     }
   };
   const loadExecution = async (id, executionId) => {
     if (!id || !executionId) { setExecutionDetail(null); return null; }
-    const data = await W2.json("/api/research/projects/" + encodeURIComponent(id) +
+    const data = await researchRead("/api/research/projects/" + encodeURIComponent(id) +
       "/executions/" + encodeURIComponent(executionId));
     setExecutionDetail(data);
     return data;
@@ -1831,8 +1838,8 @@ const Page = () => {
     setViewerBusy(true);
     const base = "/api/research/projects/" + encodeURIComponent(projectId) + "/files/" + encodeURIComponent(fileId);
     Promise.all([
-      W2.json(base + "/preview"),
-      W2.json(base + "/diff").catch(() => ({ available: false })),
+      researchRead(base + "/preview"),
+      researchRead(base + "/diff").catch(() => ({ available: false })),
     ]).then(([nextPreview, nextDiff]) => {
       if (!alive) return;
       setPreview(nextPreview);

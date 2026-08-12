@@ -72,21 +72,35 @@ W2.fetch = async (path, options = {}) => {
   const suppressAuthExpired = !!requestOptions.suppressAuthExpired;
   const url = /^https?:/.test(path) ? path : W2.API_BASE + path;
   const retryTransientGet = requestOptions.retryTransientGet !== false && isSameOriginGet(url, requestOptions);
+  const requestedRetries = Number(requestOptions.transientGetRetries);
+  const transientGetRetries = Number.isFinite(requestedRetries)
+    ? Math.max(0, Math.min(8, Math.trunc(requestedRetries))) : 2;
   delete requestOptions.suppressAuthExpired;
   delete requestOptions.retryTransientGet;
+  delete requestOptions.transientGetRetries;
   const headers = new Headers(options.headers || {});
   const t = W2.token();
   if (t) headers.set("Authorization", "Bearer " + t);
   const slug = W2.tenant();
   if (slug) headers.set("X-Tenant-Slug", slug);
   let res;
-  for (let attempt = 0; attempt <= 2; attempt += 1) {
-    res = await fetch(url, { ...requestOptions, headers });
-    if (!retryTransientGet || !transientGetStatuses.has(res.status) || attempt >= 2) break;
+  for (let attempt = 0; attempt <= transientGetRetries; attempt += 1) {
+    try {
+      res = await fetch(url, { ...requestOptions, headers });
+    } catch (error) {
+      if (!retryTransientGet || attempt >= transientGetRetries ||
+          (error && error.name === "AbortError")) throw error;
+      const base = Math.min(2400, 220 * Math.pow(2, attempt));
+      const jitter = Math.floor(Math.random() * 120);
+      await waitForRetry(base + jitter, requestOptions.signal);
+      continue;
+    }
+    if (!retryTransientGet || !transientGetStatuses.has(res.status) ||
+        attempt >= transientGetRetries) break;
     /* A short, bounded exponential delay smooths over a service restart.  It
        applies only to same-origin idempotent GETs; writes and WebAuthn
        ceremonies are never replayed. */
-    const base = 180 * Math.pow(2, attempt);
+    const base = Math.min(2400, 220 * Math.pow(2, attempt));
     const jitter = Math.floor(Math.random() * 90);
     await waitForRetry(base + jitter, requestOptions.signal);
   }
