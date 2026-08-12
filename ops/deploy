@@ -377,7 +377,10 @@ else
         --format shell
     )"
     PLAN_SOURCE="active_release"
-    INSTALL_MODE="${MODE}"
+    # The controller has already enforced the operator's requested validation
+    # depth. Ask the trusted server planner to recompute component and database
+    # impact from the same manifests instead of treating "full" as "all impacts".
+    INSTALL_MODE="smart"
     printf '    impact: source=%s risk=%s migration=%s files=%s\n' \
       "${PLAN_SOURCE}" "${PLAN_RISK}" "${PLAN_MIGRATION}" "${PLAN_CHANGED_COUNT}"
   else

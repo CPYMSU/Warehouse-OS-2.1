@@ -370,6 +370,7 @@ def test_database_migrations_are_detached_from_web_startup_and_deploy_process() 
     assert 'PLAN_MIGRATION=1' in deploy
     assert 'PLAN_SOURCE="explicit_conservative"' in deploy
     assert 'impact: source=%s risk=%s migration=%s files=%s' in deploy
+    assert 'INSTALL_MODE="smart"' in deploy
 
 
 def test_code_only_release_does_not_inspect_or_reconcile_databases() -> None:
