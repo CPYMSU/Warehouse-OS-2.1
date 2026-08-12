@@ -42,9 +42,15 @@ case "${COMMAND}" in
   local)
     mode="${2:-smart}"
     [[ "${mode}" =~ ^(smart|quick|standard|full)$ ]] || fail "invalid mode: ${mode}"
+    primary_manager="${WAREHOUSE_PRIMARY_REMOTE_MANAGER:-/Users/peiyuan/Server/bonfirework/bin/warehouse-deploy}"
+    if [[ -x "${primary_manager}" ]]; then
+      primary_transport="local"
+    else
+      primary_transport="ssh"
+    fi
     exec env \
       WAREHOUSE_CLUSTER_PREFLIGHT="${WAREHOUSE_CLUSTER_PREFLIGHT:-basic}" \
-      WAREHOUSE_PRIMARY_TRANSPORT="${WAREHOUSE_PRIMARY_TRANSPORT:-local}" \
+      WAREHOUSE_PRIMARY_TRANSPORT="${WAREHOUSE_PRIMARY_TRANSPORT:-${primary_transport}}" \
       WAREHOUSE_PRIMARY_MANAGER_SUDO="${WAREHOUSE_PRIMARY_MANAGER_SUDO:-0}" \
       WAREHOUSE_PRIMARY_PREPARE_INCOMING="${WAREHOUSE_PRIMARY_PREPARE_INCOMING:-0}" \
       "${ROOT}/ops/cluster/rolling-deploy" "${mode}"

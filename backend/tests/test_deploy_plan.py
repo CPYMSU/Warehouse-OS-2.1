@@ -201,6 +201,9 @@ def test_github_uses_one_coordinated_dual_node_route() -> None:
     assert 'WORKFLOW="production-deploy.yml"' in fast_deploy
     assert "gh workflow run" in fast_deploy
     assert "gh run watch" in fast_deploy
+    assert 'if [[ -x "${primary_manager}" ]]' in fast_deploy
+    assert 'primary_transport="ssh"' in fast_deploy
+    assert 'WAREHOUSE_PRIMARY_TRANSPORT="${WAREHOUSE_PRIMARY_TRANSPORT:-${primary_transport}}"' in fast_deploy
 
 
 def test_deploy_entrypoint_has_target_neutral_transport_contract() -> None:
@@ -364,6 +367,9 @@ def test_database_migrations_are_detached_from_web_startup_and_deploy_process() 
     assert "migration-start|migration-status|migration-wait" in deploy
     assert 'WAREHOUSE_DEPLOY_PLAN_FILE' in deploy
     assert 'migration_required=%s' in deploy
+    assert 'PLAN_MIGRATION=1' in deploy
+    assert 'PLAN_SOURCE="explicit_conservative"' in deploy
+    assert 'impact: source=%s risk=%s migration=%s files=%s' in deploy
 
 
 def test_code_only_release_does_not_inspect_or_reconcile_databases() -> None:

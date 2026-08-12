@@ -323,6 +323,7 @@ PLAN_DEPLOY_REQUIRED=1
 PLAN_TESTS=""
 PLAN_FRONTEND=1
 PLAN_INTEGRATION=0
+PLAN_MIGRATION=1
 PLAN_CHANGED_COUNT=0
 PLAN_UNMATCHED_FILES=""
 PLAN_SOURCE="explicit"
@@ -360,6 +361,28 @@ if [[ "${MODE}" == smart ]]; then
   if [[ "${PLAN_DEPLOY_REQUIRED}" != 1 ]]; then
     printf '==> no runtime deployment required for the observed change set\n'
     exit 0
+  fi
+else
+  # Explicit quick/standard/full modes choose verification depth, not database
+  # impact. Always compare the exact deployable tree with the active release so
+  # a code-only release cannot be mistaken for a schema release. If the active
+  # manifest is unavailable, retain the conservative migration-required default.
+  active_manifest="${work_dir}/active-files.sha256"
+  if manager_remote manifest \
+    > "${active_manifest}" 2>/dev/null && [[ -s "${active_manifest}" ]]; then
+    eval "$(
+      ops/deploy-plan \
+        --base-manifest "${active_manifest}" \
+        --candidate-root "${ROOT}" \
+        --format shell
+    )"
+    PLAN_SOURCE="active_release"
+    INSTALL_MODE="${MODE}"
+    printf '    impact: source=%s risk=%s migration=%s files=%s\n' \
+      "${PLAN_SOURCE}" "${PLAN_RISK}" "${PLAN_MIGRATION}" "${PLAN_CHANGED_COUNT}"
+  else
+    PLAN_SOURCE="explicit_conservative"
+    printf '    impact: active manifest unavailable; database gate retained\n' >&2
   fi
 fi
 
