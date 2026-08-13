@@ -912,9 +912,13 @@
 .task-collab-document-modes button { min-height: 40px; padding: 0 12px; color: var(--ink-3); font-size: 9px; font-weight: 750; }
 .task-collab-document-modes button + button { border-left: 1px solid var(--task-hair); }
 .task-collab-document-modes button.on { background: var(--ink); color: var(--paper); }
-.task-collab-document-export { min-height: 42px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--task-rule); font-size: 9px; font-weight: 750; }
-.task-collab-document-export:disabled { opacity: .38; }
+.task-collab-document-export,
+.task-collab-document-undo { min-height: 42px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--task-rule); font-size: 9px; font-weight: 750; }
+.task-collab-document-undo > span { color: var(--task-red); font: 900 18px/1 var(--f-mono); }
+.task-collab-document-export:disabled,
+.task-collab-document-undo:disabled { opacity: .38; }
 .task-collab-document-modes button:focus-visible,
+.task-collab-document-undo:focus-visible,
 .task-collab-document-export:focus-visible,
 .task-collab-document-editor textarea:focus-visible { outline: 3px solid var(--task-red); outline-offset: 2px; }
 .task-collab-document-status {
@@ -1509,6 +1513,9 @@
   text-align: center;
 }
 .task-collab-document-formula-preview math { font-size: 1em; }
+.task-collab-document-formula-typeset { max-width: 100%; display: inline-block; }
+.task-collab-document-formula-typeset > .katex-display { margin: 0; overflow-x: auto; overflow-y: hidden; }
+.task-collab-document-formula-typeset > .katex { font-size: 1em; }
 .task-collab-document-formula-preview code { font: 500 14px/1.5 var(--f-mono); }
 .task-collab-document-formula-trigger {
   border: 0;
@@ -1560,6 +1567,8 @@
   white-space: nowrap;
 }
 .task-collab-document-inline-formula math { font-size: 1em; }
+.task-collab-document-inline-formula .task-collab-document-formula-typeset,
+.task-collab-document-inline-formula .katex { display: inline; }
 .task-collab-document-inline-formula code { font: 500 .88em/1.35 var(--f-mono); }
 .task-collab-document-formula-source {
   width: 100%;
@@ -1852,6 +1861,7 @@
   .task-collab-document-tools { width: 100%; }
   .task-collab-document-modes { flex: 1 1 auto; }
   .task-collab-document-modes button,
+  .task-collab-document-undo,
   .task-collab-document-export { min-height: 46px; }
   .task-collab-document-editor textarea,
   .task-collab-document-preview { min-height: max(360px, 52dvh); font-size: 16px; }

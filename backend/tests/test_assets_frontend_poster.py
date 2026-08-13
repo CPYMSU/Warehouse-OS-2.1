@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS_PAGE = ROOT / "frontend" / "v2" / "pages" / "pages-assets.jsx"
@@ -100,14 +101,15 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260814-task-longdoc1' in index
-    assert 'pages/pages-tasks.jsx?v=20260814-task-longdoc1' in index
+    assert 'vendor/katex.min.css?v=0.16.11' in index
+    assert 'pages/pages-tasks.css?v=20260814-task-docformat2' in index
+    assert 'pages/pages-tasks.jsx?v=20260814-task-docformat2' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260814-task-longdoc1' in index
+    assert 'dist/app.bundle.js?v=20260814-task-docformat2' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -167,9 +169,26 @@ def test_task_documents_support_long_form_manuscripts():
     assert 'setError(t("工作稿編輯記錄已達上限"));' in source
 
 
+def test_task_documents_batch_pending_crdt_updates_in_one_request():
+    source = TASKS.read_text(encoding="utf-8")
+
+    assert "const COLLAB_DOCUMENT_SYNC_BATCH_UPDATES = 40;" in source
+    assert "const COLLAB_DOCUMENT_SYNC_BATCH_BYTES = 1536 * 1024;" in source
+    assert "const collabDocumentSyncBatch = (updates, canDispatchNew) =>" in source
+    assert "base_sequence: baseSequence," in source
+    assert "updates: updates.map(update => ({" in source
+    assert "accepted_update_ids" in source
+    assert "client_update_id: update.client_update_id," in source
+    assert "ops: update.ops," in source
+
+
 def test_task_documents_render_arrow_formulas_and_sanitized_mermaid_blocks():
     source = TASKS.read_text(encoding="utf-8")
     css = TASKS_CSS.read_text(encoding="utf-8")
+    index = INDEX.read_text(encoding="utf-8")
+    katex = ROOT / "frontend" / "v2" / "vendor" / "katex.min.js"
+    katex_css = ROOT / "frontend" / "v2" / "vendor" / "katex.min.css"
+    katex_license = ROOT / "frontend" / "v2" / "vendor" / "katex-LICENSE.txt"
     mermaid = ROOT / "frontend" / "v2" / "vendor" / "mermaid.min.js"
     license_file = ROOT / "frontend" / "v2" / "vendor" / "mermaid-LICENSE.txt"
 
@@ -177,6 +196,16 @@ def test_task_documents_render_arrow_formulas_and_sanitized_mermaid_blocks():
     assert 'if (command === "text")' in source
     assert 'if (node.type === "space") return " ";' in source
     assert "withoutTrailingWhitespace.endsWith(closer)" in source
+    assert 'opener === "["' in source
+    assert "const collabFormulaKatexMarkup" in source
+    assert 'engine.renderToString(source' in source
+    assert 'output: "htmlAndMathml"' in source
+    assert 'strict: "error"' in source
+    assert "trust: false" in source
+    assert 'className="task-collab-document-formula-typeset"' in source
+    assert 'dangerouslySetInnerHTML={{ __html: katexMarkup.html }}' in source
+    assert 'script src="vendor/katex.min.js?v=0.16.11"' in index
+    assert "unpkg.com/katex" not in index
     assert "const collabDocumentParseMermaidAt" in source
     assert 'securityLevel: "strict"' in source
     assert 'htmlLabels: false,' in source
@@ -186,8 +215,74 @@ def test_task_documents_render_arrow_formulas_and_sanitized_mermaid_blocks():
     assert 'dangerouslySetInnerHTML={{ __html: state.svg }}' in source
     assert "CollaborativeDocumentMermaidEditor" in source
     assert ".task-collab-document-mermaid-output svg" in css
+    assert ".task-collab-document-formula-typeset > .katex-display" in css
+    assert katex.stat().st_size > 250_000
+    assert katex_css.stat().st_size > 20_000
+    assert "MIT License" in katex_license.read_text(encoding="utf-8")
     assert mermaid.stat().st_size > 1_000_000
     assert "MIT License" in license_file.read_text(encoding="utf-8")
+
+
+def test_task_document_katex_renders_real_multiline_manuscript_formulas():
+    katex = ROOT / "frontend" / "v2" / "vendor" / "katex.min.js"
+    script = r"""
+const katex = require(process.argv[1]);
+const formulas = [
+  String.raw`q_i=
+\left(
+s_i,
+\eta_i,
+\mathcal V_i
+\right),`,
+  String.raw`\eta_i=1
+\quad\Rightarrow\quad
+\mathcal V_i\neq\varnothing.`,
+  String.raw`\boxed{
+\text{Intent}
+\neq
+\text{Attempt}
+\neq
+\text{Verified Effect}
+}`,
+];
+for (const formula of formulas) {
+  const html = katex.renderToString(formula, {
+    displayMode: true, output: "htmlAndMathml", throwOnError: true,
+    strict: "error", trust: false, maxExpand: 1000, maxSize: 20,
+  });
+  if (!html.includes('class="katex"') || !html.includes("<math")) process.exit(2);
+}
+"""
+    subprocess.run(
+        ["node", "-e", script, str(katex)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    source = TASKS.read_text(encoding="utf-8")
+    assert "const COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS = 4096;" in source
+    assert "const COLLAB_DOCUMENT_MAX_FORMULAS = 500;" in source
+    assert "const COLLAB_DOCUMENT_MAX_FORMULA_LINES = 80;" in source
+    assert "if (opener === \"[\" && !collabFormulaLooksMathematical(value, true)) continue;" in source
+
+
+def test_task_documents_offer_collaborative_undo_and_relocatable_block_removal():
+    source = TASKS.read_text(encoding="utf-8")
+    css = TASKS_CSS.read_text(encoding="utf-8")
+
+    assert "const COLLAB_DOCUMENT_MAX_UNDO_STEPS = 50;" in source
+    assert "const COLLAB_DOCUMENT_MAX_UNDO_BYTES = 4 * 1024 * 1024;" in source
+    assert "const collabDocumentHistoryEntry" in source
+    assert "const collabDocumentRelocateHistoryEntry" in source
+    assert "const undoDocument = () =>" in source
+    assert "{ recordHistory: false }" in source
+    assert 'String(event.key || "").toLowerCase() !== "z"' in source
+    assert 'className="task-collab-document-undo"' in source
+    assert "const collabDocumentRelocateStructuredBlock" in source
+    assert "{ structuredBlock: blockValue, referenceContent: content }" in source
+    assert ".task-collab-document-undo" in css
 
 
 def test_login_poster_uses_bonfire_platform_identity_and_modular_motion():

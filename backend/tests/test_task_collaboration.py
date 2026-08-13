@@ -217,6 +217,86 @@ def _tenant_member(owner: ActorContext) -> ActorContext:
 
 
 @pytest.mark.integration
+def test_task_document_batches_updates_and_replays_them_idempotently() -> None:
+    owner = _tenant_actor("document-batch")
+    app.dependency_overrides[current_actor] = lambda: owner
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "title": "Batched collaboration draft",
+                "visibility": "company",
+                "assignees": [str(owner.user_id)],
+            },
+        )
+        assert created.status_code == 201
+        task = created.json()
+        task_id = task["id"]
+        assert client.post(
+            f"/api/tasks/{task_id}/collaboration/open",
+            json={"discoverability": "company", "join_policy": "open"},
+        ).status_code == 201
+        document = client.get(
+            f"/api/tasks/{task_id}/collaboration/document"
+        ).json()
+        updates = [
+            {
+                "client_update_id": f"batch-update-{index}",
+                "ops": [
+                    {
+                        "type": "insert",
+                        "id": f"batch:{index}",
+                        "after": "^" if index == 1 else f"batch:{index - 1}",
+                        "value": value,
+                        "clock": index,
+                    }
+                ],
+            }
+            for index, value in enumerate("批次稿", start=1)
+        ]
+        payload = {
+            "client_id": "batch-client",
+            "base_sequence": 0,
+            "updates": updates,
+        }
+        batched = client.post(
+            f"/api/tasks/{task_id}/collaboration/document/updates",
+            json=payload,
+        )
+        assert batched.status_code == 200
+        body = batched.json()
+        assert body["result"] == "updated"
+        assert body["idempotent"] is False
+        assert body["accepted_sequence"] == 3
+        assert body["accepted_update_ids"] == [
+            update["client_update_id"] for update in updates
+        ]
+        assert body["sync"]["mode"] == "delta"
+        assert body["sync"]["base_sequence"] == 0
+        assert body["sync"]["latest_sequence"] == 3
+        assert len(body["sync"]["updates"]) == 3
+        assert "snapshot" not in body
+        assert "content" not in body
+        assert client.get(
+            f"/api/tasks/{task_id}/collaboration/document"
+        ).json()["content"] == "批次稿"
+
+        replay = client.post(
+            f"/api/tasks/{task_id}/collaboration/document/updates",
+            json=payload,
+        )
+        assert replay.status_code == 200
+        assert replay.json()["result"] == "idempotent"
+        assert replay.json()["idempotent"] is True
+        assert replay.json()["accepted_sequence"] == 3
+        assert replay.json()["document"]["id"] == document["document"]["id"]
+        assert replay.json()["sync"]["latest_sequence"] == 3
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.integration
 def test_task_workspace_join_chat_history_and_tenant_isolation() -> None:
     owner = _tenant_actor("owner")
     member = _tenant_member(owner)

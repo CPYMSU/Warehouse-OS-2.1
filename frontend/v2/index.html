@@ -71,7 +71,8 @@ try {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <!-- 2.1 完全獨立前端(Swiss Edition):自己的設計系統/組件/頁面,只復用後端 /api;經典版在舊域名原封不動 -->
 <link rel="stylesheet" href="core.css?v=20260806-login-farmer1"/>
-<link rel="stylesheet" href="pages/pages-tasks.css?v=20260814-task-longdoc1"/>
+<link rel="stylesheet" href="vendor/katex.min.css?v=0.16.11"/>
+<link rel="stylesheet" href="pages/pages-tasks.css?v=20260814-task-docformat2"/>
 <link rel="stylesheet" href="pages/pages-shield.css?v=20260802-shield-storage1"/>
 <link rel="stylesheet" href="pages/pages-browser.css?v=20260801-browser1"/>
 <link rel="stylesheet" href="pages/pages-optimizer-topology.css?v=20260723mermaid1"/>
@@ -123,7 +124,7 @@ try {
 <script type="application/x-warehouse-source" src="pages/pages-logs.jsx?v=20260804-audit-conversation1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-settings.jsx?v=20260728-ai1"></script>
 <script type="application/x-warehouse-source" src="pages/pages-cases.jsx?v=20260721185500"></script>
-<script type="application/x-warehouse-source" src="pages/pages-tasks.jsx?v=20260814-task-longdoc1"></script>
+<script type="application/x-warehouse-source" src="pages/pages-tasks.jsx?v=20260814-task-docformat2"></script>
 <script type="application/x-warehouse-source" src="pages/pages-records.jsx?v=20260721185500"></script>
 <script type="application/x-warehouse-source" src="pages/pages-civilization-mobile.jsx?v=20260808-mobile-app5"></script>
 <script type="application/x-warehouse-source" src="pages/pages-civilization.jsx?v=20260808-civilization19"></script>
@@ -140,7 +141,9 @@ try {
 <!-- Feature 23 語義拓撲是普通 JavaScript；先註冊重試鉤子，再讓主 bundle 註冊原頁面。 -->
 <script src="pages/pages-optimizer-topology.js?v=20260723mermaid1"></script>
 <script src="pages/civilization-postcard.js?v=20260808-share4"></script>
-<script src="dist/app.bundle.js?v=20260814-task-longdoc1"></script>
+<!-- 工作稿公式引擎必须同源并先于主 bundle：离线、内网与严格内容拦截下保持完整 LaTeX。 -->
+<script src="vendor/katex.min.js?v=0.16.11"></script>
+<script src="dist/app.bundle.js?v=20260814-task-docformat2"></script>
 <script>
 /* 非关键增强资源在首屏启动之后异步加载，不阻塞主 bundle 的 DOMContentLoaded。 */
 (function () {
@@ -159,11 +162,7 @@ try {
   }
   function loadEnhancements() {
     css("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+TC:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap");
-    css("https://unpkg.com/katex@0.16.11/dist/katex.min.css");
     css("https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css");
-    script("https://unpkg.com/katex@0.16.11/dist/katex.min.js", function () {
-      script("https://unpkg.com/katex@0.16.11/dist/contrib/auto-render.min.js");
-    });
     script("https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js");
   }
   function schedule() { window.setTimeout(loadEnhancements, 1500); }

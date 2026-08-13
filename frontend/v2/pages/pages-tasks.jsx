@@ -27,7 +27,9 @@ window.W2_LANG.addEN({
   "重新載入": "Reload", "同步中": "Syncing", "剛剛同步": "Synced just now",
   "待開始": "Planned", "進行中": "In progress", "已暫停": "Paused", "已完成": "Completed", "已取消": "Cancelled",
   "立即開始": "Start now", "繼續": "Resume", "暫停": "Pause", "等待": "Wait", "完成": "Complete", "取消任務": "Cancel task",
-  "重新進行": "Reopen", "任務已完成": "Task completed", "撤銷": "Undo",
+  "重新進行": "Reopen", "任務已完成": "Task completed", "撤銷": "Undo", "撤回": "Undo",
+  "撤回上一次工作稿編輯": "Undo the last draft edit",
+  "工作稿已在另一處更新，無法安全撤回這次編輯。": "The draft changed elsewhere, so this edit cannot be safely undone.",
   "編輯": "Edit", "編輯任務": "Edit task", "儲存更改": "Save changes", "儲存中…": "Saving…",
   "任務已更新": "Task updated", "更新失敗": "Update failed",
   "刪除任務": "Delete task", "確定刪除？": "Delete this task?", "保留任務": "Keep task",
@@ -2171,18 +2173,23 @@ const COLLAB_DOCUMENT_MAX_NODES = 200000;
 const COLLAB_DOCUMENT_MAX_TABLE_ROWS = 200;
 const COLLAB_DOCUMENT_MAX_PREVIEW_BLOCKS = 1000;
 const COLLAB_DOCUMENT_MAX_PREVIEW_IMAGES = 100;
-const COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS = 512;
+const COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS = 4096;
 const COLLAB_DOCUMENT_MAX_FORMULA_DEPTH = 12;
 const COLLAB_DOCUMENT_MAX_FORMULA_NODES = 256;
-const COLLAB_DOCUMENT_MAX_FORMULAS = 100;
+const COLLAB_DOCUMENT_MAX_FORMULAS = 500;
+const COLLAB_DOCUMENT_MAX_FORMULA_LINES = 80;
+const COLLAB_DOCUMENT_MAX_UNDO_STEPS = 50;
+const COLLAB_DOCUMENT_MAX_UNDO_BYTES = 4 * 1024 * 1024;
 const COLLAB_DOCUMENT_MAX_MERMAID_CHARACTERS = 8000;
 const COLLAB_DOCUMENT_MAX_MERMAID_BLOCKS = 20;
 const COLLAB_DOCUMENT_UPDATE_CHUNK = 350;
 const COLLAB_DOCUMENT_MAX_UPDATE_BYTES = 80 * 1024;
+const COLLAB_DOCUMENT_SYNC_BATCH_UPDATES = 40;
+const COLLAB_DOCUMENT_SYNC_BATCH_BYTES = 1536 * 1024;
 const COLLAB_DOCUMENT_MAX_PENDING_UPDATES = 160;
 const COLLAB_DOCUMENT_MAX_QUEUE_BYTES = 4 * 1024 * 1024;
 const COLLAB_DOCUMENT_GET_TIMEOUT_MS = 15000;
-const COLLAB_DOCUMENT_UPDATE_TIMEOUT_MS = 20000;
+const COLLAB_DOCUMENT_UPDATE_TIMEOUT_MS = 30000;
 const COLLAB_DOCUMENT_MAX_TRANSIENT_RETRIES = 5;
 const COLLAB_DOCUMENT_QUEUE_VERSION = 1;
 const COLLAB_DOCUMENT_CACHE_VERSION = 1;
@@ -2562,6 +2569,28 @@ const collabDocumentChunkUpdates = (operations, seed) => {
   if (nextOps.length) updates.push({ client_update_id: `${seed}-${updates.length + 1}`, ops: nextOps, dispatched: false });
   return updates;
 };
+const collabDocumentSyncBatch = (updates, canDispatchNew) => {
+  const selected = [];
+  let bytes = new Blob([JSON.stringify({ base_sequence: 0, updates: [] })]).size;
+  for (const update of updates) {
+    if (update.dispatched !== true && !canDispatchNew) break;
+    const wireUpdate = {
+      client_update_id: update.client_update_id,
+      ops: update.ops,
+    };
+    const updateBytes = new Blob([JSON.stringify(wireUpdate)]).size + (selected.length ? 1 : 0);
+    if (
+      selected.length
+      && (
+        selected.length >= COLLAB_DOCUMENT_SYNC_BATCH_UPDATES
+        || bytes + updateBytes > COLLAB_DOCUMENT_SYNC_BATCH_BYTES
+      )
+    ) break;
+    selected.push(update);
+    bytes += updateBytes;
+  }
+  return selected;
+};
 const collabDocumentMergePendingUpdates = (queue, incomingUpdates, lockFirst) => {
   const current = queue.updates.map(update => ({ ...update, ops: [...update.ops] }));
   const incoming = incomingUpdates.map(update => ({ ...update, ops: [...update.ops] }));
@@ -2853,8 +2882,8 @@ const collabDocumentAssetAlt = asset => optionalText(
   obj(asset).alt_text, obj(asset).file_name, t('圖片')
 ).replace(/[\]\\|\r\n]/g, ' ').trim().slice(0, 160);
 const COLLAB_DOCUMENT_STYLE_RE = /^<!-- w2-style:v1 rev=(\d{1,16}) actor=([A-Za-z0-9._:-]{1,80}) font=(swiss|editorial|mono) size=(sm|md|lg) -->$/;
-const COLLAB_DOCUMENT_FORMULA_RE = /^\s*\\\[([\s\S]{0,512})\\\]\s*$/;
-const COLLAB_DOCUMENT_DOLLAR_FORMULA_RE = /^\s*\$\$([\s\S]{0,512})\$\$\s*$/;
+const COLLAB_DOCUMENT_FORMULA_RE = /^\s*\\\[([\s\S]{0,4096})\\\]\s*$/;
+const COLLAB_DOCUMENT_DOLLAR_FORMULA_RE = /^\s*\$\$([\s\S]{0,4096})\$\$\s*$/;
 const COLLAB_DOCUMENT_IMAGE_LINE_RE = /^!\[([^\]\n]{0,160})\]\(w2-image:(img_[A-Za-z0-9_-]{20,80})\)$/;
 const COLLAB_DOCUMENT_MERMAID_OPEN_RE = /^\s*`{3,}\s*mermaid\s*$/i;
 const COLLAB_DOCUMENT_CODE_CLOSE_RE = /^\s*`{3,}\s*$/;
@@ -3029,37 +3058,36 @@ const collabDocumentParseFormulaAt = (recordsValue, indexValue, contentValue = n
   const opener = record.value.trim();
   const closer = opener === "\\[" ? "\\]" : opener === "$$" ? "$$" : opener === "[" ? "]" : "";
   if (!closer) return null;
-  let absoluteClose = -1;
-  let closeColumn = -1;
-  for (let cursor = index + 1; cursor < Math.min(records.length, index + 14); cursor += 1) {
+  const content = contentValue == null
+    ? records.map(item => item.value).join("\n") : String(contentValue || "");
+  for (
+    let cursor = index + 1;
+    cursor < Math.min(records.length, index + COLLAB_DOCUMENT_MAX_FORMULA_LINES + 2);
+    cursor += 1
+  ) {
     const candidate = records[cursor].value;
     const withoutTrailingWhitespace = candidate.trimEnd();
     if (!withoutTrailingWhitespace.endsWith(closer)) continue;
-    absoluteClose = cursor;
-    closeColumn = withoutTrailingWhitespace.length - closer.length;
-    break;
+    const closeColumn = withoutTrailingWhitespace.length - closer.length;
+    const closeRecord = records[cursor];
+    const attachedBody = closeColumn > (closeRecord.value.match(/^\s*/) || [""])[0].length;
+    if (cursor === index + 1 && !attachedBody) continue;
+    const firstBody = records[index + 1];
+    const sourceEnd = attachedBody
+      ? closeRecord.start + closeColumn
+      : records[cursor - 1].end;
+    const value = content.slice(firstBody.start, sourceEnd);
+    if (!value.trim()) continue;
+    if (value.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS) break;
+    if (opener === "[" && !collabFormulaLooksMathematical(value, true)) continue;
+    return {
+      type: "formula", lineIndex: record.index, start: record.start,
+      end: closeRecord.end, sourceStart: firstBody.start,
+      sourceEnd, value, nextLine: cursor + 1,
+      inferred: opener === "[",
+    };
   }
-  if (absoluteClose < 0) return null;
-  const firstBody = records[index + 1];
-  const closeRecord = records[absoluteClose];
-  const attachedBody = closeColumn > (closeRecord.value.match(/^\s*/) || [""])[0].length;
-  if (absoluteClose === index + 1 && !attachedBody) return null;
-  const sourceEnd = attachedBody
-    ? closeRecord.start + closeColumn
-    : records[absoluteClose - 1].end;
-  const content = contentValue == null
-    ? records.map(item => item.value).join("\n") : String(contentValue || "");
-  const value = content.slice(firstBody.start, sourceEnd);
-  if (
-    !value.trim() || value.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS
-    || (opener === "[" && !collabFormulaLooksMathematical(value, true))
-  ) return null;
-  return {
-    type: "formula", lineIndex: record.index, start: record.start,
-    end: records[absoluteClose].end, sourceStart: firstBody.start,
-    sourceEnd, value, nextLine: absoluteClose + 1,
-    inferred: opener === "[",
-  };
+  return null;
 };
 const collabDocumentParseMermaidAt = (recordsValue, indexValue, contentValue = null) => {
   const records = arr(recordsValue);
@@ -3148,7 +3176,6 @@ const collabFormulaNormalize = value => {
   let formula = String(value || "").slice(0, COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS).trim();
   const fullWidth = { "＝": "=", "＋": "+", "－": "-", "＊": "*", "／": "/", "（": "(", "）": ")" };
   formula = formula.replace(/[＝＋－＊／（）]/g, character => fullWidth[character] || character);
-  formula = formula.replace(/\\\\(?=[A-Za-z])/g, "\\");
   formula = formula.replace(/\*\*/g, "^")
     .replace(/!=/g, "\\ne ").replace(/<=/g, "\\le ").replace(/>=/g, "\\ge ")
     .replace(/\bsqrt\s*\(([^()]{1,180})\)/gi, "\\sqrt{$1}");
@@ -3160,6 +3187,36 @@ const collabFormulaNormalize = value => {
   if (fraction) formula = `\\frac{${fraction[1]}}{${fraction[2]}}`;
   return formula.replace(/\s+/g, " ").trim();
 };
+const collabFormulaKatexMarkup = (formulaValue, inline = false) => {
+  const source = collabFormulaNormalize(formulaValue);
+  if (!source || collabFormulaForbidden.test(source)) return null;
+  const engine = window.katex;
+  if (!engine || typeof engine.renderToString !== "function") return null;
+  try {
+    return {
+      source,
+      html: engine.renderToString(source, {
+        displayMode: inline !== true,
+        output: "htmlAndMathml",
+        throwOnError: true,
+        strict: "error",
+        trust: false,
+        maxExpand: 1000,
+        maxSize: 20,
+      }),
+    };
+  } catch (error) {
+    return null;
+  }
+};
+const collabFormulaValid = value => {
+  const source = collabFormulaNormalize(value);
+  if (!source || collabFormulaForbidden.test(source)) return false;
+  if (window.katex && typeof window.katex.renderToString === "function") {
+    return collabFormulaKatexMarkup(source, false) != null;
+  }
+  return collabFormulaAst(source).valid;
+};
 /* Parentheses are common in prose and citations, so inferred formulas require
    an unambiguous math signal before the safe parser is allowed to render them. */
 function collabFormulaLooksMathematical(value, allowEquation = false) {
@@ -3169,7 +3226,7 @@ function collabFormulaLooksMathematical(value, allowEquation = false) {
   const singleIdentifier = /^[A-Za-z]$/.test(source);
   const mathSignal = /\\[A-Za-z]+|[_^=<>]|[+\-*/]\s*[A-Za-z0-9]|[∑∏∫√∞≤≥≠≈→←↔∈∉]|\d\s*[,.:]\s*[A-Za-z]/.test(source);
   if (!mathSignal && !(allowEquation && /[A-Za-z0-9]\s*[=+\-*/]/.test(source)) && !singleIdentifier) return false;
-  return collabFormulaAst(source).valid;
+  return collabFormulaValid(source);
 }
 const collabFormulaAst = formulaValue => {
   const source = collabFormulaNormalize(formulaValue);
@@ -3328,7 +3385,10 @@ const collabFormulaElement = (node, path = "m") => {
 };
 const CollaborativeDocumentFormulaMath = ({ value, inline = false }) => {
   const parsed = collabFormulaAst(value);
-  return parsed.valid
+  const katexMarkup = M(() => collabFormulaKatexMarkup(value, inline), [value, inline]);
+  return katexMarkup
+    ? <span className="task-collab-document-formula-typeset" role="math" aria-label={katexMarkup.source} dangerouslySetInnerHTML={{ __html: katexMarkup.html }}/>
+    : parsed.valid
     ? <math display={inline ? "inline" : "block"} aria-label={parsed.source}>{collabFormulaElement(parsed.ast)}</math>
     : <code>{String(value || "")}</code>;
 };
@@ -3445,7 +3505,7 @@ const collabDocumentFormulaSegments = value => {
     const explicit = match[1] != null || match[2] != null;
     const body = match[1] != null ? match[1] : match[2] != null ? match[2] : match[3];
     const formula = explicit ? body : `(${body})`;
-    if ((!explicit && !collabFormulaLooksMathematical(body)) || !collabFormulaAst(formula).valid) continue;
+    if ((!explicit && !collabFormulaLooksMathematical(body)) || !collabFormulaValid(formula)) continue;
     if (match.index > cursor) segments.push({ type: "text", value: source.slice(cursor, match.index) });
     segments.push({ type: "formula", value: formula, source: match[0] });
     cursor = match.index + match[0].length;
@@ -3790,9 +3850,38 @@ const collabDocumentVisualGroups = blockValues => {
   });
   return groups;
 };
-const collabDocumentStructuredRemoval = (contentValue, blockValue) => {
+const collabDocumentRelocateStructuredBlock = (contentValue, blockValue, referenceContentValue = null) => {
   const content = String(contentValue || "");
   const block = obj(blockValue);
+  const referenceContent = referenceContentValue == null
+    ? content : String(referenceContentValue || "");
+  const referenceStart = clamp(number(block.start), 0, referenceContent.length);
+  const referenceEnd = clamp(number(block.end), referenceStart, referenceContent.length);
+  const referenceSource = referenceContent.slice(referenceStart, referenceEnd);
+  if (
+    referenceSource
+    && referenceStart <= content.length
+    && content.slice(referenceStart, referenceStart + referenceSource.length) === referenceSource
+  ) return { ...block, start: referenceStart, end: referenceStart + referenceSource.length };
+  const candidates = collabDocumentParseBlocks(content).blocks.filter(candidate => (
+    candidate.type === block.type && ["table", "formula", "mermaid", "image"].includes(candidate.type)
+  ));
+  if (!candidates.length) return null;
+  const exact = referenceSource ? candidates.filter(candidate => (
+    content.slice(candidate.start, candidate.end) === referenceSource
+  )) : [];
+  const mappedStart = referenceContent === content
+    ? referenceStart : collabDocumentMapSelection(referenceContent, content, referenceStart);
+  const pool = exact.length ? exact : candidates;
+  return [...pool].sort((left, right) => (
+    Math.abs(number(left.start) - mappedStart) - Math.abs(number(right.start) - mappedStart)
+    || Math.abs(number(left.lineIndex) - number(block.lineIndex)) - Math.abs(number(right.lineIndex) - number(block.lineIndex))
+  ))[0] || null;
+};
+const collabDocumentStructuredRemoval = (contentValue, blockValue, referenceContentValue = null) => {
+  const content = String(contentValue || "");
+  const block = collabDocumentRelocateStructuredBlock(content, blockValue, referenceContentValue);
+  if (!block) return null;
   let start = clamp(number(block.start), 0, content.length);
   let end = clamp(number(block.end), start, content.length);
   if (end < content.length && content[end] === "\n") end += 1;
@@ -3801,6 +3890,79 @@ const collabDocumentStructuredRemoval = (contentValue, blockValue) => {
   const remaining = content.slice(0, start) + content.slice(end);
   const replacement = collabDocumentParseBlocks(remaining).blocks.length ? "" : "\n";
   return { start, end, expected, replacement };
+};
+const collabDocumentHistoryEntry = (beforeValue, afterValue) => {
+  const before = String(beforeValue || "");
+  const after = String(afterValue || "");
+  if (before === after) return null;
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start += 1;
+  let beforeEnd = before.length;
+  let afterEnd = after.length;
+  while (
+    beforeEnd > start && afterEnd > start
+    && before[beforeEnd - 1] === after[afterEnd - 1]
+  ) {
+    beforeEnd -= 1;
+    afterEnd -= 1;
+  }
+  const removed = before.slice(start, beforeEnd);
+  const inserted = after.slice(start, afterEnd);
+  const left = before.slice(Math.max(0, start - 64), start);
+  const right = before.slice(beforeEnd, Math.min(before.length, beforeEnd + 64));
+  return {
+    start,
+    removed,
+    inserted,
+    left,
+    right,
+    bytes: (removed.length + inserted.length + left.length + right.length) * 2,
+  };
+};
+const collabDocumentRelocateHistoryEntry = (contentValue, entryValue) => {
+  const content = String(contentValue || "");
+  const entry = obj(entryValue);
+  const inserted = String(entry.inserted || "");
+  const left = String(entry.left || "");
+  const right = String(entry.right || "");
+  const expectedStart = clamp(number(entry.start), 0, content.length);
+  const exactEnd = expectedStart + inserted.length;
+  if (
+    exactEnd <= content.length
+    && content.slice(expectedStart, exactEnd) === inserted
+    && (!left || content.slice(Math.max(0, expectedStart - left.length), expectedStart) === left)
+    && (!right || content.slice(exactEnd, exactEnd + right.length) === right)
+  ) return { start: expectedStart, end: exactEnd };
+  const candidates = [];
+  if (inserted) {
+    let cursor = 0;
+    while (cursor <= content.length && candidates.length < 100) {
+      const found = content.indexOf(inserted, cursor);
+      if (found < 0) break;
+      candidates.push({ start: found, end: found + inserted.length });
+      cursor = found + Math.max(1, inserted.length);
+    }
+  } else if (left || right) {
+    const boundaryNeedle = left + right;
+    if (boundaryNeedle) {
+      let cursor = 0;
+      while (cursor <= content.length && candidates.length < 100) {
+        const found = content.indexOf(boundaryNeedle, cursor);
+        if (found < 0) break;
+        const boundary = found + left.length;
+        candidates.push({ start: boundary, end: boundary });
+        cursor = found + Math.max(1, boundaryNeedle.length);
+      }
+    }
+  }
+  const scored = candidates.map(candidate => {
+    const candidateLeft = content.slice(Math.max(0, candidate.start - left.length), candidate.start);
+    const candidateRight = content.slice(candidate.end, candidate.end + right.length);
+    const contextScore = (left && candidateLeft === left ? 2 : 0) + (right && candidateRight === right ? 2 : 0);
+    return { ...candidate, contextScore, distance: Math.abs(candidate.start - expectedStart) };
+  }).sort((a, b) => b.contextScore - a.contextScore || a.distance - b.distance);
+  if (!scored.length || (left || right) && scored[0].contextScore === 0) return null;
+  return { start: scored[0].start, end: scored[0].end };
 };
 const collabDocumentInlineSourceOffset = (value, visibleOffset, affinity = "backward") => {
   const source = String(value || "");
@@ -5883,8 +6045,14 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
   const removeStructuredBlock = blockValue => {
     if (readOnly || !["table", "formula", "mermaid", "image"].includes(blockValue && blockValue.type)) return false;
     const removal = collabDocumentStructuredRemoval(content, blockValue);
-    if (removal.end <= removal.start) return false;
-    const committed = onReplace(removal.start, removal.end, removal.replacement, removal.expected);
+    if (!removal || removal.end <= removal.start) return false;
+    const committed = onReplace(
+      removal.start,
+      removal.end,
+      removal.replacement,
+      removal.expected,
+      { structuredBlock: blockValue, referenceContent: content }
+    );
     if (committed) {
       const caret = removal.start + removal.replacement.length;
       selectionRef.current = {
@@ -5964,6 +6132,8 @@ const CollaborativeDocument = ({
   const sourceSelectionRef = R(null);
   const restoringSourceSelection = R(false);
   const visualSelectionRef = R(null);
+  const undoHistoryRef = R([]);
+  const undoHistoryBytesRef = R(0);
   const imageInputRef = R(null);
   const composing = R(false);
   const reloadAfterComposition = R(false);
@@ -5992,6 +6162,7 @@ const CollaborativeDocument = ({
   const [mode, setMode] = S("edit");
   const [editorView, setEditorView] = S("visual");
   const [toolPanel, setToolPanel] = S("");
+  const [undoCount, setUndoCount] = S(0);
   const [loading, setLoading] = S(true);
   const [saving, setSaving] = S(false);
   const [exporting, setExporting] = S(false);
@@ -6278,6 +6449,9 @@ const CollaborativeDocument = ({
           documentMetaRef.current = {};
           contentRef.current = "";
           capabilitiesRef.current = { can_read: false, can_edit: false, can_export: false, read_only: true };
+          undoHistoryRef.current = [];
+          undoHistoryBytesRef.current = 0;
+          setUndoCount(0);
           setContent("");
           setAssets([]);
           setDocumentMeta({});
@@ -6359,16 +6533,25 @@ const CollaborativeDocument = ({
         && queueRef.current.updates.length
         && batchUpdateIds.has(queueRef.current.updates[0].client_update_id)
       ) {
-        let update = queueRef.current.updates[0];
-        if (update.dispatched !== true && capabilitiesRef.current.can_edit !== true) {
+        const candidates = [];
+        for (const item of queueRef.current.updates) {
+          if (!batchUpdateIds.has(item.client_update_id)) break;
+          candidates.push(item);
+        }
+        let updates = collabDocumentSyncBatch(
+          candidates,
+          capabilitiesRef.current.can_edit === true
+        );
+        if (!updates.length) {
           success = false;
           break;
         }
-        if (update.dispatched !== true) {
+        if (updates.some(update => update.dispatched !== true)) {
+          const selectedIds = new Set(updates.map(update => update.client_update_id));
           const sealedQueue = {
             ...queueRef.current,
-            updates: queueRef.current.updates.map((item, index) => (
-              index === 0 ? { ...item, dispatched: true } : item
+            updates: queueRef.current.updates.map(item => (
+              selectedIds.has(item.client_update_id) ? { ...item, dispatched: true } : item
             )),
           };
           if (!collabDocumentSaveQueue(tenant, taskId, viewerUserId, sealedQueue)) {
@@ -6377,9 +6560,11 @@ const CollaborativeDocument = ({
             break;
           }
           queueRef.current = sealedQueue;
-          update = sealedQueue.updates[0];
+          updates = sealedQueue.updates.filter(item => selectedIds.has(item.client_update_id));
           setStorageWarning("");
         }
+        const selectedIds = new Set(updates.map(update => update.client_update_id));
+        const baseSequence = adoptedSequence.current;
         invalidateDocumentLoads();
         const controller = new AbortController();
         updateController.current = controller;
@@ -6394,8 +6579,11 @@ const CollaborativeDocument = ({
             `/api/tasks/${encodeURIComponent(taskId)}/collaboration/document/updates`,
             {
               client_id: queueRef.current.client_id,
-              client_update_id: update.client_update_id,
-              ops: update.ops,
+              base_sequence: baseSequence,
+              updates: updates.map(update => ({
+                client_update_id: update.client_update_id,
+                ops: update.ops,
+              })),
             },
             { signal: controller.signal }
           );
@@ -6405,7 +6593,14 @@ const CollaborativeDocument = ({
         }
         if (!mounted.current || tenant !== W2.tenant()) return false;
         invalidateDocumentLoads();
-        const remaining = queueRef.current.updates.filter(item => item.client_update_id !== update.client_update_id);
+        const acceptedIds = new Set(
+          arr(collabData(response).accepted_update_ids).map(value => String(value || ""))
+        );
+        if (
+          acceptedIds.size !== selectedIds.size
+          || [...selectedIds].some(updateId => !acceptedIds.has(updateId))
+        ) throw new Error("incomplete collaboration document batch acknowledgement");
+        const remaining = queueRef.current.updates.filter(item => !selectedIds.has(item.client_update_id));
         automaticRetryBlocked.current = false;
         transientRetryCount.current = 0;
         queueRef.current = { ...queueRef.current, updates: remaining };
@@ -6532,6 +6727,8 @@ const CollaborativeDocument = ({
       sourceSelectionRef.current = null;
       restoringSourceSelection.current = false;
       visualSelectionRef.current = null;
+      undoHistoryRef.current = [];
+      undoHistoryBytesRef.current = 0;
       imageInputRef.current = null;
       composing.current = false;
       reloadAfterComposition.current = false;
@@ -6906,6 +7103,22 @@ const CollaborativeDocument = ({
     if (typeof onAnnotationFocusHandled === "function") onAnnotationFocusHandled(annotation.id);
   }, [focusAnnotationId, loading, documentMeta.id, resolvedAnnotations, onAnnotationFocusHandled]);
 
+  const rememberUndo = C((beforeValue, afterValue) => {
+    const entry = collabDocumentHistoryEntry(beforeValue, afterValue);
+    if (!entry) return;
+    const history = [...undoHistoryRef.current, entry];
+    let bytes = undoHistoryBytesRef.current + entry.bytes;
+    while (
+      history.length > 1
+      && (history.length > COLLAB_DOCUMENT_MAX_UNDO_STEPS || bytes > COLLAB_DOCUMENT_MAX_UNDO_BYTES)
+    ) {
+      const removed = history.shift();
+      bytes -= number(removed && removed.bytes);
+    }
+    undoHistoryRef.current = history;
+    undoHistoryBytesRef.current = Math.max(0, bytes);
+    setUndoCount(history.length);
+  }, []);
   const validateDocumentText = nextText => {
     if (capabilities.can_edit !== true || loading) return false;
     const nextCharacters = Array.from(nextText);
@@ -6919,7 +7132,7 @@ const CollaborativeDocument = ({
     }
     return true;
   };
-  const commitDocumentOperations = (nextText, operations, updateSeed) => {
+  const commitDocumentOperations = (nextText, operations, updateSeed, options = {}) => {
     if (!operations.length) return true;
     const insertedNodes = operations.reduce((total, operation) => (
       total + (operation.type === "insert" ? 1 : 0)
@@ -6935,6 +7148,7 @@ const CollaborativeDocument = ({
       return false;
     }
     try {
+      const previousContent = collabDocumentView(nodesRef.current).content;
       const nextNodes = collabDocumentApply(nodesRef.current, operations);
       const view = collabDocumentView(nextNodes);
       if (view.content !== String(nextText)) throw new Error("collaboration document projection mismatch");
@@ -6949,6 +7163,7 @@ const CollaborativeDocument = ({
       setPendingCount(queueRef.current.updates.length);
       setError("");
       setStorageWarning("");
+      if (options.recordHistory !== false) rememberUndo(previousContent, view.content);
       scheduleFlush(500);
       return true;
     } catch (exception) {
@@ -6957,29 +7172,47 @@ const CollaborativeDocument = ({
       return false;
     }
   };
-  const commitDocumentText = nextText => {
+  const commitDocumentText = (nextText, options = {}) => {
     if (!validateDocumentText(nextText)) return false;
     const seed = collabDocumentUpdateSeed();
     const operations = collabDocumentOperations(nodesRef.current, nextText, seed);
-    return commitDocumentOperations(nextText, operations, seed);
+    return commitDocumentOperations(nextText, operations, seed, options);
   };
-  const replaceDocumentRange = (startValue, endValue, replacementValue, expectedValue = null) => {
+  const replaceDocumentRange = (startValue, endValue, replacementValue, expectedValue = null, options = {}) => {
     const before = contentRef.current;
-    const start = clamp(number(startValue), 0, before.length);
-    const end = clamp(number(endValue), start, before.length);
-    if (expectedValue != null && before.slice(start, end) !== String(expectedValue)) {
+    let start = clamp(number(startValue), 0, before.length);
+    let end = clamp(number(endValue), start, before.length);
+    let replacement = String(replacementValue || "");
+    let expected = expectedValue;
+    if (
+      expected != null
+      && before.slice(start, end) !== String(expected)
+      && options.structuredBlock
+    ) {
+      const relocated = collabDocumentStructuredRemoval(
+        before,
+        options.structuredBlock,
+        options.referenceContent
+      );
+      if (relocated) {
+        start = relocated.start;
+        end = relocated.end;
+        replacement = relocated.replacement;
+        expected = relocated.expected;
+      }
+    }
+    if (expected != null && before.slice(start, end) !== String(expected)) {
       setError(t("工作稿已在另一處更新，正在合併。"));
       scheduleDocumentReload(0);
       return false;
     }
-    const replacement = String(replacementValue || "");
     const next = before.slice(0, start) + replacement + before.slice(end);
     if (next === before) return true;
     if (!validateDocumentText(next)) return false;
     try {
       const seed = collabDocumentUpdateSeed();
       const operations = collabDocumentRangeOperations(nodesRef.current, start, end, replacement, seed);
-      return commitDocumentOperations(next, operations, seed);
+      return commitDocumentOperations(next, operations, seed, options);
     } catch (exception) {
       setError(t("工作稿同步失敗，已保留在此裝置。"));
       loadDocument({ quiet: true });
@@ -7025,6 +7258,76 @@ const CollaborativeDocument = ({
     }
     if (!validateDocumentText(next)) return false;
     return commitDocumentOperations(next, operations, seed);
+  };
+  const undoDocument = () => {
+    if (capabilitiesRef.current.can_edit !== true || loading || composing.current) return false;
+    const entry = undoHistoryRef.current[undoHistoryRef.current.length - 1];
+    if (!entry) return false;
+    const current = contentRef.current;
+    const located = collabDocumentRelocateHistoryEntry(current, entry);
+    if (!located) {
+      setError(t("工作稿已在另一處更新，無法安全撤回這次編輯。"));
+      return false;
+    }
+    const committed = replaceDocumentRange(
+      located.start,
+      located.end,
+      entry.removed,
+      entry.inserted,
+      { recordHistory: false }
+    );
+    if (!committed) return false;
+    const history = undoHistoryRef.current.slice(0, -1);
+    undoHistoryRef.current = history;
+    undoHistoryBytesRef.current = Math.max(0, undoHistoryBytesRef.current - number(entry.bytes));
+    setUndoCount(history.length);
+    setSelectionToolbar(null);
+    const caret = located.start + String(entry.removed || "").length;
+    if (editorView === "source") {
+      sourceSelectionRef.current = {
+        start: caret, end: caret, startAffinity: "backward", endAffinity: "backward",
+        direction: "none", active: true, restoring: true,
+        startAnchor: null, endAnchor: null,
+      };
+      window.requestAnimationFrame(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        try {
+          editor.focus({ preventScroll: true });
+          editor.setSelectionRange(caret, caret, "none");
+        } catch (error) {}
+        if (sourceSelectionRef.current) sourceSelectionRef.current.restoring = false;
+      });
+    } else {
+      const next = current.slice(0, located.start) + String(entry.removed || "") + current.slice(located.end);
+      const block = collabDocumentParseBlocks(next).blocks.find(candidate => (
+        caret >= candidate.start && caret <= candidate.end
+      ));
+      visualSelectionRef.current = {
+        type: "text", lineIndex: number(block && block.lineIndex),
+        endLineIndex: number(block && block.lineIndex),
+        start: caret, end: caret, startAffinity: "backward", endAffinity: "backward",
+        active: true, restoring: true, pending: true,
+      };
+    }
+    return true;
+  };
+  const handleDocumentKeyDownCapture = event => {
+    interactionObserved.current = true;
+    const target = event.target;
+    const editingDraft = target && target.closest && target.closest(
+      ".task-collab-document-editor, .task-collab-document-visual"
+    );
+    if (
+      !editingDraft
+      || String(event.key || "").toLowerCase() !== "z"
+      || (!event.metaKey && !event.ctrlKey)
+      || event.altKey
+      || event.shiftKey
+      || undoHistoryRef.current.length < 1
+    ) return;
+    event.preventDefault();
+    undoDocument();
   };
   const onVisualCompositionStart = () => { composing.current = true; };
   const onVisualCompositionEnd = callback => {
@@ -7428,7 +7731,7 @@ const CollaborativeDocument = ({
   const documentStyle = collabDocumentStyle(content);
   const visualToolsDisabled = capabilities.can_edit !== true || loading || mode !== "edit" || editorView !== "visual";
 
-  return <section ref={sectionRef} className="task-collab-document" data-sequence={number(documentMeta.latest_sequence)} onPointerDownCapture={() => { interactionObserved.current = true; }} onKeyDownCapture={() => { interactionObserved.current = true; }}>
+  return <section ref={sectionRef} className="task-collab-document" data-sequence={number(documentMeta.latest_sequence)} onPointerDownCapture={() => { interactionObserved.current = true; }} onKeyDownCapture={handleDocumentKeyDownCapture}>
     <header className="task-collab-document-head">
       <div><L red>SHARED · RGA/01</L><h3>{t("協作工作稿")}</h3><p>{t("所有協作者可在同一份工作稿中安全共編。")}</p></div>
       <div className="task-collab-document-tools">
@@ -7436,6 +7739,7 @@ const CollaborativeDocument = ({
           <button type="button" className={mode === "edit" ? "on" : ""} aria-pressed={mode === "edit"} onClick={() => { setMode("edit"); setToolPanel(""); }}>{t("編輯")}</button>
           <button type="button" className={mode === "preview" ? "on" : ""} aria-pressed={mode === "preview"} onClick={() => { setMode("preview"); setToolPanel(""); }}>{t("預覽")}</button>
         </div>
+        <button type="button" className="task-collab-document-undo" disabled={undoCount < 1 || capabilities.can_edit !== true || loading} onClick={undoDocument} aria-label={t("撤回上一次工作稿編輯")} title={`${t("撤回上一次工作稿編輯")} · ${/Mac|iPhone|iPad/.test(window.navigator && window.navigator.platform || "") ? "⌘Z" : "Ctrl+Z"}`}><span aria-hidden="true">↶</span>{t("撤回")}</button>
         <button type="button" className="task-collab-document-export" disabled={exporting || pendingCount > 0 || saving || offline || capabilities.can_export === false || !documentMeta.id} onClick={exportDocument}><I name="arrow" size={12}/>{exporting ? "…" : t("匯出")}</button>
       </div>
     </header>

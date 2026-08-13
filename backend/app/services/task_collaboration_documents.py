@@ -36,6 +36,9 @@ MAX_VISIBLE_CHARACTERS = 100_000
 MAX_NODES = 200_000
 MAX_UPDATE_OPERATIONS = 1_000
 MAX_UPDATE_BYTES = 96 * 1024
+MAX_BATCH_UPDATES = 40
+MAX_BATCH_OPERATIONS = 20_000
+MAX_BATCH_BYTES = 2 * 1024 * 1024
 MAX_UPDATES_PER_DOCUMENT = 20_000
 MAX_INCREMENTAL_UPDATES = 500
 SNAPSHOT_INTERVAL = 50
@@ -351,45 +354,62 @@ def _apply_operations(
     nodes: dict[str, dict[str, object]], operations: list[dict[str, object]]
 ) -> tuple[dict[str, dict[str, object]], str, bool]:
     next_nodes = {element_id: dict(node) for element_id, node in nodes.items()}
+    visible_length, changed = _apply_operations_in_place(
+        next_nodes,
+        operations,
+        sum(not bool(node["deleted"]) for node in next_nodes.values()),
+    )
+    content = _render(next_nodes)
+    if len(content) != visible_length:
+        raise _error(500, "Collaboration document state is corrupt")
+    return next_nodes, content, changed
+
+
+def _apply_operations_in_place(
+    nodes: dict[str, dict[str, object]],
+    operations: list[dict[str, object]],
+    visible_length: int,
+) -> tuple[int, bool]:
     changed = False
     current_max_clock = max(
-        (int(node["clock"]) for node in next_nodes.values()), default=0
+        (int(node["clock"]) for node in nodes.values()), default=0
     )
     insert_count = sum(operation["type"] == "insert" for operation in operations)
     maximum_new_clock = current_max_clock + insert_count
     for operation in operations:
         element_id = str(operation["id"])
         if operation["type"] == "insert":
-            if element_id in next_nodes:
+            if element_id in nodes:
                 raise _error(409, "CRDT element id already exists")
             predecessor = str(operation["after"])
-            if predecessor != ROOT_ELEMENT_ID and predecessor not in next_nodes:
+            if predecessor != ROOT_ELEMENT_ID and predecessor not in nodes:
                 raise _error(409, "CRDT predecessor does not exist")
             if int(operation["clock"]) > maximum_new_clock:
                 raise _error(409, "CRDT clock exceeds this update window")
-            next_nodes[element_id] = {
+            nodes[element_id] = {
                 "id": element_id,
                 "after": predecessor,
                 "value": operation["value"],
                 "clock": operation["clock"],
                 "deleted": False,
             }
+            visible_length += 1
             changed = True
         else:
-            if element_id not in next_nodes:
+            if element_id not in nodes:
                 raise _error(409, "CRDT deletion target does not exist")
-            if not next_nodes[element_id]["deleted"]:
-                next_nodes[element_id]["deleted"] = True
+            if not nodes[element_id]["deleted"]:
+                nodes[element_id]["deleted"] = True
+                visible_length -= 1
                 changed = True
-    if len(next_nodes) > MAX_NODES:
+    if len(nodes) > MAX_NODES:
         raise _error(413, "Collaboration document node limit reached")
-    content = _render(next_nodes)
-    if len(content) > MAX_VISIBLE_CHARACTERS:
+    if visible_length > MAX_VISIBLE_CHARACTERS:
         raise _error(
             413,
             f"Collaboration document is limited to {MAX_VISIBLE_CHARACTERS} characters",
         )
-    return next_nodes, content, changed
+    return visible_length, changed
 
 
 def _verified_state(
@@ -511,14 +531,13 @@ def _assets(session: Session, document_id: UUID) -> list[dict[str, object]]:
     return [_asset_view(dict(row)) for row in rows]
 
 
-def _document_view(
+def _document_response_base(
     session: Session,
     task: dict[str, object],
     member: dict[str, object],
     document: dict[str, object],
-    verified: tuple[dict[str, dict[str, object]], str] | None = None,
+    nodes: dict[str, dict[str, object]],
 ) -> dict[str, object]:
-    nodes, content = verified or _verified_state(session, document)
     public_snapshot = _public_snapshot(nodes)
     return {
         "document": {
@@ -538,11 +557,105 @@ def _document_view(
             "created_at": document["created_at"],
             "updated_at": document["updated_at"],
         },
-        "snapshot": public_snapshot,
-        "content": content,
         "assets": _assets(session, UUID(str(document["id"]))),
         "capabilities": _capabilities(task, member, document),
     }
+
+
+def _document_view(
+    session: Session,
+    task: dict[str, object],
+    member: dict[str, object],
+    document: dict[str, object],
+    verified: tuple[dict[str, dict[str, object]], str] | None = None,
+) -> dict[str, object]:
+    nodes, content = verified or _verified_state(session, document)
+    public_snapshot = _public_snapshot(nodes)
+    return _document_response_base(session, task, member, document, nodes) | {
+        "snapshot": public_snapshot,
+        "content": content,
+    }
+
+
+def _document_delta_view(
+    session: Session,
+    task: dict[str, object],
+    member: dict[str, object],
+    document: dict[str, object],
+    *,
+    after_sequence: int,
+    verified: tuple[dict[str, dict[str, object]], str],
+) -> dict[str, object]:
+    latest_sequence = int(document["latest_sequence"])
+    if after_sequence > latest_sequence or (
+        latest_sequence - after_sequence > MAX_INCREMENTAL_UPDATES
+    ):
+        response = _document_view(
+            session, task, member, document, verified=verified
+        )
+        response["sync"] = {
+            "mode": "reset",
+            "reason": (
+                "client_ahead"
+                if after_sequence > latest_sequence
+                else "delta_limit"
+            ),
+            "base_sequence": 0,
+            "latest_sequence": latest_sequence,
+            "updates": [],
+        }
+        return response
+
+    updates: list[dict[str, object]] = []
+    if after_sequence < latest_sequence:
+        rows = session.execute(
+            text(
+                """
+                SELECT sequence, update_payload, update_hash
+                FROM workflow.task_collaboration_document_updates
+                WHERE document_id = :document_id AND sequence > :after_sequence
+                ORDER BY sequence
+                LIMIT :limit
+                """
+            ),
+            {
+                "document_id": document["id"],
+                "after_sequence": after_sequence,
+                "limit": MAX_INCREMENTAL_UPDATES + 1,
+            },
+        ).mappings()
+        expected_sequence = after_sequence + 1
+        for row in rows:
+            payload = row["update_payload"]
+            if (
+                int(row["sequence"]) != expected_sequence
+                or not isinstance(payload, dict)
+                or payload.get("format") != CRDT_FORMAT
+                or not isinstance(payload.get("ops"), list)
+                or _hash(_canonical(payload)) != row["update_hash"]
+            ):
+                raise _error(500, "Collaboration document update history is corrupt")
+            updates.append(
+                {
+                    "sequence": expected_sequence,
+                    "update_hash": row["update_hash"],
+                    "payload": payload,
+                }
+            )
+            expected_sequence += 1
+        if expected_sequence - 1 != latest_sequence:
+            raise _error(500, "Collaboration document update history is incomplete")
+
+    response = _document_response_base(
+        session, task, member, document, verified[0]
+    )
+    response["sync"] = {
+        "mode": "delta" if updates else "current",
+        "base_sequence": after_sequence,
+        "latest_sequence": latest_sequence,
+        "updates": updates,
+    }
+    return response
 
 
 def get_document(
@@ -657,147 +770,242 @@ def append_update_in_session(
     client_update_id: str,
     operations: list[dict[str, object]],
 ) -> dict[str, object]:
-    update_value = {"format": CRDT_FORMAT, "ops": operations}
-    update_json = _canonical(update_value)
-    update_bytes = len(update_json.encode("utf-8"))
-    if update_bytes > MAX_UPDATE_BYTES:
-        raise _error(413, "Collaboration update is too large")
-    update_hash = _hash(update_json)
-    existing = (
-        session.execute(
-            text(
-                """
-                SELECT sequence, client_id, update_payload, update_hash
-                FROM workflow.task_collaboration_document_updates
-                WHERE document_id = :document_id
-                  AND actor_user_id = :actor_user_id
-                  AND client_update_id = :client_update_id
-                """
-            ),
+    return append_updates_in_session(
+        session,
+        actor,
+        task,
+        space,
+        member,
+        document,
+        client_id=client_id,
+        updates=[(client_update_id, operations)],
+    )
+
+
+def append_updates_in_session(
+    session: Session,
+    actor: ActorContext,
+    task: dict[str, object],
+    space: dict[str, object],
+    member: dict[str, object],
+    document: dict[str, object],
+    *,
+    client_id: str,
+    updates: list[tuple[str, list[dict[str, object]]]],
+    base_sequence: int | None = None,
+) -> dict[str, object]:
+    prepared: list[dict[str, object]] = []
+    total_bytes = 0
+    total_operations = 0
+    for client_update_id, operations in updates:
+        update_value = {"format": CRDT_FORMAT, "ops": operations}
+        update_json = _canonical(update_value)
+        update_bytes = len(update_json.encode("utf-8"))
+        if update_bytes > MAX_UPDATE_BYTES:
+            raise _error(413, "Collaboration update is too large")
+        total_bytes += update_bytes + len(client_update_id.encode("utf-8"))
+        total_operations += len(operations)
+        prepared.append(
             {
-                "document_id": document["id"],
-                "actor_user_id": actor.user_id,
                 "client_update_id": client_update_id,
-            },
+                "operations": operations,
+                "update_json": update_json,
+                "update_hash": _hash(update_json),
+                "update_bytes": update_bytes,
+            }
         )
-        .mappings()
-        .one_or_none()
-    )
-    if existing is not None:
-        if existing["client_id"] != client_id or existing["update_hash"] != update_hash:
-            raise _error(409, "client_update_id was already used for another update")
-        response = _document_view(session, task, member, document)
-        return response | {
-            "result": "idempotent",
-            "idempotent": True,
-            "accepted_sequence": int(existing["sequence"]),
-        }
-    _writable(task)
-    if member["role"] not in EDITABLE_ROLES:
-        raise _error(403, "Observer membership cannot edit the collaboration document")
-    if document["state"] != "active":
-        raise _error(409, "Collaboration document is read-only")
-    nodes, _ = _verified_state(session, document)
-    next_nodes, content, changed = _apply_operations(nodes, operations)
-    previous_sequence = int(document["latest_sequence"])
-    if not changed:
-        response = _document_view(
-            session, task, member, document, verified=(nodes, content)
-        )
-        return response | {
-            "result": "converged_noop",
-            "idempotent": True,
-            "accepted_sequence": previous_sequence,
-        }
-    if previous_sequence >= MAX_UPDATES_PER_DOCUMENT:
-        raise _error(409, "Collaboration document update limit reached; export and archive it")
-    _, snapshot_json, snapshot_hash = _snapshot(next_nodes)
-    sequence = previous_sequence + 1
-    session.execute(
+    if (
+        not prepared
+        or len(prepared) > MAX_BATCH_UPDATES
+        or total_operations > MAX_BATCH_OPERATIONS
+        or total_bytes > MAX_BATCH_BYTES
+    ):
+        raise _error(413, "Collaboration update batch is too large")
+
+    existing_rows = session.execute(
         text(
             """
-            INSERT INTO workflow.task_collaboration_document_updates(
-              tenant_id, document_id, sequence, actor_user_id, client_id,
-              client_update_id, update_payload, update_hash, byte_size
-            ) VALUES (
-              :tenant_id, :document_id, :sequence, :actor_user_id, :client_id,
-              :client_update_id, CAST(:update AS jsonb), :update_hash, :byte_size
-            )
+            SELECT sequence, client_id, client_update_id, update_hash
+            FROM workflow.task_collaboration_document_updates
+            WHERE document_id = :document_id
+              AND actor_user_id = :actor_user_id
+              AND client_update_id = ANY(CAST(:client_update_ids AS text[]))
             """
         ),
         {
-            "tenant_id": actor.tenant_id,
             "document_id": document["id"],
-            "sequence": sequence,
             "actor_user_id": actor.user_id,
-            "client_id": client_id,
-            "client_update_id": client_update_id,
-            "update": update_json,
-            "update_hash": update_hash,
-            "byte_size": update_bytes,
+            "client_update_ids": [
+                str(update["client_update_id"]) for update in prepared
+            ],
         },
-    )
-    session.execute(
-        text(
-            """
-            UPDATE workflow.task_collaboration_documents
-            SET latest_sequence = :sequence, snapshot = CAST(:snapshot AS jsonb),
-                snapshot_hash = :snapshot_hash, visible_length = :visible_length,
-                node_count = :node_count, updated_by_user_id = :user_id
-            WHERE id = :document_id
-            """
-        ),
-        {
-            "sequence": sequence,
-            "snapshot": snapshot_json,
-            "snapshot_hash": snapshot_hash,
-            "visible_length": len(content),
-            "node_count": len(next_nodes),
-            "user_id": actor.user_id,
-            "document_id": document["id"],
-        },
-    )
-    if sequence % SNAPSHOT_INTERVAL == 0:
-        session.execute(
-            text(
-                """
-                INSERT INTO workflow.task_collaboration_document_snapshots(
-                  tenant_id, document_id, sequence, snapshot, snapshot_hash,
-                  visible_length, node_count, created_by_user_id
-                ) VALUES (
-                  :tenant_id, :document_id, :sequence, CAST(:snapshot AS jsonb),
-                  :snapshot_hash, :visible_length, :node_count, :user_id
-                )
-                """
-            ),
+    ).mappings()
+    existing = {str(row["client_update_id"]): row for row in existing_rows}
+    for update in prepared:
+        row = existing.get(str(update["client_update_id"]))
+        if row is not None and (
+            row["client_id"] != client_id
+            or row["update_hash"] != update["update_hash"]
+        ):
+            raise _error(409, "client_update_id was already used for another update")
+
+    pending = [
+        update
+        for update in prepared
+        if str(update["client_update_id"]) not in existing
+    ]
+    if pending:
+        _writable(task)
+        if member["role"] not in EDITABLE_ROLES:
+            raise _error(403, "Observer membership cannot edit the collaboration document")
+        if document["state"] != "active":
+            raise _error(409, "Collaboration document is read-only")
+
+    next_nodes, content = _verified_state(session, document)
+    visible_length = len(content)
+    sequence = int(document["latest_sequence"])
+    inserted_rows: list[dict[str, object]] = []
+    checkpoints: list[dict[str, object]] = []
+    converged_noops = 0
+    for update in pending:
+        visible_length, changed = _apply_operations_in_place(
+            next_nodes,
+            update["operations"],  # type: ignore[arg-type]
+            visible_length,
+        )
+        if not changed:
+            converged_noops += 1
+            continue
+        if sequence >= MAX_UPDATES_PER_DOCUMENT:
+            raise _error(
+                409,
+                "Collaboration document update limit reached; export and archive it",
+            )
+        sequence += 1
+        inserted_rows.append(
             {
                 "tenant_id": actor.tenant_id,
                 "document_id": document["id"],
                 "sequence": sequence,
+                "actor_user_id": actor.user_id,
+                "client_id": client_id,
+                "client_update_id": update["client_update_id"],
+                "update": update["update_json"],
+                "update_hash": update["update_hash"],
+                "byte_size": update["update_bytes"],
+            }
+        )
+        if sequence % SNAPSHOT_INTERVAL == 0:
+            _, checkpoint_json, checkpoint_hash = _snapshot(next_nodes)
+            checkpoints.append(
+                {
+                    "tenant_id": actor.tenant_id,
+                    "document_id": document["id"],
+                    "sequence": sequence,
+                    "snapshot": checkpoint_json,
+                    "snapshot_hash": checkpoint_hash,
+                    "visible_length": visible_length,
+                    "node_count": len(next_nodes),
+                    "user_id": actor.user_id,
+                }
+            )
+
+    if inserted_rows:
+        session.execute(
+            text(
+                """
+                INSERT INTO workflow.task_collaboration_document_updates(
+                  tenant_id, document_id, sequence, actor_user_id, client_id,
+                  client_update_id, update_payload, update_hash, byte_size
+                ) VALUES (
+                  :tenant_id, :document_id, :sequence, :actor_user_id, :client_id,
+                  :client_update_id, CAST(:update AS jsonb), :update_hash, :byte_size
+                )
+                """
+            ),
+            inserted_rows,
+        )
+        if checkpoints:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO workflow.task_collaboration_document_snapshots(
+                      tenant_id, document_id, sequence, snapshot, snapshot_hash,
+                      visible_length, node_count, created_by_user_id
+                    ) VALUES (
+                      :tenant_id, :document_id, :sequence, CAST(:snapshot AS jsonb),
+                      :snapshot_hash, :visible_length, :node_count, :user_id
+                    )
+                    """
+                ),
+                checkpoints,
+            )
+        content = _render(next_nodes)
+        if len(content) != visible_length:
+            raise _error(500, "Collaboration document state is corrupt")
+        _, snapshot_json, snapshot_hash = _snapshot(next_nodes)
+        session.execute(
+            text(
+                """
+                UPDATE workflow.task_collaboration_documents
+                SET latest_sequence = :sequence, snapshot = CAST(:snapshot AS jsonb),
+                    snapshot_hash = :snapshot_hash, visible_length = :visible_length,
+                    node_count = :node_count, updated_by_user_id = :user_id
+                WHERE id = :document_id
+                """
+            ),
+            {
+                "sequence": sequence,
                 "snapshot": snapshot_json,
                 "snapshot_hash": snapshot_hash,
-                "visible_length": len(content),
+                "visible_length": visible_length,
                 "node_count": len(next_nodes),
                 "user_id": actor.user_id,
+                "document_id": document["id"],
             },
         )
-    _event(
-        session,
-        actor,
-        space,
-        "document_updated",
-        subject_user_id=actor.user_id,
-        payload={"document_id": str(document["id"]), "sequence": sequence},
+        _event(
+            session,
+            actor,
+            space,
+            "document_updated",
+            subject_user_id=actor.user_id,
+            payload={
+                "document_id": str(document["id"]),
+                "sequence": sequence,
+                "update_count": len(inserted_rows),
+            },
+        )
+        document = _document_row(session, UUID(str(space["id"])))
+        assert document is not None
+
+    verified = (next_nodes, content)
+    response = (
+        _document_delta_view(
+            session,
+            task,
+            member,
+            document,
+            after_sequence=base_sequence,
+            verified=verified,
+        )
+        if base_sequence is not None
+        else _document_view(session, task, member, document, verified=verified)
     )
-    document = _document_row(session, UUID(str(space["id"])))
-    assert document is not None
-    response = _document_view(
-        session, task, member, document, verified=(next_nodes, content)
-    )
+    idempotent = not inserted_rows
     return response | {
-        "result": "updated",
-        "idempotent": False,
+        "result": (
+            "updated"
+            if inserted_rows
+            else "converged_noop"
+            if converged_noops
+            else "idempotent"
+        ),
+        "idempotent": idempotent,
         "accepted_sequence": sequence,
+        "accepted_update_ids": [
+            str(update["client_update_id"]) for update in prepared
+        ],
     }
 
 
@@ -806,12 +1014,50 @@ def append_update(
 ) -> dict[str, object]:
     target_id = _uuid(task_id, "task id")
     client_id = _identifier(payload.get("client_id"), "client_id")
-    client_update_id = _identifier(payload.get("client_update_id"), "client_update_id")
-    operations = _normalise_operations(payload.get("ops"))
+    raw_updates = payload.get("updates")
+    updates: list[tuple[str, list[dict[str, object]]]] = []
+    if raw_updates is None:
+        updates.append(
+            (
+                _identifier(payload.get("client_update_id"), "client_update_id"),
+                _normalise_operations(payload.get("ops")),
+            )
+        )
+    else:
+        if (
+            not isinstance(raw_updates, list)
+            or not raw_updates
+            or len(raw_updates) > MAX_BATCH_UPDATES
+        ):
+            raise _error(
+                422,
+                f"updates must contain 1 to {MAX_BATCH_UPDATES} updates",
+            )
+        seen_update_ids: set[str] = set()
+        for raw_update in raw_updates:
+            if not isinstance(raw_update, dict):
+                raise _error(422, "Invalid collaboration update batch")
+            update_id = _identifier(
+                raw_update.get("client_update_id"), "client_update_id"
+            )
+            if update_id in seen_update_ids:
+                raise _error(422, "Duplicate client_update_id in update batch")
+            seen_update_ids.add(update_id)
+            updates.append((update_id, _normalise_operations(raw_update.get("ops"))))
+    base_sequence_value = payload.get("base_sequence")
+    base_sequence = None
+    if base_sequence_value is not None:
+        if (
+            isinstance(base_sequence_value, bool)
+            or not isinstance(base_sequence_value, int)
+            or base_sequence_value < 0
+        ):
+            raise _error(422, "Invalid collaboration document sequence")
+        base_sequence = base_sequence_value
     with tenant_session(actor.tenant_id) as session:
         task, space, member = _context(session, actor, target_id)
         document = _ensure_document(session, actor, space, lock=True)
-        return append_update_in_session(
+        return append_updates_in_session(
             session,
             actor,
             task,
@@ -819,8 +1065,8 @@ def append_update(
             member,
             document,
             client_id=client_id,
-            client_update_id=client_update_id,
-            operations=operations,
+            updates=updates,
+            base_sequence=base_sequence,
         )
 
 
