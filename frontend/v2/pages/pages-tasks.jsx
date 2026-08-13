@@ -2884,6 +2884,7 @@ const collabDocumentAssetAlt = asset => optionalText(
 const COLLAB_DOCUMENT_STYLE_RE = /^<!-- w2-style:v1 rev=(\d{1,16}) actor=([A-Za-z0-9._:-]{1,80}) font=(swiss|editorial|mono) size=(sm|md|lg) -->$/;
 const COLLAB_DOCUMENT_FORMULA_RE = /^\s*\\\[([\s\S]{0,4096})\\\]\s*$/;
 const COLLAB_DOCUMENT_DOLLAR_FORMULA_RE = /^\s*\$\$([\s\S]{0,4096})\$\$\s*$/;
+const COLLAB_DOCUMENT_BRACKET_FORMULA_RE = /^\s*\[([\s\S]{1,4096})\]\s*$/;
 const COLLAB_DOCUMENT_IMAGE_LINE_RE = /^!\[([^\]\n]{0,160})\]\(w2-image:(img_[A-Za-z0-9_-]{20,80})\)$/;
 const COLLAB_DOCUMENT_MERMAID_OPEN_RE = /^\s*`{3,}\s*mermaid\s*$/i;
 const COLLAB_DOCUMENT_CODE_CLOSE_RE = /^\s*`{3,}\s*$/;
@@ -3045,14 +3046,15 @@ const collabDocumentParseFormulaAt = (recordsValue, indexValue, contentValue = n
   if (!record) return null;
   const explicit = record.value.match(COLLAB_DOCUMENT_FORMULA_RE);
   const dollars = !explicit ? record.value.match(COLLAB_DOCUMENT_DOLLAR_FORMULA_RE) : null;
-  if (explicit || dollars) {
-    const marker = explicit ? "\\[" : "$$";
+  const bracketed = !explicit && !dollars ? record.value.match(COLLAB_DOCUMENT_BRACKET_FORMULA_RE) : null;
+  if (explicit || dollars || (bracketed && collabFormulaLooksMathematical(bracketed[1], true))) {
+    const marker = explicit ? "\\[" : dollars ? "$$" : "[";
     const open = record.value.indexOf(marker);
-    const close = record.value.lastIndexOf(explicit ? "\\]" : "$$");
+    const close = record.value.lastIndexOf(explicit ? "\\]" : dollars ? "$$" : "]");
     return {
       type: "formula", lineIndex: record.index, start: record.start, end: record.end,
       sourceStart: record.start + open + marker.length, sourceEnd: record.start + close,
-      value: (explicit || dollars)[1], nextLine: index + 1, inferred: false,
+      value: (explicit || dollars || bracketed)[1], nextLine: index + 1, inferred: Boolean(bracketed),
     };
   }
   const opener = record.value.trim();
@@ -3172,6 +3174,13 @@ const collabDocumentParseBlocks = contentValue => {
 };
 
 const collabFormulaForbidden = /\\(?:href|url|includegraphics|input|write|html|class|style|def|newcommand|require)\b/i;
+const collabFormulaNormalizeMultilineBreaks = value => String(value || "").replace(
+  /\\begin\{(aligned|alignedat|gathered|split|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|cases)\}[\s\S]*?\\end\{\1\}/g,
+  environment => environment.replace(
+    /(^|[^\\])\\(?=[ \t]*\r?\n[ \t]*(?:&|\\end\{))/gm,
+    (_match, prefix) => `${prefix}\\\\`,
+  ),
+);
 const collabFormulaNormalize = value => {
   let formula = String(value || "").slice(0, COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS).trim();
   const fullWidth = { "＝": "=", "＋": "+", "－": "-", "＊": "*", "／": "/", "（": "(", "）": ")" };
@@ -3179,6 +3188,7 @@ const collabFormulaNormalize = value => {
   formula = formula.replace(/\*\*/g, "^")
     .replace(/!=/g, "\\ne ").replace(/<=/g, "\\le ").replace(/>=/g, "\\ge ")
     .replace(/\bsqrt\s*\(([^()]{1,180})\)/gi, "\\sqrt{$1}");
+  formula = collabFormulaNormalizeMultilineBreaks(formula);
   const greek = { alpha: "alpha", beta: "beta", gamma: "gamma", delta: "delta", theta: "theta", lambda: "lambda", mu: "mu", pi: "pi", sigma: "sigma", phi: "phi", omega: "omega" };
   Object.keys(greek).forEach(name => {
     formula = formula.replace(new RegExp(`(^|[^\\\\A-Za-z])${name}(?=$|[^A-Za-z])`, "gi"), `$1\\${greek[name]}`);
@@ -3498,13 +3508,14 @@ const CollaborativeDocumentMermaidDiagram = ({ value }) => {
 const collabDocumentFormulaSegments = value => {
   const source = String(value || "");
   const segments = [];
-  const candidate = /\\\(([^\n]{1,512}?)\\\)|\$(?!\$)([^$\n]{1,512}?)\$|\(([^()\n]{1,512})\)/g;
+  const candidate = /\\\(([^\n]{1,512}?)\\\)|\\\[([^\n]{1,512}?)\\\]|\$(?!\$)([^$\n]{1,512}?)\$|\[([^\[\]\n]{1,512})\]|\(([^()\n]{1,512})\)/g;
   let cursor = 0;
   let match;
   while ((match = candidate.exec(source)) !== null) {
-    const explicit = match[1] != null || match[2] != null;
-    const body = match[1] != null ? match[1] : match[2] != null ? match[2] : match[3];
-    const formula = explicit ? body : `(${body})`;
+    const explicit = match[1] != null || match[2] != null || match[3] != null;
+    const bracketed = match[4] != null;
+    const body = match.slice(1).find(item => item != null);
+    const formula = explicit || bracketed ? body : `(${body})`;
     if ((!explicit && !collabFormulaLooksMathematical(body)) || !collabFormulaValid(formula)) continue;
     if (match.index > cursor) segments.push({ type: "text", value: source.slice(cursor, match.index) });
     segments.push({ type: "formula", value: formula, source: match[0] });

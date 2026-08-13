@@ -102,14 +102,14 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'vendor/katex.min.css?v=0.16.11' in index
-    assert 'pages/pages-tasks.css?v=20260814-task-docformat2' in index
-    assert 'pages/pages-tasks.jsx?v=20260814-task-docformat2' in index
+    assert 'pages/pages-tasks.css?v=20260814-task-docformat3' in index
+    assert 'pages/pages-tasks.jsx?v=20260814-task-docformat3' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260814-task-docformat2' in index
+    assert 'dist/app.bundle.js?v=20260814-task-docformat3' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -244,6 +244,16 @@ s_i,
 \neq
 \text{Verified Effect}
 }`,
+  String.raw`\boxed{
+\begin{aligned}
+&\text{What should be observed?}\\
+&\text{How much context is required?}\\
+&\text{Who should reason?}\\
+&\text{Which capability should be used?}\\
+&\text{Is more evidence required?}\\
+&\text{Should the system continue, recover, ask, or stop?}
+\end{aligned}
+}`,
 ];
 for (const formula of formulas) {
   const html = katex.renderToString(formula, {
@@ -265,7 +275,45 @@ for (const formula of formulas) {
     assert "const COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS = 4096;" in source
     assert "const COLLAB_DOCUMENT_MAX_FORMULAS = 500;" in source
     assert "const COLLAB_DOCUMENT_MAX_FORMULA_LINES = 80;" in source
+    assert "const COLLAB_DOCUMENT_BRACKET_FORMULA_RE =" in source
+    assert "const collabFormulaNormalizeMultilineBreaks = value =>" in source
+    assert "formula = collabFormulaNormalizeMultilineBreaks(formula);" in source
+    assert "explicit || dollars || (bracketed && collabFormulaLooksMathematical(bracketed[1], true))" in source
+    assert r"|\[([^\[\]\n]{1,512})\]" in source
     assert "if (opener === \"[\" && !collabFormulaLooksMathematical(value, true)) continue;" in source
+
+    helper_start = source.index("const collabFormulaNormalizeMultilineBreaks = value =>")
+    helper_end = source.index("\nconst collabFormulaNormalize =", helper_start)
+    helper = source[helper_start:helper_end].replace(
+        "collabFormulaNormalizeMultilineBreaks", "normalizeMultilineBreaks"
+    )
+    broken_formula = r"""\boxed{
+\begin{aligned}
+&\text{What should be observed?}\
+&\text{How much context is required?}\
+&\text{Who should reason?}\
+&\text{Which capability should be used?}\
+&\text{Is more evidence required?}\
+&\text{Should the system continue, recover, ask, or stop?}
+\end{aligned}
+}"""
+    normalize_script = helper + r"""
+const katex = require(process.argv[1]);
+const normalized = normalizeMultilineBreaks(process.argv[2]).replace(/\s+/g, " ").trim();
+if (!normalized.includes(String.raw`?}\\ &\text{How much context`)) process.exit(3);
+const html = katex.renderToString(normalized, {
+  displayMode: true, output: "htmlAndMathml", throwOnError: true,
+  strict: "error", trust: false, maxExpand: 1000, maxSize: 20,
+});
+if (!html.includes('class="katex"') || !html.includes("<math")) process.exit(4);
+"""
+    subprocess.run(
+        ["node", "-e", normalize_script, str(katex), broken_formula],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_task_documents_offer_collaborative_undo_and_relocatable_block_removal():
