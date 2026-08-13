@@ -2844,6 +2844,7 @@ const collabDocumentAssetAlt = asset => optionalText(
 ).replace(/[\]\\|\r\n]/g, ' ').trim().slice(0, 160);
 const COLLAB_DOCUMENT_STYLE_RE = /^<!-- w2-style:v1 rev=(\d{1,16}) actor=([A-Za-z0-9._:-]{1,80}) font=(swiss|editorial|mono) size=(sm|md|lg) -->$/;
 const COLLAB_DOCUMENT_FORMULA_RE = /^\s*\\\[([\s\S]{0,512})\\\]\s*$/;
+const COLLAB_DOCUMENT_DOLLAR_FORMULA_RE = /^\s*\$\$([\s\S]{0,512})\$\$\s*$/;
 const COLLAB_DOCUMENT_IMAGE_LINE_RE = /^!\[([^\]\n]{0,160})\]\(w2-image:(img_[A-Za-z0-9_-]{20,80})\)$/;
 const collabDocumentStyle = contentValue => {
   const lines = String(contentValue || "").split("\n");
@@ -2996,14 +2997,44 @@ const collabDocumentParseTableAt = (records, index) => {
     header, divider, rows, lines, columnCount: header.cells.length, nextLine: cursor,
   };
 };
-const collabDocumentParseFormulaLine = record => {
-  const match = record.value.match(COLLAB_DOCUMENT_FORMULA_RE);
-  if (!match) return null;
-  const open = record.value.indexOf("\\[");
-  const close = record.value.lastIndexOf("\\]");
+const collabDocumentParseFormulaAt = (recordsValue, indexValue, contentValue = null) => {
+  const records = arr(recordsValue);
+  const index = number(indexValue);
+  const record = records[index];
+  if (!record) return null;
+  const explicit = record.value.match(COLLAB_DOCUMENT_FORMULA_RE);
+  const dollars = !explicit ? record.value.match(COLLAB_DOCUMENT_DOLLAR_FORMULA_RE) : null;
+  if (explicit || dollars) {
+    const marker = explicit ? "\\[" : "$$";
+    const open = record.value.indexOf(marker);
+    const close = record.value.lastIndexOf(explicit ? "\\]" : "$$");
+    return {
+      type: "formula", lineIndex: record.index, start: record.start, end: record.end,
+      sourceStart: record.start + open + marker.length, sourceEnd: record.start + close,
+      value: (explicit || dollars)[1], nextLine: index + 1, inferred: false,
+    };
+  }
+  const opener = record.value.trim();
+  const closer = opener === "\\[" ? "\\]" : opener === "$$" ? "$$" : opener === "[" ? "]" : "";
+  if (!closer) return null;
+  const closeIndex = records.slice(index + 1, index + 14).findIndex(candidate => candidate.value.trim() === closer);
+  if (closeIndex < 0) return null;
+  const absoluteClose = index + 1 + closeIndex;
+  if (absoluteClose <= index + 1) return null;
+  const firstBody = records[index + 1];
+  const lastBody = records[absoluteClose - 1];
+  const content = contentValue == null
+    ? records.map(item => item.value).join("\n") : String(contentValue || "");
+  const value = content.slice(firstBody.start, lastBody.end);
+  if (
+    !value.trim() || value.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS
+    || (opener === "[" && !collabFormulaLooksMathematical(value, true))
+  ) return null;
   return {
-    type: "formula", lineIndex: record.index, start: record.start, end: record.end,
-    sourceStart: record.start + open + 2, sourceEnd: record.start + close, value: match[1],
+    type: "formula", lineIndex: record.index, start: record.start,
+    end: records[absoluteClose].end, sourceStart: firstBody.start,
+    sourceEnd: lastBody.end, value, nextLine: absoluteClose + 1,
+    inferred: opener === "[",
   };
 };
 const collabDocumentParseBlocks = contentValue => {
@@ -3020,11 +3051,11 @@ const collabDocumentParseBlocks = contentValue => {
       index = table.nextLine;
       continue;
     }
-    const formula = collabDocumentParseFormulaLine(records[index]);
+    const formula = collabDocumentParseFormulaAt(records, index, content);
     if (formula && formulaCount < COLLAB_DOCUMENT_MAX_FORMULAS) {
       blocks.push(formula);
       formulaCount += 1;
-      index += 1;
+      index = formula.nextLine;
       continue;
     }
     const image = records[index].value.match(COLLAB_DOCUMENT_IMAGE_LINE_RE);
@@ -3063,6 +3094,7 @@ const collabFormulaNormalize = value => {
   let formula = String(value || "").slice(0, COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS).trim();
   const fullWidth = { "＝": "=", "＋": "+", "－": "-", "＊": "*", "／": "/", "（": "(", "）": ")" };
   formula = formula.replace(/[＝＋－＊／（）]/g, character => fullWidth[character] || character);
+  formula = formula.replace(/\\\\(?=[A-Za-z])/g, "\\");
   formula = formula.replace(/\*\*/g, "^")
     .replace(/!=/g, "\\ne ").replace(/<=/g, "\\le ").replace(/>=/g, "\\ge ")
     .replace(/\bsqrt\s*\(([^()]{1,180})\)/gi, "\\sqrt{$1}");
@@ -3074,6 +3106,16 @@ const collabFormulaNormalize = value => {
   if (fraction) formula = `\\frac{${fraction[1]}}{${fraction[2]}}`;
   return formula.replace(/\s+/g, " ").trim();
 };
+/* Parentheses are common in prose and citations, so inferred formulas require
+   an unambiguous math signal before the safe parser is allowed to render them. */
+function collabFormulaLooksMathematical(value, allowEquation = false) {
+  const source = collabFormulaNormalize(value);
+  if (!source || source.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS || /[\u3400-\u9fff]/.test(source)) return false;
+  const singleIdentifier = /^[A-Za-z]$/.test(source);
+  const mathSignal = /\\[A-Za-z]+|[_^=<>]|[+\-*/]\s*[A-Za-z0-9]|[∑∏∫√∞≤≥≠≈→←↔∈∉]|\d\s*[,.:]\s*[A-Za-z]/.test(source);
+  if (!mathSignal && !(allowEquation && /[A-Za-z0-9]\s*[=+\-*/]/.test(source)) && !singleIdentifier) return false;
+  return collabFormulaAst(source).valid;
+}
 const collabFormulaAst = formulaValue => {
   const source = collabFormulaNormalize(formulaValue);
   if (!source || source.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS || collabFormulaForbidden.test(source)) {
@@ -3089,7 +3131,13 @@ const collabFormulaAst = formulaValue => {
   };
   const symbols = {
     alpha: "α", beta: "β", gamma: "γ", delta: "δ", theta: "θ", lambda: "λ", mu: "μ", pi: "π", sigma: "σ", phi: "φ", omega: "ω",
-    sum: "∑", prod: "∏", int: "∫", lim: "lim", le: "≤", ge: "≥", ne: "≠", times: "×", div: "÷", pm: "±", infty: "∞",
+    Alpha: "Α", Beta: "Β", Gamma: "Γ", Delta: "Δ", Theta: "Θ", Lambda: "Λ", Pi: "Π", Sigma: "Σ", Phi: "Φ", Omega: "Ω",
+    sum: "∑", prod: "∏", int: "∫", partial: "∂", nabla: "∇", lim: "lim",
+    le: "≤", ge: "≥", ne: "≠", approx: "≈", sim: "∼", equiv: "≡",
+    times: "×", div: "÷", cdot: "⋅", pm: "±", mp: "∓", infty: "∞",
+    in: "∈", notin: "∉", subset: "⊂", subseteq: "⊆", cup: "∪", cap: "∩",
+    to: "→", rightarrow: "→", leftarrow: "←", leftrightarrow: "↔",
+    forall: "∀", exists: "∃", neg: "¬", land: "∧", lor: "∨",
   };
   const parseSequence = (stop = "", depth = 0) => {
     if (depth > COLLAB_DOCUMENT_MAX_FORMULA_DEPTH) {
@@ -3119,6 +3167,12 @@ const collabFormulaAst = formulaValue => {
         cursor += 1;
         const match = source.slice(cursor).match(/^[A-Za-z]+/);
         if (!match) {
+          const spacing = source[cursor];
+          if (spacing && /[,;:! ]/.test(spacing)) {
+            cursor += 1;
+            children.push(make("space"));
+            continue;
+          }
           valid = false;
           break;
         }
@@ -3127,6 +3181,10 @@ const collabFormulaAst = formulaValue => {
         if (command === "frac") children.push(make("fraction", { numerator: argument(), denominator: argument() }));
         else if (command === "sqrt") children.push(make("sqrt", { body: argument() }));
         else if (command === "text") children.push(make("text", { value: collabFormulaPlainText(argument()) }));
+        else if (["mathcal", "mathbb", "mathrm", "mathbf", "mathit"].includes(command)) children.push(make("variant", { variant: command, body: argument() }));
+        else if (["left", "right"].includes(command)) continue;
+        else if (["quad", "qquad"].includes(command)) children.push(make("space", { width: command === "qquad" ? "2em" : "1em" }));
+        else if (["sin", "cos", "tan", "log", "ln", "exp", "max", "min"].includes(command)) children.push(make("text", { value: command }));
         else if (Object.prototype.hasOwnProperty.call(symbols, command)) children.push(make(command === "lim" ? "text" : "operator", { value: symbols[command] }));
         else {
           valid = false;
@@ -3195,7 +3253,11 @@ const collabFormulaElement = (node, path = "m") => {
   if (node.type === "identifier") return <mi key={path}>{node.value}</mi>;
   if (node.type === "operator") return <mo key={path}>{node.value}</mo>;
   if (node.type === "text") return <mtext key={path}>{node.value}</mtext>;
-  if (node.type === "space") return <mspace key={path} width=".35em"/>;
+  if (node.type === "space") return <mspace key={path} width={node.width || ".35em"}/>;
+  if (node.type === "variant") {
+    const variants = { mathcal: "script", mathbb: "double-struck", mathrm: "normal", mathbf: "bold", mathit: "italic" };
+    return <mstyle key={path} mathvariant={variants[node.variant] || "normal"}>{collabFormulaElement(node.body, `${path}-v`)}</mstyle>;
+  }
   if (node.type === "fraction") return <mfrac key={path}>{collabFormulaElement(node.numerator, `${path}-n`)}{collabFormulaElement(node.denominator, `${path}-d`)}</mfrac>;
   if (node.type === "sqrt") return <msqrt key={path}>{collabFormulaElement(node.body, `${path}-r`)}</msqrt>;
   if (node.type === "scripts") {
@@ -3205,11 +3267,30 @@ const collabFormulaElement = (node, path = "m") => {
   }
   return <mtext key={path}>{collabFormulaPlainText(node)}</mtext>;
 };
-const CollaborativeDocumentFormulaMath = ({ value }) => {
+const CollaborativeDocumentFormulaMath = ({ value, inline = false }) => {
   const parsed = collabFormulaAst(value);
   return parsed.valid
-    ? <math display="block" aria-label={parsed.source}>{collabFormulaElement(parsed.ast)}</math>
+    ? <math display={inline ? "inline" : "block"} aria-label={parsed.source}>{collabFormulaElement(parsed.ast)}</math>
     : <code>{String(value || "")}</code>;
+};
+
+const collabDocumentFormulaSegments = value => {
+  const source = String(value || "");
+  const segments = [];
+  const candidate = /\\\(([^\n]{1,512}?)\\\)|\$(?!\$)([^$\n]{1,512}?)\$|\(([^()\n]{1,512})\)/g;
+  let cursor = 0;
+  let match;
+  while ((match = candidate.exec(source)) !== null) {
+    const explicit = match[1] != null || match[2] != null;
+    const body = match[1] != null ? match[1] : match[2] != null ? match[2] : match[3];
+    const formula = explicit ? body : `(${body})`;
+    if ((!explicit && !collabFormulaLooksMathematical(body)) || !collabFormulaAst(formula).valid) continue;
+    if (match.index > cursor) segments.push({ type: "text", value: source.slice(cursor, match.index) });
+    segments.push({ type: "formula", value: formula, source: match[0] });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < source.length) segments.push({ type: "text", value: source.slice(cursor) });
+  return segments.length ? segments : [{ type: "text", value: source }];
 };
 
 const collabDocumentInlineCharacterEscaped = (source, index) => {
@@ -3366,6 +3447,19 @@ const collabDocumentInlineElements = (value, keyPrefix = "inline") => collabDocu
     : part.type === "italic" ? <em key={`${keyPrefix}-${index}`}>{part.value}</em>
     : <React.Fragment key={`${keyPrefix}-${index}`}>{part.value}</React.Fragment>
 ));
+const collabDocumentPreviewInlineElements = (value, keyPrefix = "inline") => collabDocumentInlineParts(value).flatMap((part, index) => {
+  const wrap = (node, keyValue) => part.type === "bold"
+    ? <strong key={keyValue}>{node}</strong>
+    : part.type === "bolditalic" ? <strong key={keyValue}><em>{node}</em></strong>
+    : part.type === "italic" ? <em key={keyValue}>{node}</em>
+    : <React.Fragment key={keyValue}>{node}</React.Fragment>;
+  return collabDocumentFormulaSegments(part.value).map((segment, segmentIndex) => {
+    const segmentKey = `${keyPrefix}-${index}-${segmentIndex}`;
+    return wrap(segment.type === "formula"
+      ? <span className="task-collab-document-inline-formula" role="math" aria-label={segment.value}><CollaborativeDocumentFormulaMath value={segment.value} inline/></span>
+      : segment.value, segmentKey);
+  });
+});
 const collabDocumentRenderEditable = (root, value) => {
   if (!root) return false;
   const fragment = document.createDocumentFragment();
@@ -3875,9 +3969,14 @@ const collabDocumentPlainClipboardCanonical = value => {
   };
   while (index < records.length) {
     const record = records[index];
-    const formula = record.value.match(COLLAB_DOCUMENT_FORMULA_RE);
+    const formula = collabDocumentParseFormulaAt(records, index, plain);
     const image = record.value.match(COLLAB_DOCUMENT_IMAGE_LINE_RE);
-    if (formula || image) {
+    if (formula) {
+      output.push(plain.slice(formula.start, formula.end));
+      index = formula.nextLine;
+      continue;
+    }
+    if (image) {
       output.push(record.value);
       index += 1;
       continue;
@@ -4083,7 +4182,7 @@ const collabDocumentRichInline = (lineValue, taskId, assetMap, keyPrefix, imageB
   let match;
   collabDocumentAssetToken.lastIndex = 0;
   while ((match = collabDocumentAssetToken.exec(line)) !== null) {
-    if (match.index > cursor) output.push(...collabDocumentInlineElements(line.slice(cursor, match.index), `${keyPrefix}-text-${cursor}`));
+    if (match.index > cursor) output.push(...collabDocumentPreviewInlineElements(line.slice(cursor, match.index), `${keyPrefix}-text-${cursor}`));
     const asset = assetMap.get(match[2]);
     const withinBudget = !imageBudget
       || imageBudget.count < COLLAB_DOCUMENT_MAX_PREVIEW_IMAGES;
@@ -4093,8 +4192,8 @@ const collabDocumentRichInline = (lineValue, taskId, assetMap, keyPrefix, imageB
       : <span className="task-collab-document-image-error" key={`${keyPrefix}-${match.index}-missing`}>{t(asset ? "圖片預覽已達上限" : "圖片無法載入")}</span>);
     cursor = match.index + match[0].length;
   }
-  if (cursor < line.length) output.push(...collabDocumentInlineElements(line.slice(cursor), `${keyPrefix}-text-${cursor}`));
-  return output.length ? output : collabDocumentInlineElements(line, `${keyPrefix}-text`);
+  if (cursor < line.length) output.push(...collabDocumentPreviewInlineElements(line.slice(cursor), `${keyPrefix}-text-${cursor}`));
+  return output.length ? output : collabDocumentPreviewInlineElements(line, `${keyPrefix}-text`);
 };
 
 const CollaborativeDocumentPreview = ({ taskId, content, assets }) => {

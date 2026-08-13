@@ -1505,6 +1505,21 @@
   line-height: 1.45;
 }
 .task-collab-document-formula-preview math { font-size: 1em; }
+.task-collab-document-inline-formula {
+  max-width: 100%;
+  margin: 0 .08em;
+  display: inline-flex;
+  align-items: baseline;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: -.08em;
+  color: inherit;
+  font-family: Georgia, "Times New Roman", "Noto Serif TC", "Noto Serif SC", serif;
+  font-size: 1.04em;
+  white-space: nowrap;
+}
+.task-collab-document-inline-formula math { font-size: 1em; }
+.task-collab-document-inline-formula code { font: 500 .88em/1.35 var(--f-mono); }
 .task-collab-document-formula-source {
   width: 100%;
   min-height: 46px;
