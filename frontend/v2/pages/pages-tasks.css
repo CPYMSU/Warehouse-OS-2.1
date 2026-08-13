@@ -1578,6 +1578,118 @@
 }
 .task-collab-document-formula-source:focus { box-shadow: inset 3px 0 0 var(--task-red); }
 
+.task-collab-document-mermaid {
+  position: relative;
+  max-width: 100%;
+  margin: 22px 0;
+  background: transparent;
+}
+.task-collab-document-mermaid.is-editing {
+  border-top: 1px solid var(--task-hair);
+  border-bottom: 1px solid var(--task-hair);
+}
+.task-collab-document-mermaid-output {
+  min-height: 120px;
+  padding: 8px 48px 8px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+.task-collab-document-mermaid-output svg {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(680px, 72vh);
+  display: block;
+}
+.task-collab-document-mermaid-edit,
+.task-collab-document-mermaid-remove {
+  position: absolute;
+  right: 7px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--task-hair);
+  border-radius: 0;
+  background: var(--paper);
+}
+.task-collab-document-mermaid-edit {
+  top: 7px;
+  color: var(--ink-3);
+  opacity: 0;
+  transition: opacity .15s ease, border-color .15s ease, color .15s ease;
+}
+.task-collab-document-mermaid:hover .task-collab-document-mermaid-edit,
+.task-collab-document-mermaid-edit:focus-visible,
+.task-collab-document-mermaid.is-editing .task-collab-document-mermaid-edit {
+  opacity: 1;
+}
+.task-collab-document-mermaid-edit:hover { border-color: var(--ink); color: var(--ink); }
+.task-collab-document-mermaid-remove { top: 48px; color: var(--task-red); }
+.task-collab-document-mermaid-remove:hover { border-color: var(--task-red); }
+.task-collab-document-mermaid-source-shell { display: block; }
+.task-collab-document-mermaid-source-shell:not(.is-active) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.task-collab-document-mermaid-source {
+  width: 100%;
+  min-height: 148px;
+  padding: 12px;
+  display: block;
+  resize: vertical;
+  border: 0;
+  border-top: 1px solid var(--task-hair);
+  border-radius: 0;
+  outline: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 500 13px/1.55 var(--f-mono);
+  caret-color: var(--task-red);
+  tab-size: 2;
+}
+.task-collab-document-mermaid-source:focus { box-shadow: inset 3px 0 0 var(--task-red); }
+.task-collab-document-mermaid-loading {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.task-collab-document-mermaid-loading i {
+  width: 5px;
+  height: 5px;
+  display: block;
+  background: var(--ink-3);
+  animation: task-mermaid-pulse .9s ease-in-out infinite alternate;
+}
+.task-collab-document-mermaid-loading i:nth-child(2) { animation-delay: .15s; }
+.task-collab-document-mermaid-loading i:nth-child(3) { animation-delay: .3s; }
+@keyframes task-mermaid-pulse { from { opacity: .2; } to { opacity: 1; } }
+.task-collab-document-mermaid-error {
+  padding: 12px 0;
+  color: var(--task-red);
+}
+.task-collab-document-mermaid-error strong { font: 750 10px/1.4 var(--f-mono); }
+.task-collab-document-mermaid-error pre {
+  max-height: 260px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-left: 2px solid var(--task-red);
+  background: var(--task-soft);
+  color: var(--ink);
+  font: 500 12px/1.55 var(--f-mono);
+  white-space: pre;
+}
+
 .task-collab-document-visual button:focus-visible,
 .task-collab-document-visual select:focus-visible,
 .task-collab-document-visual input:focus-visible,
@@ -1758,12 +1870,18 @@
   .task-collab-document-block-remove { min-height: 44px; font-size: 10px; }
   .task-collab-document-formula-preview { padding-right: 48px; padding-left: 48px; }
   .task-collab-document-formula-remove { top: 4px; right: 4px; width: 44px; height: 44px; }
+  .task-collab-document-mermaid-output { min-height: 100px; padding: 6px 52px 6px 0; }
+  .task-collab-document-mermaid-edit,
+  .task-collab-document-mermaid-remove { right: 4px; width: 44px; height: 44px; opacity: 1; }
+  .task-collab-document-mermaid-edit { top: 4px; }
+  .task-collab-document-mermaid-remove { top: 52px; }
   .task-collab-document-text-surface,
   .task-collab-document-source-block,
   .task-collab-document-cell:is(input, textarea),
   .task-collab-document-cell input,
   .task-collab-document-cell textarea,
-  .task-collab-document-formula-source { font-size: 16px; }
+  .task-collab-document-formula-source,
+  .task-collab-document-mermaid-source { font-size: 16px; }
   .task-collab-document-paragraph.is-heading-1 { font-size: 25px; }
   .task-collab-document-paragraph.is-heading-2 { font-size: 20px; }
   .task-collab-document-visual-image input { min-height: 46px; font-size: 16px; }

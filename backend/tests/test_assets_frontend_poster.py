@@ -100,14 +100,14 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260813-task-formula2' in index
-    assert 'pages/pages-tasks.jsx?v=20260813-task-formula2' in index
+    assert 'pages/pages-tasks.css?v=20260813-task-richdoc1' in index
+    assert 'pages/pages-tasks.jsx?v=20260813-task-richdoc1' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260813-task-formula2' in index
+    assert 'dist/app.bundle.js?v=20260813-task-richdoc1' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -144,6 +144,40 @@ def test_task_formulas_read_like_document_content_until_they_are_edited():
     assert ".task-collab-document-formula-source-shell:not(.is-active)" in css
     assert "justify-content: center" in css
     assert "border-left: 3px solid var(--task-red)" not in css
+
+
+def test_task_visual_editor_does_not_swallow_failed_paste_events():
+    source = TASKS.read_text(encoding="utf-8")
+
+    assert "const storedTextSelection = () =>" in source
+    assert "return observed.unresolved ? storedTextSelection() || observed : observed;" in source
+    assert 'return insertCanonical(canonical, { selectionOverride: insertionSelection() });' in source
+    assert "if (insertTransfer(event.clipboardData)) {" in source
+    assert 'structuralInputPending.current = "insertFromPaste";' in source
+    assert "event.preventDefault();\n    insertTransfer(event.clipboardData);" not in source
+
+
+def test_task_documents_render_arrow_formulas_and_sanitized_mermaid_blocks():
+    source = TASKS.read_text(encoding="utf-8")
+    css = TASKS_CSS.read_text(encoding="utf-8")
+    mermaid = ROOT / "frontend" / "v2" / "vendor" / "mermaid.min.js"
+    license_file = ROOT / "frontend" / "v2" / "vendor" / "mermaid-LICENSE.txt"
+
+    assert 'rightarrow: "→"' in source
+    assert 'if (command === "text")' in source
+    assert 'if (node.type === "space") return " ";' in source
+    assert "withoutTrailingWhitespace.endsWith(closer)" in source
+    assert "const collabDocumentParseMermaidAt" in source
+    assert 'securityLevel: "strict"' in source
+    assert 'htmlLabels: false,' in source
+    assert 'flowchart: { htmlLabels: false' in source
+    assert 'script.src = "vendor/mermaid.min.js?v=11.16.0";' in source
+    assert 'FORBID_TAGS: ["script", "foreignObject", "a"]' in source
+    assert 'dangerouslySetInnerHTML={{ __html: state.svg }}' in source
+    assert "CollaborativeDocumentMermaidEditor" in source
+    assert ".task-collab-document-mermaid-output svg" in css
+    assert mermaid.stat().st_size > 1_000_000
+    assert "MIT License" in license_file.read_text(encoding="utf-8")
 
 
 def test_login_poster_uses_bonfire_platform_identity_and_modular_motion():

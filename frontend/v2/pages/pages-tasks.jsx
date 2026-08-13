@@ -190,9 +190,15 @@ window.W2_LANG.addEN({
   "插入圖片": "Insert image",
   "插入表格": "Insert table",
   "插入公式": "Insert formula",
+  "插入圖表": "Insert diagram",
   "公式": "Formula",
   "公式內容": "Formula source",
   "編輯公式": "Edit formula",
+  "圖表內容": "Diagram source",
+  "編輯圖表": "Edit diagram",
+  "刪除圖表": "Remove diagram",
+  "Mermaid 圖表": "Mermaid diagram",
+  "Mermaid 圖表無法顯示": "Mermaid diagram cannot be displayed",
   "智能格式": "Smart format",
   "新增一列": "Add row",
   "刪除末列": "Remove last row",
@@ -2168,6 +2174,8 @@ const COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS = 512;
 const COLLAB_DOCUMENT_MAX_FORMULA_DEPTH = 12;
 const COLLAB_DOCUMENT_MAX_FORMULA_NODES = 256;
 const COLLAB_DOCUMENT_MAX_FORMULAS = 100;
+const COLLAB_DOCUMENT_MAX_MERMAID_CHARACTERS = 8000;
+const COLLAB_DOCUMENT_MAX_MERMAID_BLOCKS = 20;
 const COLLAB_DOCUMENT_UPDATE_CHUNK = 350;
 const COLLAB_DOCUMENT_MAX_UPDATE_BYTES = 80 * 1024;
 const COLLAB_DOCUMENT_MAX_PENDING_UPDATES = 160;
@@ -2847,6 +2855,8 @@ const COLLAB_DOCUMENT_STYLE_RE = /^<!-- w2-style:v1 rev=(\d{1,16}) actor=([A-Za-
 const COLLAB_DOCUMENT_FORMULA_RE = /^\s*\\\[([\s\S]{0,512})\\\]\s*$/;
 const COLLAB_DOCUMENT_DOLLAR_FORMULA_RE = /^\s*\$\$([\s\S]{0,512})\$\$\s*$/;
 const COLLAB_DOCUMENT_IMAGE_LINE_RE = /^!\[([^\]\n]{0,160})\]\(w2-image:(img_[A-Za-z0-9_-]{20,80})\)$/;
+const COLLAB_DOCUMENT_MERMAID_OPEN_RE = /^\s*`{3,}\s*mermaid\s*$/i;
+const COLLAB_DOCUMENT_CODE_CLOSE_RE = /^\s*`{3,}\s*$/;
 const collabDocumentStyle = contentValue => {
   const lines = String(contentValue || "").split("\n");
   const candidates = [];
@@ -3018,15 +3028,27 @@ const collabDocumentParseFormulaAt = (recordsValue, indexValue, contentValue = n
   const opener = record.value.trim();
   const closer = opener === "\\[" ? "\\]" : opener === "$$" ? "$$" : opener === "[" ? "]" : "";
   if (!closer) return null;
-  const closeIndex = records.slice(index + 1, index + 14).findIndex(candidate => candidate.value.trim() === closer);
-  if (closeIndex < 0) return null;
-  const absoluteClose = index + 1 + closeIndex;
-  if (absoluteClose <= index + 1) return null;
+  let absoluteClose = -1;
+  let closeColumn = -1;
+  for (let cursor = index + 1; cursor < Math.min(records.length, index + 14); cursor += 1) {
+    const candidate = records[cursor].value;
+    const withoutTrailingWhitespace = candidate.trimEnd();
+    if (!withoutTrailingWhitespace.endsWith(closer)) continue;
+    absoluteClose = cursor;
+    closeColumn = withoutTrailingWhitespace.length - closer.length;
+    break;
+  }
+  if (absoluteClose < 0) return null;
   const firstBody = records[index + 1];
-  const lastBody = records[absoluteClose - 1];
+  const closeRecord = records[absoluteClose];
+  const attachedBody = closeColumn > (closeRecord.value.match(/^\s*/) || [""])[0].length;
+  if (absoluteClose === index + 1 && !attachedBody) return null;
+  const sourceEnd = attachedBody
+    ? closeRecord.start + closeColumn
+    : records[absoluteClose - 1].end;
   const content = contentValue == null
     ? records.map(item => item.value).join("\n") : String(contentValue || "");
-  const value = content.slice(firstBody.start, lastBody.end);
+  const value = content.slice(firstBody.start, sourceEnd);
   if (
     !value.trim() || value.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS
     || (opener === "[" && !collabFormulaLooksMathematical(value, true))
@@ -3034,8 +3056,30 @@ const collabDocumentParseFormulaAt = (recordsValue, indexValue, contentValue = n
   return {
     type: "formula", lineIndex: record.index, start: record.start,
     end: records[absoluteClose].end, sourceStart: firstBody.start,
-    sourceEnd: lastBody.end, value, nextLine: absoluteClose + 1,
+    sourceEnd, value, nextLine: absoluteClose + 1,
     inferred: opener === "[",
+  };
+};
+const collabDocumentParseMermaidAt = (recordsValue, indexValue, contentValue = null) => {
+  const records = arr(recordsValue);
+  const index = number(indexValue);
+  const record = records[index];
+  if (!record || !COLLAB_DOCUMENT_MERMAID_OPEN_RE.test(record.value)) return null;
+  const relativeClose = records.slice(index + 1).findIndex(candidate => (
+    COLLAB_DOCUMENT_CODE_CLOSE_RE.test(candidate.value)
+  ));
+  if (relativeClose < 0) return null;
+  const closeIndex = index + 1 + relativeClose;
+  const sourceStart = closeIndex === index + 1 ? records[closeIndex].start : records[index + 1].start;
+  const sourceEnd = closeIndex === index + 1 ? sourceStart : records[closeIndex - 1].end;
+  const content = contentValue == null
+    ? records.map(item => item.value).join("\n") : String(contentValue || "");
+  const value = content.slice(sourceStart, sourceEnd);
+  if (value.length > COLLAB_DOCUMENT_MAX_MERMAID_CHARACTERS) return null;
+  return {
+    type: "mermaid", lineIndex: record.index, start: record.start,
+    end: records[closeIndex].end, sourceStart, sourceEnd, value,
+    nextLine: closeIndex + 1,
   };
 };
 const collabDocumentParseBlocks = contentValue => {
@@ -3044,8 +3088,16 @@ const collabDocumentParseBlocks = contentValue => {
   const style = collabDocumentStyle(content);
   const blocks = [];
   let formulaCount = 0;
+  let mermaidCount = 0;
   let index = style.lineCount;
   while (index < records.length && blocks.length < COLLAB_DOCUMENT_MAX_PREVIEW_BLOCKS) {
+    const mermaid = collabDocumentParseMermaidAt(records, index, content);
+    if (mermaid && mermaidCount < COLLAB_DOCUMENT_MAX_MERMAID_BLOCKS) {
+      blocks.push(mermaid);
+      mermaidCount += 1;
+      index = mermaid.nextLine;
+      continue;
+    }
     const table = collabDocumentParseTableAt(records, index);
     if (table) {
       blocks.push(table);
@@ -3111,7 +3163,8 @@ const collabFormulaNormalize = value => {
    an unambiguous math signal before the safe parser is allowed to render them. */
 function collabFormulaLooksMathematical(value, allowEquation = false) {
   const source = collabFormulaNormalize(value);
-  if (!source || source.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS || /[\u3400-\u9fff]/.test(source)) return false;
+  const structuralSource = source.replace(/\\text\{[^{}]{0,180}\}/g, "");
+  if (!source || source.length > COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS || /[\u3400-\u9fff]/.test(structuralSource)) return false;
   const singleIdentifier = /^[A-Za-z]$/.test(source);
   const mathSignal = /\\[A-Za-z]+|[_^=<>]|[+\-*/]\s*[A-Za-z0-9]|[∑∏∫√∞≤≥≠≈→←↔∈∉]|\d\s*[,.:]\s*[A-Za-z]/.test(source);
   if (!mathSignal && !(allowEquation && /[A-Za-z0-9]\s*[=+\-*/]/.test(source)) && !singleIdentifier) return false;
@@ -3137,7 +3190,10 @@ const collabFormulaAst = formulaValue => {
     le: "≤", ge: "≥", ne: "≠", approx: "≈", sim: "∼", equiv: "≡",
     times: "×", div: "÷", cdot: "⋅", pm: "±", mp: "∓", infty: "∞",
     in: "∈", notin: "∉", subset: "⊂", subseteq: "⊆", cup: "∪", cap: "∩",
-    to: "→", rightarrow: "→", leftarrow: "←", leftrightarrow: "↔",
+    to: "→", mapsto: "↦", rightarrow: "→", Rightarrow: "⇒", longrightarrow: "⟶", Longrightarrow: "⟹",
+    leftarrow: "←", Leftarrow: "⇐", longleftarrow: "⟵", Longleftarrow: "⟸",
+    leftrightarrow: "↔", Leftrightarrow: "⇔", longleftrightarrow: "⟷", Longleftrightarrow: "⟺",
+    uparrow: "↑", downarrow: "↓",
     forall: "∀", exists: "∃", neg: "¬", land: "∧", lor: "∨",
   };
   const parseSequence = (stop = "", depth = 0) => {
@@ -3243,6 +3299,7 @@ const collabFormulaAst = formulaValue => {
 };
 function collabFormulaPlainText(node) {
   if (!node) return "";
+  if (node.type === "space") return " ";
   if (node.value != null) return String(node.value);
   if (node.children) return node.children.map(collabFormulaPlainText).join("");
   return "";
@@ -3273,6 +3330,108 @@ const CollaborativeDocumentFormulaMath = ({ value, inline = false }) => {
   return parsed.valid
     ? <math display={inline ? "inline" : "block"} aria-label={parsed.source}>{collabFormulaElement(parsed.ast)}</math>
     : <code>{String(value || "")}</code>;
+};
+
+let collabDocumentMermaidLoader = null;
+let collabDocumentMermaidInitialized = false;
+let collabDocumentMermaidRenderId = 0;
+const collabDocumentMermaidValidation = value => {
+  const source = String(value || "").trim();
+  if (!source || source.length > COLLAB_DOCUMENT_MAX_MERMAID_CHARACTERS) return { valid: false, source };
+  if (
+    /^\s*---(?:\s|$)/.test(source)
+    || /^\s*%%\s*\{/m.test(source)
+    || /^\s*click\s+/im.test(source)
+  ) return { valid: false, source };
+  return { valid: true, source };
+};
+const collabDocumentInitializeMermaid = engine => {
+  if (!engine || collabDocumentMermaidInitialized) return engine;
+  engine.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    suppressErrorRendering: true,
+    maxTextSize: COLLAB_DOCUMENT_MAX_MERMAID_CHARACTERS,
+    htmlLabels: false,
+    theme: "base",
+    themeVariables: {
+      background: "#ffffff", primaryColor: "#ffffff", primaryTextColor: "#191919",
+      primaryBorderColor: "#191919", lineColor: "#55534f", secondaryColor: "#f2f2ef",
+      tertiaryColor: "#ffffff", clusterBkg: "#f2f2ef", clusterBorder: "#8a8982",
+      edgeLabelBackground: "#ffffff", fontFamily: "Inter, Arial, sans-serif",
+    },
+    flowchart: { htmlLabels: false, useMaxWidth: true },
+    sequence: { useMaxWidth: true },
+  });
+  collabDocumentMermaidInitialized = true;
+  return engine;
+};
+const collabDocumentLoadMermaid = () => {
+  if (window.mermaid) return Promise.resolve(collabDocumentInitializeMermaid(window.mermaid));
+  if (collabDocumentMermaidLoader) return collabDocumentMermaidLoader;
+  collabDocumentMermaidLoader = new Promise((resolve, reject) => {
+    const loaded = () => window.mermaid
+      ? resolve(collabDocumentInitializeMermaid(window.mermaid))
+      : reject(new Error("mermaid runtime unavailable"));
+    let script = document.querySelector('script[data-w2-mermaid-runtime="11.16.0"]');
+    if (script) {
+      script.addEventListener("load", loaded, { once: true });
+      script.addEventListener("error", reject, { once: true });
+      return;
+    }
+    script = document.createElement("script");
+    script.src = "vendor/mermaid.min.js?v=11.16.0";
+    script.async = true;
+    script.dataset.w2MermaidRuntime = "11.16.0";
+    script.addEventListener("load", loaded, { once: true });
+    script.addEventListener("error", reject, { once: true });
+    document.head.appendChild(script);
+  }).catch(error => {
+    collabDocumentMermaidLoader = null;
+    throw error;
+  });
+  return collabDocumentMermaidLoader;
+};
+const CollaborativeDocumentMermaidDiagram = ({ value }) => {
+  const validation = M(() => collabDocumentMermaidValidation(value), [value]);
+  const [state, setState] = S({ status: "loading", svg: "" });
+  E(() => {
+    let active = true;
+    let renderId = "";
+    if (!validation.valid) {
+      setState({ status: "error", svg: "" });
+      return undefined;
+    }
+    setState({ status: "loading", svg: "" });
+    const timer = window.setTimeout(() => {
+      collabDocumentLoadMermaid().then(async engine => {
+        renderId = `w2-collab-mermaid-${Date.now()}-${++collabDocumentMermaidRenderId}`;
+        const result = await engine.render(renderId, validation.source);
+        const purifier = window.DOMPurify;
+        const svg = purifier && purifier.sanitize(String(obj(result).svg || ""), {
+          USE_PROFILES: { svg: true, svgFilters: true },
+          FORBID_TAGS: ["script", "foreignObject", "a"],
+          FORBID_ATTR: ["href", "xlink:href", "target"],
+        });
+        if (!svg || !/<svg\b/i.test(svg)) throw new Error("invalid mermaid output");
+        if (active) setState({ status: "ready", svg });
+      }).catch(() => {
+        if (active) setState({ status: "error", svg: "" });
+      }).finally(() => {
+        const transient = renderId && document.getElementById(renderId);
+        if (transient && !transient.closest(".task-collab-document-mermaid-output")) transient.remove();
+      });
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      const transient = renderId && document.getElementById(renderId);
+      if (transient && !transient.closest(".task-collab-document-mermaid-output")) transient.remove();
+    };
+  }, [validation.valid, validation.source]);
+  if (state.status === "ready") return <div className="task-collab-document-mermaid-output" role="img" aria-label={t("Mermaid 圖表")} dangerouslySetInnerHTML={{ __html: state.svg }}/>;
+  if (state.status === "error") return <div className="task-collab-document-mermaid-error" role="img" aria-label={t("Mermaid 圖表無法顯示")}><strong>{t("Mermaid 圖表無法顯示")}</strong><pre>{String(value || "")}</pre></div>;
+  return <div className="task-collab-document-mermaid-loading" role="status" aria-label={t("同步中")}><i/><i/><i/></div>;
 };
 
 const collabDocumentFormulaSegments = value => {
@@ -3970,8 +4129,14 @@ const collabDocumentPlainClipboardCanonical = value => {
   };
   while (index < records.length) {
     const record = records[index];
+    const mermaid = collabDocumentParseMermaidAt(records, index, plain);
     const formula = collabDocumentParseFormulaAt(records, index, plain);
     const image = record.value.match(COLLAB_DOCUMENT_IMAGE_LINE_RE);
+    if (mermaid) {
+      output.push(plain.slice(mermaid.start, mermaid.end));
+      index = mermaid.nextLine;
+      continue;
+    }
     if (formula) {
       output.push(plain.slice(formula.start, formula.end));
       index = formula.nextLine;
@@ -4214,6 +4379,10 @@ const CollaborativeDocumentPreview = ({ taskId, content, assets }) => {
       rendered.push(<div className="task-collab-document-formula-preview" key={`formula-${block.lineIndex}`}><CollaborativeDocumentFormulaMath value={block.value}/></div>);
       return;
     }
+    if (block.type === "mermaid") {
+      rendered.push(<div className="task-collab-document-mermaid" key={`mermaid-${block.lineIndex}`}><CollaborativeDocumentMermaidDiagram value={block.value}/></div>);
+      return;
+    }
     if (block.type === "image") {
       const asset = assetMap.get(block.assetKey);
       rendered.push(<p key={`image-${block.lineIndex}`}>{asset && imageBudget.count < COLLAB_DOCUMENT_MAX_PREVIEW_IMAGES
@@ -4427,6 +4596,40 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
     if (collabDocumentTextSurfaceMatches(root, surfaceBlocks, showPlaceholder)) return;
     collabDocumentRenderTextSurface(root, surfaceBlocks, showPlaceholder);
   });
+  const storedTextSelection = () => {
+    const selected = selectionRef.current;
+    if (!selected || selected.type !== "text") return null;
+    const startSource = number(selected.start);
+    const endSource = Math.max(startSource, number(selected.end));
+    const startBlock = (selected.lineIndex == null ? null : blockAtLine(selected.lineIndex))
+      || surfaceBlocks.find(block => startSource >= block.start && startSource <= block.end);
+    const endBlock = (selected.endLineIndex == null ? null : blockAtLine(selected.endLineIndex))
+      || [...surfaceBlocks].reverse().find(block => endSource >= block.start && endSource <= block.end)
+      || startBlock;
+    if (!startBlock || !endBlock) return null;
+    const boundedStart = clamp(startSource, startBlock.sourceStart, startBlock.sourceEnd);
+    const boundedEnd = clamp(endSource, endBlock.sourceStart, endBlock.sourceEnd);
+    return {
+      start: collabDocumentInlineVisibleOffset(
+        startBlock.value, boundedStart - startBlock.sourceStart
+      ),
+      end: collabDocumentInlineVisibleOffset(
+        endBlock.value, boundedEnd - endBlock.sourceStart
+      ),
+      sourceStart: boundedStart,
+      sourceEnd: boundedEnd,
+      startLineIndex: startBlock.lineIndex,
+      endLineIndex: endBlock.lineIndex,
+      startAffinity: selected.startAffinity || "backward",
+      endAffinity: selected.endAffinity || "backward",
+      direction: selected.direction || "none",
+      crossBlock: startBlock.lineIndex !== endBlock.lineIndex,
+    };
+  };
+  const insertionSelection = () => {
+    const observed = rememberSelection();
+    return observed.unresolved ? storedTextSelection() || observed : observed;
+  };
   const insertCanonical = (insertedValue, { allowEmpty = false, forceInline = false, selectionOverride = null } = {}) => {
     const inserted = String(insertedValue || "");
     if (!inserted && !allowEmpty) return false;
@@ -4434,7 +4637,7 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
     if (selection.unresolved) return false;
     const insertedProjection = collabDocumentParseBlocks(inserted);
     const blockContent = !forceInline && (inserted.includes("\n") || insertedProjection.blocks.some(item => (
-      ["table", "formula", "image"].includes(item.type)
+      ["table", "formula", "mermaid", "image"].includes(item.type)
       || (item.type === "text" && (item.level || item.listMarker))
     )));
     if (selection.crossBlock) {
@@ -4523,7 +4726,11 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
     }
     return committed;
   };
-  const insertTransfer = transfer => insertCanonical(collabDocumentClipboardCanonical(transfer));
+  const insertTransfer = transfer => {
+    const canonical = collabDocumentClipboardCanonical(transfer);
+    if (!canonical) return false;
+    return insertCanonical(canonical, { selectionOverride: insertionSelection() });
+  };
   const mergeTextBoundary = (event, inputType, selectionValue = null) => {
     const selection = selectionValue || rememberSelection();
     if (selection.unresolved || selection.crossBlock) return false;
@@ -4638,9 +4845,12 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
     return () => root.removeEventListener("beforeinput", beforeInput);
   });
   const paste = event => {
-    if (readOnly) return;
-    event.preventDefault();
-    insertTransfer(event.clipboardData);
+    if (readOnly || !event.clipboardData) return;
+    if (insertTransfer(event.clipboardData)) {
+      event.preventDefault();
+      return;
+    }
+    structuralInputPending.current = "insertFromPaste";
   };
   const drop = event => {
     if (readOnly) return;
@@ -5067,6 +5277,46 @@ const CollaborativeDocumentFormulaEditor = ({ block, readOnly, selectionRef, onR
         {editing && <button type="button" className="task-collab-document-formula-remove" onClick={() => onRemove(block)} aria-label={t("刪除公式")} title={t("刪除公式")}><I name="trash" size={14}/></button>}
       </>}
   </div>;
+};
+
+const CollaborativeDocumentMermaidEditor = ({ block, readOnly, selectionRef, onReplace, onRemove, onComposeStart, onComposeEnd, onBlur }) => {
+  const [editing, setEditing] = S(false);
+  const ignorePostCompositionChange = R(false);
+  const sourceRef = R(null);
+  const update = (value, expectedValue = block.value) => onReplace(
+    block.sourceStart, block.sourceStart + String(expectedValue).length,
+    String(value || "").slice(0, COLLAB_DOCUMENT_MAX_MERMAID_CHARACTERS), expectedValue
+  );
+  const remember = (event, active) => {
+    if (selectionRef.current && (selectionRef.current.pending === true || selectionRef.current.restoring === true)) return;
+    const input = event.currentTarget;
+    const controlStart = clamp(number(input.selectionStart), 0, block.value.length);
+    const controlEnd = clamp(number(input.selectionEnd), controlStart, block.value.length);
+    const sourceStart = block.sourceStart + controlStart;
+    const sourceEnd = block.sourceStart + controlEnd;
+    const current = selectionRef.current;
+    const preserveAnchors = current && current.start === sourceStart && current.end === sourceEnd;
+    selectionRef.current = {
+      type: "mermaid", lineIndex: block.lineIndex, start: sourceStart, end: sourceEnd,
+      startAffinity: sourceStart === sourceEnd ? "backward" : "forward",
+      endAffinity: "backward",
+      startAnchor: preserveAnchors ? current.startAnchor : null,
+      endAnchor: preserveAnchors ? current.endAnchor : null,
+      controlStart, controlEnd, active, pending: false,
+    };
+  };
+  LE(() => {
+    if (!editing || !sourceRef.current || document.activeElement === sourceRef.current) return;
+    sourceRef.current.focus({ preventScroll: true });
+  }, [editing]);
+  return <section className={`task-collab-document-mermaid${editing ? " is-editing" : ""}`} data-collab-block-line-index={block.lineIndex} onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setEditing(false);
+  }}>
+    <CollaborativeDocumentMermaidDiagram value={block.value}/>
+    {!readOnly && <button type="button" className="task-collab-document-mermaid-edit" onClick={() => setEditing(true)} aria-label={t("編輯圖表")} title={t("編輯圖表")} aria-expanded={editing}><I name="chart" size={15}/></button>}
+    {!readOnly && <label className={`task-collab-document-mermaid-source-shell${editing ? " is-active" : ""}`}><span className="sr-only">{t("圖表內容")}</span><textarea ref={sourceRef} className="task-collab-document-mermaid-source" rows="7" value={block.value} maxLength={COLLAB_DOCUMENT_MAX_MERMAID_CHARACTERS} spellCheck="false" onChange={event => { if (ignorePostCompositionChange.current) { ignorePostCompositionChange.current = false; return; } if (!(event.nativeEvent && event.nativeEvent.isComposing)) update(event.currentTarget.value); }} onCompositionStart={() => { ignorePostCompositionChange.current = false; onComposeStart(); }} onCompositionEnd={event => { const value = event.currentTarget.value; ignorePostCompositionChange.current = true; window.setTimeout(() => { ignorePostCompositionChange.current = false; }, 0); onComposeEnd(() => update(value)); }} onFocus={event => { setEditing(true); remember(event, true); }} onSelect={event => remember(event, true)} onBlur={event => { remember(event, false); onBlur(); }}/></label>}
+    {editing && <button type="button" className="task-collab-document-mermaid-remove" onClick={() => onRemove(block)} aria-label={t("刪除圖表")} title={t("刪除圖表")}><I name="trash" size={14}/></button>}
+  </section>;
 };
 
 const CollaborativeDocumentImageEditor = ({ taskId, block, asset, withinBudget, readOnly, selectionRef, onReplace, onRemove, onComposeStart, onComposeEnd, onBlur }) => {
@@ -5516,6 +5766,9 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
           } else if (block.type === "formula" && selected.type === "formula") {
             start = clamp(number(selected.start) - block.sourceStart, 0, length);
             end = clamp(number(selected.end) - block.sourceStart, start, length);
+          } else if (block.type === "mermaid" && selected.type === "mermaid") {
+            start = clamp(number(selected.start) - block.sourceStart, 0, length);
+            end = clamp(number(selected.end) - block.sourceStart, start, length);
           } else if (block.type === "image" && selected.type === "image") {
             start = clamp(number(selected.start) - block.altStart, 0, length);
             end = clamp(number(selected.end) - block.altStart, start, length);
@@ -5525,12 +5778,12 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
           }
           try { target.setSelectionRange(start, end); } catch (ignored) {}
           const sourceStart = block.type === "table" && tableCell ? tableCell.sourceStart + collabDocumentTableRawOffset(tableCell.raw, start)
-            : block.type === "formula" ? block.sourceStart + start
+            : block.type === "formula" || block.type === "mermaid" ? block.sourceStart + start
             : block.type === "image" ? block.altStart + start
             : block.type === "source" ? block.start + start
             : selected.start;
           const sourceEnd = block.type === "table" && tableCell ? tableCell.sourceStart + collabDocumentTableRawOffset(tableCell.raw, end)
-            : block.type === "formula" ? block.sourceStart + end
+            : block.type === "formula" || block.type === "mermaid" ? block.sourceStart + end
             : block.type === "image" ? block.altStart + end
             : block.type === "source" ? block.start + end
             : selected.end;
@@ -5623,7 +5876,7 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
     };
   };
   const removeStructuredBlock = blockValue => {
-    if (readOnly || !["table", "formula", "image"].includes(blockValue && blockValue.type)) return false;
+    if (readOnly || !["table", "formula", "mermaid", "image"].includes(blockValue && blockValue.type)) return false;
     const removal = collabDocumentStructuredRemoval(content, blockValue);
     if (removal.end <= removal.start) return false;
     const committed = onReplace(removal.start, removal.end, removal.replacement, removal.expected);
@@ -5671,6 +5924,7 @@ const CollaborativeDocumentVisualEditor = ({ taskId, content, assets, readOnly, 
         if (block.type === "text-surface") return <CollaborativeDocumentTextSurface key={`text-surface-${index}`} blocks={block.blocks} documentContent={content} readOnly={readOnly} showPlaceholder={documentIsEmpty && index === 0} selectionRef={selectionRef} resolveSelection={resolveTextSelection} onCopySelection={copyTextSelection} onSelectionActivity={onSelectionChange} onReplace={onReplace} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
         if (block.type === "table") return <CollaborativeDocumentTableEditor key={`table-${block.lineIndex}`} block={block} readOnly={readOnly} selectionRef={selectionRef} onReplace={onReplace} onSplices={onSplices} onRemove={removeStructuredBlock} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
         if (block.type === "formula") return <CollaborativeDocumentFormulaEditor key={`formula-${block.lineIndex}`} block={block} readOnly={readOnly} selectionRef={selectionRef} onReplace={onReplace} onRemove={removeStructuredBlock} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
+        if (block.type === "mermaid") return <CollaborativeDocumentMermaidEditor key={`mermaid-${block.lineIndex}`} block={block} readOnly={readOnly} selectionRef={selectionRef} onReplace={onReplace} onRemove={removeStructuredBlock} onComposeStart={onComposeStart} onComposeEnd={onComposeEnd} onBlur={onBlur}/>;
         if (block.type === "image") {
           const asset = assetMap.get(block.assetKey);
           const withinBudget = imageBudget.count < COLLAB_DOCUMENT_MAX_PREVIEW_IMAGES;
@@ -7057,6 +7311,9 @@ const CollaborativeDocument = ({
     "| 欄位 1 | 欄位 2 |\n| --- | --- |\n| 內容 | 內容 |"
   );
   const insertFormula = () => insertDocumentSnippet("\\[x^2 + y^2 = z^2\\]");
+  const insertMermaid = () => insertDocumentSnippet([
+    "```mermaid", "flowchart LR", "  A[開始] --> B[完成]", "```",
+  ].join("\n"));
   const uploadDocumentImage = async event => {
     const input = event.currentTarget;
     const file = input.files && input.files[0];
@@ -7179,6 +7436,7 @@ const CollaborativeDocument = ({
       <button type="button" disabled={capabilities.can_edit !== true || loading || offline || uploadingImage} onClick={() => imageInputRef.current && imageInputRef.current.click()}><I name="image" size={14}/><span>{uploadingImage ? t("圖片上傳中") + "…" : t("插入圖片")}</span></button>
       <button type="button" disabled={capabilities.can_edit !== true || loading} onClick={insertTable}><I name="table" size={14}/><span>{t("插入表格")}</span></button>
       <button type="button" disabled={capabilities.can_edit !== true || loading} onClick={insertFormula}><span aria-hidden="true">∑</span><span>{t("插入公式")}</span></button>
+      <button type="button" disabled={capabilities.can_edit !== true || loading} onClick={insertMermaid}><I name="chart" size={14}/><span>{t("插入圖表")}</span></button>
       <button type="button" disabled={visualToolsDisabled} aria-pressed={toolPanel === "format"} onClick={() => setToolPanel(current => current === "format" ? "" : "format")}><span aria-hidden="true">B</span><span>{t("格式")}</span></button>
       <button type="button" disabled={visualToolsDisabled} aria-pressed={toolPanel === "type"} onClick={() => setToolPanel(current => current === "type" ? "" : "type")}><span aria-hidden="true">Aa</span><span>{t("字體")}</span></button>
       <button type="button" disabled={loading || mode !== "edit"} aria-pressed={editorView === "source"} onClick={() => { setEditorView(current => current === "source" ? "visual" : "source"); setToolPanel(""); }}><span aria-hidden="true">&lt;/&gt;</span><span>{editorView === "source" ? t("回到視覺共編") : t("原文")}</span></button>
