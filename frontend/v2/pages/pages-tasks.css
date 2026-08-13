@@ -1486,25 +1486,66 @@
 }
 
 .task-collab-document-formula {
-  margin: 16px 0;
-  border: 1px solid var(--task-rule);
-  border-left: 3px solid var(--task-red);
-  background: var(--paper);
+  position: relative;
+  margin: 18px 0;
+  background: transparent;
+}
+.task-collab-document-formula.is-editing {
+  border-top: 1px solid var(--task-hair);
+  border-bottom: 1px solid var(--task-hair);
 }
 .task-collab-document-formula-preview {
-  min-height: 72px;
-  padding: 14px 16px;
+  width: 100%;
+  min-height: 52px;
+  padding: 7px 36px;
   display: flex;
   align-items: center;
+  justify-content: center;
   overflow-x: auto;
-  border-bottom: 1px solid var(--task-hair);
-  background: var(--task-soft);
   color: var(--ink);
   font-family: Georgia, "Times New Roman", "Noto Serif TC", "Noto Serif SC", serif;
-  font-size: 21px;
-  line-height: 1.45;
+  font-size: 22px;
+  line-height: 1.6;
+  text-align: center;
 }
 .task-collab-document-formula-preview math { font-size: 1em; }
+.task-collab-document-formula-preview code { font: 500 14px/1.5 var(--f-mono); }
+.task-collab-document-formula-trigger {
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  cursor: text;
+}
+.task-collab-document-formula-trigger:hover { background: color-mix(in srgb, var(--task-soft) 55%, transparent); }
+.task-collab-document-formula-trigger:focus-visible {
+  outline: 2px solid var(--task-red);
+  outline-offset: 2px;
+}
+.task-collab-document-formula-source-shell { display: block; }
+.task-collab-document-formula-source-shell:not(.is-active) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.task-collab-document-formula-remove {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--task-red);
+}
+.task-collab-document-formula-remove:hover { border-color: var(--task-red); }
 .task-collab-document-inline-formula {
   max-width: 100%;
   margin: 0 .08em;
@@ -1527,6 +1568,7 @@
   display: block;
   resize: vertical;
   border: 0;
+  border-top: 1px solid var(--task-hair);
   border-radius: 0;
   outline: 0;
   background: var(--paper);
@@ -1535,7 +1577,6 @@
   caret-color: var(--task-red);
 }
 .task-collab-document-formula-source:focus { box-shadow: inset 3px 0 0 var(--task-red); }
-.task-collab-document-formula-source:read-only { background: var(--task-soft); color: var(--ink-3); cursor: default; }
 
 .task-collab-document-visual button:focus-visible,
 .task-collab-document-visual select:focus-visible,
@@ -1715,6 +1756,8 @@
   .task-collab-document-table-actions { max-width: 100%; overflow-x: auto; }
   .task-collab-document-table-actions button { min-height: 44px; flex: 0 0 auto; }
   .task-collab-document-block-remove { min-height: 44px; font-size: 10px; }
+  .task-collab-document-formula-preview { padding-right: 48px; padding-left: 48px; }
+  .task-collab-document-formula-remove { top: 4px; right: 4px; width: 44px; height: 44px; }
   .task-collab-document-text-surface,
   .task-collab-document-source-block,
   .task-collab-document-cell:is(input, textarea),

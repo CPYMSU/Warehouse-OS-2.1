@@ -192,6 +192,7 @@ window.W2_LANG.addEN({
   "插入公式": "Insert formula",
   "公式": "Formula",
   "公式內容": "Formula source",
+  "編輯公式": "Edit formula",
   "智能格式": "Smart format",
   "新增一列": "Add row",
   "刪除末列": "Remove last row",
@@ -5011,7 +5012,9 @@ const CollaborativeDocumentTableEditor = ({ block, readOnly, selectionRef, onRep
 };
 
 const CollaborativeDocumentFormulaEditor = ({ block, readOnly, selectionRef, onReplace, onRemove, onComposeStart, onComposeEnd, onBlur }) => {
+  const [editing, setEditing] = S(false);
   const ignorePostCompositionChange = R(false);
+  const sourceRef = R(null);
   const update = (value, expectedValue = block.value) => onReplace(block.sourceStart, block.sourceStart + String(expectedValue).length, String(value || "").slice(0, COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS), expectedValue);
   const remember = (event, active) => {
     if (selectionRef.current && (selectionRef.current.pending === true || selectionRef.current.restoring === true)) return;
@@ -5048,10 +5051,21 @@ const CollaborativeDocumentFormulaEditor = ({ block, readOnly, selectionRef, onR
     };
     onBlur();
   };
-  return <div className="task-collab-document-formula" data-collab-block-line-index={block.lineIndex}>
-    {!readOnly && <button type="button" className="task-collab-document-block-remove" onClick={() => onRemove(block)}>{t("刪除公式")}</button>}
-    <div className="task-collab-document-formula-preview"><CollaborativeDocumentFormulaMath value={block.value}/></div>
-    <label><span className="sr-only">{t("公式內容")}</span><textarea className="task-collab-document-formula-source" rows="2" value={block.value} readOnly={readOnly} maxLength={COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS} spellCheck="false" onChange={event => { if (ignorePostCompositionChange.current) { ignorePostCompositionChange.current = false; return; } if (!(event.nativeEvent && event.nativeEvent.isComposing)) update(event.currentTarget.value); }} onCompositionStart={() => { ignorePostCompositionChange.current = false; onComposeStart(); }} onCompositionEnd={event => { const value = event.currentTarget.value; ignorePostCompositionChange.current = true; window.setTimeout(() => { ignorePostCompositionChange.current = false; }, 0); onComposeEnd(() => update(value)); }} onFocus={event => remember(event, true)} onSelect={event => remember(event, true)} onBlur={normalize}/></label>
+  LE(() => {
+    if (!editing || !sourceRef.current || document.activeElement === sourceRef.current) return;
+    sourceRef.current.focus({ preventScroll: true });
+  }, [editing]);
+  const preview = <CollaborativeDocumentFormulaMath value={block.value}/>;
+  return <div className={`task-collab-document-formula${editing ? " is-editing" : ""}`} data-collab-block-line-index={block.lineIndex} onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setEditing(false);
+  }}>
+    {readOnly
+      ? <div className="task-collab-document-formula-preview">{preview}</div>
+      : <>
+        <button type="button" className="task-collab-document-formula-trigger task-collab-document-formula-preview" aria-label={t("編輯公式")} title={t("編輯公式")} aria-expanded={editing} onClick={() => setEditing(true)}>{preview}</button>
+        <label className={`task-collab-document-formula-source-shell${editing ? " is-active" : ""}`}><span className="sr-only">{t("公式內容")}</span><textarea ref={sourceRef} className="task-collab-document-formula-source" rows="2" value={block.value} maxLength={COLLAB_DOCUMENT_MAX_FORMULA_CHARACTERS} spellCheck="false" onChange={event => { if (ignorePostCompositionChange.current) { ignorePostCompositionChange.current = false; return; } if (!(event.nativeEvent && event.nativeEvent.isComposing)) update(event.currentTarget.value); }} onCompositionStart={() => { ignorePostCompositionChange.current = false; onComposeStart(); }} onCompositionEnd={event => { const value = event.currentTarget.value; ignorePostCompositionChange.current = true; window.setTimeout(() => { ignorePostCompositionChange.current = false; }, 0); onComposeEnd(() => update(value)); }} onFocus={event => { setEditing(true); remember(event, true); }} onSelect={event => remember(event, true)} onBlur={normalize}/></label>
+        {editing && <button type="button" className="task-collab-document-formula-remove" onClick={() => onRemove(block)} aria-label={t("刪除公式")} title={t("刪除公式")}><I name="trash" size={14}/></button>}
+      </>}
   </div>;
 };
 
