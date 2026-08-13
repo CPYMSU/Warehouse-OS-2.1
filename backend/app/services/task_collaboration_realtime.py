@@ -24,9 +24,9 @@ _MAX_REPLAY = 1_000
 _BATCH_SIZE = 100
 _POSITION_FORMAT = "document-cursor-v1"
 _POSITION_MODES = frozenset({"visual", "source", "preview"})
-_POSITION_MAX_OFFSET = 32_000
+_POSITION_MAX_OFFSET = 100_000
 _POSITION_MAX_SCROLL = 2_000_000
-_POSITION_MAX_LINE = 50_000
+_POSITION_MAX_LINE = 100_000
 _POSITION_KEYS = frozenset(
     {
         "format",

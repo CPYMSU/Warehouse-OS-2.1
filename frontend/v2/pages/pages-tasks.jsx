@@ -278,7 +278,8 @@ window.W2_LANG.addEN({
   "此任務已結束，工作稿已鎖定。重新進行任務後可繼續編輯。": "This task is closed and its draft is locked. Reopen the task to continue editing.",
   "觀察者可閱讀工作稿，但不能修改。": "Observers can read the draft but cannot edit it.",
   "本機儲存空間不足，請先保持此頁開啟並重新連線。": "Local storage is full. Keep this page open and reconnect before leaving.",
-  "工作稿最多 32000 個字": "The working draft is limited to 32,000 characters",
+  "工作稿最多 100000 個字": "The working draft is limited to 100,000 characters",
+  "工作稿編輯記錄已達上限": "The working draft edit history has reached its limit",
   "工作稿包含無效字元": "The working draft contains an invalid character",
   "偵測到無法讀取的本機工作稿；原始資料已保留且不會自動載入。": "An unreadable local draft was detected. Its original data was preserved and will not be loaded automatically.",
   "即時連線": "Live",
@@ -744,7 +745,7 @@ const normalizeCollabPosition = value => {
     mode,
     cursor_start: start,
     cursor_end: end,
-    line_index: clamp(number(position.line_index), 0, 50000),
+    line_index: clamp(number(position.line_index), 0, 100000),
     scroll_top: clamp(Math.round(number(position.scroll_top)), 0, 2000000),
     document_sequence: clamp(number(position.document_sequence), 0, Number.MAX_SAFE_INTEGER),
     active: position.active === true,
@@ -2165,8 +2166,8 @@ const CollaborationChat = ({
    reloads; realtime events only prompt a canonical GET and never carry text. */
 const COLLAB_DOCUMENT_FORMAT = "rga-v1";
 const COLLAB_DOCUMENT_ROOT = "^";
-const COLLAB_DOCUMENT_MAX_CHARACTERS = 32000;
-const COLLAB_DOCUMENT_MAX_NODES = 50000;
+const COLLAB_DOCUMENT_MAX_CHARACTERS = 100000;
+const COLLAB_DOCUMENT_MAX_NODES = 200000;
 const COLLAB_DOCUMENT_MAX_TABLE_ROWS = 200;
 const COLLAB_DOCUMENT_MAX_PREVIEW_BLOCKS = 1000;
 const COLLAB_DOCUMENT_MAX_PREVIEW_IMAGES = 100;
@@ -2188,7 +2189,7 @@ const COLLAB_DOCUMENT_CACHE_VERSION = 1;
 const COLLAB_DOCUMENT_CACHE_DATABASE = "warehouse-task-collaboration";
 const COLLAB_DOCUMENT_CACHE_STORE = "documents";
 const COLLAB_DOCUMENT_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-const COLLAB_DOCUMENT_CACHE_MAX_BYTES = 12 * 1024 * 1024;
+const COLLAB_DOCUMENT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const COLLAB_DOCUMENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,179}$/;
 const collabDocumentValidCharacter = value => {
   const text = String(value == null ? "" : value);
@@ -4726,10 +4727,10 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
     }
     return committed;
   };
-  const insertTransfer = transfer => {
+  const insertTransfer = (transfer, selectionOverride = null) => {
     const canonical = collabDocumentClipboardCanonical(transfer);
     if (!canonical) return false;
-    return insertCanonical(canonical, { selectionOverride: insertionSelection() });
+    return insertCanonical(canonical, { selectionOverride: selectionOverride || insertionSelection() });
   };
   const mergeTextBoundary = (event, inputType, selectionValue = null) => {
     const selection = selectionValue || rememberSelection();
@@ -4846,11 +4847,15 @@ const CollaborativeDocumentTextSurface = ({ blocks, documentContent, readOnly, s
   });
   const paste = event => {
     if (readOnly || !event.clipboardData) return;
-    if (insertTransfer(event.clipboardData)) {
-      event.preventDefault();
+    const canonical = collabDocumentClipboardCanonical(event.clipboardData);
+    if (!canonical) return;
+    const selection = insertionSelection();
+    if (selection.unresolved) {
+      structuralInputPending.current = "insertFromPaste";
       return;
     }
-    structuralInputPending.current = "insertFromPaste";
+    event.preventDefault();
+    insertCanonical(canonical, { selectionOverride: selection });
   };
   const drop = event => {
     if (readOnly) return;
@@ -6905,7 +6910,7 @@ const CollaborativeDocument = ({
     if (capabilities.can_edit !== true || loading) return false;
     const nextCharacters = Array.from(nextText);
     if (nextCharacters.length > COLLAB_DOCUMENT_MAX_CHARACTERS) {
-      setError(t("工作稿最多 32000 個字"));
+      setError(t("工作稿最多 100000 個字"));
       return false;
     }
     if (nextCharacters.some(value => !collabDocumentValidCharacter(value))) {
@@ -6916,6 +6921,13 @@ const CollaborativeDocument = ({
   };
   const commitDocumentOperations = (nextText, operations, updateSeed) => {
     if (!operations.length) return true;
+    const insertedNodes = operations.reduce((total, operation) => (
+      total + (operation.type === "insert" ? 1 : 0)
+    ), 0);
+    if (Object.keys(nodesRef.current).length + insertedNodes > COLLAB_DOCUMENT_MAX_NODES) {
+      setError(t("工作稿編輯記錄已達上限"));
+      return false;
+    }
     const updates = collabDocumentChunkUpdates(operations, `du-${updateSeed}`);
     const nextQueue = collabDocumentMergePendingUpdates(queueRef.current, updates, flushing.current);
     if (nextQueue.updates.length > COLLAB_DOCUMENT_MAX_PENDING_UPDATES) {

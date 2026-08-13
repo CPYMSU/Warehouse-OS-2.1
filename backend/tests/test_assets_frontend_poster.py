@@ -100,14 +100,14 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'pages/pages-assets.css?v=20260805-pages-console1' in index
     assert 'pages/pages-assets.jsx?v=20260806-pages-package1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
-    assert 'pages/pages-tasks.css?v=20260813-task-richdoc1' in index
-    assert 'pages/pages-tasks.jsx?v=20260813-task-richdoc1' in index
+    assert 'pages/pages-tasks.css?v=20260814-task-longdoc1' in index
+    assert 'pages/pages-tasks.jsx?v=20260814-task-longdoc1' in index
     assert 'core.css?v=20260806-login-farmer1' in index
     assert 'core.jsx?v=20260806-pages-actions1' in index
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260813-task-richdoc1' in index
+    assert 'dist/app.bundle.js?v=20260814-task-longdoc1' in index
     assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
         encoding="utf-8"
     )
@@ -151,10 +151,20 @@ def test_task_visual_editor_does_not_swallow_failed_paste_events():
 
     assert "const storedTextSelection = () =>" in source
     assert "return observed.unresolved ? storedTextSelection() || observed : observed;" in source
-    assert 'return insertCanonical(canonical, { selectionOverride: insertionSelection() });' in source
-    assert "if (insertTransfer(event.clipboardData)) {" in source
+    assert "const selection = insertionSelection();" in source
+    assert "if (selection.unresolved) {" in source
     assert 'structuralInputPending.current = "insertFromPaste";' in source
+    assert "event.preventDefault();\n    insertCanonical(canonical, { selectionOverride: selection });" in source
     assert "event.preventDefault();\n    insertTransfer(event.clipboardData);" not in source
+
+
+def test_task_documents_support_long_form_manuscripts():
+    source = TASKS.read_text(encoding="utf-8")
+
+    assert "const COLLAB_DOCUMENT_MAX_CHARACTERS = 100000;" in source
+    assert "const COLLAB_DOCUMENT_MAX_NODES = 200000;" in source
+    assert 'setError(t("工作稿最多 100000 個字"));' in source
+    assert 'setError(t("工作稿編輯記錄已達上限"));' in source
 
 
 def test_task_documents_render_arrow_formulas_and_sanitized_mermaid_blocks():

@@ -5,11 +5,18 @@ from fastapi import HTTPException
 
 from app.api.task_collaboration import _image_dimensions
 from app.services.task_collaboration_documents import (
+    MAX_NODES,
+    MAX_VISIBLE_CHARACTERS,
     _apply_operations,
     _normalise_operations,
     _public_snapshot,
     _snapshot_nodes,
 )
+
+
+def test_long_form_document_limits_match_the_storage_contract() -> None:
+    assert MAX_VISIBLE_CHARACTERS == 100_000
+    assert MAX_NODES == 200_000
 
 
 def test_rga_concurrent_siblings_converge_without_overwriting() -> None:

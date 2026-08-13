@@ -252,7 +252,7 @@ def test_dependency_free_alembic_head_matches_the_declared_graph() -> None:
         text=True,
     )
 
-    assert completed.stdout.strip() == "20260809_0092 (head)"
+    assert completed.stdout.strip() == "20260814_0093 (head)"
 
     policy = json.loads(
         (REPO_ROOT / "backend" / "alembic" / "migration-policy.json").read_text(

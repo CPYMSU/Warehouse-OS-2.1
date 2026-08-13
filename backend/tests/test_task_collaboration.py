@@ -82,6 +82,16 @@ def test_task_collaboration_position_contract_is_bounded() -> None:
         _position_payload({**position, "cursor_start": 13})
     with pytest.raises(HTTPException, match="position"):
         _position_payload({**position, "selected_text": "must never leave the editor"})
+    assert _position_payload(
+        {
+            **position,
+            "cursor_start": 100_000,
+            "cursor_end": 100_000,
+            "line_index": 100_000,
+        }
+    )["cursor_end"] == 100_000
+    with pytest.raises(HTTPException, match="cursor end"):
+        _position_payload({**position, "cursor_end": 100_001})
 
 
 def test_task_collaboration_contracts_are_native_and_authenticated() -> None:
