@@ -10,7 +10,15 @@ on:
         required: true
         default: smart
         type: choice
-        options: [smart, quick, standard, full]
+        options: [smart, quick, standard, full, primary-recovery]
+      prepared_release:
+        description: Prepared mac-primary release for primary-recovery
+        required: false
+        type: string
+      recovery_confirmation:
+        description: Enter ACTIVATE_PRIMARY_ONLY for primary-recovery
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -45,9 +53,25 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           test -z "$(git status --porcelain=v1)"
       - name: Run coordinated fast deployment
+        if: env.DEPLOY_MODE != 'primary-recovery'
         env:
           WAREHOUSE_CONTROL_REPL_PASSWORD: ${{ secrets.WAREHOUSE_CONTROL_REPL_PASSWORD }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           ops/cluster/rolling-deploy "${DEPLOY_MODE}"
+      - name: Activate verified primary recovery release
+        if: env.DEPLOY_MODE == 'primary-recovery'
+        env:
+          PREPARED_RELEASE: ${{ github.event.inputs.prepared_release }}
+          RECOVERY_CONFIRMATION: ${{ github.event.inputs.recovery_confirmation }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "${RECOVERY_CONFIRMATION}" = ACTIVATE_PRIMARY_ONLY
+          [[ "${PREPARED_RELEASE}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]+-mac-primary-(smart|quick|standard|full)$ ]]
+          manager=/Users/peiyuan/Server/bonfirework/bin/warehouse-deploy
+          test -x "${manager}"
+          "${manager}" prepared-status "${PREPARED_RELEASE}"
+          "${manager}" activate "${PREPARED_RELEASE}"
+          "${manager}" status

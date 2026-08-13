@@ -196,6 +196,11 @@ def test_github_uses_one_coordinated_dual_node_route() -> None:
     assert 'ops/cluster/rolling-deploy "${DEPLOY_MODE}"' in production
     assert "run-full-verification" not in production
     assert "tailscale/github-action" not in production
+    assert "primary-recovery" in production
+    assert "ACTIVATE_PRIMARY_ONLY" in production
+    assert '"${manager}" prepared-status "${PREPARED_RELEASE}"' in production
+    assert '"${manager}" activate "${PREPARED_RELEASE}"' in production
+    assert "database-migration-state" not in production
 
     fast_deploy = (REPO_ROOT / "ops" / "fast-deploy").read_text(encoding="utf-8")
     assert 'WORKFLOW="production-deploy.yml"' in fast_deploy
