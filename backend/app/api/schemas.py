@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.services.action_context import (
     PAGES_ACTION_CONTEXT_SCHEMA,
     RESOURCE_ACTION_CONTEXT_SCHEMA,
+    RESOURCE_OPERATION_CONTEXT_SCHEMA,
 )
 
 
@@ -68,6 +69,7 @@ class AgentActionContext(BaseModel):
     schema_: Literal[
         "warehouse.pages-action-context.v1",
         "warehouse.resource-action-context.v1",
+        "warehouse.resource-operation-context.v1",
     ] = Field(alias="schema")
     action_key: str = Field(
         min_length=3,
@@ -106,15 +108,43 @@ class AgentActionContext(BaseModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
     )
     suggested_tool_names: list[str] = Field(default_factory=list, max_length=8)
+    operation_tool_name: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=128,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
+    observation_tool_names: list[str] = Field(default_factory=list, max_length=4)
+    resource_argument_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_-]*$",
+    )
+    operation_defaults: dict[str, str] = Field(default_factory=dict, max_length=8)
+    operation_choices: dict[str, list[str]] = Field(default_factory=dict, max_length=8)
 
     @model_validator(mode="after")
     def validate_schema_shape(self) -> AgentActionContext:
         if self.schema_ == PAGES_ACTION_CONTEXT_SCHEMA:
             if not self.workspace_ref or not self.action_key.startswith("pages."):
                 raise ValueError("Pages action context requires a Pages action and workspace")
-        elif self.schema_ == RESOURCE_ACTION_CONTEXT_SCHEMA:
+        elif self.schema_ in {
+            RESOURCE_ACTION_CONTEXT_SCHEMA,
+            RESOURCE_OPERATION_CONTEXT_SCHEMA,
+        }:
             if not self.resource_type or not self.resource_ref:
                 raise ValueError("Resource action context requires a typed resource reference")
+            if self.schema_ == RESOURCE_OPERATION_CONTEXT_SCHEMA:
+                if not self.operation_tool_name:
+                    raise ValueError("Resource operation context requires an operation tool")
+                if not self.resource_argument_name:
+                    self.resource_argument_name = "id"
+                for key, values in self.operation_choices.items():
+                    if not values or len(values) > 32:
+                        raise ValueError("Operation choices must contain 1 to 32 values")
+                    if key in self.operation_defaults and self.operation_defaults[key] not in values:
+                        raise ValueError("Operation default must be one of its choices")
         return self
 
 

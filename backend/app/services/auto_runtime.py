@@ -1,10 +1,10 @@
 """Shared goal-driven Auto Runtime for every Warehouse OS AI surface.
 
 This is deliberately the only model-facing boundary.  Surfaces may supply a
-different interaction format, but they cannot select commands, invoke SQL, or
-maintain a separate tool loop.  Domain capability execution will be connected
-here as typed adapters mature; until then the runtime stays explicit about
-what it has observed and never claims an unperformed business action.
+different interaction format and may bound a governed resource operation, but
+they cannot invoke SQL, grant authority, or maintain a separate tool loop.
+The runtime stays explicit about what it has observed and never claims an
+unperformed business action.
 """
 
 from __future__ import annotations
@@ -102,6 +102,96 @@ def _bounded_action_context(value: object) -> dict[str, object] | None:
 # Kept as a compatibility alias for integrations that adopted the first Pages
 # context contract. The implementation is now resource-generic.
 _bounded_pages_action_context = _bounded_action_context
+
+
+def _operation_context_scope(action_context: object) -> set[str] | None:
+    if not isinstance(action_context, dict) or action_context.get("schema") != (
+        "warehouse.resource-operation-context.v1"
+    ):
+        return None
+    operation = str(action_context.get("operation_tool_name") or "").strip()
+    if not operation:
+        return None
+    return {
+        operation,
+        *(
+            str(name)
+            for name in action_context.get("observation_tool_names") or []
+            if str(name)
+        ),
+    }
+
+
+def _bind_operation_arguments(
+    action_context: object,
+    tool_name: str,
+    arguments: dict[str, object],
+) -> dict[str, object]:
+    """Bind one governed operation to its resource and reviewed value set."""
+
+    if not isinstance(action_context, dict) or tool_name != str(
+        action_context.get("operation_tool_name") or ""
+    ):
+        return dict(arguments)
+    bounded = dict(arguments)
+    resource_argument = str(action_context.get("resource_argument_name") or "id")
+    bounded[resource_argument] = str(action_context.get("resource_ref") or "")
+    defaults = action_context.get("operation_defaults")
+    defaults = defaults if isinstance(defaults, dict) else {}
+    choices = action_context.get("operation_choices")
+    choices = choices if isinstance(choices, dict) else {}
+    for key, raw_choices in choices.items():
+        allowed = {str(value) for value in raw_choices} if isinstance(raw_choices, list) else set()
+        current = str(bounded.get(key) or "").strip()
+        if allowed and current not in allowed:
+            if key in defaults and str(defaults[key]) in allowed:
+                bounded[key] = str(defaults[key])
+            else:
+                bounded.pop(key, None)
+    for key, value in defaults.items():
+        if bounded.get(key) in (None, ""):
+            bounded[str(key)] = str(value)
+    return bounded
+
+
+def _bound_operation_route(
+    route: dict[str, object],
+    action_context: object,
+) -> dict[str, object]:
+    """Expose only the capabilities allowed by a governed UI operation."""
+
+    scope = _operation_context_scope(action_context)
+    if not scope:
+        return route
+    ordered = [
+        *(
+            str(name)
+            for name in (action_context or {}).get("observation_tool_names") or []
+            if str(name) in scope
+        ),
+        str((action_context or {}).get("operation_tool_name") or ""),
+    ]
+    genes = {
+        str(gene.get("tool_name")): gene
+        for gene in ai_capability_gene_index()
+        if str(gene.get("tool_name")) in scope
+    }
+    selected = [name for name in dict.fromkeys(ordered) if name in genes]
+    route["selected_tool_names"] = selected
+    route["selected_domains"] = list(
+        dict.fromkeys(str(genes[name].get("domain") or "") for name in selected)
+    )
+    route["selected_families"] = list(
+        dict.fromkeys(
+            f"{genes[name].get('domain')}:{str(genes[name].get('command') or '').split(maxsplit=1)[0]}"
+            for name in selected
+        )
+    )
+    route["needs_tools"] = True
+    route["requires_user_input"] = False
+    route["interaction_mode"] = "operational"
+    route["operation_scope_enforced"] = True
+    return route
 
 
 def _emit_activity(
@@ -1686,6 +1776,11 @@ def _route_goal(
             "typed resource references as user intent, not observed state; freely accept, "
             "ignore or supplement suggested tools. It never selects a capability, proves an "
             "outcome, grants authority or removes a confirmation requirement. "
+            "A resource-operation context is different: operation_tool_name, observation "
+            "tools, resource identity and reviewed argument values form a server-enforced "
+            "capability scope. They still are not evidence or authorization, so re-observe "
+            "state and honor confirmation, but never switch the request kind, resource id or "
+            "operation capability. "
             "Catalogue candidates are non-authoritative discovery hints. When the human asks "
             "to perform an operation represented by a candidate, route it as operational "
             "with needs_tools=true; do not replace the governed capability with a generic "
@@ -2177,7 +2272,8 @@ def _reflect(
             "ask the human to repeat information that available read capabilities can "
             "resolve. Parameters are immutable after a Passkey is granted. If an authorized "
             "action fails, that authorization remains bound to the failed action. Preserve "
-            "action_context, incorporate the returned evidence, and freely replan; any "
+            "action_context, incorporate the returned evidence, and freely replan within any "
+            "resource-operation capability scope; any "
             "materially different write must become a new confirmation proposal. "
             "A succeeded domain capability with verified readback or a world observation is "
             "authoritative evidence for its declared effect and returned facts. Cite that "
@@ -2743,8 +2839,14 @@ def run_auto_runtime(
             context_mode=normalized_context_mode,
             activity_callback=activity_callback,
         )
+        route = _bound_operation_route(route, bounded_action_context)
         if bounded_authorization is not None:
             authorized_tool = str(bounded_authorization.get("tool_name") or "")
+            operation_scope = _operation_context_scope(bounded_action_context)
+            if operation_scope is not None and authorized_tool not in operation_scope:
+                raise RuntimeError(
+                    "Authorized capability does not match the governed resource operation"
+                )
             authorized_gene = entry_by_tool_name(authorized_tool)
             selected_tools = [str(item) for item in route.get("selected_tool_names") or []]
             if authorized_tool and authorized_tool not in selected_tools:
@@ -3213,6 +3315,11 @@ def run_auto_runtime(
                     continue
                 arguments = decision.get("arguments")
                 safe_arguments = arguments if isinstance(arguments, dict) else {}
+                safe_arguments = _bind_operation_arguments(
+                    bounded_action_context,
+                    tool_name,
+                    safe_arguments,
+                )
                 signature = _decision_signature(tool_name, safe_arguments)
                 if signature in executed_signatures:
                     continue
@@ -3495,6 +3602,9 @@ def run_auto_runtime(
             known_tool_names.update(
                 _recovery_capability_names(list(l3.get("atomic_recovery") or []))
             )
+            operation_scope = _operation_context_scope(bounded_action_context)
+            if operation_scope is not None:
+                known_tool_names.intersection_update(operation_scope)
             continuation = _normalise_continuation_decisions(
                 reflection,
                 known_tool_names=known_tool_names,

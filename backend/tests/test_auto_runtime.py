@@ -1344,6 +1344,72 @@ def test_resource_action_context_preserves_identity_without_selecting_a_tool() -
         )
 
 
+def test_resource_operation_context_enforces_capability_identity_and_real_choices() -> None:
+    request_id = "7d9ad337-f8dc-432a-9dc7-fca065e0baf6"
+    payload = AgentRunRequest(
+        text="审批这个注册申请",
+        action_context={
+            "schema": "warehouse.resource-operation-context.v1",
+            "action_key": "iam.membership_request.approve",
+            "resource_type": "iam.membership_request",
+            "resource_ref": request_id,
+            "operation_tool_name": "registration_approve",
+            "observation_tool_names": [
+                "registrations_pending",
+                "organization_structure",
+            ],
+            "resource_argument_name": "id",
+            "operation_defaults": {
+                "department": "lab_operations",
+                "position": "instrument_technician",
+            },
+            "operation_choices": {
+                "department": ["lab_operations"],
+                "position": ["instrument_technician", "lab_director"],
+            },
+        },
+    )
+
+    bounded = auto_runtime._bounded_action_context(
+        payload.action_context.model_dump(exclude_none=True, by_alias=True)
+    )
+    assert bounded is not None
+    assert auto_runtime._operation_context_scope(bounded) == {
+        "registrations_pending",
+        "organization_structure",
+        "registration_approve",
+    }
+    route = auto_runtime._bound_operation_route(
+        {
+            "selected_tool_names": ["membership_approve", "database_execute"],
+            "selected_domains": [],
+            "selected_families": [],
+        },
+        bounded,
+    )
+    assert route["selected_tool_names"] == [
+        "registrations_pending",
+        "organization_structure",
+        "registration_approve",
+    ]
+    assert route["operation_scope_enforced"] is True
+
+    arguments = auto_runtime._bind_operation_arguments(
+        bounded,
+        "registration_approve",
+        {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "department": "wrong_department",
+            "position": "lab_ops_supervisor",
+        },
+    )
+    assert arguments == {
+        "id": request_id,
+        "department": "lab_operations",
+        "position": "instrument_technician",
+    }
+
+
 def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> None:
     atlas = ai_capability_atlas()
     genes = ai_capability_gene_index()

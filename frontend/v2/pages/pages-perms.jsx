@@ -1596,23 +1596,71 @@ const Page = ({ boot, reload, templateKey = "" }) => {
     const meta = [assignment, r.contact, r.reason].filter(v => v && v !== "—").join(" · ");
     const orgHint = assignment ? t(",期望部門 / 崗位「{o}」", { o: assignment }) : "";
     const requestKind = kind === "mem" ? t("加入") : t("註冊");
-    const approve = t("審批通過「{u}」的{kind}申請(#{id}),期望角色「{r}」{o};請觀察真實申請、現有身份與崗位預設後完成審批", { u, kind: requestKind, id, r: role, o: orgHint });
+    const returnedOptions = Array.isArray(r.approval_position_options)
+      ? r.approval_position_options : [];
+    const structureOptions = (org && Array.isArray(org.positions) ? org.positions : [])
+      .filter(position => position && position.active !== false && (
+        !r.requested_org_unit_code
+        || String(position.department_code || "") === String(r.requested_org_unit_code)
+      ));
+    const positionOptions = (returnedOptions.length ? returnedOptions : structureOptions)
+      .map(position => ({
+        position_code: String(position && position.position_code || "").trim(),
+        name: String(position && position.name || "").trim(),
+        department_code: String(position && position.department_code || "").trim(),
+        role_level: Number(position && position.role_level) || 1,
+      }))
+      .filter(position => position.position_code)
+      .sort((a, b) => (a.role_level - b.role_level)
+        || a.position_code.localeCompare(b.position_code));
+    const requestedPosition = String(r.requested_position_code || "").trim();
+    const defaultPosition = positionOptions.find(position =>
+      position.position_code === requestedPosition
+    ) || positionOptions[0] || null;
+    const positionSummary = positionOptions.length
+      ? positionOptions.map(position => `${position.name || position.position_code} (${position.position_code})`).join("、")
+      : t("沒有可用崗位");
+    const defaultSummary = defaultPosition
+      ? t("預設採用最低權限的「{name}」({code})", {
+          name: defaultPosition.name || defaultPosition.position_code,
+          code: defaultPosition.position_code,
+        })
+      : t("未找到可用崗位,請先停止並說明原因");
+    const approve = t("審批通過「{u}」的{kind}申請(#{id}),期望角色「{r}」{o};真實可用崗位只有:{positions};{defaultPosition}。請先核對真實申請與現有身份,只能使用這個申請種類的專用審批能力,並以卡片顯示最終部門與崗位後等待我的 Passkey 授權", {
+      u, kind: requestKind, id, r: role, o: orgHint,
+      positions: positionSummary, defaultPosition: defaultSummary,
+    });
     const reject = t("駁回「{u}」的{kind}申請(#{id}),請取得理由並核對真實申請後執行", { u, kind: requestKind, id });
-    const actionContext = (action, suggestions) => ({
+    const actionContext = (action, operationToolName, observationToolNames, defaults = {}, choices = {}) => ({
       action_context: {
-        schema: "warehouse.resource-action-context.v1",
+        schema: "warehouse.resource-operation-context.v1",
         action_key: `iam.membership_request.${action}`,
         resource_type: "iam.membership_request",
         resource_ref: String(id),
-        suggested_tool_names: suggestions,
+        operation_tool_name: operationToolName,
+        observation_tool_names: observationToolNames,
+        resource_argument_name: "id",
+        operation_defaults: defaults,
+        operation_choices: choices,
+        suggested_tool_names: observationToolNames.concat([operationToolName]),
       },
     });
-    const approveContext = actionContext("approve", kind === "mem"
-      ? ["memberships_pending", "membership_approve"]
-      : ["registrations_pending", "registration_approve"]);
-    const rejectContext = actionContext("reject", kind === "mem"
-      ? ["memberships_pending", "membership_reject"]
-      : ["registrations_pending", "registration_reject"]);
+    const pendingTool = kind === "mem" ? "memberships_pending" : "registrations_pending";
+    const approveTool = kind === "mem" ? "membership_approve" : "registration_approve";
+    const rejectTool = kind === "mem" ? "membership_reject" : "registration_reject";
+    const approvalDefaults = {
+      ...(r.requested_org_unit_code ? { department: String(r.requested_org_unit_code) } : {}),
+      ...(defaultPosition ? { position: defaultPosition.position_code } : {}),
+    };
+    const approvalChoices = {
+      ...(r.requested_org_unit_code ? { department: [String(r.requested_org_unit_code)] } : {}),
+      ...(positionOptions.length ? { position: positionOptions.map(position => position.position_code) } : {}),
+    };
+    const approveContext = actionContext(
+      "approve", approveTool, [pendingTool, "organization_structure"],
+      approvalDefaults, approvalChoices,
+    );
+    const rejectContext = actionContext("reject", rejectTool, [pendingTool]);
     return (
       <div key={kind + id + ":" + i} className="ledger-row">
         <span className="lr-idx">{pad2(i + 1)}</span>

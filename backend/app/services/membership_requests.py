@@ -97,7 +97,8 @@ def list_membership_requests(
                reviewer.display_name AS reviewer_name,
                assigned_position.name AS assigned_position_name,
                assigned_role.name AS assigned_role_name,
-               CASE WHEN {_JOIN_REQUEST_SQL} THEN 'join' ELSE 'registration' END AS request_kind
+               CASE WHEN {_JOIN_REQUEST_SQL} THEN 'join' ELSE 'registration' END AS request_kind,
+               approval_options.positions AS approval_position_options
         FROM platform.membership_requests AS mr
         JOIN iam.users AS u ON u.id = mr.user_id
         LEFT JOIN iam.users AS reviewer ON reviewer.id = mr.reviewed_by
@@ -129,6 +130,31 @@ def list_membership_requests(
           ORDER BY role.level DESC, role.name
           LIMIT 1
         ) AS assigned_role ON true
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(
+            jsonb_agg(
+              jsonb_build_object(
+                'position_code', candidate.position_code,
+                'name', candidate.name,
+                'department_code', candidate.department_code,
+                'role_level', candidate.role_level,
+                'role_name', candidate.role_name
+              ) ORDER BY candidate.role_level, candidate.position_code
+            ),
+            '[]'::jsonb
+          ) AS positions
+          FROM (
+            SELECT position_code, name, department_code, role_level, role_name
+            FROM iam.position_profiles
+            WHERE tenant_id = mr.tenant_id AND active
+              AND (
+                COALESCE(mr.requested_org_unit_code, '') = ''
+                OR department_code = mr.requested_org_unit_code
+              )
+            ORDER BY role_level, position_code
+            LIMIT 32
+          ) AS candidate
+        ) AS approval_options ON true
         WHERE mr.tenant_id = :tenant_id
           AND (:request_status = 'all' OR mr.status = :request_status)
           {kind_predicate}
@@ -151,11 +177,37 @@ def list_membership_requests(
         "kind": normalized_kind,
     }
     with system_session() as session:
+        session.execute(
+            text("SELECT set_config('app.tenant_id', CAST(:tenant_id AS text), true)"),
+            {"tenant_id": str(actor.tenant_id)},
+        )
         rows = session.execute(query, params).mappings().all()
         pending_count = int(session.execute(count_query, params).scalar_one())
+    requests: list[dict[str, object]] = []
+    for row in rows:
+        projected = _safe(dict(row))
+        options = projected.get("approval_position_options")
+        options = options if isinstance(options, list) else []
+        requested_position = str(projected.get("requested_position_code") or "")
+        available_codes = {
+            str(option.get("position_code") or "")
+            for option in options
+            if isinstance(option, dict)
+        }
+        default_position = (
+            requested_position
+            if requested_position and requested_position in available_codes
+            else (
+                str(options[0].get("position_code") or "")
+                if options and isinstance(options[0], dict)
+                else ""
+            )
+        )
+        projected["approval_default_position_code"] = default_position or None
+        requests.append(projected)
     return {
         "available": True,
-        "requests": [_safe(dict(row)) for row in rows],
+        "requests": requests,
         "pending_count": pending_count,
         "request_kind": normalized_kind,
     }
@@ -343,33 +395,66 @@ def approve_membership_request(
     """Activate the real tenant membership and close the platform request."""
 
     body = dict(payload or {})
-    request_row = _load_request_for_review(
-        actor,
-        request_id,
-        expected_kind=expected_kind,
-    )
-    if request_row["status"] == "approved":
-        return _approval_result(actor, request_row, already_processed=True)
-    if request_row["status"] != "pending":
-        raise HTTPException(status_code=409, detail="Membership request is already rejected")
+    _require_manager(actor)
+    parsed_id = _request_uuid(request_id)
+    expected = _validate_kind(expected_kind) if expected_kind else "all"
 
-    org_unit_code = str(
-        body.get("org_unit_code")
-        or body.get("department")
-        or request_row.get("requested_org_unit_code")
-        or ""
-    ).strip()
-    position_code = str(
-        body.get("position_code")
-        or body.get("position")
-        or request_row.get("requested_position_code")
-        or ""
-    ).strip()
-    role_ref = str(
-        body.get("role_id") or body.get("role") or request_row.get("requested_role_id") or ""
-    ).strip()
+    # The canonical platform request, tenant assignment, appointment, role and
+    # audit event all transition under one PostgreSQL transaction.  Locking the
+    # request first makes repeated clicks idempotent and prevents a membership
+    # from being activated while the request remains pending.
+    with system_session() as session:
+        session.execute(
+            text("SELECT set_config('app.tenant_id', CAST(:tenant_id AS text), true)"),
+            {"tenant_id": str(actor.tenant_id)},
+        )
+        row = (
+            session.execute(
+                text(
+                    f"""
+                    SELECT mr.id, mr.tenant_id, mr.user_id, mr.status,
+                           mr.requested_org_unit_code, mr.requested_position_code,
+                           mr.requested_role_id,
+                           CASE WHEN {_JOIN_REQUEST_SQL}
+                                THEN 'join' ELSE 'registration' END AS request_kind
+                    FROM platform.membership_requests AS mr
+                    JOIN iam.users AS u ON u.id = mr.user_id
+                    WHERE mr.id = :id AND mr.tenant_id = :tenant_id
+                    FOR UPDATE OF mr
+                    """
+                ),
+                {"id": parsed_id, "tenant_id": actor.tenant_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None or (expected != "all" and row["request_kind"] != expected):
+            raise HTTPException(status_code=404, detail="Membership request not found")
+        request_row = dict(row)
+        if request_row["status"] == "approved":
+            return _approval_result(actor, request_row, already_processed=True)
+        if request_row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Membership request is already rejected")
 
-    with tenant_session(actor.tenant_id) as session:
+        org_unit_code = str(
+            body.get("org_unit_code")
+            or body.get("department")
+            or request_row.get("requested_org_unit_code")
+            or ""
+        ).strip()
+        position_code = str(
+            body.get("position_code")
+            or body.get("position")
+            or request_row.get("requested_position_code")
+            or ""
+        ).strip()
+        role_ref = str(
+            body.get("role_id")
+            or body.get("role")
+            or request_row.get("requested_role_id")
+            or ""
+        ).strip()
+
         position = None
         if position_code:
             position = (
@@ -527,21 +612,7 @@ def approve_membership_request(
                     "role_id": role["id"],
                 },
             )
-        _audit(
-            session,
-            actor,
-            "membership.request.approved",
-            {
-                "request_id": str(request_row["id"]),
-                "user_id": str(request_row["user_id"]),
-                "request_kind": request_row["request_kind"],
-                "position_code": position["position_code"] if position else None,
-                "role_id": str(role["id"]) if role else None,
-            },
-        )
-
-    note = str(body.get("note") or "").strip()
-    with system_session() as session:
+        note = str(body.get("note") or "").strip()
         result = session.execute(
             text(
                 """
@@ -558,8 +629,20 @@ def approve_membership_request(
                 "note": note,
             },
         )
-    if result.rowcount != 1:
-        raise HTTPException(status_code=409, detail="Membership request changed during approval")
+        if result.rowcount != 1:
+            raise HTTPException(status_code=409, detail="Membership request changed during approval")
+        _audit(
+            session,
+            actor,
+            "membership.request.approved",
+            {
+                "request_id": str(request_row["id"]),
+                "user_id": str(request_row["user_id"]),
+                "request_kind": request_row["request_kind"],
+                "position_code": position["position_code"] if position else None,
+                "role_id": str(role["id"]) if role else None,
+            },
+        )
     return _approval_result(actor, request_row)
 
 

@@ -109,8 +109,8 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260814-task-docformat3' in index
-    assert 'dist/personal.bundle.js?v=20260806-login-farmer1' in PERSONAL.read_text(
+    assert 'dist/app.bundle.js?v=20260815-approval-guard1' in index
+    assert 'dist/personal.bundle.js?v=20260815-approval-guard1' in PERSONAL.read_text(
         encoding="utf-8"
     )
     assert 'core.jsx?v=20260806-pages-actions1' in PERSONAL.read_text(encoding="utf-8")

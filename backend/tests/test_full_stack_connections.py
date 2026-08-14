@@ -16,7 +16,7 @@ from app.api.deps import ActorContext, current_actor
 from app.core.security import hash_password, verify_password
 from app.db.session import system_session, tenant_session
 from app.main import app
-from app.services import auto_runtime
+from app.services import auto_runtime, membership_requests
 from app.services.legacy_capability_runtime import execute_retained_capability
 from app.services.passkey_grants import issue_step_up_grant
 from app.services.templates import provision_tenant_template
@@ -692,6 +692,36 @@ def test_registration_and_join_approvals_share_the_real_membership_workflow() ->
         assert [row["id"] for row in joins.json()["requests"]] == [join_id]
         assert registrations.json()["pending_count"] == 1
         assert joins.json()["pending_count"] == 1
+        registration_row = registrations.json()["requests"][0]
+        position_options = registration_row["approval_position_options"]
+        assert position_options
+        available_position_codes = {
+            option["position_code"] for option in position_options
+        }
+        assert registration_row["approval_default_position_code"] in available_position_codes
+
+        # A stale or hallucinated position must leave both sides of the
+        # approval transition untouched, and the real request stays visible.
+        invalid_assignment = client.post(
+            f"/api/auth/registrations/{registration_id}/approve",
+            json={"position_code": "lab_ops_supervisor"},
+        )
+        assert invalid_assignment.status_code == 422
+        still_pending = client.get("/api/auth/registrations?status=pending").json()
+        assert [row["id"] for row in still_pending["requests"]] == [registration_id]
+        with tenant_session(manager.tenant_id) as session:
+            assert session.execute(
+                text(
+                    """
+                    SELECT count(*) FROM iam.memberships
+                    WHERE tenant_id = :tenant_id AND user_id = :user_id
+                    """
+                ),
+                {
+                    "tenant_id": manager.tenant_id,
+                    "user_id": registration_row["user_id"],
+                },
+            ).scalar_one() == 0
 
         attacker = replace(
             joining_actor,
@@ -785,6 +815,68 @@ def test_registration_and_join_approvals_share_the_real_membership_workflow() ->
         rejected_history = client.get("/api/auth/registrations?status=rejected").json()
         assert [row["id"] for row in rejected_history["requests"]] == [rejected_id]
         assert rejected_history["requests"][0]["review_note"] == "Incomplete information"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_registration_approval_rolls_back_membership_when_request_close_fails(
+    monkeypatch,
+) -> None:
+    base_manager = _actor()
+    manager = replace(
+        base_manager,
+        permissions=frozenset({"users.manage", *base_manager.permissions}),
+    )
+    client = TestClient(app)
+    app.dependency_overrides[current_actor] = lambda: manager
+    try:
+        username = f"atomic-registration-{uuid4().hex[:12]}"
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "tenant_slug": manager.tenant_slug,
+                "username": username,
+                "display_name": "Atomic Registration Applicant",
+                "password": "atomic-registration-password",
+            },
+        )
+        request_id = registered.json()["request_id"]
+        pending = client.get("/api/auth/registrations?status=pending").json()["requests"][0]
+        position_code = pending["approval_default_position_code"]
+
+        def fail_before_commit(*_args, **_kwargs):
+            raise RuntimeError("simulated audit storage failure")
+
+        monkeypatch.setattr(membership_requests, "_audit", fail_before_commit)
+        with pytest.raises(RuntimeError, match="simulated audit storage failure"):
+            membership_requests.approve_membership_request(
+                manager,
+                request_id,
+                {"position_code": position_code},
+                expected_kind="registration",
+            )
+
+        with system_session() as session:
+            request = session.execute(
+                text(
+                    """
+                    SELECT status, user_id FROM platform.membership_requests
+                    WHERE id = :id AND tenant_id = :tenant_id
+                    """
+                ),
+                {"id": request_id, "tenant_id": manager.tenant_id},
+            ).mappings().one()
+        assert request["status"] == "pending"
+        with tenant_session(manager.tenant_id) as session:
+            assert session.execute(
+                text(
+                    """
+                    SELECT count(*) FROM iam.memberships
+                    WHERE tenant_id = :tenant_id AND user_id = :user_id
+                    """
+                ),
+                {"tenant_id": manager.tenant_id, "user_id": request["user_id"]},
+            ).scalar_one() == 0
     finally:
         app.dependency_overrides.clear()
 

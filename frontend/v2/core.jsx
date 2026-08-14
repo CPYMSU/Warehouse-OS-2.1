@@ -3653,6 +3653,7 @@ const SecretaryDock = () => {
   const sendRef = useRef(null);
   const recordWorkflowRef = useRef({ active: false });
   const businessContextRef = useRef(null);
+  const actionContextRef = useRef(null);
   const continuedActionsRef = useRef(new Set());
   const pendingContinuationActionsRef = useRef(new Set());
   const continuationUserTurnRef = useRef(new Map());
@@ -4030,6 +4031,7 @@ const SecretaryDock = () => {
       convRef.current = null;
       recordWorkflowRef.current.active = false;
       businessContextRef.current = null;
+      actionContextRef.current = null;
       continuedActionsRef.current.clear();
       pendingContinuationActionsRef.current.clear();
       continuationUserTurnRef.current.clear();
@@ -4099,6 +4101,7 @@ const SecretaryDock = () => {
       const businessContext = secretaryContextOf(e.detail);
       const actionContext = secretaryActionContextOf(e.detail);
       businessContextRef.current = businessContext;
+      actionContextRef.current = actionContext;
       if (p) {
         if (sendRef.current) {
           sendRef.current(
@@ -4144,6 +4147,12 @@ const SecretaryDock = () => {
       ? source.detail : source && typeof source === "object" ? source : {};
     const actionKey = typeof detail.action_key === "string" ? detail.action_key : "";
     if (!actionKey) return;
+    const terminalStatus = String(detail.status || "").trim().toLowerCase();
+    if (actionContextRef.current
+        && actionContextRef.current.action_key === actionKey
+        && ["completed", "succeeded", "cancelled"].includes(terminalStatus)) {
+      actionContextRef.current = null;
+    }
     const deliveryCandidates = [
       ...(Array.isArray(detail.credential_deliveries) ? detail.credential_deliveries : []),
       ...(detail.credential_delivery ? [detail.credential_delivery] : []),
@@ -4322,6 +4331,13 @@ const SecretaryDock = () => {
     );
     const strongTextConfirmation = SECRETARY_STRONG_TEXT_CONFIRMATION_RE.test(msg);
     const weakTextConfirmation = SECRETARY_WEAK_TEXT_CONFIRMATION_RE.test(msg);
+    const suppliedActionContext = secretaryActionContextOf(runOptions);
+    const effectiveActionContext = suppliedActionContext
+      || ((strongTextConfirmation || weakTextConfirmation) ? actionContextRef.current : null);
+    if (suppliedActionContext) actionContextRef.current = suppliedActionContext;
+    else if (!hiddenUserTurn && !strongTextConfirmation && !weakTextConfirmation) {
+      actionContextRef.current = null;
+    }
     const resurfaceOperationConfirmations = !hiddenUserTurn && (
       strongTextConfirmation
       || (weakTextConfirmation && pendingOperationConfirmationRef.current)
@@ -4474,8 +4490,8 @@ const SecretaryDock = () => {
         ),
         surface: "secretary",
         context_mode: reasoningModeRef.current,
-        ...(runOptions && runOptions.action_context ? {
-          action_context: runOptions.action_context,
+        ...(effectiveActionContext ? {
+          action_context: effectiveActionContext,
         } : {}),
         ...(runOptions && runOptions.resume_confirmation_action_id ? {
           resume_confirmation_action_id: Number(runOptions.resume_confirmation_action_id),
@@ -5155,6 +5171,7 @@ const SecretaryDock = () => {
       forceTailRef.current = true;
       recordWorkflowRef.current.active = false;
       businessContextRef.current = null;
+      actionContextRef.current = null;
       const restored = await restoreSecretarySession(conversationId);
       if (restored && identityGeneration === identityGenerationRef.current
           && newConversationGeneration === newConversationGenerationRef.current) {
@@ -5189,6 +5206,7 @@ const SecretaryDock = () => {
     <button className="dock-fab" onClick={() => {
       setOpen(true);
       businessContextRef.current = null;
+      actionContextRef.current = null;
       const restored = restoreReadyRef.current
         ? Promise.resolve(null) : restoreSecretarySession();
       restored.finally(() =>
@@ -5359,7 +5377,7 @@ const SecretaryDock = () => {
               <span aria-hidden="true">＋</span><span className="secretary-new-label">{t("新對話")}</span>
             </button>
             <button className="btn ghost sm" style={{ padding: "0 7px", fontFamily: "var(--f-mono)", fontSize: 12 }} title={big ? "縮小" : "放大"} onClick={() => setBig(v => !v)}>{big ? "⤡" : "⤢"}</button>
-            <button className="btn ghost sm" style={{ padding: "0 7px" }} onClick={() => { voice.shutdown(); businessContextRef.current = null; setOpen(false); }}><Icon2 name="x" size={13}/></button>
+            <button className="btn ghost sm" style={{ padding: "0 7px" }} onClick={() => { voice.shutdown(); businessContextRef.current = null; actionContextRef.current = null; setOpen(false); }}><Icon2 name="x" size={13}/></button>
           </div>
         </div>
       </div>
@@ -5580,7 +5598,11 @@ const secretaryActionContextOf = (value) => {
   const source = value.action_context && typeof value.action_context === "object"
     && !Array.isArray(value.action_context) ? value.action_context : value;
   const schema = String(source.schema || "");
-  if (!["warehouse.pages-action-context.v1", "warehouse.resource-action-context.v1"].includes(schema)) return null;
+  if (![
+    "warehouse.pages-action-context.v1",
+    "warehouse.resource-action-context.v1",
+    "warehouse.resource-operation-context.v1",
+  ].includes(schema)) return null;
   const actionKey = String(source.action_key || "").trim();
   if (!/^[a-z][a-z0-9_.:-]{2,159}$/.test(actionKey)) return null;
   const validRef = ref => /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,159}$/.test(String(ref || "").trim());
@@ -5620,11 +5642,53 @@ const secretaryActionContextOf = (value) => {
       resource_ref: item.resource_ref,
       ...(item.resource_version ? { resource_version: item.resource_version } : {}),
     }));
-  return {
+  const base = {
     schema, action_key: actionKey, resource_type: resourceType, resource_ref: resourceRef,
     ...(resourceVersion ? { resource_version: resourceVersion } : {}),
     ...(relatedResources.length ? { related_resources: relatedResources } : {}),
     suggested_tool_names: suggestedToolNames,
+  };
+  if (schema !== "warehouse.resource-operation-context.v1") return base;
+  const validTool = name => /^[a-z][a-z0-9_]{2,127}$/.test(String(name || "").trim());
+  const validArgument = name => /^[a-z][a-z0-9_-]{0,63}$/.test(String(name || "").trim());
+  const validValue = value => {
+    const item = String(value || "").trim();
+    return item.length > 0 && item.length <= 240 && !/[\u0000\r\n]/.test(item);
+  };
+  const operationToolName = String(source.operation_tool_name || "").trim();
+  const resourceArgumentName = String(source.resource_argument_name || "id").trim();
+  if (!validTool(operationToolName) || !validArgument(resourceArgumentName)) return null;
+  const observationToolNames = Array.from(new Set(
+    (Array.isArray(source.observation_tool_names) ? source.observation_tool_names : [])
+      .map(name => String(name || "").trim())
+      .filter(name => validTool(name) && name !== operationToolName),
+  )).slice(0, 4);
+  const boundedArgumentMap = value => Object.fromEntries(
+    Object.entries(value && typeof value === "object" && !Array.isArray(value) ? value : {})
+      .filter(([key, item]) => validArgument(key) && validValue(item))
+      .slice(0, 8)
+      .map(([key, item]) => [String(key), String(item).trim()]),
+  );
+  const operationDefaults = boundedArgumentMap(source.operation_defaults);
+  const operationChoices = Object.fromEntries(
+    Object.entries(source.operation_choices && typeof source.operation_choices === "object"
+      && !Array.isArray(source.operation_choices) ? source.operation_choices : {})
+      .filter(([key, values]) => validArgument(key) && Array.isArray(values))
+      .slice(0, 8)
+      .map(([key, values]) => [String(key), Array.from(new Set(
+        values.map(value => String(value || "").trim()).filter(validValue),
+      )).slice(0, 32)])
+      .filter(([, values]) => values.length),
+  );
+  if (Object.entries(operationDefaults).some(([key, value]) =>
+    operationChoices[key] && !operationChoices[key].includes(value))) return null;
+  return {
+    ...base,
+    operation_tool_name: operationToolName,
+    observation_tool_names: observationToolNames,
+    resource_argument_name: resourceArgumentName,
+    operation_defaults: operationDefaults,
+    operation_choices: operationChoices,
   };
 };
 const validReturnHash = (value) => {

@@ -1,9 +1,10 @@
 """Bounded control-surface context shared across Auto Runtime continuations.
 
-The context identifies the resource and user intent that originated a turn.  It
-is deliberately neither a workflow selector nor evidence that the resource
-exists: models may use, supplement, or reject the suggested capabilities after
-observing current state.
+The context identifies the resource and user intent that originated a turn.
+Ordinary action context is deliberately neither a workflow selector nor
+evidence that the resource exists.  A governed resource-operation context is a
+stronger control-surface intent: it bounds which capabilities and resource
+identity may be used, while remaining neither authorization nor live evidence.
 """
 
 from __future__ import annotations
@@ -13,12 +14,58 @@ from collections.abc import Collection
 
 PAGES_ACTION_CONTEXT_SCHEMA = "warehouse.pages-action-context.v1"
 RESOURCE_ACTION_CONTEXT_SCHEMA = "warehouse.resource-action-context.v1"
-ACTION_CONTEXT_SCHEMAS = frozenset({PAGES_ACTION_CONTEXT_SCHEMA, RESOURCE_ACTION_CONTEXT_SCHEMA})
+RESOURCE_OPERATION_CONTEXT_SCHEMA = "warehouse.resource-operation-context.v1"
+ACTION_CONTEXT_SCHEMAS = frozenset(
+    {
+        PAGES_ACTION_CONTEXT_SCHEMA,
+        RESOURCE_ACTION_CONTEXT_SCHEMA,
+        RESOURCE_OPERATION_CONTEXT_SCHEMA,
+    }
+)
 
 _ACTION_KEY = re.compile(r"^[a-z][a-z0-9_.:-]{2,159}$")
 _RESOURCE_TYPE = re.compile(r"^[a-z][a-z0-9_.:-]{1,127}$")
 _RESOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,159}$")
 _TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{2,127}$")
+_ARGUMENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_ARGUMENT_VALUE = re.compile(r"^[^\x00\r\n]{1,240}$")
+
+
+def _argument_map(value: object, *, limit: int = 8) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    bounded: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        item = str(raw_value or "").strip()
+        if not _ARGUMENT_NAME.fullmatch(key) or not _ARGUMENT_VALUE.fullmatch(item):
+            continue
+        bounded[key] = item
+        if len(bounded) >= limit:
+            break
+    return bounded
+
+
+def _argument_choices(value: object, *, limit: int = 8) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    bounded: dict[str, list[str]] = {}
+    for raw_key, raw_values in value.items():
+        key = str(raw_key or "").strip()
+        if not _ARGUMENT_NAME.fullmatch(key) or not isinstance(raw_values, list):
+            continue
+        choices: list[str] = []
+        for raw_value in raw_values:
+            item = str(raw_value or "").strip()
+            if _ARGUMENT_VALUE.fullmatch(item) and item not in choices:
+                choices.append(item)
+            if len(choices) >= 32:
+                break
+        if choices:
+            bounded[key] = choices
+        if len(bounded) >= limit:
+            break
+    return bounded
 
 
 def _resource_reference(value: object) -> dict[str, str] | None:
@@ -94,8 +141,47 @@ def bounded_action_context(
         if len(suggested) >= 8:
             break
     bounded["suggested_tool_names"] = suggested
-    bounded["trust_boundary"] = (
-        "Control-surface resource and intent hint only; not live evidence, tool "
-        "selection, authorization, workflow prescription or proof of completion."
-    )
+    if schema == RESOURCE_OPERATION_CONTEXT_SCHEMA:
+        operation_tool_name = str(value.get("operation_tool_name") or "").strip()
+        if not _TOOL_NAME.fullmatch(operation_tool_name):
+            return None
+        if active is not None and operation_tool_name not in active:
+            return None
+        observation_tool_names: list[str] = []
+        for item in value.get("observation_tool_names") or []:
+            name = str(item or "").strip()
+            if not _TOOL_NAME.fullmatch(name) or (active is not None and name not in active):
+                continue
+            if name != operation_tool_name and name not in observation_tool_names:
+                observation_tool_names.append(name)
+            if len(observation_tool_names) >= 4:
+                break
+        resource_argument_name = str(value.get("resource_argument_name") or "id").strip()
+        if not _ARGUMENT_NAME.fullmatch(resource_argument_name):
+            return None
+        defaults = _argument_map(value.get("operation_defaults"))
+        choices = _argument_choices(value.get("operation_choices"))
+        for key, default in defaults.items():
+            if key in choices and default not in choices[key]:
+                return None
+        bounded.update(
+            {
+                "operation_tool_name": operation_tool_name,
+                "observation_tool_names": observation_tool_names,
+                "resource_argument_name": resource_argument_name,
+                "operation_defaults": defaults,
+                "operation_choices": choices,
+                "trust_boundary": (
+                    "Control-surface operation scope and immutable resource identity; "
+                    "not live evidence, authorization or proof of completion. Capability "
+                    "execution must still re-observe state and enforce permissions, "
+                    "confirmation and transaction invariants."
+                ),
+            }
+        )
+    else:
+        bounded["trust_boundary"] = (
+            "Control-surface resource and intent hint only; not live evidence, tool "
+            "selection, authorization, workflow prescription or proof of completion."
+        )
     return bounded
