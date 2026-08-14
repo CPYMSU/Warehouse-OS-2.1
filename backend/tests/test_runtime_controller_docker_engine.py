@@ -903,6 +903,45 @@ def test_runtime_orphan_reconcile_stops_only_nonresident_managed_containers(
     assert controller.reconcile_orphan_runtime_containers() == 0
 
 
+def test_staged_healthy_runtime_is_resident_before_activation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = UUID("00000000-0000-0000-0000-000000000096")
+    statements: list[str] = []
+
+    class _Result:
+        def scalars(self) -> _Result:
+            return self
+
+        def __iter__(self):
+            return iter(
+                [
+                    {
+                        "container_names": ["warehouse-runtime-staged"],
+                        "runtime_kind": "python",
+                        "execution_mode": "service",
+                    }
+                ]
+            )
+
+    class _Session:
+        def execute(self, statement: object, *_args: object, **_kwargs: object) -> _Result:
+            statements.append(str(statement))
+            return _Result()
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id: UUID):
+        yield _Session()
+
+    controller = runtime_controller.RuntimeController(Settings())
+    monkeypatch.setattr(controller, "_tenants", lambda: [tenant_id])
+    monkeypatch.setattr(runtime_controller.base, "tenant_session", fake_tenant_session)
+
+    assert controller._resident_runtime_container_names() == {"warehouse-runtime-staged"}
+    assert "active_deployment_id" not in statements[0]
+    assert "FROM digital_asset.deployments AS d" in statements[0]
+
+
 def test_runtime_lifecycle_stops_idle_container_and_wakes_same_container(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

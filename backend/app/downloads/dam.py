@@ -465,7 +465,11 @@ def _parser() -> argparse.ArgumentParser:
     job.add_argument("--source", dest="source_version_id", required=True)
     job_selector = job.add_mutually_exclusive_group(required=True)
     job_selector.add_argument("--name", dest="job_name", help="manifest 聲明的 lifecycle job")
-    job_selector.add_argument("--command", help="工作區邊界內的顯式一次性命令")
+    job_selector.add_argument(
+        "--command",
+        dest="job_command",
+        help="工作區邊界內的顯式一次性命令",
+    )
     job.add_argument("--component", default="job")
     job.add_argument("--runtime", help="例如 python3.12 或 node20")
     job.add_argument("--profile", dest="runtime_profile")
@@ -740,7 +744,7 @@ def main() -> None:
             for key, value in {
                 "source_version_id": args.source_version_id,
                 "job": args.job_name,
-                "command": args.command,
+                "command": args.job_command,
                 "component": args.component,
                 "runtime": args.runtime,
                 "runtime_profile": args.runtime_profile,

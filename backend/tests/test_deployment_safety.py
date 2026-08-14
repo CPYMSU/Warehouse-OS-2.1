@@ -175,6 +175,53 @@ def test_static_deployment_acceptance_does_not_require_an_internal_url(
     assert accepted["evidence"]["http"][0]["name"] == "static-root"
 
 
+def test_candidate_acceptance_requests_runtime_wake_before_private_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment_id = UUID("00000000-0000-0000-0000-000000000104")
+    statements: list[str] = []
+
+    class _Result:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def scalar_one_or_none(self) -> object:
+            return self.value
+
+        def mappings(self) -> _Result:
+            return self
+
+        def one_or_none(self) -> object:
+            return self.value
+
+    class _Session:
+        def execute(
+            self,
+            statement: object,
+            _parameters: dict[str, object] | None = None,
+        ) -> _Result:
+            sql = str(statement)
+            statements.append(sql)
+            if "UPDATE digital_asset.deployments" in sql:
+                return _Result("wake_requested")
+            return _Result({"runtime_state": "running", "runtime_wake_error": None})
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id: UUID):
+        yield _Session()
+
+    monkeypatch.setattr(deployment_acceptance, "tenant_session", fake_tenant_session)
+
+    deployment_acceptance._ensure_candidate_runtime_running(
+        _credential(),
+        deployment_id,
+        Settings(runtime_wake_timeout_seconds=1),
+    )
+
+    assert "SET runtime_state='wake_requested'" in statements[0]
+    assert any("SELECT runtime_state,runtime_wake_error" in sql for sql in statements)
+
+
 class _ScalarResult:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -203,6 +250,116 @@ def test_database_gate_ignores_workspace_history_for_database_free_release() -> 
     assert observed["ready"] is True
     assert observed["required"] is False
     assert observed["reason"] == "deployment_declares_no_database_access"
+
+
+def test_database_gate_uses_current_v23_lifecycle_instead_of_fabric_history() -> None:
+    source_id = "00000000-0000-0000-0000-000000000106"
+    job_id = UUID("00000000-0000-0000-0000-000000000107")
+    statements: list[str] = []
+
+    class _Result:
+        def __init__(
+            self,
+            *,
+            scalar: object = None,
+            mapping: dict[str, object] | None = None,
+            rows: list[dict[str, object]] | None = None,
+        ) -> None:
+            self.scalar = scalar
+            self.mapping = mapping
+            self.rows = rows or []
+
+        def scalar_one_or_none(self) -> object:
+            return self.scalar
+
+        def mappings(self) -> _Result:
+            return self
+
+        def one_or_none(self) -> dict[str, object] | None:
+            return self.mapping
+
+        def __iter__(self):
+            return iter(self.rows)
+
+    class _Session:
+        def execute(
+            self,
+            statement: object,
+            parameters: dict[str, object] | None = None,
+        ) -> _Result:
+            sql = str(statement)
+            statements.append(sql)
+            if "SELECT config FROM digital_asset.workspaces" in sql:
+                return _Result(scalar={"database_policy": {"mode": "platform_managed"}})
+            if "FROM digital_asset.database_bindings" in sql:
+                return _Result(
+                    mapping={
+                        "id": UUID("00000000-0000-0000-0000-000000000108"),
+                        "status": "ready",
+                        "provider_key": "postgresql",
+                        "capabilities": {"vector_extension": True},
+                        "config": {},
+                    }
+                )
+            if "FROM digital_asset.deployments" in sql:
+                assert parameters is not None
+                assert parameters["source_version_id"] == source_id
+                return _Result(
+                    rows=[
+                        {
+                            "id": job_id,
+                            "status": "ready",
+                            "health": "healthy",
+                            "requested_config": {
+                                "lifecycle_job": {
+                                    "name": "migrate",
+                                    "contract_digest": "current-contract",
+                                }
+                            },
+                        }
+                    ]
+                )
+            if "FROM digital_asset.database_backups" in sql:
+                return _Result(
+                    mapping={
+                        "id": UUID("00000000-0000-0000-0000-000000000109"),
+                        "sha256": "a" * 64,
+                        "metadata": {
+                            "checksum_verified": True,
+                            "restore_verified": True,
+                        },
+                        "completed_at": None,
+                    }
+                )
+            raise AssertionError(sql)
+
+    observed = database_release.observe_database_release_gate(
+        _Session(),
+        UUID("00000000-0000-0000-0000-000000000102"),
+        deployment_config={
+            "source_version_id": source_id,
+            "database_access": "runtime",
+            "compatibility_contract": {
+                "schema": "warehouse.hosting-application.v2.3",
+                "contract_digest": "current-contract",
+                "lifecycle": {
+                    "jobs": [
+                        {
+                            "name": "migrate",
+                            "database_access": "migration",
+                            "required_before_activation": True,
+                        }
+                    ]
+                },
+                "acceptance": {"database": {"counts": []}},
+            },
+        },
+    )
+
+    assert observed["ready"] is True
+    assert observed["migration_evidence_source"] == "deployment_lifecycle"
+    assert observed["migrations"][0]["deployment_id"] == str(job_id)
+    assert not any("digital_asset.hosting_resources" in sql for sql in statements)
 
 
 def test_verified_application_url_requires_public_route_evidence(

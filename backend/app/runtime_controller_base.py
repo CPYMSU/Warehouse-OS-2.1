@@ -2258,6 +2258,14 @@ class RuntimeController:
         return repaired
 
     def _resident_runtime_container_names(self) -> set[str]:
+        """Return every healthy service Runtime that still owns live containers.
+
+        Staged candidates are intentionally included.  They must remain reachable
+        for private acceptance before the workspace active pointer is switched.
+        Idle candidates are released through the normal Runtime lifecycle instead
+        of being mistaken for Docker orphans immediately after a successful build.
+        """
+
         names: set[str] = set()
         for tenant_id in self._tenants():
             with tenant_session(tenant_id) as session:
@@ -2265,13 +2273,13 @@ class RuntimeController:
                     text(
                         """
                         SELECT d.result
-                        FROM digital_asset.workspaces AS w
-                        JOIN digital_asset.deployments AS d
-                          ON d.id=w.active_deployment_id
+                        FROM digital_asset.deployments AS d
                         WHERE d.status='ready' AND d.health='healthy'
                           AND d.runtime_state IN (
                             'wake_requested','waking','running','suspending'
                           )
+                          AND d.result->>'runtime_kind' IN ('python','node','container')
+                          AND COALESCE(d.result->>'execution_mode','service')='service'
                         """
                     )
                 ).scalars()

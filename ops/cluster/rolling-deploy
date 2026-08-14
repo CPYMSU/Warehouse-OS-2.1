@@ -199,10 +199,12 @@ primary_migration="$(awk -F= '$1 == "migration_required" {print $2; exit}' "${pr
 standby_migration="$(awk -F= '$1 == "migration_required" {print $2; exit}' "${standby_plan_file}")"
 [[ "${primary_migration}" =~ ^[01]$ && "${standby_migration}" =~ ^[01]$ ]] \
   || fail "prepared migration impact is invalid"
-[[ "${primary_migration}" == "${standby_migration}" ]] \
-  || fail "node migration impact plans disagree"
+migration_required=0
+if [[ "${primary_migration}" == 1 || "${standby_migration}" == 1 ]]; then
+  migration_required=1
+fi
 
-if [[ "${primary_migration}" == 1 ]]; then
+if [[ "${migration_required}" == 1 ]]; then
   printf '==> background database gate: standby schema, then primary data\n'
   # Both prepares only build and validate code. The database phase is explicit:
   # bootstrap the fenced subscriber if needed, apply standby schema first, then

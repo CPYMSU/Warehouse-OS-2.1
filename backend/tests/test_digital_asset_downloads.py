@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.api import digital_assets
 from app.api.deps import ActorContext, current_actor
+from app.downloads import dam
 from app.main import app
 from app.services.auto_runtime import _safe_download_markers
 from app.terminal import executor, legacy_catalog
@@ -31,6 +32,20 @@ def _actor() -> ActorContext:
         topology_title="Owner",
         permissions=frozenset({"ai.use", "asset_mgmt.manage"}),
     )
+
+
+def test_dm_job_command_does_not_overwrite_top_level_command() -> None:
+    declared = dam._parser().parse_args(["job", "--source", "source-id", "--name", "migrate"])
+    explicit = dam._parser().parse_args(
+        ["job", "--source", "source-id", "--command", "python migrate.py"]
+    )
+
+    assert declared.command == "job"
+    assert declared.job_name == "migrate"
+    assert declared.job_command is None
+    assert explicit.command == "job"
+    assert explicit.job_name is None
+    assert explicit.job_command == "python migrate.py"
 
 
 def test_21_guide_and_cli_are_downloadable_without_legacy_runtime_paths() -> None:

@@ -398,7 +398,9 @@ def test_code_only_release_does_not_inspect_or_reconcile_databases() -> None:
     assert "alembic current" not in primary_validation
     assert "alembic current" not in candidate_validation
     assert 'hosted_database=unchanged action=skipped reason=code_only' in server
-    assert 'if [[ "${primary_migration}" == 1 ]]; then' in cluster
+    assert 'if [[ "${migration_required}" == 1 ]]; then' in cluster
+    assert '"${primary_migration}" == 1 || "${standby_migration}" == 1' in cluster
+    assert "node migration impact plans disagree" not in cluster
     assert 'database phase skipped (code-only release)' in cluster
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
@@ -24,6 +25,104 @@ from app.services.digital_asset_hosting import WorkspaceCredential, _json_safe
 
 _INTERNAL_URL = re.compile(r"^http://[a-zA-Z0-9_.-]+:[0-9]{1,5}$")
 _MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+def _ensure_candidate_runtime_running(
+    credential: WorkspaceCredential,
+    deployment_id: UUID,
+    settings: Settings,
+) -> None:
+    """Wake a staged Runtime and wait for its controller health gate.
+
+    Acceptance can happen immediately after a build or after scale-to-zero has
+    suspended the candidate.  Always requesting an idempotent wake also repairs
+    the legacy state where an orphan reconciliation stopped the container while
+    the database still said ``running``.
+    """
+
+    with tenant_session(credential.tenant_id) as session:
+        state = session.execute(
+            text(
+                """
+                UPDATE digital_asset.deployments
+                SET runtime_state='wake_requested',
+                    runtime_last_request_at=now(),
+                    runtime_wake_requested_at=now(),
+                    runtime_state_changed_at=now(),
+                    runtime_wake_error=NULL
+                WHERE id=:deployment_id AND workspace_id=:workspace_id
+                  AND status='ready' AND health='healthy'
+                RETURNING runtime_state
+                """
+            ),
+            {
+                "deployment_id": deployment_id,
+                "workspace_id": credential.workspace_id,
+            },
+        ).scalar_one_or_none()
+    if state is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "candidate_runtime_wake_failed",
+                "message": "Only a healthy service Runtime can be woken for acceptance",
+                "deployment_id": str(deployment_id),
+                "retryable": False,
+            },
+        )
+
+    deadline = time.monotonic() + max(1.0, float(settings.runtime_wake_timeout_seconds))
+    observed_state = str(state)
+    observed_error = ""
+    while time.monotonic() < deadline:
+        with tenant_session(credential.tenant_id) as session:
+            observed = (
+                session.execute(
+                    text(
+                        """
+                        SELECT runtime_state,runtime_wake_error
+                        FROM digital_asset.deployments
+                        WHERE id=:deployment_id AND workspace_id=:workspace_id
+                          AND status='ready' AND health='healthy'
+                        """
+                    ),
+                    {
+                        "deployment_id": deployment_id,
+                        "workspace_id": credential.workspace_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if observed is None:
+            break
+        observed_state = str(observed.get("runtime_state") or "unknown")
+        observed_error = str(observed.get("runtime_wake_error") or "")
+        if observed_state == "running":
+            return
+        if observed_state == "error":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "candidate_runtime_wake_failed",
+                    "message": observed_error or "Candidate Runtime failed its wake health gate",
+                    "deployment_id": str(deployment_id),
+                    "runtime_state": observed_state,
+                    "retryable": True,
+                },
+            )
+        time.sleep(0.1)
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "reason": "candidate_runtime_wake_timeout",
+            "message": "Candidate Runtime did not become healthy before acceptance timed out",
+            "deployment_id": str(deployment_id),
+            "runtime_state": observed_state,
+            "runtime_wake_error": observed_error or None,
+            "retryable": True,
+        },
+    )
 
 
 def _json_pointer(document: object, pointer: str) -> object:
@@ -418,6 +517,7 @@ def accept_workspace_deployment(
     else:
         if not _INTERNAL_URL.fullmatch(internal_url):
             raise HTTPException(status_code=409, detail="Candidate internal URL is unavailable")
+        _ensure_candidate_runtime_running(credential, candidate_id, settings)
         http_evidence, http_failures = _http_acceptance(internal_url, probes)
         candidate_transport = "private_runtime_network"
     database_evidence, database_failures = _database_acceptance(
