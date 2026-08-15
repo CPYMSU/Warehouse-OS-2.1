@@ -49,6 +49,13 @@ def test_manifest_is_a_single_machine_contract_for_terminal_ai() -> None:
     assert manifest["desired_state"]["runtime"]["type"].endswith("compose")
     assert "accelerator" in manifest["desired_state"]["resources"]["kinds"]
     assert manifest["execution"]["raw_reasoning_exposed"] is False
+    assert manifest["execution"]["release_orchestration"] == {
+        "schema": "warehouse.workspace-release.v1",
+        "doctor": "POST /api/workspaces/v1/releases/plan",
+        "create": "POST /api/workspaces/v1/releases",
+        "server_owned_progress": True,
+        "implicit_activation": False,
+    }
     assert [item["name"] for item in manifest["downloads"]] == [
         "dm.py",
         "dm-guide.md",
@@ -157,7 +164,7 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert kit.status_code == 200
     assert cli.status_code == 200
     assert 'DEFAULT_BASE = "http://testserver"' in cli.text
-    assert 'VERSION = "2.7.0"' in cli.text
+    assert 'VERSION = "2.8.0"' in cli.text
     assert "/api/workspaces/v1/usage" in cli.text
     assert 'commands.add_parser("job"' in cli.text
     assert 'commands.add_parser("database"' in cli.text
@@ -165,6 +172,9 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert 'source_subcommands.add_parser("pull"' in cli.text
     assert '"/api/hosting/v2/sessions"' in cli.text
     assert 'commands.add_parser("hosting"' in cli.text
+    assert 'commands.add_parser("release"' in cli.text
+    assert 'commands.add_parser("project"' in cli.text
+    assert '"/api/workspaces/v1/releases/plan"' in cli.text
     assert '"/api/hosting/v2/requirements"' in cli.text
     assert 'prog="dm.py"' in cli.text
     compile(cli.text, "dm.py", "exec")
@@ -173,6 +183,10 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert "/api/hosting/v2/manifest" in guide.text
     assert requirements.status_code == 200
     assert requirements.json()["version"] == "2.3"
+    assert requirements.json()["release_orchestration"]["schema"] == (
+        "warehouse.workspace-release.v1"
+    )
+    assert requirements.json()["release_orchestration"]["implicit_activation"] is False
     assert standard.status_code == 200
     assert standard.text.startswith("# Warehouse OS《託管應用技術要求 2.3》")
     assert contract.status_code == 200
@@ -251,10 +265,7 @@ def test_intelligent_hosting_routes_are_published_before_api_fallback() -> None:
         "/api/hosting/v2/sessions/{session_id}/source-uploads",
         "/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}",
         "/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}/complete",
-        (
-            "/api/hosting/v2/sessions/{session_id}/source-uploads/"
-            "{upload_id}/parts/{part_no}"
-        ),
+        ("/api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}/parts/{part_no}"),
         "/api/hosting/v2/sessions/{session_id}/sources",
         "/api/hosting/v2/sessions/{session_id}/sources/attach",
         "/api/workspaces/v1/fabric/manifest",

@@ -62,6 +62,17 @@ def requirements_bundle(*, public_surface: str) -> dict[str, object]:
         "ok": True,
         "version": STANDARD_VERSION,
         "schema": STANDARD_SCHEMA,
+        "release_orchestration": {
+            "schema": "warehouse.workspace-release.v1",
+            "cli_version": "2.8.0",
+            "doctor": "python3 dm.py project doctor --source <SOURCE_VERSION_ID>",
+            "run": (
+                "python3 dm.py release run --source <SOURCE_VERSION_ID> "
+                "--idempotency-key <STABLE_KEY>"
+            ),
+            "implicit_activation": False,
+            "server_owned_progress": True,
+        },
         "content": standard_path().read_text(encoding="utf-8"),
         "contract": contract,
         "downloads": requirement_downloads(public_surface=public_surface),

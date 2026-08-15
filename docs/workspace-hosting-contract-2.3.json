@@ -124,13 +124,34 @@
     "filesystem_symlinks_followed": false
   },
   "release_lifecycle": {
+    "orchestration_schema": "warehouse.workspace-release.v1",
+    "plan_endpoint": "POST /api/workspaces/v1/releases/plan",
+    "create_endpoint": "POST /api/workspaces/v1/releases",
+    "server_owned_progress": true,
+    "idempotency_key_required": true,
+    "implicit_activation": false,
     "sequence": [
       "verify immutable source and executable manifest",
-      "run required idempotent lifecycle jobs",
       "build an inactive candidate with read-only source",
+      "run required idempotent lifecycle jobs",
       "probe declared HTTP and RLS-scoped database facts",
       "explicitly activate the accepted candidate",
-      "retain the previous healthy revision for rollback"
+      "verify the exact revision on the public route",
+      "retain or automatically restore the previous healthy revision"
+    ],
+    "resumable_states": [
+      "planned",
+      "candidate_requested",
+      "candidate_ready",
+      "jobs_running",
+      "accepted",
+      "awaiting_activation",
+      "activating",
+      "verified",
+      "failed",
+      "rolled_back",
+      "cancelled",
+      "blocked"
     ],
     "job_database_access": [
       "none",

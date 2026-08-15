@@ -32,14 +32,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from alembic.config import Config
-from alembic.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 from alembic import command
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 
 STATE_SCHEMA = "warehouse.database-migration-state.v1"
 REQUEST_SCHEMA = "warehouse.database-migration-request.v1"
@@ -80,19 +80,14 @@ class MigrationFailure(RuntimeError):
         self.recovery_action = recovery_action
 
 
-def _failure_details(
-    request: MigrationRequest | None, exc: BaseException
-) -> dict[str, object]:
+def _failure_details(request: MigrationRequest | None, exc: BaseException) -> dict[str, object]:
     if isinstance(exc, MigrationFailure):
         details: dict[str, object] = {"error_code": exc.code}
         if exc.recovery_action:
             details["recovery_action"] = exc.recovery_action
         return details
     database_error = getattr(exc, "orig", exc)
-    sqlstate = str(
-        getattr(database_error, "sqlstate", "")
-        or getattr(database_error, "pgcode", "")
-    )
+    sqlstate = str(getattr(database_error, "sqlstate", "") or getattr(database_error, "pgcode", ""))
     if request is not None and request.node_role == "standby" and sqlstate == "42501":
         return {
             "error_code": "standby_ownership_drift",
@@ -110,9 +105,7 @@ def _safe_error(exc: BaseException) -> str:
 
     diagnostics = [str(exc)]
     if isinstance(exc, subprocess.CalledProcessError):
-        diagnostics.extend(
-            value for value in (exc.stderr, exc.stdout) if isinstance(value, str)
-        )
+        diagnostics.extend(value for value in (exc.stderr, exc.stdout) if isinstance(value, str))
     value = " ".join(diagnostics).replace("\x00", " ")
     value = re.sub(
         r"(?i)(password|passwd|pwd|token|secret)\s*[=:]\s*[^\s,;]+",
@@ -236,6 +229,24 @@ def _literal_sql(node: ast.AST) -> str | None:
     return None
 
 
+def _contains_row_mutation(sql: str) -> bool:
+    """Distinguish executed DML from DDL clauses and privilege names.
+
+    ``ON DELETE``, ``BEFORE UPDATE`` and ``GRANT INSERT`` are common parts of
+    schema-only migrations.  A keyword search treated all three as row writes.
+    Only a statement whose operation is DML (including a DML CTE) mutates rows
+    while the migration executes.
+    """
+
+    for statement in sql.split(";"):
+        normalized = re.sub(r"^\s*(?:--[^\n]*(?:\n|$)|/\*.*?\*/\s*)*", "", statement, flags=re.S)
+        if re.match(r"^(?:INSERT|UPDATE|DELETE|MERGE|COPY)\b", normalized, re.IGNORECASE):
+            return True
+        if re.match(r"^WITH\b", normalized, re.IGNORECASE) and SQL_DML.search(normalized):
+            return True
+    return False
+
+
 def _revision_operations(path: Path) -> tuple[bool, bool, list[str]]:
     """Return (has_ddl, has_dml, dynamic_sql_calls) for one migration file."""
 
@@ -260,7 +271,7 @@ def _revision_operations(path: Path) -> tuple[bool, bool, list[str]]:
             dynamic.append(f"line {getattr(node, 'lineno', '?')}")
             continue
         has_ddl = has_ddl or bool(SQL_DDL.search(sql))
-        has_dml = has_dml or bool(SQL_DML.search(sql))
+        has_dml = has_dml or _contains_row_mutation(sql)
     return has_ddl, has_dml, dynamic
 
 
@@ -500,9 +511,7 @@ class DatabaseMigrationController:
                 self.request.target_revision,
                 self.request.node_role,
             )
-            plan_payload = [
-                {"revision": item.revision, "scope": item.scope} for item in plan
-            ]
+            plan_payload = [{"revision": item.revision, "scope": item.scope} for item in plan]
             if not plan:
                 self.state.write(
                     "succeeded",

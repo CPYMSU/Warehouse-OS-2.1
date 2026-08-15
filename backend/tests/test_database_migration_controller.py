@@ -157,8 +157,7 @@ def test_revision_operation_scanner_separates_schema_and_data(tmp_path: Path) ->
     )
     data = tmp_path / "data.py"
     data.write_text(
-        "def upgrade():\n"
-        "    op.execute(\"UPDATE jobs SET state='ready'\")\n",
+        "def upgrade():\n    op.execute(\"UPDATE jobs SET state='ready'\")\n",
         encoding="utf-8",
     )
 
@@ -169,8 +168,7 @@ def test_revision_operation_scanner_separates_schema_and_data(tmp_path: Path) ->
 def test_revision_operation_scanner_detects_alembic_bulk_insert(tmp_path: Path) -> None:
     data = tmp_path / "bulk_data.py"
     data.write_text(
-        "def upgrade():\n"
-        "    op.bulk_insert(account_table, [{'name': 'system'}])\n",
+        "def upgrade():\n    op.bulk_insert(account_table, [{'name': 'system'}])\n",
         encoding="utf-8",
     )
 
@@ -204,9 +202,7 @@ def test_repository_migrations_follow_the_post_baseline_policy() -> None:
     script = ScriptDirectory.from_config(config)
     heads = script.get_heads()
     policy = json.loads(
-        (config_path.parent / "alembic" / "migration-policy.json").read_text(
-            encoding="utf-8"
-        )
+        (config_path.parent / "alembic" / "migration-policy.json").read_text(encoding="utf-8")
     )
 
     assert len(heads) == 1
@@ -239,9 +235,7 @@ def test_standby_refuses_legacy_gap_and_accepts_new_schema_revision(tmp_path: Pa
         schema.revision,
         "standby",
     )
-    assert [(item.revision, item.scope) for item in plan] == [
-        ("next_schema", "schema")
-    ]
+    assert [(item.revision, item.scope) for item in plan] == [("next_schema", "schema")]
 
 
 def test_standby_cursor_bootstrap_requests_safe_reseed_without_primary_revision() -> None:
@@ -347,7 +341,7 @@ def test_controller_noop_primary_and_standby_jobs_use_independent_cursors(
                     "schema": REQUEST_SCHEMA,
                     "release_id": f"20260805T15000{name[-1]}Z-abcdef123456-{role}-smart",
                     "git_sha": "abcdef123456",
-                    "target_revision": "20260814_0093",
+                    "target_revision": "20260815_0095",
                     "node_role": role,
                     "requested_at": "2026-08-05T15:00:00Z",
                 }
@@ -369,9 +363,12 @@ def test_controller_noop_primary_and_standby_jobs_use_independent_cursors(
         assert json.loads(standby_status.read_text(encoding="utf-8"))["status"] == "succeeded"
         engine = create_engine(migration_url)
         with engine.connect() as connection:
-            assert connection.execute(
-                text("SELECT version_num FROM app.alembic_version_standby")
-            ).scalar_one() == "20260814_0093"
+            assert (
+                connection.execute(
+                    text("SELECT version_num FROM app.alembic_version_standby")
+                ).scalar_one()
+                == "20260815_0095"
+            )
         engine.dispose()
     finally:
         engine = create_engine(migration_url)

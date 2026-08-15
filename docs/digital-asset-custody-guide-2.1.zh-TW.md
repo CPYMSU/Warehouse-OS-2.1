@@ -217,21 +217,26 @@ python dam.py storage probe
 ```bash
 python dam.py source push ./app.zip --version v1.0.0 --component api
 python dam.py source list
-python dam.py runtime set --type auto --source <source-version-uuid>
-python dam.py deploy request --source <source-version-uuid> --component api
-python dam.py deploy status <deployment-uuid>
-python dam.py deploy logs <deployment-uuid>
+python dam.py project doctor --source <source-version-uuid>
+python dam.py release plan --source <source-version-uuid>
+python dam.py release run --source <source-version-uuid> \
+  --idempotency-key <stable-release-key>
+python dam.py release status <release-uuid>
+python dam.py release activate <release-uuid>
 ```
 
-源碼必須是 ZIP 或 TAR。服務端復算 SHA-256，拒絕絕對路徑、`..`、link、特殊文件、過多項目與解壓炸彈，再以同一交易建立 artifact、asset version 與 custody event。部署 request 只返回 `queued`；Runtime Controller 完成內部及永久入口健康探測後才返回 `ready/healthy`。
+源碼必須是 ZIP 或 TAR。服務端復算 SHA-256，拒絕絕對路徑、`..`、link、特殊文件、過多項目與解壓炸彈，再以同一交易建立 artifact、asset version 與 custody event。`project doctor` 和 `release plan` 是只讀檢查；它們在建立候選前報告 Runtime 類型、權限、資料庫 Job、驗收路徑與互斥聲明。`release run` 建立服務端持久會話，CLI 或網路中斷後 Runtime Controller 仍會繼續，使用原 release ID 可觀察或恢復。
 
-`runtime set` 接受 `auto/static/web/api/worker/agent/container/compose`。`auto` 以受驗證壓縮包的實際證據選擇資料庫中的 Runtime profile；也可用 `--runtime python3.12`、`--runtime node20`、`--entrypoint`、`--start-command` 覆寫。加上 `--deploy` 可在同一原子呼叫配置組件並提交部署；worker/agent 以持續運行程序核驗，不會偽造網站 URL。
+Release 依序建立不接流量的候選、執行必要 lifecycle Job、完成不可變候選驗收，並停在 `awaiting_activation`。顯式激活後，只有公共入口確實返回本次 deployment 證據才成為 `verified`；失敗時平台自動恢復上一健康版本。`--idempotency-key` 在重試時必須保持不變，避免建立重複候選或重跑 Job。
 
-切換到任何既有 healthy revision（包含回滾）使用：
+如需在單一命令中等待並顯式授權激活，可使用：
 
 ```bash
-python dam.py deploy activate <deployment-uuid>
+python dam.py release run --source <source-version-uuid> \
+  --idempotency-key <stable-release-key> --activate
 ```
+
+`runtime set`、`job` 與 `deploy request/status/logs/accept/activate` 仍保留為低階診斷和相容接口，不再是日常發布必須手工拼接的步驟。
 
 ### 4.2 同一把 Key 的 Hosting Fabric
 
@@ -395,6 +400,14 @@ curl -sS -X PUT \
 - `GET /api/workspaces/v1/deployments/{deployment_id}/logs`
 - `POST /api/workspaces/v1/deployments/{deployment_id}/cancel`
 - `POST /api/workspaces/v1/deployments/{deployment_id}/activate`
+- `POST /api/workspaces/v1/releases/plan`（只讀發布預檢）
+- `POST /api/workspaces/v1/releases`（建立可恢復 Release，要求 Idempotency-Key）
+- `GET /api/workspaces/v1/releases[/{release_id}]`
+- `GET /api/workspaces/v1/releases/{release_id}/events`
+- `POST /api/workspaces/v1/releases/{release_id}/resume`
+- `POST /api/workspaces/v1/releases/{release_id}/activate`
+- `POST /api/workspaces/v1/releases/{release_id}/cancel`
+- `POST /api/workspaces/v1/releases/{release_id}/rollback`
 - `PUT /api/workspaces/v1/database/policy`
 - `GET /api/workspaces/v1/database/control`
 - `POST /api/workspaces/v1/database/reconcile`
