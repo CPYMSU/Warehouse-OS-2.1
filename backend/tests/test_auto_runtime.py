@@ -1027,12 +1027,12 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
                 "decisions": [
                     {
                         "tool_name": "digital_market_runtime_upgrade",
-                        "judgment": "execute",
-                        # DeepSeek may place this hand-off marker inside the
-                        # argument object despite the planner instruction.
-                        # Runtime must consume it before terminal validation.
-                        "arguments": {"authorization_action_id": 8},
-                        "reasoning": "現況仍需要已授權的 runtime 升級",
+                        # Even if a model tries to turn an explicitly resumed,
+                        # exact Passkey action back into a question, the
+                        # Keychain contract must make one adapter attempt.
+                        "judgment": "ask_person",
+                        "arguments": {},
+                        "reasoning": "錯誤地再次詢問已確認參數",
                     }
                 ],
                 "completion_assessment": {"complete": False},
@@ -1112,9 +1112,20 @@ def test_authorization_keychain_is_replanned_before_runtime_consumes_it(
     assert consumed["authorization_keychain_id"] == signal["authorization_keychain_id"]
     assert result.tool_results[0]["result"]["action"]["status"] == "completed"
     assert result.confirmation_actions == ()
-    assert reflection_rounds == [1, 2]
+    assert reflection_rounds == [1]
     assert result.reflection["goal_complete"] is True
-    assert result.reflection["reasoning_rounds"][1]["reasoning_only"] is True
+    assert result.reflection["authorized_action_status"] == "completed"
+    assert result.reflection["reasoning_rounds"] == [
+        {
+            "round": 1,
+            "selected_tool_names": ["digital_market_runtime_upgrade"],
+            "executed_tool_names": ["digital_market_runtime_upgrade"],
+            "goal_complete": True,
+            "continue_autonomously": False,
+            "continue_reason": "authorized_action_completed",
+            "grounding_recovery_mode": None,
+        }
+    ]
     delivery_activities = [
         item for item in activities if item.get("phase") == "secure_credential_delivery"
     ]
@@ -1516,6 +1527,99 @@ def test_router_discovery_finds_the_research_key_capability() -> None:
     }
 
 
+def test_router_discovery_distinguishes_runtime_wsk_from_workspace_wak() -> None:
+    query = (
+        "要的是 wsk_ Warehouse AI 秘書／CLI Runtime Key，"
+        "綁定目前登入帳號與目前公司，不需要 workspace、warehouse UUID"
+    )
+    candidates = ai_capability_candidates(query, limit=8)
+
+    assert candidates
+    assert candidates[0]["tool_name"] == "secretary_cli_key_issue"
+    assert candidates[0]["domain"] == "ai"
+    assert candidates[0]["semantic_contract"] == {
+        "resource": "iam.runtime_api_credential",
+        "effect": "issue_current_user_current_company_runtime_credential",
+        "request_kind": "wsk_runtime_api_key",
+        "canonical_identity": "iam.runtime_api_keys",
+        "identity_invariant": (
+            "credential_is_bound_to_requesting_user_and_current_tenant_never_workspace"
+        ),
+        "workspace_policy": "not_applicable_never_request_workspace_or_warehouse_id",
+        "success_evidence": (
+            "credential_metadata_readback_and_one_time_wsk_secret_delivery"
+        ),
+        "workflow_prescribed": False,
+    }
+    assert {
+        str(candidate["tool_name"]) for candidate in candidates
+    }.isdisjoint(
+        {
+            "digital_market_provision",
+            "digital_market_key_issue",
+            "digital_market_primary_key_rotate",
+            "digital_market_key_revoke",
+            "digital_market_keys_list",
+        }
+    )
+
+
+def test_router_binds_one_explicit_wsk_type_discriminator(monkeypatch) -> None:
+    query = (
+        "簽發 wsk_ Warehouse AI 秘書 Runtime Key；"
+        "這不是 wak_ 工作區 Key，也不需要 workspace UUID"
+    )
+    layers = {
+        "L0_permanent_world_map": {
+            "capability_atlas": ai_capability_atlas(),
+            "capability_gene_count": len(ai_capability_gene_index()),
+            "resource_atlas": [],
+        },
+        "L1_current_company_and_people": {
+            "company_summary": {},
+            "current_interaction": {},
+        },
+        "L2_current_goal": {},
+        "L3_execution_working_set": {},
+    }
+
+    monkeypatch.setattr(
+        auto_runtime,
+        "_completion",
+        lambda *_args, **_kwargs: json.dumps(
+            {
+                "interaction_mode": "operational",
+                "understood_goal": query,
+                "message": "",
+                "needs_tools": True,
+                "requires_user_input": False,
+                # Simulate the exact model mistake observed in production.
+                "selected_domains": ["dam"],
+                "selected_families": ["dam:dm"],
+                "context_requests": [],
+                "success_criteria": [],
+                "uncertainties": [],
+                "reasoning": "mistook Runtime Key for workspace Key",
+                "memory_depth": "focused",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    routed, _raw = auto_runtime._route_goal(
+        object(),
+        query,
+        layers,
+        [],
+        context_mode="balanced",
+        activity_callback=None,
+    )
+
+    assert routed["selected_tool_names"] == ["secretary_cli_key_issue"]
+    assert routed["needs_tools"] is True
+    assert routed["interaction_mode"] == "operational"
+
+
 def test_router_discovery_uses_query_salience_for_a_requested_deliverable() -> None:
     candidates = ai_capability_candidates("部署指南 我需要下载", limit=5)
     expanded = ai_capability_candidates("部署指南 我需要下载", limit=10)
@@ -1547,6 +1651,7 @@ def test_runtime_can_expand_one_dynamic_command_family_without_domain_rules() ->
     assert index
     assert {item["family"] for item in index} == {"wf"}
     assert {"wf_inbox", "wf_workflows"}.issubset({str(item["tool_name"]) for item in index})
+    assert all("semantic_contract" in item for item in index)
 
 
 def test_authority_projection_joins_observed_references_without_business_rules() -> None:

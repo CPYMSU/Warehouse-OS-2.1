@@ -228,7 +228,6 @@ def test_deepseek_flash_distinguishes_manuscript_refinement_effects() -> None:
             "research_manuscript_agent_chat",
             "research_manuscript_annotate",
             "research_manuscript_finding_reject",
-            "research_manuscript_draft_save",
             "research_document_annotate",
         }
     )
@@ -300,3 +299,47 @@ def test_deepseek_flash_distinguishes_hosting_bundle_and_workspace_effects() -> 
             "digital_market_db_exec",
         }
     )
+
+
+def test_deepseek_flash_distinguishes_tenant_wsk_from_workspace_wak() -> None:
+    tool_names = {
+        "secretary_cli_key_issue",
+        "secretary_cli_keys_list",
+        "secretary_cli_key_revoke",
+        "digital_market_provision",
+        "digital_market_key_issue",
+        "digital_market_primary_key_rotate",
+        "digital_market_key_revoke",
+        "digital_market_keys_list",
+    }
+    domain_index = [
+        gene for gene in ai_capability_gene_index() if gene["tool_name"] in tool_names
+    ]
+    goal = (
+        "請簽發一把 wsk_ Warehouse AI 秘書／CLI Runtime Key，"
+        "綁定目前登入帳號與目前公司，scopes 是 assistant,terminal，有效 30 天。"
+        "這不是 wak_ 數字資產工作區 Key，不需要 workspace 或 warehouse UUID。"
+    )
+    selected, _raw = auto_runtime._select_tools(
+        _deepseek_flash(),
+        goal,
+        {
+            "interaction_mode": "operational",
+            "understood_goal": goal,
+            "needs_tools": True,
+            "requires_user_input": False,
+            "selected_domains": ["ai", "dam"],
+            "selected_families": ["ai:ai", "dam:dm"],
+            "context_requests": ["authority"],
+            "success_criteria": ["簽發目前使用者與公司的 wsk_ 並一次性安全交付"],
+            "uncertainties": [],
+            "memory_depth": "focused",
+        },
+        domain_index,
+        [],
+        context_mode="balanced",
+        activity_callback=None,
+    )
+
+    chosen = set(selected["selected_tool_names"])
+    assert chosen == {"secretary_cli_key_issue"}

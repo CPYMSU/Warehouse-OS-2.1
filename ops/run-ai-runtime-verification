@@ -34,4 +34,4 @@ fi
 export WAREHOUSE_REQUIRE_DEEPSEEK_LIVE=1
 export WAREHOUSE_REQUIRE_SECRETARY_E2E=1
 export WAREHOUSE_TEST_VENV="$backend_dir/.venv"
-exec "$repo_dir/ops/run-full-verification"
+exec "$repo_dir/ops/run-full-verification" "$@"

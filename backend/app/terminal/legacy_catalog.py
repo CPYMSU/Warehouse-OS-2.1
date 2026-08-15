@@ -538,7 +538,26 @@ COMMANDS = [
     {
         "command": "ai key issue",
         "tool_name": "secretary_cli_key_issue",
-        "description": "簽發綁定本人與當前公司的 Runtime API Key，可授權 AI、終端與科研 API；明文只安全顯示一次",
+        "description": (
+            "簽發 wsk_ Warehouse AI 秘書／CLI Runtime Key；固定綁定目前登入帳號與目前公司，"
+            "可授權 assistant、terminal 與 research，完全不屬於數字資產工作區，因此不需要也不得索取 "
+            "workspace、warehouse UUID 或 wak_ Key；明文只以一次性安全卡顯示一次"
+        ),
+        "search_aliases": [
+            "wsk",
+            "wsk key",
+            "wsk runtime key",
+            "Warehouse Runtime Key",
+            "Warehouse AI 秘書 CLI Runtime Key",
+            "Warehouse AI 秘书 CLI Runtime Key",
+            "AI 秘書 Runtime Key",
+            "AI 秘书 Runtime Key",
+            "CLI Runtime Key",
+            "綁定目前登入帳號與目前公司",
+            "绑定当前登录账号与当前公司",
+            "不需要 workspace warehouse UUID",
+        ],
+        "routing_discriminators": ["wsk_"],
         "api_method": "POST",
         "api_path": "/api/assistant/cli-keys",
         "permission": "ai.use",
@@ -548,6 +567,20 @@ COMMANDS = [
         "risk": "high",
         "secret_result_fields": ["api_key"],
         "ai_requires_confirmation": True,
+        "semantic_contract": {
+            "resource": "iam.runtime_api_credential",
+            "effect": "issue_current_user_current_company_runtime_credential",
+            "request_kind": "wsk_runtime_api_key",
+            "canonical_identity": "iam.runtime_api_keys",
+            "identity_invariant": (
+                "credential_is_bound_to_requesting_user_and_current_tenant_never_workspace"
+            ),
+            "workspace_policy": "not_applicable_never_request_workspace_or_warehouse_id",
+            "success_evidence": (
+                "credential_metadata_readback_and_one_time_wsk_secret_delivery"
+            ),
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("label", "body.label", "終端用途標籤，如 MacBook 或 CI", default="我的終端"),
             _p("scopes", "body.scopes", "assistant,terminal,research；不得超過本人當前權限"),
@@ -558,7 +591,17 @@ COMMANDS = [
     {
         "command": "ai key list",
         "tool_name": "secretary_cli_keys_list",
-        "description": "列出本人 Runtime API Key 的 hint、scope、到期、使用與吊銷狀態，不返回明文",
+        "description": (
+            "列出目前登入帳號在目前公司的 wsk_ Warehouse Runtime Key 安全元資料："
+            "hint、scope、到期、使用與吊銷狀態；不需要 workspace，且不返回明文"
+        ),
+        "search_aliases": [
+            "列出 wsk key",
+            "查看 Warehouse Runtime Key",
+            "list wsk runtime keys",
+            "list my CLI runtime keys",
+        ],
+        "routing_discriminators": ["wsk_"],
         "api_method": "GET",
         "api_path": "/api/assistant/cli-keys",
         "permission": "ai.use",
@@ -566,13 +609,34 @@ COMMANDS = [
         "execution_identity": "requesting_user",
         "writes": False,
         "risk": "low",
+        "semantic_contract": {
+            "resource": "iam.runtime_api_credential",
+            "effect": "observe_current_user_current_company_runtime_credentials",
+            "request_kind": "wsk_runtime_api_key",
+            "canonical_identity": "iam.runtime_api_keys",
+            "identity_invariant": (
+                "credential_plaintext_and_digest_are_never_returned_and_scope_is_not_workspace"
+            ),
+            "success_evidence": "runtime_credential_metadata_readback",
+            "workflow_prescribed": False,
+        },
         "params": [],
         "examples": ["ai key list"],
     },
     {
         "command": "ai key revoke",
         "tool_name": "secretary_cli_key_revoke",
-        "description": "立即吊銷本人一把 Runtime API Key，不影響其他 Key",
+        "description": (
+            "立即吊銷目前登入帳號在目前公司的一把 wsk_ Warehouse Runtime Key；"
+            "不需要 workspace，且不影響其他 Key"
+        ),
+        "search_aliases": [
+            "吊銷 wsk key",
+            "撤销 Warehouse Runtime Key",
+            "revoke wsk runtime key",
+            "revoke my CLI runtime key",
+        ],
+        "routing_discriminators": ["wsk_"],
         "api_method": "POST",
         "api_path": "/api/assistant/cli-keys/{id}/revoke",
         "permission": "ai.use",
@@ -581,6 +645,17 @@ COMMANDS = [
         "writes": True,
         "risk": "high",
         "ai_requires_confirmation": True,
+        "semantic_contract": {
+            "resource": "iam.runtime_api_credential",
+            "effect": "revoke_one_current_user_current_company_runtime_credential",
+            "request_kind": "wsk_runtime_api_key",
+            "canonical_identity": "iam.runtime_api_keys",
+            "identity_invariant": (
+                "only_the_selected_requesting_user_tenant_credential_is_revoked"
+            ),
+            "success_evidence": "revoked_runtime_credential_status_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("key-id", "path.id", "ai key list 返回的 key id", required=True, ptype="int")
         ],

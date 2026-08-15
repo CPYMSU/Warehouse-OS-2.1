@@ -1338,10 +1338,10 @@ def authorization_signal_for_runtime(
 ) -> dict[str, object]:
     """Validate an authorization Keychain without claiming or executing it.
 
-    The confirmation card is an identity/consent boundary only.  This read-only
-    hand-off gives Auto Runtime enough bounded context to make a fresh decision;
-    the exact encrypted arguments remain server-side until the Runtime explicitly
-    elects to consume this authorization.
+    The confirmation card establishes identity and consent. This read-only
+    hand-off lets Auto Runtime freshly route and observe before it attempts the
+    exact reviewed operation; encrypted arguments remain server-side until the
+    bounded one-use Keychain is consumed at the execution boundary.
     """
 
     keychain_uuid = _as_uuid(authorization_keychain_id)

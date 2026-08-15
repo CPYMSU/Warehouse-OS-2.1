@@ -355,6 +355,11 @@ def expand_capability_domains(
                 if gene["confirmation_required"]
                 else ("write_direct" if gene["writes"] else "read")
             ),
+            # Selection prompts explicitly reason over semantic resource,
+            # effect, kind and identity. Preserve that contract when a domain
+            # is compacted; dropping it here makes lookalike credentials such
+            # as tenant-bound wsk_ and workspace-bound wak_ indistinguishable.
+            "semantic_contract": dict(gene.get("semantic_contract") or {}),
         }
         for gene in genes
     ]

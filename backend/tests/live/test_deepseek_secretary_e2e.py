@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from uuid import uuid4
 
 import pytest
@@ -20,6 +21,7 @@ from app.api.deps import ActorContext, current_actor
 from app.core.security import hash_password
 from app.db.session import system_session, tenant_session
 from app.main import app
+from app.services.passkey_grants import issue_step_up_grant
 from app.services.templates import provision_tenant_template
 
 pytestmark = pytest.mark.integration
@@ -109,6 +111,7 @@ def _actor() -> ActorContext:
         permissions=frozenset(
             {
                 "ai.use",
+                "terminal.use",
                 "settings.manage",
                 "assets.read",
                 "assets.manage",
@@ -303,5 +306,159 @@ def test_real_deepseek_secretary_creates_and_reads_back_business_asset() -> None
         assert turn_messages[1]["content"] == final["message"]
         assert turn_messages[1]["metadata"]["status"] == "succeeded"
         assert turn_messages[1]["metadata"]["engine"] == "deepseek-v4-flash"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_real_deepseek_secretary_issues_tenant_wsk_after_confirmation() -> None:
+    """Prove the secretary distinguishes wsk_, stages consent, and completes issuance."""
+
+    api_key = _require_secretary_e2e()
+    actor = _actor()
+    unique_suffix = uuid4().hex[:12]
+    turn_id = f"secretary-wsk-{unique_suffix}"
+    label = f"DeepSeek Secretary CLI {unique_suffix}"
+
+    app.dependency_overrides[current_actor] = lambda: actor
+    client = TestClient(app)
+    try:
+        configured = client.post(
+            "/api/integrations/deepseek/save",
+            json={"api_key": api_key, "model": "deepseek-v4-flash"},
+        )
+        assert configured.status_code == 200, configured.text
+        assert configured.json()["validation"]["ok"] is True
+
+        request_text = (
+            "請直接準備簽發，不要詢問 workspace 或 warehouse UUID："
+            "我要的是 wsk_ Warehouse AI 秘書／CLI Runtime Key，"
+            "固定綁定目前登入帳號與目前公司，不是 wak_ 數字資產工作區 Key。"
+            f"標籤是「{label}」，scopes 是 assistant,terminal，有效 30 天。"
+            "所有必要欄位都已提供；請使用正確能力並顯示授權卡。"
+        )
+        proposed = client.post(
+            "/api/agent/run/stream",
+            json={
+                "text": request_text,
+                "turn_id": turn_id,
+                "surface": "secretary",
+                "context_mode": "balanced",
+                "locale": "zh-Hant",
+                "language_mode": "fixed",
+            },
+        )
+        assert proposed.status_code == 200, proposed.text
+        proposed_events = _ndjson_events(proposed.text)
+        confirmations = [
+            event for event in proposed_events if event.get("event") == "confirmation_required"
+        ]
+        assert len(confirmations) == 1, proposed_events
+        action = confirmations[0]["action"]
+        assert action["tool_name"] == "secretary_cli_key_issue"
+        assert action["command"] == "ai key issue"
+        assert action["status"] == "pending"
+        assert action["conversation_id"] == confirmations[0]["conversation_id"]
+        assert proposed_events[-1]["status"] == "waiting_confirmation"
+        selected_activities = [
+            event
+            for event in proposed_events
+            if event.get("event") == "runtime_activity"
+            and "secretary_cli_key_issue" in (event.get("selected_tool_names") or [])
+        ]
+        assert selected_activities
+        assert not any(
+            tool_name in (event.get("selected_tool_names") or [])
+            for event in proposed_events
+            for tool_name in (
+                "digital_market_provision",
+                "digital_market_key_issue",
+                "digital_market_primary_key_rotate",
+                "digital_market_key_revoke",
+                "digital_market_keys_list",
+            )
+        )
+
+        # The CI grant represents a successfully verified Passkey ceremony;
+        # the same purpose/resource binding and one-use Keychain as production
+        # are still enforced by the real confirmation and Runtime endpoints.
+        grant_token = "secretary-wsk-passkey-" + secrets.token_urlsafe(32)
+        issue_step_up_grant(
+            actor,
+            token=grant_token,
+            purpose="ai.confirmation.execute",
+            resource={"action_id": action["id"], "revision": action["revision"]},
+            verification={
+                "verified": True,
+                "method": "webauthn",
+                "operator": actor.username,
+            },
+        )
+        credential_client_id = "w2cc_" + secrets.token_urlsafe(24)
+        confirmed = client.post(
+            f"/api/agent/confirmation-actions/{action['id']}/confirm",
+            json={
+                "expected_revision": action["revision"],
+                "step_up_token": grant_token,
+                "credential_client_id": credential_client_id,
+            },
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        confirmed_action = confirmed.json()["action"]
+        assert confirmed_action["status"] == "authorized"
+        continuation = confirmed_action["continuation"]
+
+        resumed = client.post(
+            "/api/agent/run/stream",
+            json={
+                "text": request_text,
+                "turn_id": f"{turn_id}-authorized",
+                "conversation_id": action["conversation_id"],
+                "surface": "secretary",
+                "context_mode": "balanced",
+                "locale": "zh-Hant",
+                "language_mode": "fixed",
+                "resume_confirmation_action_id": action["id"],
+                "authorization_keychain_id": continuation["authorization_keychain_id"],
+            },
+        )
+        assert resumed.status_code == 200, resumed.text
+        resumed_events = _ndjson_events(resumed.text)
+        completed_events = [
+            event
+            for event in resumed_events
+            if event.get("event") == "authorization_completed"
+        ]
+        assert completed_events, json.dumps(resumed_events, ensure_ascii=False, indent=2)
+        completed = completed_events[-1]["action"]
+        assert completed["tool_name"] == "secretary_cli_key_issue"
+        assert completed["status"] == "completed", json.dumps(
+            resumed_events, ensure_ascii=False, indent=2
+        )
+        assert resumed_events[-1]["status"] == "succeeded", json.dumps(
+            resumed_events, ensure_ascii=False, indent=2
+        )
+        assert len(completed["credential_deliveries"]) == 1
+        delivery = completed["credential_deliveries"][0]
+
+        fetched = client.post(
+            f"/api/agent/confirmation-actions/{action['id']}/credential-delivery/fetch",
+            json={
+                "delivery_id": delivery["delivery_id"],
+                "credential_client_id": credential_client_id,
+            },
+        )
+        assert fetched.status_code == 200, fetched.text
+        credentials = fetched.json()["credentials"]
+        assert len(credentials) == 1
+        plaintext = credentials[0]["value"]
+        assert plaintext.startswith(f"wsk_{actor.tenant_slug}_")
+        assert credentials[0]["scopes"] == ["assistant", "terminal"]
+
+        listed = client.get("/api/assistant/cli-keys")
+        assert listed.status_code == 200, listed.text
+        matching = [row for row in listed.json()["keys"] if row.get("label") == label]
+        assert len(matching) == 1
+        assert matching[0]["scopes"] == ["assistant", "terminal"]
+        assert plaintext not in listed.text
     finally:
         app.dependency_overrides.clear()

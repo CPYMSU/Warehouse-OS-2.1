@@ -1729,6 +1729,29 @@ def _route_goal(
             if isinstance(item, dict) and item.get("tool_name")
         }.values()
     )[:12]
+    explicit_candidate_anchors: list[dict[str, str]] = []
+    normalized_goal = str(goal or "").lower()
+    for candidate in catalogue_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        tool_name = str(candidate.get("tool_name") or "")
+        entry = entry_by_tool_name(tool_name)
+        discriminators = [
+            str(value or "").strip().lower()
+            for value in (entry or {}).get("routing_discriminators") or []
+            if str(value or "").strip()
+        ]
+        matched = [value for value in discriminators if value in normalized_goal]
+        if not matched:
+            continue
+        explicit_candidate_anchors.append(
+            {
+                "tool_name": tool_name,
+                "domain": str(candidate.get("domain") or ""),
+                "family": str((entry or {}).get("command") or "").split(maxsplit=1)[0],
+                "matched_discriminator": matched[0],
+            }
+        )
     router_world = {
         "company": l1.get("company_summary") or {},
         "interaction": l1.get("current_interaction") or {},
@@ -1742,6 +1765,7 @@ def _route_goal(
         ],
         "capability_atlas": atlas,
         "catalogue_candidates": catalogue_candidates,
+        "explicit_candidate_anchors": explicit_candidate_anchors,
         "catalogue_candidate_contracts": _parameter_contracts(
             [
                 str(item.get("tool_name"))
@@ -1805,6 +1829,10 @@ def _route_goal(
             "refusal or ask for a justification. Compare semantic effect, canonical resource "
             "and identity invariants before selecting a domain; a shared username is not proof "
             "that two capabilities have the same business effect. A proposal is ready when "
+            "An explicit_candidate_anchor is different: it exists only when the human's "
+            "text contains an exact type identifier declared by that candidate. Treat its "
+            "resource family as a hard type constraint and never substitute a lookalike "
+            "capability from another domain. "
             "every required "
             "schema input can be inferred from the request and all remaining inputs have "
             "catalogue defaults. Optional upload, deployment or refinement can happen in a "
@@ -1919,6 +1947,10 @@ def _route_goal(
     selected_tools = [
         str(name) for name in parsed.get("selected_tool_names") or [] if str(name) in known_by_name
     ]
+    if len(explicit_candidate_anchors) == 1 and not bool(parsed.get("requires_user_input")):
+        anchored_tool = explicit_candidate_anchors[0]["tool_name"]
+        if anchored_tool in known_by_name and anchored_tool not in selected_tools:
+            selected_tools.append(anchored_tool)
     if selected_tools and not selected_domains:
         selected_domains = [str(known_by_name[name]["domain"]) for name in selected_tools]
     if selected_tools and not selected_families:
@@ -2496,6 +2528,66 @@ def _apply_declarative_tool_composition(
     ]
 
 
+def _bind_authorized_execution_decision(
+    decisions: list[dict[str, object]],
+    authorization: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    """Turn an explicit Keychain resume into one exact execution attempt.
+
+    A Passkey confirmation plus a request carrying the matching one-use
+    Keychain is the human's instruction to execute the already-reviewed,
+    encrypted action. The model still routes, observes and plans, but it must
+    not turn that instruction back into a question or silently omit it. The
+    target adapter remains authoritative and may reject stale or invalid state.
+    """
+
+    if not isinstance(authorization, dict):
+        return decisions
+    tool_name = str(authorization.get("tool_name") or "").strip()
+    action_id = authorization.get("action_id")
+    if not tool_name or action_id in (None, ""):
+        return decisions
+
+    bound: list[dict[str, object]] = []
+    matched = False
+    for decision in decisions:
+        if str(decision.get("tool_name") or "").strip() != tool_name:
+            bound.append(decision)
+            continue
+        if matched:
+            continue
+        matched = True
+        bound.append(
+            {
+                **decision,
+                "tool_name": tool_name,
+                "judgment": "execute",
+                "arguments": {},
+                "authorization_action_id": action_id,
+                "reasoning": (
+                    "Execute the exact Passkey-reviewed action from the bounded "
+                    "one-use authorization Keychain"
+                ),
+            }
+        )
+    if not matched:
+        bound.insert(
+            0,
+            {
+                "tool_name": tool_name,
+                "judgment": "execute",
+                "arguments": {},
+                "authorization_action_id": action_id,
+                "reasoning": (
+                    "Execute the exact Passkey-reviewed action from the bounded "
+                    "one-use authorization Keychain"
+                ),
+                "continue_after_result": True,
+            },
+        )
+    return bound
+
+
 def _apply_human_input_decision_boundary(
     reflection: dict[str, object],
     decisions: list[dict[str, object]],
@@ -2520,6 +2612,115 @@ def _apply_human_input_decision_boundary(
             }
         )
     return reflection
+
+
+def _apply_authorized_action_outcome(
+    reflection: dict[str, object],
+    authorization: dict[str, object] | None,
+    tool_results: list[dict[str, object]],
+    *,
+    locale: str,
+) -> str | None:
+    """Make the audited terminal action state authoritative over model prose."""
+
+    if not isinstance(authorization, dict):
+        return None
+    authorized_tool = str(authorization.get("tool_name") or "")
+    authorized_action_id = str(authorization.get("action_id") or "")
+    for item in tool_results:
+        if not isinstance(item, dict) or str(item.get("tool_name") or "") != authorized_tool:
+            continue
+        result = item.get("result")
+        result = result if isinstance(result, dict) else {}
+        action = result.get("action")
+        action = action if isinstance(action, dict) else {}
+        action_id = str(action.get("id") or action.get("action_id") or "")
+        if authorized_action_id and action_id != authorized_action_id:
+            continue
+        status = str(action.get("status") or "").strip().lower()
+        if status not in {"completed", "failed", "cancelled", "expired", "outcome_unknown"}:
+            continue
+        command = str(action.get("command") or authorization.get("command") or authorized_tool)
+        has_delivery = bool(action.get("credential_deliveries"))
+        evidence_id = str(item.get("evidence_id") or "")
+        if status == "completed":
+            if locale == "en":
+                message = (
+                    f"AI Runtime completed {command}. "
+                    + (
+                        "Collect the credential from the one-time secure card below."
+                        if has_delivery
+                        else "The audited business result is available below."
+                    )
+                )
+            elif locale == "zh-Hans":
+                message = (
+                    f"AI Runtime 已完成 {command}。"
+                    + (
+                        "请从下方一次性安全卡领取凭证并立即保存。"
+                        if has_delivery
+                        else "已写入业务系统与审计记录。"
+                    )
+                )
+            else:
+                message = (
+                    f"AI Runtime 已完成 {command}。"
+                    + (
+                        "請從下方一次性安全卡領取憑證並立即保存。"
+                        if has_delivery
+                        else "已寫入業務系統與審計記錄。"
+                    )
+                )
+            reflection.update(
+                {
+                    "message": message,
+                    "goal_complete": True,
+                    "continue_autonomously": False,
+                    "requires_user_input": False,
+                    "continue_reason": "authorized_action_completed",
+                    "next_domains": [],
+                    "next_families": [],
+                    "next_decisions": [],
+                    "claims": [
+                        {
+                            "statement": f"{command} completed",
+                            "requires_evidence": True,
+                            "evidence_refs": [evidence_id] if evidence_id else [],
+                        }
+                    ],
+                }
+            )
+        else:
+            if locale == "en":
+                message = (
+                    f"AI Runtime attempted {command}, but the authorized operation ended "
+                    f"with status {status}. The protected audit record retains the diagnosis."
+                )
+            elif locale == "zh-Hans":
+                message = (
+                    f"AI Runtime 已执行 {command}，但授权操作状态为 {status}；"
+                    "原始诊断已保留在受保护的审计记录中。"
+                )
+            else:
+                message = (
+                    f"AI Runtime 已執行 {command}，但授權操作狀態為 {status}；"
+                    "原始診斷已保留於受保護的審計記錄。"
+                )
+            reflection.update(
+                {
+                    "message": message,
+                    "goal_complete": False,
+                    "continue_autonomously": False,
+                    "requires_user_input": False,
+                    "continue_reason": f"authorized_action_{status}",
+                    "next_domains": [],
+                    "next_families": [],
+                    "next_decisions": [],
+                }
+            )
+        reflection["authorized_action_status"] = status
+        return status
+    return None
 
 
 def _normalise_continuation_decisions(
@@ -3280,6 +3481,7 @@ def run_auto_runtime(
         decisions = _apply_declarative_tool_composition(
             [dict(item) for item in planned.get("decisions") or [] if isinstance(item, dict)]
         )
+        decisions = _bind_authorized_execution_decision(decisions, bounded_authorization)
         capability_metadata = {
             str(item.get("tool_name")): item
             for item in ai_capability_gene_index()
@@ -3530,7 +3732,18 @@ def run_auto_runtime(
             interaction_mode=str(route.get("interaction_mode") or "operational"),
             ledger=_evidence_ledger(normalized_goal, layers, tool_results),
         )
-        if pending_confirmation_actions:
+        authorized_action_status = _apply_authorized_action_outcome(
+            reflection,
+            bounded_authorization,
+            tool_results,
+            locale=normalized_response_locale,
+        )
+        if authorized_action_status is not None:
+            # A terminal, audited action result is the final authority for the
+            # exact one-use Keychain. Do not let a later model round retry the
+            # spent write or replace its outcome with an unrelated question.
+            pass
+        elif pending_confirmation_actions:
             # Confirmation is a generic execution boundary, not a business
             # workflow rule. Keep the staged card as the only valid next step.
             reflection.update(
