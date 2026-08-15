@@ -335,8 +335,7 @@ def _database_acceptance(
                             parameters.append(value)
                     where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(predicates)
                 statement = (
-                    sql.SQL("SELECT count(*)::bigint AS value FROM {}.{}")
-                    .format(
+                    sql.SQL("SELECT count(*)::bigint AS value FROM {}.{}").format(
                         sql.Identifier(str(assertion["schema"])),
                         sql.Identifier(str(assertion["relation"])),
                     )
@@ -373,9 +372,7 @@ def _lifecycle_evidence(
     lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
     jobs = lifecycle.get("jobs") if isinstance(lifecycle.get("jobs"), list) else []
     required = [
-        job
-        for job in jobs
-        if isinstance(job, dict) and bool(job.get("required_before_activation"))
+        job for job in jobs if isinstance(job, dict) and bool(job.get("required_before_activation"))
     ]
     evidence: list[dict[str, object]] = []
     failures: list[str] = []
@@ -412,6 +409,8 @@ def accept_workspace_deployment(
     credential: WorkspaceCredential,
     deployment_id: UUID | int,
     settings: Settings,
+    *,
+    ensure_runtime: bool = True,
 ) -> dict[str, object]:
     """Probe a candidate using its immutable source-declared compatibility contract."""
 
@@ -517,7 +516,8 @@ def accept_workspace_deployment(
     else:
         if not _INTERNAL_URL.fullmatch(internal_url):
             raise HTTPException(status_code=409, detail="Candidate internal URL is unavailable")
-        _ensure_candidate_runtime_running(credential, candidate_id, settings)
+        if ensure_runtime:
+            _ensure_candidate_runtime_running(credential, candidate_id, settings)
         http_evidence, http_failures = _http_acceptance(internal_url, probes)
         candidate_transport = "private_runtime_network"
     database_evidence, database_failures = _database_acceptance(
