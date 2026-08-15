@@ -652,8 +652,42 @@ def _candidate_ready(
             payload={"job": name, "deployment_id": str(job_id)},
             values={"current_job_deployment_id": job_id},
         )
+    candidate_id = UUID(str(row["candidate_deployment_id"]))
+    runtime = _prepare_candidate_runtime_for_acceptance(credential, candidate_id)
+    runtime_error = runtime.get("error")
+    if runtime_error:
+        error = {
+            "reason": "candidate_runtime_wake_failed",
+            "deployment_id": str(candidate_id),
+            "message": str(runtime_error),
+        }
+        return _transition(
+            credential,
+            UUID(str(row["id"])),
+            "candidate_ready",
+            "failed",
+            event_type="candidate_runtime_wake_failed",
+            payload=error,
+            values={"last_error": error},
+        )
+    if not bool(runtime.get("ready")):
+        if bool(runtime.get("requested")):
+            with tenant_session(credential.tenant_id) as session:
+                _release_event(
+                    session,
+                    UUID(str(row["id"])),
+                    credential.tenant_id,
+                    "candidate_runtime_wake_requested",
+                    "candidate_ready",
+                    "candidate_ready",
+                    {"deployment_id": str(candidate_id)},
+                )
+        return False
     accepted = accept_workspace_deployment(
-        credential, UUID(str(row["candidate_deployment_id"])), settings
+        credential,
+        candidate_id,
+        settings,
+        ensure_runtime=False,
     )
     if not bool(accepted.get("accepted")):
         error = {"reason": "candidate_acceptance_failed", "acceptance": accepted}
@@ -675,6 +709,82 @@ def _candidate_ready(
         payload={"deployment_id": str(row["candidate_deployment_id"])},
         values={"evidence": {"acceptance": accepted}},
     )
+
+
+def _prepare_candidate_runtime_for_acceptance(
+    credential: WorkspaceCredential,
+    deployment_id: UUID,
+) -> dict[str, object]:
+    """Request a candidate wake without blocking its owning controller loop.
+
+    The Runtime Controller advances releases and runtime lifecycle work in the
+    same process.  Waiting synchronously here would prevent that process from
+    observing its own ``wake_requested`` transition.  A first pass therefore
+    records an idempotent wake request and yields; a later pass accepts only
+    after the lifecycle reconciler has recorded ``running``.
+    """
+
+    with tenant_session(credential.tenant_id) as session:
+        deployment = (
+            session.execute(
+                text(
+                    """
+                    SELECT status,health,runtime_state,runtime_wake_requested_at,
+                           runtime_wake_error,result
+                    FROM digital_asset.deployments
+                    WHERE id=:deployment_id AND workspace_id=:workspace_id
+                    """
+                ),
+                {
+                    "deployment_id": deployment_id,
+                    "workspace_id": credential.workspace_id,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if deployment is None:
+            return {"ready": False, "error": "Candidate deployment is unavailable"}
+        result = deployment.get("result") if isinstance(deployment.get("result"), dict) else {}
+        if str(result.get("runtime_kind") or "") == "static":
+            return {"ready": True, "requested": False}
+        if deployment["status"] != "ready" or deployment["health"] != "healthy":
+            return {
+                "ready": False,
+                "error": "Only a healthy candidate can be prepared for acceptance",
+            }
+        state = str(deployment.get("runtime_state") or "unknown")
+        if state == "error":
+            return {
+                "ready": False,
+                "error": str(deployment.get("runtime_wake_error") or "Runtime wake failed"),
+            }
+        if state == "running" and deployment.get("runtime_wake_requested_at") is not None:
+            return {"ready": True, "requested": False}
+        if state in {"wake_requested", "waking"}:
+            return {"ready": False, "requested": False}
+        requested = session.execute(
+            text(
+                """
+                UPDATE digital_asset.deployments
+                SET runtime_state='wake_requested',
+                    runtime_last_request_at=now(),
+                    runtime_wake_requested_at=now(),
+                    runtime_state_changed_at=now(),
+                    runtime_wake_error=NULL
+                WHERE id=:deployment_id AND workspace_id=:workspace_id
+                  AND status='ready' AND health='healthy'
+                  AND runtime_state=:observed_state
+                RETURNING id
+                """
+            ),
+            {
+                "deployment_id": deployment_id,
+                "workspace_id": credential.workspace_id,
+                "observed_state": state,
+            },
+        ).scalar_one_or_none()
+    return {"ready": False, "requested": requested is not None}
 
 
 def _observe_job(credential: WorkspaceCredential, row: dict[str, object]) -> bool:

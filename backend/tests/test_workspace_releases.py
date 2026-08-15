@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -61,6 +62,87 @@ def test_runtime_delivery_keeps_database_contracts_valid() -> None:
     jobs = [{"name": "migrate", "database_access": "migration"}]
 
     assert workspace_releases._static_blockers("python", manifest, jobs) == []
+
+
+def test_release_candidate_requests_runtime_wake_without_blocking(monkeypatch) -> None:
+    deployment_id = UUID("00000000-0000-0000-0000-000000000210")
+    statements: list[str] = []
+
+    class _Result:
+        def __init__(self, *, mapping=None, scalar=None):
+            self.mapping = mapping
+            self.scalar = scalar
+
+        def mappings(self):
+            return self
+
+        def one_or_none(self):
+            return self.mapping
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+    class _Session:
+        def execute(self, statement, _parameters=None):
+            sql = str(statement)
+            statements.append(sql)
+            if "SELECT status,health,runtime_state" in sql:
+                return _Result(
+                    mapping={
+                        "status": "ready",
+                        "health": "healthy",
+                        "runtime_state": "running",
+                        "runtime_wake_requested_at": None,
+                        "runtime_wake_error": None,
+                        "result": {"runtime_kind": "container"},
+                    }
+                )
+            return _Result(scalar=deployment_id)
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id):
+        yield _Session()
+
+    monkeypatch.setattr(workspace_releases, "tenant_session", fake_tenant_session)
+
+    result = workspace_releases._prepare_candidate_runtime_for_acceptance(
+        _credential("deploy:read", "deploy:write"), deployment_id
+    )
+
+    assert result == {"ready": False, "requested": True}
+    assert any("SET runtime_state='wake_requested'" in sql for sql in statements)
+
+
+def test_release_candidate_accepts_after_lifecycle_records_running(monkeypatch) -> None:
+    deployment_id = UUID("00000000-0000-0000-0000-000000000211")
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def one_or_none(self):
+            return {
+                "status": "ready",
+                "health": "healthy",
+                "runtime_state": "running",
+                "runtime_wake_requested_at": datetime.now(UTC),
+                "runtime_wake_error": None,
+                "result": {"runtime_kind": "container"},
+            }
+
+    class _Session:
+        def execute(self, _statement, _parameters=None):
+            return _Result()
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id):
+        yield _Session()
+
+    monkeypatch.setattr(workspace_releases, "tenant_session", fake_tenant_session)
+
+    assert workspace_releases._prepare_candidate_runtime_for_acceptance(
+        _credential("deploy:read", "deploy:write"), deployment_id
+    ) == {"ready": True, "requested": False}
 
 
 def test_release_plan_is_side_effect_free_and_reports_missing_scope(monkeypatch) -> None:
