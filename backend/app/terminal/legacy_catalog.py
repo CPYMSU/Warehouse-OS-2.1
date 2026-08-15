@@ -4430,6 +4430,13 @@ COMMANDS = [
         "permission": None,
         "writes": False,
         "risk": "low",
+        "semantic_contract": {
+            "resource": "iam.organization",
+            "effect": "observe_organization_structure",
+            "identity_invariant": "tenant_membership_and_platform_ownership_remain_distinct",
+            "success_evidence": "tenant_scoped_units_positions_and_members_readback",
+            "workflow_prescribed": False,
+        },
         "params": [],
         "examples": ["org structure"],
     },
@@ -4454,6 +4461,13 @@ COMMANDS = [
         "permission": None,
         "writes": False,
         "risk": "low",
+        "semantic_contract": {
+            "resource": "iam.organization_template",
+            "effect": "preview_organization_template_merge",
+            "identity_invariant": "preview_never_mutates_tenant_organization",
+            "success_evidence": "preview_token_and_exact_change_digest",
+            "workflow_prescribed": False,
+        },
         "params": [_p("template", "query.template", "行業模板 key")],
         "examples": ["org preview --template hotel_homestay"],
     },
@@ -4466,6 +4480,14 @@ COMMANDS = [
         "permission": "settings.manage",
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.organization",
+            "effect": "merge_organization_template",
+            "identity_invariant": "custom_data_is_never_deleted_and_occupied_units_are_preserved",
+            "precondition": "matching_unexpired_preview_token_and_confirmed_digest",
+            "success_evidence": "template_key_and_complete_organization_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("template", "body.template_key", "行業模板 key", required=True),
             _p(
@@ -4608,6 +4630,13 @@ COMMANDS = [
         "permission_any": ["users.manage", "settings.manage"],
         "writes": True,
         "risk": "normal",
+        "semantic_contract": {
+            "resource": "iam.organizational_unit",
+            "effect": "create_organizational_unit",
+            "identity_invariant": "unit_code_is_unique_within_current_tenant",
+            "success_evidence": "created_unit_readback_in_organization_structure",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("name", "body.unit_name", "部門名稱", required=True),
             _p("code", "body.unit_code", "唯一部門代碼(省略則自動生成)"),
@@ -4626,6 +4655,13 @@ COMMANDS = [
         "permission": "users.manage",
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.organizational_unit",
+            "effect": "update_organizational_unit",
+            "identity_invariant": "tenant_and_unit_identity_are_preserved",
+            "success_evidence": "updated_unit_readback_in_organization_structure",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "部門 id", required=True, ptype="int"),
             _p("name", "body.unit_name", "新部門名稱"),
@@ -4645,6 +4681,14 @@ COMMANDS = [
         "permission": "users.manage",
         "writes": True,
         "risk": "high",
+        "confirmation_policy": {"mode": "passkey", "adapter": "staged_action"},
+        "semantic_contract": {
+            "resource": "iam.organizational_unit",
+            "effect": "archive_empty_organizational_unit",
+            "identity_invariant": "unit_with_members_positions_or_children_cannot_be_archived",
+            "success_evidence": "inactive_unit_readback_in_organization_structure",
+            "workflow_prescribed": False,
+        },
         "params": [_p("id", "path.id", "部門 id", required=True, ptype="int")],
         "examples": ["org department archive --id 8"],
     },
@@ -4658,6 +4702,13 @@ COMMANDS = [
         "permission_any": ["users.manage", "permissions.topology.manage", "settings.manage"],
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.organizational_unit_permission_ceiling",
+            "effect": "replace_department_permission_ceiling",
+            "identity_invariant": "descendants_and_members_cannot_exceed_department_ceiling",
+            "success_evidence": "effective_permission_topology_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "部門 id", required=True, ptype="int"),
             _p(
@@ -4679,6 +4730,13 @@ COMMANDS = [
         "permission_any": ["users.manage", "permissions.topology.manage", "settings.manage"],
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.organizational_unit_navigation_ceiling",
+            "effect": "replace_department_navigation_ceiling",
+            "identity_invariant": "navigation_visibility_never_grants_business_permission",
+            "success_evidence": "effective_navigation_topology_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "部門 id", required=True, ptype="int"),
             _p("modules", "body.modules", "完整導航模塊 id 列表", required=True, ptype="list"),
@@ -4697,6 +4755,13 @@ COMMANDS = [
         "permission": "users.manage",
         "writes": True,
         "risk": "normal",
+        "semantic_contract": {
+            "resource": "iam.position_profile",
+            "effect": "create_position_profile",
+            "identity_invariant": "position_belongs_to_one_current_tenant_department",
+            "success_evidence": "created_position_readback_in_organization_structure",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("name", "body.position_name", "崗位名稱", required=True),
             _p("department", "body.org_unit_id", "所屬部門 id", required=True, ptype="int"),
@@ -4719,6 +4784,13 @@ COMMANDS = [
         "permission": "users.manage",
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.position_profile",
+            "effect": "update_position_profile",
+            "identity_invariant": "position_identity_and_tenant_are_preserved",
+            "success_evidence": "updated_position_readback_in_organization_structure",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "崗位 id", required=True, ptype="int"),
             _p("name", "body.position_name", "新崗位名稱"),
@@ -4739,6 +4811,14 @@ COMMANDS = [
         "permission": "users.manage",
         "writes": True,
         "risk": "high",
+        "confirmation_policy": {"mode": "passkey", "adapter": "staged_action"},
+        "semantic_contract": {
+            "resource": "iam.position_profile",
+            "effect": "archive_empty_position_profile",
+            "identity_invariant": "position_with_active_members_cannot_be_archived",
+            "success_evidence": "inactive_position_readback_in_organization_structure",
+            "workflow_prescribed": False,
+        },
         "params": [_p("id", "path.id", "崗位 id", required=True, ptype="int")],
         "examples": ["org position archive --id 9"],
     },
@@ -4752,6 +4832,13 @@ COMMANDS = [
         "permission_any": ["users.manage", "permissions.topology.manage", "settings.manage"],
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.position_navigation_default",
+            "effect": "replace_position_navigation_default",
+            "identity_invariant": "navigation_visibility_never_grants_business_permission",
+            "success_evidence": "effective_position_navigation_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "崗位 id", required=True, ptype="int"),
             _p("modules", "body.modules", "完整導航模塊 id 列表", required=True, ptype="list"),
@@ -4771,6 +4858,13 @@ COMMANDS = [
         "permission_any": ["users.manage", "permissions.topology.manage", "settings.manage"],
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.member_permission_override",
+            "effect": "replace_member_permission_overrides",
+            "identity_invariant": "direct_allow_cannot_exceed_department_permission_ceiling",
+            "success_evidence": "effective_member_permission_topology_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "用戶 id", required=True, ptype="int"),
             _p("allow", "body.allow", "直接增加的權限鍵列表", ptype="list"),
@@ -4788,6 +4882,13 @@ COMMANDS = [
         "permission_any": ["users.manage", "permissions.topology.manage", "settings.manage"],
         "writes": True,
         "risk": "high",
+        "semantic_contract": {
+            "resource": "iam.member_navigation_override",
+            "effect": "replace_member_navigation_overrides",
+            "identity_invariant": "navigation_visibility_never_grants_business_permission",
+            "success_evidence": "effective_member_navigation_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("id", "path.id", "用戶 id", required=True, ptype="int"),
             _p("allow", "body.allow", "額外顯示的導航模塊 id 列表", ptype="list"),
@@ -10062,6 +10163,15 @@ COMMANDS = [
         "permission": None,
         "writes": True,
         "risk": "normal",
+        "semantic_contract": {
+            "effect": "request_membership_for_existing_identity",
+            "resource": "iam.membership_request",
+            "canonical_identity": "platform.membership_requests",
+            "identity_invariant": "global_login_exists_and_must_not_be_recreated",
+            "request_kind": "join",
+            "success_evidence": "pending_membership_request_readback",
+            "workflow_prescribed": False,
+        },
         "params": [
             _p("slug", "body.slug", "目標公司的企業代碼", required=True, positional=True),
         ],
@@ -10076,6 +10186,14 @@ COMMANDS = [
         "permission": "users.manage",
         "writes": False,
         "risk": "low",
+        "semantic_contract": {
+            "effect": "observe_membership_requests",
+            "resource": "iam.membership_request",
+            "canonical_identity": "platform.membership_requests",
+            "identity_invariant": "global_login_already_exists",
+            "request_kind": "join",
+            "workflow_prescribed": False,
+        },
         "params": [_p("status", "query.status", "狀態(默認 pending)")],
         "examples": ["members pending"],
     },
@@ -10125,6 +10243,7 @@ COMMANDS = [
             "effect": "reject_existing_identity_membership_request",
             "resource": "iam.membership_request",
             "canonical_identity": "platform.membership_requests",
+            "identity_invariant": "global_login_exists_and_must_not_be_recreated",
             "request_kind": "join",
             "workflow_prescribed": False,
         },
@@ -11842,6 +11961,669 @@ COMMANDS = [
         "examples": ["civilization lens upsert --post 00000000-0000-0000-0000-000000000001 --index 0 --revision 3 --name 制度 --text 先看約束"],
     },
 ]
+
+
+# Native research routes predate the semantic capability fabric. Keep their
+# factual resource/effect/invariant/readback contracts in one complete matrix
+# so model discovery cannot silently confuse adjacent paper, evidence, review,
+# execution, or release operations.
+_RESEARCH_SEMANTIC_MATRIX = {
+    "research_api_key_issue": (
+        "research.api_credential",
+        "issue_self_scoped_research_api_credential",
+        "credential_is_bound_to_requesting_user_tenant_and_research_audience",
+        "credential_metadata_readback_and_one_time_secret_delivery",
+    ),
+    "research_api_keys_list": (
+        "research.api_credential",
+        "observe_self_scoped_research_api_credentials",
+        "credential_plaintext_is_never_returned_by_list",
+        "tenant_and_user_scoped_credential_metadata_readback",
+    ),
+    "research_api_key_revoke": (
+        "research.api_credential",
+        "revoke_one_self_scoped_research_api_credential",
+        "other_credentials_remain_unchanged",
+        "revoked_credential_status_readback",
+    ),
+    "research_cli_show": (
+        "research.cli_manifest",
+        "observe_research_cli_manifest",
+        "manifest_observation_never_executes_or_installs_the_cli",
+        "download_checksum_environment_and_operation_manifest_readback",
+    ),
+    "research_formats_list": (
+        "research.format_capability",
+        "observe_research_format_capabilities",
+        "format_capability_observation_never_mutates_project_files",
+        "format_preview_diff_and_upload_limit_readback",
+    ),
+    "research_project_list": (
+        "research.project",
+        "observe_research_projects",
+        "only_current_tenant_projects_are_visible",
+        "project_file_version_and_git_summary_readback",
+    ),
+    "research_project_create": (
+        "research.project",
+        "create_git_backed_research_project",
+        "project_code_and_repository_namespace_are_unique_within_tenant",
+        "created_project_and_repository_readback",
+    ),
+    "research_project_show": (
+        "research.project",
+        "observe_one_research_project",
+        "project_identity_and_tenant_scope_are_preserved",
+        "project_files_versions_and_git_lineage_readback",
+    ),
+    "research_upload_contract": (
+        "research.file_upload_contract",
+        "issue_project_file_upload_contract",
+        "issuing_a_contract_never_uploads_or_versions_file_content",
+        "route_method_limits_and_safe_template_readback",
+    ),
+    "research_git_log": (
+        "research.git_commit",
+        "observe_project_git_history",
+        "observed_native_commits_and_parent_links_are_immutable",
+        "commit_hash_author_parent_and_file_version_readback",
+    ),
+    "research_file_versions": (
+        "research.file_version",
+        "observe_immutable_file_versions",
+        "version_content_hash_and_git_identity_are_immutable",
+        "version_sha256_and_git_commit_readback",
+    ),
+    "research_file_preview": (
+        "research.file_version",
+        "extract_version_pinned_file_preview",
+        "preview_never_mutates_the_selected_file_version",
+        "selected_version_hash_and_preview_payload_readback",
+    ),
+    "research_document_review": (
+        "research.document_review_workspace",
+        "observe_version_pinned_document_review_workspace",
+        "anchors_questions_and_citations_remain_bound_to_one_file_version",
+        "blocks_anchors_concepts_questions_and_citations_readback",
+    ),
+    "research_manuscript_refinement": (
+        "research.manuscript_draft",
+        "start_or_resume_structured_manuscript_draft",
+        "source_file_version_remains_immutable_and_draft_is_recoverable",
+        "draft_source_version_content_hash_and_revision_readback",
+    ),
+    "research_manuscript_semantic_show": (
+        "research.manuscript_semantic_workspace",
+        "observe_manuscript_semantic_workspace",
+        "derived_semantics_never_replace_source_or_draft_content",
+        "translations_distillation_summary_and_reviewer_threads_readback",
+    ),
+    "research_manuscript_semantic_refresh": (
+        "research.manuscript_semantic_run",
+        "queue_incremental_manuscript_semantic_run",
+        "content_hash_and_selected_modes_bound_each_queued_run",
+        "semantic_run_id_modes_scope_digest_and_status_readback",
+    ),
+    "research_manuscript_agent_chat": (
+        "research.manuscript_agent_thread",
+        "append_manuscript_agent_thread_message",
+        "reviewer_threads_are_isolated_and_selection_anchor_is_preserved",
+        "thread_message_agent_type_and_grounded_selection_readback",
+    ),
+    "research_manuscript_annotate": (
+        "research.manuscript_annotation",
+        "create_content_hash_bound_manuscript_annotation",
+        "annotation_anchor_invalidates_when_source_content_changes",
+        "annotation_anchor_content_hash_and_author_readback",
+    ),
+    "research_manuscript_annotation_status": (
+        "research.manuscript_annotation",
+        "set_manuscript_annotation_resolution_status",
+        "anchor_content_and_audit_identity_are_preserved",
+        "annotation_resolution_status_readback",
+    ),
+    "research_manuscript_finding_accept": (
+        "research.manuscript_review_finding",
+        "apply_review_finding_to_manuscript_draft",
+        "source_hash_and_draft_revision_must_still_match",
+        "accepted_finding_and_updated_draft_revision_readback",
+    ),
+    "research_manuscript_finding_reject": (
+        "research.manuscript_review_finding",
+        "reject_review_finding_without_changing_draft",
+        "draft_content_remains_unchanged_and_decision_is_audited",
+        "rejected_finding_status_and_decision_readback",
+    ),
+    "research_manuscript_draft_save": (
+        "research.manuscript_draft",
+        "replace_structured_manuscript_draft_with_revision_lock",
+        "draft_save_never_creates_file_version_or_git_commit",
+        "incremented_draft_revision_and_complete_blocks_readback",
+    ),
+    "research_manuscript_submit": (
+        "research.file_version",
+        "materialize_manuscript_draft_as_immutable_docx_version",
+        "submitted_revision_is_fixed_and_prior_file_versions_remain_immutable",
+        "new_file_version_sha256_git_commit_and_audit_readback",
+    ),
+    "research_document_annotate": (
+        "research.document_annotation",
+        "create_version_pinned_document_annotation",
+        "character_anchor_remains_bound_to_one_immutable_file_version",
+        "annotation_version_anchor_body_and_author_readback",
+    ),
+    "research_document_ask": (
+        "research.document_question",
+        "answer_version_pinned_document_question",
+        "answer_must_reference_the_selected_version_and_exact_blocks",
+        "question_answer_file_version_and_block_citations_readback",
+    ),
+    "research_file_diff": (
+        "research.file_diff",
+        "compare_two_immutable_file_versions",
+        "diff_observation_never_changes_either_file_version",
+        "from_to_version_hashes_and_semantic_or_table_diff_readback",
+    ),
+    "research_workflow_show": (
+        "research.workflow",
+        "observe_complete_research_workflow",
+        "workflow_observation_never_advances_any_research_state",
+        "dmp_protocol_run_claim_evidence_review_and_release_readback",
+    ),
+    "research_dmp_show": (
+        "research.data_management_plan",
+        "observe_current_and_historical_dmp_versions",
+        "historical_dmp_versions_remain_immutable",
+        "current_dmp_and_superseded_history_readback",
+    ),
+    "research_dmp_update": (
+        "research.data_management_plan",
+        "create_next_dmp_version",
+        "prior_dmp_version_is_preserved_and_marked_superseded",
+        "new_current_dmp_version_and_history_readback",
+    ),
+    "research_protocol_list": (
+        "research.protocol",
+        "observe_research_protocols",
+        "protocol_identity_and_locked_versions_are_preserved",
+        "project_protocols_and_lock_status_readback",
+    ),
+    "research_protocol_create": (
+        "research.protocol",
+        "create_reviewable_research_protocol",
+        "protocol_is_bound_to_the_current_tenant_project",
+        "created_protocol_specification_and_status_readback",
+    ),
+    "research_run_list": (
+        "research.run",
+        "observe_research_runs",
+        "run_protocol_and_project_identity_are_preserved",
+        "project_runs_protocols_and_execution_status_readback",
+    ),
+    "research_run_start": (
+        "research.run",
+        "start_audited_research_run",
+        "run_inputs_environment_and_optional_protocol_are_project_bound",
+        "created_run_inputs_environment_protocol_and_status_readback",
+    ),
+    "research_run_complete": (
+        "research.run",
+        "complete_or_terminate_research_run",
+        "existing_run_identity_and_project_scope_are_preserved",
+        "terminal_status_observations_results_and_deviation_readback",
+    ),
+    "research_claim_list": (
+        "research.claim",
+        "observe_research_claims",
+        "claim_evidence_and_review_identity_are_preserved",
+        "claims_evidence_links_and_review_status_readback",
+    ),
+    "research_claim_create": (
+        "research.claim",
+        "create_testable_research_claim",
+        "claim_is_bound_to_current_tenant_project_and_not_self_verified",
+        "created_claim_statement_confidence_and_review_status_readback",
+    ),
+    "research_evidence_link": (
+        "research.claim_evidence",
+        "link_immutable_evidence_to_research_claim",
+        "exactly_one_same_project_file_version_or_run_is_linked",
+        "claim_evidence_relation_target_and_provenance_readback",
+    ),
+    "research_review_list": (
+        "research.formal_review",
+        "observe_formal_research_reviews",
+        "review_target_decision_and_reviewer_identity_are_preserved",
+        "dmp_protocol_claim_and_release_review_records_readback",
+    ),
+    "research_review_submit": (
+        "research.formal_review",
+        "submit_formal_peer_review_decision",
+        "decision_is_bound_to_exact_project_target_and_reviewer_identity",
+        "review_target_decision_comment_and_audit_identity_readback",
+    ),
+    "research_reproduce_check": (
+        "research.reproducibility_check",
+        "freeze_and_assess_research_reproducibility_manifest",
+        "check_records_exact_current_hashes_without_mutating_sources",
+        "frozen_manifest_completeness_findings_and_hash_readback",
+    ),
+    "research_execution_runtimes": (
+        "research.execution_runtime",
+        "observe_research_execution_runtimes",
+        "runtime_observation_never_executes_untrusted_code",
+        "runtime_packages_network_isolation_and_resource_contract_readback",
+    ),
+    "research_execution_list": (
+        "research.execution",
+        "observe_research_executions",
+        "execution_attempt_and_artifact_lineage_are_preserved",
+        "job_status_exit_code_attempt_and_artifact_count_readback",
+    ),
+    "research_execution_submit": (
+        "research.execution",
+        "submit_isolated_research_execution",
+        "entrypoint_and_inputs_are_version_pinned_with_no_shell_or_network",
+        "queued_execution_runtime_inputs_limits_and_status_readback",
+    ),
+    "research_execution_show": (
+        "research.execution",
+        "observe_one_research_execution",
+        "execution_project_attempt_and_input_identity_are_preserved",
+        "execution_status_logs_exit_code_inputs_and_artifacts_readback",
+    ),
+    "research_execution_cancel": (
+        "research.execution",
+        "cancel_cancellable_research_execution",
+        "completed_results_and_existing_artifacts_are_never_deleted",
+        "cancelled_execution_status_and_audit_readback",
+    ),
+    "research_execution_retry": (
+        "research.execution",
+        "retry_terminal_research_execution_as_new_attempt",
+        "prior_attempt_results_remain_immutable_and_lineage_is_preserved",
+        "new_attempt_identity_parent_and_queued_status_readback",
+    ),
+    "research_artifact_promote": (
+        "research.execution_artifact",
+        "promote_execution_artifact_to_project_file_version",
+        "artifact_content_hash_and_execution_provenance_are_preserved",
+        "new_file_version_git_commit_and_artifact_linkage_readback",
+    ),
+    "research_release_list": (
+        "research.release",
+        "observe_research_releases",
+        "release_manifest_and_version_identity_are_immutable",
+        "project_release_codes_status_access_and_hash_readback",
+    ),
+    "research_release_create": (
+        "research.release",
+        "create_immutable_ro_crate_research_release",
+        "reproducibility_and_claim_review_preconditions_must_be_satisfied",
+        "release_code_frozen_manifest_sha256_and_ro_crate_readback",
+    ),
+    "research_release_show": (
+        "research.release",
+        "observe_one_immutable_research_release",
+        "frozen_manifest_sha256_and_ro_crate_identity_are_preserved",
+        "release_metadata_manifest_sha256_and_ro_crate_readback",
+    ),
+}
+
+_research_entries = {
+    str(entry["tool_name"]): entry
+    for entry in COMMANDS
+    if str(entry.get("command") or "").startswith("research ")
+}
+if set(_RESEARCH_SEMANTIC_MATRIX) != set(_research_entries):
+    raise RuntimeError("research semantic matrix must cover every research capability exactly")
+for _tool_name, (_resource, _effect, _invariant, _evidence) in (
+    _RESEARCH_SEMANTIC_MATRIX.items()
+):
+    _research_entries[_tool_name]["semantic_contract"] = {
+        "resource": _resource,
+        "effect": _effect,
+        "identity_invariant": _invariant,
+        "success_evidence": _evidence,
+        "workflow_prescribed": False,
+    }
+
+# The native digital-asset control plane spans asset custody, workspaces,
+# databases, Pages, device runtimes, hosting sessions, and credentials. This
+# matrix preserves the richer contracts already declared inline while making
+# every native-only DAM gene equally explicit for model selection and readback.
+_DAM_SEMANTIC_MATRIX = {
+    "digital_market_summary": (
+        "digital_asset.portfolio_summary",
+        "observe_digital_asset_portfolio_summary",
+        "aggregation_is_limited_to_the_current_tenant",
+        "asset_stage_listing_and_latest_valuation_totals_readback",
+    ),
+    "digital_market_list": (
+        "digital_asset.asset",
+        "observe_tenant_digital_assets",
+        "filters_never_expand_beyond_current_tenant_assets",
+        "asset_identity_valuation_equity_listing_and_compliance_readback",
+    ),
+    "digital_market_show": (
+        "digital_asset.asset",
+        "observe",
+        "asset_identity_is_resolved_without_treating_workspace_key_as_asset_ref",
+        "asset_source_version_and_verified_artifact_hash_readback",
+    ),
+    "digital_market_listings": (
+        "digital_asset.listing",
+        "observe_digital_asset_market_listings",
+        "listing_filters_do_not_mutate_market_state",
+        "listing_asset_status_price_and_availability_readback",
+    ),
+    "digital_market_create": (
+        "digital_asset.asset",
+        "create_digital_asset_master_record",
+        "asset_identity_is_unique_within_current_tenant",
+        "created_asset_number_kind_status_and_source_identity_readback",
+    ),
+    "digital_market_upload": (
+        "digital_asset.artifact",
+        "attach_evidence",
+        "existing_asset_or_workspace_identity_is_preserved_unless_new_asset_is_explicit",
+        "artifact_hash_version_target_relations_and_custody_event_readback",
+    ),
+    "digital_market_update": (
+        "digital_asset.asset",
+        "update_digital_asset_master_record",
+        "asset_number_tenant_and_custody_history_are_preserved",
+        "updated_asset_master_record_readback",
+    ),
+    "digital_market_archive": (
+        "digital_asset.asset",
+        "soft_archive",
+        "custody_version_and_audit_history_are_preserved",
+        "archived_asset_status_and_history_readback",
+    ),
+    "digital_market_version_add": (
+        "digital_asset.source_version",
+        "create_immutable_digital_asset_version",
+        "version_hash_and_parent_asset_identity_are_immutable",
+        "version_number_artifact_uri_hash_dependencies_and_change_log_readback",
+    ),
+    "digital_market_custody": (
+        "digital_asset.custody_event",
+        "append_digital_asset_custody_event",
+        "custody_history_is_append_only_and_asset_identity_is_preserved",
+        "custody_event_type_hash_uri_details_and_actor_readback",
+    ),
+    "digital_market_workspace_create": (
+        "digital_asset.workspace",
+        "create_if_absent",
+        "workspace_key_is_idempotently_bound_to_one_tenant_asset",
+        "workspace_identity_permanent_entry_quota_and_database_binding_readback",
+    ),
+    "digital_market_workspace_storage_switch": (
+        "digital_asset.workspace",
+        "update_if_empty",
+        "workspace_identity_and_data_storage_remain_preserved",
+        "workspace_code_storage_binding_and_precondition_readback",
+    ),
+    "digital_market_workspace_resize": (
+        "digital_asset.workspace_quota",
+        "resize_workspace_storage_quota_with_revision_lock",
+        "asset_and_workspace_identity_are_locked_and_quota_never_shrinks",
+        "updated_quota_revision_delta_and_audit_readback",
+    ),
+    "digital_market_database_create": (
+        "digital_asset.database_binding",
+        "create_isolated_workspace_postgresql_database",
+        "stable_data_api_and_shared_workspace_quota_are_preserved",
+        "database_registry_provider_role_and_binding_readback_without_secrets",
+    ),
+    "digital_market_database_migrate_hdd": (
+        "digital_asset.database_binding",
+        "migrate_workspace_database_binding_to_hdd",
+        "data_api_keys_and_workspace_identity_remain_unchanged",
+        "copy_verification_new_provider_binding_and_rollback_source_readback",
+    ),
+    "digital_market_deploy": (
+        "digital_asset.deployment",
+        "create_verified_asset_deployment_request",
+        "asset_workspace_and_source_version_identity_are_server_verified",
+        "deployment_identity_source_hash_status_and_runtime_receipt_readback",
+    ),
+    "digital_market_runtime_upgrade": (
+        "digital_asset.workspace",
+        "mutate_in_place",
+        "workspace_identity_is_preserved_and_ready_requires_external_observation",
+        "runtime_components_deployment_and_world_health_readback",
+    ),
+    "digital_market_common": (
+        "digital_asset.public_listing",
+        "observe_cross_tenant_common_market_summary",
+        "only_public_conclusion_layer_fields_cross_company_boundaries",
+        "listing_title_equity_price_availability_badge_and_company_readback",
+    ),
+    "digital_market_trades": (
+        "digital_asset.trade",
+        "observe_digital_asset_trade_ledger",
+        "trade_and_gl_voucher_identity_are_immutable",
+        "trade_amount_listing_counterpart_and_gl_voucher_readback",
+    ),
+    "digital_market_revenues": (
+        "digital_asset.revenue_distribution",
+        "observe_digital_asset_revenue_ledger",
+        "holder_share_platform_retention_and_gl_identity_are_preserved",
+        "distribution_amount_holder_share_payment_and_gl_voucher_readback",
+    ),
+    "digital_market_guide": (
+        "digital_asset.hosting_guide",
+        "observe_authoritative_digital_asset_hosting_guide",
+        "guide_observation_never_changes_hosting_state",
+        "guide_version_authoritative_content_and_download_link_readback",
+    ),
+    "digital_market_hosting_requirements": (
+        "digital_asset.hosting_contract",
+        "observe_hosting_application_requirements",
+        "requirements_do_not_claim_an_application_is_ready",
+        "contract_version_supported_runtimes_responsibilities_and_ready_gate_readback",
+    ),
+    "digital_market_hosting_start": (
+        "digital_asset.hosting_session",
+        "start_or_execute_intelligent_hosting_session",
+        "existing_asset_workspace_source_and_hash_identity_are_reused",
+        "session_goal_observations_action_receipts_and_exact_diagnostics_readback",
+    ),
+    "digital_market_hosting_continue": (
+        "digital_asset.hosting_session",
+        "continue_existing_intelligent_hosting_session",
+        "session_goal_context_sources_and_prior_diagnostics_are_preserved",
+        "appended_message_actions_receipts_and_updated_session_state_readback",
+    ),
+    "digital_market_hosting_status": (
+        "digital_asset.hosting_session",
+        "observe_and_refresh_intelligent_hosting_session",
+        "queued_or_configured_state_is_never_reported_as_ready",
+        "session_phase_workspace_world_evidence_diagnostics_and_next_step_readback",
+    ),
+    "digital_market_hosting_events": (
+        "digital_asset.hosting_event",
+        "observe_ordered_intelligent_hosting_events",
+        "event_sequence_and_prior_receipts_are_append_only",
+        "ordered_understanding_observation_source_action_diagnostic_and_health_readback",
+    ),
+    "digital_market_pages_status": (
+        "digital_asset.pages_console",
+        "observe_workspace_pages_control_plane",
+        "pages_observation_never_changes_active_release_or_origin",
+        "canonical_entry_origin_active_history_database_source_and_actions_readback",
+    ),
+    "digital_market_pages_configure": (
+        "digital_asset.pages_configuration",
+        "configure_pages_via_intelligent_hosting_session",
+        "site_key_is_canonical_alias_is_explicit_and_origin_update_is_atomic",
+        "hosting_session_actions_pages_entry_origin_and_release_state_readback",
+    ),
+    "digital_market_pages_design": (
+        "digital_asset.pages_design_context",
+        "observe_source_version_pages_design_context",
+        "active_release_and_immutable_source_version_remain_unchanged",
+        "source_hash_safe_file_index_compute_locations_and_recommendations_readback",
+    ),
+    "digital_market_pages_package": (
+        "digital_asset.pages_package",
+        "observe_immutable_pages_application_package",
+        "package_observation_never_runs_code_or_database_migration",
+        "entry_data_api_functions_device_contract_and_zip_digest_readback",
+    ),
+    "digital_market_pages_design_file": (
+        "digital_asset.source_file",
+        "read_allowlisted_non_secret_design_file",
+        "file_must_belong_to_selected_immutable_source_and_safe_index",
+        "source_version_path_content_hash_encoding_and_content_readback",
+    ),
+    "digital_market_pages_release_activate": (
+        "digital_asset.pages_release",
+        "activate_ready_healthy_pages_release",
+        "historical_source_and_deployment_records_are_never_rewritten",
+        "active_release_pointer_deployment_health_and_entry_readback",
+    ),
+    "digital_market_pages_device_plan": (
+        "digital_asset.device_migration_plan",
+        "calculate_workspace_device_first_migration_plan",
+        "planning_never_changes_runtime_database_or_pages_configuration",
+        "current_state_target_state_actions_origins_and_fallback_plan_readback",
+    ),
+    "digital_market_pages_device_migrate": (
+        "digital_asset.pages_runtime",
+        "migrate_workspace_to_device_first_pages_runtime",
+        "database_schema_is_unchanged_and_browser_rules_remain_default_deny",
+        "static_entry_device_agent_origin_fallback_and_runtime_mode_readback",
+    ),
+    "digital_market_device_runtime": (
+        "digital_asset.device_runtime_manifest",
+        "observe_workspace_device_runtime_manifest",
+        "manifest_never_exposes_secrets_or_unverified_source",
+        "source_download_local_agent_origin_data_api_and_fallback_status_readback",
+    ),
+    "digital_market_storage_pools": (
+        "digital_asset.storage_pool",
+        "observe_hosting_storage_pools",
+        "server_paths_and_credentials_are_never_exposed",
+        "pool_health_watermark_capacity_and_database_policy_readback",
+    ),
+    "digital_market_database_projects": (
+        "digital_asset.database_project",
+        "observe_tenant_database_projects",
+        "dsn_password_key_plaintext_and_browser_tokens_are_never_returned",
+        "asset_workspace_provider_capacity_browser_project_and_security_readback",
+    ),
+    "digital_market_database_registry_reconcile": (
+        "digital_asset.database_project_registry",
+        "reconcile_existing_only",
+        "existing_workspace_database_identity_is_resolved_without_guessing",
+        "canonical_database_project_registry_binding_readback",
+    ),
+    "digital_market_database_project_create": (
+        "digital_asset.database_project",
+        "create_if_absent",
+        "existing_database_binding_is_never_duplicated_or_reassigned",
+        "database_project_asset_workspace_and_binding_readback",
+    ),
+    "digital_market_database_browser_access": (
+        "digital_asset.browser_database_access",
+        "observe_workspace_browser_database_access",
+        "database_credentials_and_browser_session_tokens_are_never_returned",
+        "public_locator_origins_rules_ttls_rate_limit_and_revision_readback",
+    ),
+    "digital_market_database_browser_configure": (
+        "digital_asset.browser_database_access",
+        "configure_workspace_browser_database_access",
+        "origins_are_exact_https_rules_default_deny_and_old_tokens_are_invalidated",
+        "enabled_origins_rules_ttls_rate_limit_and_revision_readback",
+    ),
+    "digital_market_database_onboarding": (
+        "digital_asset.database_onboarding_package",
+        "generate_secure_workspace_database_onboarding_package",
+        "postgres_password_and_server_key_plaintext_are_never_disclosed",
+        "status_sdk_guides_apis_public_locator_quickstart_and_key_policy_readback",
+    ),
+    "digital_market_provision": (
+        "digital_asset.provisioning_bundle",
+        "provision_native_asset_workspace_database_and_primary_key",
+        "tenant_identity_is_fixed_and_storage_policy_changes_only_on_explicit_intent",
+        "asset_workspace_entry_quota_database_binding_key_metadata_and_secret_delivery",
+    ),
+    "digital_market_key_issue": (
+        "digital_asset.workspace_credential",
+        "issue_scoped_subordinate_workspace_credential",
+        "primary_and_other_credentials_are_unchanged_and_scopes_are_bounded",
+        "credential_hint_scopes_expiry_hierarchy_and_one_time_secret_delivery",
+    ),
+    "digital_market_primary_key_rotate": (
+        "digital_asset.workspace_credential",
+        "rotate_primary_workspace_credential",
+        "exactly_one_primary_remains_and_subordinate_credentials_stay_active",
+        "new_primary_old_revocation_hierarchy_and_one_time_secret_delivery",
+    ),
+    "digital_market_key_revoke": (
+        "digital_asset.workspace_credential",
+        "revoke_one_subordinate_workspace_credential",
+        "active_primary_cannot_be_revoked_and_other_credentials_remain_unchanged",
+        "revoked_credential_status_and_unchanged_hierarchy_readback",
+    ),
+    "digital_market_collab_key_issue": (
+        "digital_asset.workspace_credential",
+        "issue_labeled_collaborator_workspace_credential",
+        "credential_grants_only_explicit_scopes_and_does_not_change_primary",
+        "collaborator_label_scopes_expiry_hierarchy_and_one_time_secret_delivery",
+    ),
+    "digital_market_keys_list": (
+        "digital_asset.workspace_credential",
+        "observe_workspace_credential_hierarchy",
+        "credential_plaintext_token_hash_dsn_and_password_are_never_returned",
+        "primary_parent_hint_scopes_expiry_use_and_revocation_metadata_readback",
+    ),
+    "digital_market_collab_key_revoke": (
+        "digital_asset.workspace_credential",
+        "revoke_one_collaborator_workspace_credential",
+        "active_primary_and_unselected_credentials_remain_unchanged",
+        "revoked_collaborator_credential_and_hierarchy_readback",
+    ),
+    "digital_market_console": (
+        "digital_asset.database_schema",
+        "observe_workspace_data_api_schema",
+        "key_plaintext_token_hash_dsn_and_raw_sql_are_never_exposed",
+        "logical_database_collections_fields_and_record_counts_readback",
+    ),
+    "digital_market_db_query": (
+        "digital_asset.collection",
+        "observe_workspace_collection_records",
+        "query_is_tenant_rls_scoped_paginated_and_never_accepts_raw_sql",
+        "database_collection_pagination_and_record_rows_readback",
+    ),
+    "digital_market_db_exec": (
+        "digital_asset.collection_record",
+        "upsert_workspace_collection_record_with_optimistic_lock",
+        "write_is_tenant_rls_scoped_and_never_accepts_raw_sql",
+        "record_key_data_version_and_post_write_readback",
+    ),
+}
+
+_dam_entries = {str(entry["tool_name"]): entry for entry in COMMANDS}
+if not set(_DAM_SEMANTIC_MATRIX).issubset(_dam_entries):
+    raise RuntimeError("DAM semantic matrix references an unknown capability")
+for _tool_name, (_resource, _effect, _invariant, _evidence) in (
+    _DAM_SEMANTIC_MATRIX.items()
+):
+    _entry = _dam_entries[_tool_name]
+    _contract = _entry.setdefault("semantic_contract", {})
+    if _contract.get("resource", _resource) != _resource:
+        raise RuntimeError(f"DAM semantic resource drift: {_tool_name}")
+    if _contract.get("effect", _effect) != _effect:
+        raise RuntimeError(f"DAM semantic effect drift: {_tool_name}")
+    _contract.setdefault("resource", _resource)
+    _contract.setdefault("effect", _effect)
+    _contract.setdefault("identity_invariant", _invariant)
+    _contract.setdefault("success_evidence", _evidence)
+    _contract.setdefault("workflow_prescribed", False)
 
 
 # ============================================================

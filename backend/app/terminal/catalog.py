@@ -21,7 +21,7 @@ from app.terminal.readiness import native_adapter_ready, readiness_snapshot
 if TYPE_CHECKING:
     from app.api.deps import ActorContext
 
-CATALOGUE_REVISION = "capability-truth-v12-task-review.2026-08-09"
+CATALOGUE_REVISION = "capability-truth-v13-coverage-matrix.2026-08-15"
 RETIRED_LIFECYCLES = frozenset({"retired_2_0"})
 
 
@@ -213,6 +213,7 @@ def migration_summary(actor: ActorContext) -> dict[str, object]:
         "retired_tenant_command_count": len(retired),
         "awaiting_domain_adapter_count": len(awaiting),
         "invalid_contract_count": len(invalid),
+        "coverage": capability_coverage_summary(),
         "readiness": readiness_snapshot(),
         "platform_state": "requires_l11_governance",
         "commands": command_catalogue(actor, include_unavailable=True),
@@ -331,6 +332,83 @@ def ai_capability_gene_index() -> list[dict[str, object]]:
                 }
             )
     return genes
+
+
+def capability_coverage_summary() -> dict[str, object]:
+    """Return one authoritative execution-coverage partition for the catalogue.
+
+    Verified registry adapters are available before the ASGI application is
+    assembled. Native adapters, however, are discovered from the concrete
+    FastAPI routes during application construction. A cold catalogue import
+    must therefore be reported as an unresolved route scan rather than as
+    proof of 256 missing business adapters.
+    """
+
+    tenant_live = [entry for entry in tenant_entries() if not is_retired(entry)]
+    platform_live = [entry for entry in platform_entries() if not is_retired(entry)]
+    route_readiness = readiness_snapshot()
+    route_registry_configured = bool(route_readiness.get("configured"))
+
+    verified_names = {
+        str(entry["tool_name"]) for entry in tenant_live if verified_adapter_ready(entry)
+    }
+    native_names = {
+        str(entry["tool_name"]) for entry in tenant_live if native_adapter_ready(entry)
+    }
+    both_names = verified_names & native_names
+    verified_only_names = verified_names - native_names
+    native_only_names = native_names - verified_names
+    uncovered_names = {
+        str(entry["tool_name"])
+        for entry in tenant_live
+        if str(entry["tool_name"]) not in (verified_names | native_names)
+    }
+    invalid_names = {
+        str(entry["tool_name"])
+        for entry in tenant_live
+        if availability(entry) == "invalid_contract"
+    }
+
+    # Before the native route registry is configured, an unmatched catalogue
+    # row is unresolved, not a demonstrated capability gap. Once configured,
+    # the same set is an authoritative gap count.
+    true_gap_count: int | None = None
+    unresolved_route_scan_count = len(uncovered_names)
+    if route_registry_configured:
+        true_gap_count = len(uncovered_names - invalid_names)
+        unresolved_route_scan_count = 0
+
+    executable_names = verified_names | native_names
+    partition_total = (
+        len(verified_only_names)
+        + len(native_only_names)
+        + len(both_names)
+        + len(uncovered_names)
+    )
+    return {
+        "schema": "warehouse.capability-coverage.v1",
+        "catalogue_revision": CATALOGUE_REVISION,
+        "classification_authoritative": route_registry_configured,
+        "route_registry_configured": route_registry_configured,
+        "non_retired_gene_count": len(tenant_live) + len(platform_live),
+        "tenant_non_retired_gene_count": len(tenant_live),
+        "platform_governance_gene_count": len(platform_live),
+        "executable_tenant_gene_count": len(executable_names),
+        "verified_registry_gene_count": len(verified_names),
+        "native_route_gene_count": len(native_names),
+        "verified_registry_only_gene_count": len(verified_only_names),
+        "native_route_only_gene_count": len(native_only_names),
+        "dual_adapter_gene_count": len(both_names),
+        "true_capability_gap_count": true_gap_count,
+        "invalid_contract_count": len(invalid_names),
+        "unresolved_route_scan_count": unresolved_route_scan_count,
+        "all_tenant_genes_executable": bool(
+            route_registry_configured
+            and len(executable_names) == len(tenant_live)
+            and not invalid_names
+        ),
+        "partition_valid": partition_total == len(tenant_live),
+    }
 
 
 def ai_capability_candidates(

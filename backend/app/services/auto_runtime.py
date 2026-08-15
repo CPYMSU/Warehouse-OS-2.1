@@ -183,7 +183,10 @@ def _bound_operation_route(
     )
     route["selected_families"] = list(
         dict.fromkeys(
-            f"{genes[name].get('domain')}:{str(genes[name].get('command') or '').split(maxsplit=1)[0]}"
+            (
+                f"{genes[name].get('domain')}:"
+                f"{str(genes[name].get('command') or '').split(maxsplit=1)[0]}"
+            )
             for name in selected
         )
     )
@@ -1081,6 +1084,28 @@ def _domain_index_prompt(
     *,
     description_chars: int,
 ) -> dict[str, object]:
+    rows: list[list[object]] = []
+    for item in domain_index:
+        if not isinstance(item, dict):
+            continue
+        contract = item.get("semantic_contract")
+        contract = contract if isinstance(contract, dict) else {}
+        rows.append(
+            [
+                item.get("tool_name"),
+                item.get("domain"),
+                item.get("family"),
+                str(item.get("description") or "")[:description_chars],
+                item.get("availability"),
+                item.get("execution_kind"),
+                item.get("mode"),
+                contract.get("resource"),
+                contract.get("effect"),
+                contract.get("request_kind"),
+                contract.get("canonical_identity"),
+                contract.get("identity_invariant"),
+            ]
+        )
     return {
         "columns": [
             "tool_name",
@@ -1090,20 +1115,13 @@ def _domain_index_prompt(
             "availability",
             "execution_kind",
             "mode",
+            "semantic_resource",
+            "semantic_effect",
+            "semantic_kind",
+            "canonical_identity",
+            "identity_invariant",
         ],
-        "rows": [
-            [
-                item.get("tool_name"),
-                item.get("domain"),
-                item.get("family"),
-                str(item.get("description") or "")[:description_chars],
-                item.get("availability"),
-                item.get("execution_kind"),
-                item.get("mode"),
-            ]
-            for item in domain_index
-            if isinstance(item, dict)
-        ],
+        "rows": rows,
     }
 
 
@@ -1965,6 +1983,10 @@ def _select_tools(
             "The top router has already selected relevant domains. Subjectively select only "
             "the exact capability genes whose full schemas and authority relationships must "
             "be expanded. The index is descriptive and has no hidden permission filtering. "
+            "Treat semantic_resource, semantic_effect, semantic_kind, canonical_identity, "
+            "and identity_invariant as exact factual constraints. Differently typed semantic "
+            "kinds are mutually exclusive unless the goal explicitly requests both; never "
+            "select a lookalike gene merely because its description or effect is similar. "
             "Do not infer a fixed workflow. Return JSON only with keys: selected_tool_names "
             "(array using exact tool_name values), context_focus (array), reasoning (string), "
             "memory_depth (index, focused, or deep)."

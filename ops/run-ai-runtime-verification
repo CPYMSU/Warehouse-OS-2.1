@@ -1,0 +1,37 @@
+#!/bin/zsh
+
+emulate -L zsh
+setopt ERR_EXIT NO_UNSET PIPE_FAIL
+umask 077
+
+readonly repo_dir="${0:A:h:h}"
+readonly backend_dir="$repo_dir/backend"
+readonly key_file="${DEEPSEEK_KEY_FILE:-${HOME}/Desktop/KEYS/Deepseek KEY.rtf}"
+
+if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+  [[ -f "$key_file" ]] || {
+    print -u2 -- "DeepSeek key file not found: $key_file"
+    exit 2
+  }
+  if [[ "$key_file" == *.rtf ]]; then
+    key_text="$(/usr/bin/textutil -convert txt -stdout "$key_file")"
+  else
+    key_text="$(<"$key_file")"
+  fi
+  DEEPSEEK_API_KEY="$(
+    print -rn -- "$key_text" |
+      /usr/bin/perl -ne 'if (/(sk-[A-Za-z0-9_-]{8,})/) { print $1; exit }'
+  )"
+  unset key_text
+  export DEEPSEEK_API_KEY
+fi
+
+[[ "$DEEPSEEK_API_KEY" == sk-* ]] || {
+  print -u2 -- "DeepSeek credential could not be loaded safely"
+  exit 2
+}
+
+export WAREHOUSE_REQUIRE_DEEPSEEK_LIVE=1
+export WAREHOUSE_REQUIRE_SECRETARY_E2E=1
+export WAREHOUSE_TEST_VENV="$backend_dir/.venv"
+exec "$repo_dir/ops/run-full-verification"

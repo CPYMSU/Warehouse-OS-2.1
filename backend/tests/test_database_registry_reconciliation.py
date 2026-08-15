@@ -14,6 +14,10 @@ def test_database_registry_reconcile_is_a_native_auto_runtime_capability() -> No
         "resource": "digital_asset.database_project_registry",
         "canonical_identity": "workspace_existing_database_binding",
         "ambiguity_policy": "observe_without_guessing",
+        "identity_invariant": (
+            "existing_workspace_database_identity_is_resolved_without_guessing"
+        ),
+        "success_evidence": "canonical_database_project_registry_binding_readback",
         "workflow_prescribed": False,
     }
 

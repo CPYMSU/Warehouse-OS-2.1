@@ -1440,6 +1440,44 @@ def test_runtime_atlas_is_dynamically_distilled_from_all_capability_genes() -> N
     )
 
 
+def test_capability_selection_index_projects_exact_semantic_constraints() -> None:
+    genes = ai_capability_gene_index()
+    registration = next(
+        gene for gene in genes if gene["tool_name"] == "registration_approve"
+    )
+    membership = next(
+        gene for gene in genes if gene["tool_name"] == "membership_approve"
+    )
+
+    prompt = auto_runtime._domain_index_prompt(
+        [registration, membership],
+        description_chars=150,
+    )
+
+    assert prompt["columns"][-5:] == [
+        "semantic_resource",
+        "semantic_effect",
+        "semantic_kind",
+        "canonical_identity",
+        "identity_invariant",
+    ]
+    rows = {row[0]: row for row in prompt["rows"]}
+    assert rows["registration_approve"][-5:] == [
+        "iam.membership_request",
+        "approve_existing_identity_membership_request",
+        "registration",
+        "platform.membership_requests",
+        "global_login_exists_and_must_not_be_recreated",
+    ]
+    assert rows["membership_approve"][-5:] == [
+        "iam.membership_request",
+        "approve_existing_identity_membership_request",
+        "join",
+        "platform.membership_requests",
+        "global_login_exists_and_must_not_be_recreated",
+    ]
+
+
 def test_router_discovery_prefers_graph_observation_for_workspace_console() -> None:
     candidates = ai_capability_candidates(
         "打開數字資產 mk4 的托管工作區 mk4-workspace 匯報站點 數據庫 API Key 狀態"
@@ -1464,6 +1502,17 @@ def test_router_discovery_finds_the_research_key_capability() -> None:
         "confirmation_required": False,
         "availability": "active",
         "execution_kind": "native_adapter",
+        "semantic_contract": {
+            "resource": "research.api_credential",
+            "effect": "issue_self_scoped_research_api_credential",
+            "identity_invariant": (
+                "credential_is_bound_to_requesting_user_tenant_and_research_audience"
+            ),
+            "success_evidence": (
+                "credential_metadata_readback_and_one_time_secret_delivery"
+            ),
+            "workflow_prescribed": False,
+        },
     }
 
 

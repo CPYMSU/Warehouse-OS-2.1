@@ -27,14 +27,14 @@ no per-tenant database files, and no seeded demonstration data.
 - real `POST /api/auth/login`, `GET /api/auth/me`, `GET /api/bootstrap`, and
   `GET /api/map/zones` compatibility endpoints;
 - shared Auto Runtime boundary: every current AI surface submits a goal to the
-  same observe → understand → plan → act → reflect loop; all 450 capability
+  same observe → understand → plan → act → reflect loop; all 559 non-retired capability
   genes are visible to its layered context, while execution remains bound to
   the current company's identity, PostgreSQL RLS scope, confirmation policy,
   and audit trail;
-- catalogue-driven internal API dispatch: all 428 tenant commands retain their
+- catalogue-driven internal API dispatch: all 537 non-retired tenant commands retain their
   registered method/path/parameter contracts, use native FastAPI routes where
-  available, and otherwise enter the tenant-isolated PostgreSQL capability
-  gateway; the 22 platform commands remain L11-governed;
+  available, and otherwise use a verified tenant-isolated capability adapter;
+  the 22 platform commands remain L11-governed;
 - an interactive command for creating the first real tenant administrator.
 
 Terminal-based research upload and version inspection are documented in
@@ -74,6 +74,13 @@ internet.
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/api/health
 ```
+
+Every AI Runtime upgrade batch must additionally run
+`ops/run-ai-runtime-verification` from the repository root. That gate loads the
+local DeepSeek credential without printing it and requires a real request
+through the AI secretary HTTP surface, actual Runtime capability execution,
+business-state readback, audit evidence, and durable transcript verification.
+Mocked-provider and selector-only tests do not satisfy this acceptance gate.
 
 After signing in, list the provisionable catalogue at
 `GET /api/platform/templates` (also available as `GET /api/industry-templates`)

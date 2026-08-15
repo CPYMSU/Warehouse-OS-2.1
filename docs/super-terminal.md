@@ -31,11 +31,11 @@ is embedded in the Runtime's `observe` event, so the terminal, secretary, and
 model reason from the same visible facts.
 
 `GET /api/runtime/skills` retains the imported Warehouse ability universe as a
-human-visible Skills catalogue. Its 512 entries are searchable by category,
-name, and description: 490 tenant entries and 22 separately L11-governed
+human-visible Skills catalogue. Its 565 entries are searchable by category,
+name, and description: 543 tenant entries and 22 separately L11-governed
 platform entries. Six Warehouse 2.0 site-file contracts remain visible only as
 retired history; they are unavailable to human execution and excluded from AI
-tool schemas, leaving 506 AI-visible genes. Human discovery and
+tool schemas, leaving 559 AI-visible genes. Human discovery and
 execution display the current account's authorization and lifecycle state,
 while Company Runtime receives the complete active current-company
 responsibility map.
@@ -104,10 +104,51 @@ before completion may be claimed.
 The isolated Python runner also stays provider-dependent rather than executing
 untrusted code in the API process.
 
-The final tenant status is 484 active, 0 awaiting-domain-adapter and 6 retired.
-The verified registry contains 272 adapters: 85 reads and 187 writes. The 22
-platform commands remain separately withheld behind L11 governance and are
-not counted as tenant commands. “Active” means a truthful execution adapter is
+AI Runtime architecture changes use a two-layer verification gate. The normal
+backend suite keeps deterministic contract, authorization, transaction and
+readback coverage. `ops/run-ai-runtime-verification` then securely loads the
+DeepSeek credential from `~/Desktop/KEYS/Deepseek KEY.rtf`, provisions the
+disposable PostgreSQL integration database used by `ops/run-full-verification`,
+runs the complete suite, and requires live `deepseek-v4-flash` checks. The
+credential is held only in the pytest child-process environment and is never
+printed, copied into the repository or included in test artifacts.
+
+Every AI Runtime upgrade batch must also pass at least one real secretary E2E
+business scenario. A selector-only or mocked-model test is diagnostic coverage,
+not acceptance evidence. The E2E gate must enter through
+`POST /api/agent/run/stream` with `surface=secretary`, load the encrypted
+tenant-scoped DeepSeek connection, let the shared Runtime select and execute the
+real Adapter, read the resulting business state back from both the public API
+and tenant PostgreSQL, and verify the durable user/assistant transcript, Runtime
+snapshot, custody or domain evidence, and command audit. The first mandatory
+scenario creates a uniquely named digital-asset master record and proves all of
+those evidence sources agree. Live routing gates additionally verify the
+provider JSON contract and that registration approval is not substituted with
+the semantically different company-join approval gene.
+One batched organization gate also requires the model to distinguish department
+creation and update, position archival, and member permission overrides from
+lookalike navigation, template, archival, and appointment genes.
+The research domain has a complete 50-of-50 semantic matrix covering credentials,
+projects, immutable files, manuscript drafts, evidence, reviews, isolated
+executions, and releases. Its live gate distinguishes starting a refinement
+draft, queuing semantic review, accepting a finding, and publishing an immutable
+DOCX version from adjacent read, annotation, rejection, and draft-save genes.
+The native digital-asset domain likewise has a complete 52-of-52 matrix across
+assets, custody, workspaces, hosting sessions, Pages, storage, databases,
+browser access, credentials, and the RLS Data API. Its live gate requires the
+model to keep one-step provisioning, browser-policy configuration, primary-key
+rotation, and read-only collection queries distinct from their component,
+observation, subordinate-key, and write lookalikes.
+
+The final tenant status is 537 active, 0 awaiting-domain-adapter and 6 retired.
+The verified registry contains 281 adapters: 90 reads and 191 writes. Concrete
+FastAPI routes cover 277 genes; 21 genes deliberately have both a native route
+and a verified registry adapter. The remaining 256 genes are native-route-only,
+not capability gaps. The machine-readable coverage matrix is exposed by
+`GET /api/cli/migration-status` and `GET /api/ai/tools`; it reports cold,
+unconfigured route scans as unresolved rather than as proven business gaps.
+The 22 platform commands remain separately withheld behind L11 governance and
+are not counted as tenant commands. “Active” means a truthful execution adapter is
 mounted; a call can still be denied, require confirmation, fail a business
 invariant, report a missing record, or reject an unconfigured provider.
 

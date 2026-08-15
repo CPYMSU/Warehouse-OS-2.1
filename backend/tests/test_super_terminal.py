@@ -15,13 +15,14 @@ from app.services import (
     warehouse_operations,
 )
 from app.services.legacy_capability_runtime import SUPPORTED_CAPABILITY_TOOLS
-from app.terminal import executor, legacy_catalog
-from app.terminal.adapters import verified_adapter_snapshot
+from app.terminal import catalog, executor, legacy_catalog
+from app.terminal.adapters import verified_adapter_ready, verified_adapter_snapshot
 from app.terminal.catalog import (
     ai_capability_candidates,
     ai_capability_gene_index,
     ai_capability_genes,
     availability,
+    capability_coverage_summary,
     platform_entries,
     tenant_entries,
 )
@@ -31,6 +32,7 @@ from app.terminal.gateway import (
     gateway_contract_ready,
     match_contract,
 )
+from app.terminal.readiness import native_adapter_evidence, native_adapter_ready
 
 RESEARCH_TOOLS = {
     entry["tool_name"]
@@ -117,6 +119,212 @@ def test_terminal_advertises_complete_catalogue_with_truthful_states(monkeypatch
     assert status["retired_tenant_command_count"] == 6
     assert status["awaiting_domain_adapter_count"] == 0
     assert status["invalid_contract_count"] == 0
+    assert status["coverage"] == capability_coverage_summary()
+    assert status["coverage"] == {
+        "schema": "warehouse.capability-coverage.v1",
+        "catalogue_revision": "capability-truth-v13-coverage-matrix.2026-08-15",
+        "classification_authoritative": True,
+        "route_registry_configured": True,
+        "non_retired_gene_count": 559,
+        "tenant_non_retired_gene_count": 537,
+        "platform_governance_gene_count": 22,
+        "executable_tenant_gene_count": 537,
+        "verified_registry_gene_count": 281,
+        "native_route_gene_count": 277,
+        "verified_registry_only_gene_count": 260,
+        "native_route_only_gene_count": 256,
+        "dual_adapter_gene_count": 21,
+        "true_capability_gap_count": 0,
+        "invalid_contract_count": 0,
+        "unresolved_route_scan_count": 0,
+        "all_tenant_genes_executable": True,
+        "partition_valid": True,
+    }
+
+
+def test_cold_route_registry_is_unresolved_not_a_proven_capability_gap(monkeypatch) -> None:
+    monkeypatch.setattr(catalog, "readiness_snapshot", lambda: {"configured": False})
+    monkeypatch.setattr(catalog, "native_adapter_ready", lambda _entry: False)
+
+    coverage = catalog.capability_coverage_summary()
+
+    assert coverage["classification_authoritative"] is False
+    assert coverage["route_registry_configured"] is False
+    assert coverage["verified_registry_gene_count"] == 281
+    assert coverage["executable_tenant_gene_count"] == 281
+    assert coverage["unresolved_route_scan_count"] == 256
+    assert coverage["true_capability_gap_count"] is None
+    assert coverage["all_tenant_genes_executable"] is False
+    assert coverage["partition_valid"] is True
+
+
+def test_every_native_only_gene_has_concrete_route_and_policy_evidence() -> None:
+    native_only = [
+        entry
+        for entry in tenant_entries()
+        if availability(entry) == "active"
+        and native_adapter_ready(entry)
+        and not verified_adapter_ready(entry)
+    ]
+
+    assert len(native_only) == 256
+    for entry in native_only:
+        evidence = native_adapter_evidence(entry)
+        assert evidence is not None, entry["tool_name"]
+        assert evidence["method"] == entry["api_method"], entry["tool_name"]
+        assert evidence["contract_path"] == entry["api_path"], entry["tool_name"]
+        assert evidence["captured_before_catch_all"] is True, entry["tool_name"]
+        assert evidence["handlers"], entry["tool_name"]
+        assert all(
+            str(handler).startswith("app.api.")
+            and "capability_gateway" not in str(handler)
+            for handler in evidence["handlers"]
+        ), entry["tool_name"]
+        assert gateway_contract_ready(entry), entry["tool_name"]
+        confirmation = legacy_catalog.confirmation_contract(entry)
+        assert confirmation["mode"] in {"direct", "passkey", "domain_workflow"}
+        assert str(confirmation["adapter"]).strip(), entry["tool_name"]
+        assert legacy_catalog.ai_confirmation_required(entry) is (
+            confirmation["mode"] != "direct"
+        )
+
+
+def test_registration_and_join_genes_bind_distinct_native_business_handlers() -> None:
+    expected = {
+        "registrations_pending": "app.api.full_stack_identity.registration_requests",
+        "registration_approve": "app.api.full_stack_identity.approve_registration",
+        "registration_reject": "app.api.full_stack_identity.reject_registration",
+        "memberships_pending": "app.api.full_stack_identity.pending_membership_requests",
+        "membership_approve": "app.api.full_stack_identity.approve_join_request",
+        "membership_reject": "app.api.full_stack_identity.reject_join_request",
+    }
+
+    for tool_name, handler in expected.items():
+        entry = legacy_catalog.entry_by_tool_name(tool_name)
+        evidence = native_adapter_evidence(entry)
+        assert evidence is not None
+        assert evidence["handlers"] == [handler]
+
+    registration_pending = legacy_catalog.entry_by_tool_name("registrations_pending")
+    join_pending = legacy_catalog.entry_by_tool_name("memberships_pending")
+    registration_approve = legacy_catalog.entry_by_tool_name("registration_approve")
+    join_approve = legacy_catalog.entry_by_tool_name("membership_approve")
+    assert registration_pending["semantic_contract"]["request_kind"] == "registration"
+    assert registration_approve["semantic_contract"]["request_kind"] == "registration"
+    assert join_pending["semantic_contract"]["request_kind"] == "join"
+    assert join_approve["semantic_contract"]["request_kind"] == "join"
+    assert registration_approve["semantic_contract"]["effect"] == (
+        join_approve["semantic_contract"]["effect"]
+    )
+    assert registration_approve["semantic_contract"]["canonical_identity"] == (
+        join_approve["semantic_contract"]["canonical_identity"]
+    )
+
+
+def test_core_organization_genes_expose_distinct_semantic_effects() -> None:
+    expected_effects = {
+        "organization_structure": "observe_organization_structure",
+        "organization_template_preview": "preview_organization_template_merge",
+        "organization_template_apply": "merge_organization_template",
+        "organization_department_create": "create_organizational_unit",
+        "organization_department_update": "update_organizational_unit",
+        "organization_department_archive": "archive_empty_organizational_unit",
+        "organization_department_permissions": (
+            "replace_department_permission_ceiling"
+        ),
+        "organization_department_navigation": (
+            "replace_department_navigation_ceiling"
+        ),
+        "organization_position_create": "create_position_profile",
+        "organization_position_update": "update_position_profile",
+        "organization_position_archive": "archive_empty_position_profile",
+        "organization_position_navigation": "replace_position_navigation_default",
+        "user_permission_overrides_set": "replace_member_permission_overrides",
+        "user_navigation_overrides_set": "replace_member_navigation_overrides",
+    }
+
+    for tool_name, expected_effect in expected_effects.items():
+        entry = legacy_catalog.entry_by_tool_name(tool_name)
+        contract = entry["semantic_contract"]
+        assert contract["effect"] == expected_effect
+        assert str(contract["resource"]).strip()
+        assert str(contract["identity_invariant"]).strip()
+        assert str(contract["success_evidence"]).strip()
+        assert contract["workflow_prescribed"] is False
+
+    for tool_name in {
+        "organization_department_archive",
+        "organization_position_archive",
+    }:
+        entry = legacy_catalog.entry_by_tool_name(tool_name)
+        assert legacy_catalog.confirmation_contract(entry) == {
+            "mode": "passkey",
+            "adapter": "staged_action",
+        }
+        assert legacy_catalog.ai_confirmation_required(entry) is True
+
+
+def test_every_native_dam_gene_has_an_exact_semantic_contract() -> None:
+    dam_entries = {
+        entry["tool_name"]: entry
+        for entry in tenant_entries()
+        if legacy_catalog.capability_summary(entry)["category"] == "dam"
+        and availability(entry) == "active"
+        and native_adapter_ready(entry)
+        and not verified_adapter_ready(entry)
+    }
+
+    assert len(dam_entries) == 52
+    assert set(dam_entries) == set(legacy_catalog._DAM_SEMANTIC_MATRIX)
+    for tool_name, entry in dam_entries.items():
+        contract = entry.get("semantic_contract")
+        assert isinstance(contract, dict), tool_name
+        assert str(contract.get("resource") or "").startswith("digital_asset."), tool_name
+        assert str(contract.get("effect") or "").strip(), tool_name
+        assert str(contract.get("identity_invariant") or "").strip(), tool_name
+        assert str(contract.get("success_evidence") or "").strip(), tool_name
+        assert contract.get("workflow_prescribed") is False, tool_name
+
+    expected_effects = {
+        "digital_market_provision": (
+            "provision_native_asset_workspace_database_and_primary_key"
+        ),
+        "digital_market_workspace_create": "create_if_absent",
+        "digital_market_database_create": (
+            "create_isolated_workspace_postgresql_database"
+        ),
+        "digital_market_pages_configure": (
+            "configure_pages_via_intelligent_hosting_session"
+        ),
+        "digital_market_pages_release_activate": (
+            "activate_ready_healthy_pages_release"
+        ),
+        "digital_market_database_browser_configure": (
+            "configure_workspace_browser_database_access"
+        ),
+        "digital_market_primary_key_rotate": "rotate_primary_workspace_credential",
+        "digital_market_db_query": "observe_workspace_collection_records",
+        "digital_market_db_exec": (
+            "upsert_workspace_collection_record_with_optimistic_lock"
+        ),
+    }
+    for tool_name, effect in expected_effects.items():
+        assert dam_entries[tool_name]["semantic_contract"]["effect"] == effect
+
+    storage = dam_entries["digital_market_workspace_storage_switch"]
+    runtime = dam_entries["digital_market_runtime_upgrade"]
+    registry = dam_entries["digital_market_database_registry_reconcile"]
+    assert storage["semantic_contract"]["preconditions"] == [
+        "source_version_count=0",
+        "code_artifact_count=0",
+    ]
+    assert runtime["semantic_contract"]["external_reality_required_for"] == [
+        "deployment.ready",
+        "public_url",
+    ]
+    assert registry["semantic_contract"]["ambiguity_policy"] == (
+        "observe_without_guessing"
+    )
 
 
 def test_human_and_ai_paths_share_the_same_command_adapter(monkeypatch) -> None:
@@ -149,6 +357,9 @@ def test_human_and_ai_paths_share_the_same_command_adapter(monkeypatch) -> None:
     assert ai.json()["data"] == human.json()["data"]
     assert len(tools.json()["tools"]) == 559
     assert len(tools.json()["capability_states"]) == 559
+    assert tools.json()["coverage"]["true_capability_gap_count"] == 0
+    assert tools.json()["coverage"]["native_route_only_gene_count"] == 256
+    assert tools.json()["coverage"]["all_tenant_genes_executable"] is True
     assert tools.json()["catalogue_scope"] == "global_command_metadata"
     assert tools.json()["data_scope"] == "current_tenant_only"
     states = {item["tool_name"]: item for item in tools.json()["capability_states"]}

@@ -112,6 +112,7 @@ from app.terminal.catalog import (
     ai_capability_states,
     ai_tool_schemas,
     business_action_catalogue,
+    capability_coverage_summary,
     command_catalogue,
     migration_summary,
     skill_catalogue,
@@ -798,6 +799,7 @@ def ai_tools(actor: ActorContext = Depends(current_actor)) -> dict[str, object]:
     return {
         "tools": ai_tool_schemas(),
         "capability_states": ai_capability_states(),
+        "coverage": capability_coverage_summary(),
         "catalogue_scope": "global_command_metadata",
         "data_scope": "current_tenant_only",
     }

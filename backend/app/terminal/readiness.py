@@ -17,6 +17,7 @@ from typing import Any
 _PATH_PARAMETER_RE = re.compile(r"\{[^{}]+\}")
 _lock = RLock()
 _native_route_signatures: frozenset[tuple[str, str]] = frozenset()
+_native_route_handlers: dict[tuple[str, str], tuple[str, ...]] = {}
 _configured = False
 
 
@@ -51,14 +52,25 @@ def configure_native_capability_routes(app: Any) -> None:
     branch is required.
     """
 
-    signatures: set[tuple[str, str]] = set()
+    handlers: dict[tuple[str, str], set[str]] = {}
     for route in _walk_routes(getattr(app, "routes", ())):
         path = _normalized_path(getattr(route, "path", ""))
+        endpoint = getattr(route, "endpoint", None)
+        handler = (
+            f"{getattr(endpoint, '__module__', '<unknown>')}."
+            f"{getattr(endpoint, '__qualname__', getattr(endpoint, '__name__', '<unknown>'))}"
+        )
         for method in getattr(route, "methods", ()) or ():
-            signatures.add((str(method).upper(), path))
-    global _configured, _native_route_signatures
+            signature = (str(method).upper(), path)
+            handlers.setdefault(signature, set()).add(handler)
+    signatures = frozenset(handlers)
+    handler_snapshot = {
+        signature: tuple(sorted(names)) for signature, names in handlers.items()
+    }
+    global _configured, _native_route_handlers, _native_route_signatures
     with _lock:
-        _native_route_signatures = frozenset(signatures)
+        _native_route_signatures = signatures
+        _native_route_handlers = handler_snapshot
         _configured = True
 
 
@@ -73,6 +85,25 @@ def native_adapter_ready(entry: dict[str, object]) -> bool:
         return _configured and signature in _native_route_signatures
 
 
+def native_adapter_evidence(entry: dict[str, object]) -> dict[str, object] | None:
+    """Return the concrete pre-gateway handlers proving native readiness."""
+
+    signature = (
+        str(entry.get("api_method") or "").upper(),
+        _normalized_path(entry.get("api_path")),
+    )
+    with _lock:
+        if not _configured or signature not in _native_route_signatures:
+            return None
+        return {
+            "method": signature[0],
+            "contract_path": str(entry.get("api_path") or ""),
+            "normalized_path": signature[1],
+            "handlers": list(_native_route_handlers.get(signature) or ()),
+            "captured_before_catch_all": True,
+        }
+
+
 def readiness_snapshot() -> dict[str, object]:
     """Expose non-secret diagnostics for tests and runtime status surfaces."""
 
@@ -82,5 +113,8 @@ def readiness_snapshot() -> dict[str, object]:
         return {
             "configured": _configured,
             "native_route_signature_count": len(_native_route_signatures),
+            "native_route_handler_count": sum(
+                len(handlers) for handlers in _native_route_handlers.values()
+            ),
             "verified_registry": verified_adapter_snapshot(),
         }

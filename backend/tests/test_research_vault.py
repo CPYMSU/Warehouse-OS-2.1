@@ -25,6 +25,7 @@ from app.services.research_vault import (
     research_asset_class,
     research_formats,
 )
+from app.terminal import legacy_catalog
 from app.terminal.catalog import business_action_catalogue
 
 RESEARCH_TOOLS = {
@@ -96,6 +97,54 @@ def _actor(*permissions: str, role_level: int = 10) -> ActorContext:
         topology_title="Researcher",
         permissions=frozenset(permissions),
     )
+
+
+def test_every_research_capability_has_an_exact_semantic_contract() -> None:
+    expected_effects = {
+        "research_project_create": "create_git_backed_research_project",
+        "research_document_review": (
+            "observe_version_pinned_document_review_workspace"
+        ),
+        "research_manuscript_refinement": (
+            "start_or_resume_structured_manuscript_draft"
+        ),
+        "research_manuscript_draft_save": (
+            "replace_structured_manuscript_draft_with_revision_lock"
+        ),
+        "research_manuscript_submit": (
+            "materialize_manuscript_draft_as_immutable_docx_version"
+        ),
+        "research_manuscript_finding_accept": (
+            "apply_review_finding_to_manuscript_draft"
+        ),
+        "research_manuscript_finding_reject": (
+            "reject_review_finding_without_changing_draft"
+        ),
+        "research_claim_create": "create_testable_research_claim",
+        "research_evidence_link": "link_immutable_evidence_to_research_claim",
+        "research_review_submit": "submit_formal_peer_review_decision",
+        "research_execution_submit": "submit_isolated_research_execution",
+        "research_release_create": "create_immutable_ro_crate_research_release",
+    }
+
+    entries = {
+        entry["tool_name"]: entry
+        for entry in legacy_catalog.COMMANDS
+        if entry["command"].startswith("research ")
+    }
+    assert set(entries) == RESEARCH_TOOLS
+    assert len(entries) == 50
+    for tool_name, entry in entries.items():
+        contract = entry.get("semantic_contract")
+        assert isinstance(contract, dict), tool_name
+        assert str(contract.get("resource") or "").startswith("research."), tool_name
+        assert str(contract.get("effect") or "").strip(), tool_name
+        assert str(contract.get("identity_invariant") or "").strip(), tool_name
+        assert str(contract.get("success_evidence") or "").strip(), tool_name
+        assert contract.get("workflow_prescribed") is False, tool_name
+
+    for tool_name, effect in expected_effects.items():
+        assert entries[tool_name]["semantic_contract"]["effect"] == effect
 
 
 def test_research_routes_and_capability_catalogue_share_exact_permissions() -> None:
