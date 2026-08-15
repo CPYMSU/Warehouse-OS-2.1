@@ -182,13 +182,21 @@
 
 ### 06B · 聲明式發布生命週期
 
-`lifecycle.jobs` 可聲明 migration、seed、catalog import 或索引初始化。每個 Job 必須有唯一名稱、固定命令、資料庫身份、逾時和 `required_before_activation`。使用者可執行：
+`lifecycle.jobs` 可聲明 migration、seed、catalog import 或索引初始化。每個 Job 必須有唯一名稱、固定命令、資料庫身份、逾時和 `required_before_activation`。正式發布優先使用服務端持久化 Release，而不是由終端逐步串接低階命令：
 
 ~~~text
-python3 dm.py job --source <SOURCE_VERSION_ID> --name migrate
+python3 dm.py project doctor --source <SOURCE_VERSION_ID>
+python3 dm.py release plan --source <SOURCE_VERSION_ID>
+python3 dm.py release run --source <SOURCE_VERSION_ID> \
+  --idempotency-key <STABLE_KEY>
+python3 dm.py release activate <RELEASE_ID>
 ~~~
 
-平台把成功證據綁定到 source version、hosting contract digest 與 Job deployment；其他源碼版本的成功記錄不能滿足本次門禁。
+`release run` 依序建立不接流量的候選、執行本次 source 聲明的必要 Job、完成候選驗收，然後停在 `awaiting_activation`。只有使用者顯式執行 `release activate`，平台才切換流量、探測真實公共路由；探測失敗時恢復建立 Release 時記錄的上一版本。需要完整自動化時可在 `release run` 加 `--activate`，這仍屬該命令中的顯式授權。
+
+Release 狀態與事件保存在服務端；終端斷線、CLI 結束或 AI 對話中斷不會丟失進度。重試必須沿用同一 `Idempotency-Key` 或原 `RELEASE_ID`。平台把成功證據綁定到 source version、hosting contract digest、Release 與 Job deployment；其他源碼版本的歷史成功記錄不能滿足本次門禁。
+
+`dm.py job`、`deploy request`、`deploy accept` 與 `deploy activate` 保留為診斷及相容低階接口；日常發布不得再要求使用者手工拼接它們。
 
 ### 06D · 平台占用計量
 
@@ -259,6 +267,8 @@ Warehouse OS 託管控制面必須：
 11. 回傳階段、證據、錯誤代碼和經遮罩的日誌，不用籠統的成功訊息取代事實。
 12. 健康檢查必須包含實際寫入探針；僅存在配置或資料列不等於儲存可用。
 13. 向使用者與 AI 提供有來源證據的計算位置建議；建議本身永不改寫程式、資料或活動發布。
+14. 將候選、必要 Job、驗收、待激活、公共路由驗證及回滾保存為可續跑 Release；任何客戶端斷線不得使流程失憶。
+15. 在建立候選前拒絕互相矛盾的交付聲明，例如純靜態交付同時要求資料庫 Runtime 環境、必要資料庫 Job 或 `/api/` 候選驗收。
 
 ## 10 · 上線前檢查表
 
@@ -275,6 +285,8 @@ Warehouse OS 託管控制面必須：
 - [ ] migration 可重入，失敗不接流量
 - [ ] Runtime 與 migration 使用不同資料庫身份，Web 服務拿不到 owner DSN
 - [ ] 必要 lifecycle Job 的成功證據屬於本次 source 與 contract digest
+- [ ] `project doctor` 與 `release plan` 沒有類型、權限或資料庫門禁 blocker
+- [ ] Release 使用穩定 Idempotency-Key，斷線後可按原 ID 繼續
 - [ ] acceptance 同時區分公開可見量和 RLS 範圍內資料庫總量
 - [ ] 子路徑、靜態資產和登入回調已測試
 - [ ] SIGTERM 可正常退出
@@ -295,6 +307,9 @@ Warehouse OS 託管控制面必須：
 
 ~~~text
 python3 dm.py hosting requirements
+python3 dm.py project doctor --source <SOURCE_VERSION_ID>
+python3 dm.py release run --source <SOURCE_VERSION_ID> \
+  --idempotency-key <STABLE_KEY>
 ~~~
 
 AI 秘書可使用「dm hosting requirements」能力，把 Markdown 與 JSON 下載卡直接交給使用者。文件與契約使用同一版本號；任何破壞相容性的要求都必須提升契約版本。

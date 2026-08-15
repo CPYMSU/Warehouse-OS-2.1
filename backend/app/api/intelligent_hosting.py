@@ -133,8 +133,8 @@ def intelligent_hosting_kit(request: Request) -> dict[str, object]:
         "quick_start": [
             "Download dm.py and dm-guide.md.",
             "Set WAREHOUSE_WORKSPACE_KEY to the asset's wak_ key.",
-            "Run: python3 dm.py agent manifest",
-            "Start one hosting session and keep its session_id for every retry.",
+            "Run: python3 dm.py project doctor --source <SOURCE_VERSION_ID>",
+            "Use one stable Idempotency-Key for release run and every retry.",
         ],
     }
 
@@ -275,24 +275,28 @@ def intelligent_hosting_message_stream(
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
     before = list_events(principal, session_id, after=0)
-    after_sequence = max(
-        [int(event["sequence"]) for event in before["events"]] or [0]
-    )
+    after_sequence = max([int(event["sequence"]) for event in before["events"]] or [0])
     result = execute_message(principal, session_id, payload, settings)
     emitted = list_events(principal, session_id, after=after_sequence)
 
     def stream():
         for event in emitted["events"]:
-            yield json.dumps(
-                {"event": event["event_type"], "payload": event},
+            yield (
+                json.dumps(
+                    {"event": event["event_type"], "payload": event},
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+        yield (
+            json.dumps(
+                {"event": "final", "payload": result},
                 ensure_ascii=False,
                 default=str,
-            ) + "\n"
-        yield json.dumps(
-            {"event": "final", "payload": result},
-            ensure_ascii=False,
-            default=str,
-        ) + "\n"
+            )
+            + "\n"
+        )
 
     return StreamingResponse(
         stream(),
@@ -384,9 +388,7 @@ def intelligent_hosting_source_upload(
     version_no: str | None = Form(default=None),
     component: str | None = Form(default=None),
     expected_sha256: str | None = Form(default=None),
-    content_sha256: Annotated[
-        str | None, Header(alias="Content-SHA256")
-    ] = None,
+    content_sha256: Annotated[str | None, Header(alias="Content-SHA256")] = None,
     principal: HostingPrincipal = Depends(hosting_principal),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
@@ -419,9 +421,7 @@ def intelligent_hosting_source_upload(
             archive=archive,
         )
     except Exception as exc:
-        diagnosis = record_session_diagnostic(
-            principal, session_id, "source.upload", exc
-        )
+        diagnosis = record_session_diagnostic(principal, session_id, "source.upload", exc)
         raise HTTPException(
             status_code=(exc.status_code if isinstance(exc, HTTPException) else 500),
             detail={"message": "Source upload failed", "diagnosis": diagnosis},

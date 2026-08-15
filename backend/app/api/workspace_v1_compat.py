@@ -50,6 +50,16 @@ from app.services.workspace_deployments import (
     resolve_declared_workspace_job,
     workspace_source_download_target,
 )
+from app.services.workspace_releases import (
+    activate_workspace_release,
+    cancel_workspace_release,
+    create_workspace_release,
+    list_workspace_releases,
+    observe_workspace_release,
+    plan_workspace_release,
+    resume_workspace_release,
+    rollback_workspace_release,
+)
 
 router = APIRouter(tags=["workspace-v1-compat"])
 
@@ -148,9 +158,7 @@ def customer_source_download(
 ) -> FileResponse:
     descriptor = workspace_source_download_target(credential, source_id)
     path = None
-    for store in object_store_read_candidates(
-        settings, str(descriptor["storage_provider"])
-    ):
+    for store in object_store_read_candidates(settings, str(descriptor["storage_provider"])):
         candidate = store.path_for(str(descriptor["object_key"]))
         if candidate.is_file():
             path = candidate
@@ -292,6 +300,87 @@ def customer_deployment_request(
     }
 
 
+@router.post("/api/workspaces/v1/releases/plan")
+def customer_release_plan(
+    payload: dict[str, object] = Body(default={}),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Validate a release graph without creating components, jobs, or deployments."""
+
+    return plan_workspace_release(credential, payload, settings)
+
+
+@router.post("/api/workspaces/v1/releases", status_code=status.HTTP_202_ACCEPTED)
+def customer_release_create(
+    payload: dict[str, object] = Body(default={}),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Persist a resumable candidate-first release; never activate implicitly."""
+
+    return create_workspace_release(
+        credential,
+        payload,
+        settings,
+        idempotency_key=idempotency_key,
+    )
+
+
+@router.get("/api/workspaces/v1/releases")
+def customer_releases(
+    limit: int = Query(default=50, ge=1, le=200),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+) -> dict[str, object]:
+    return list_workspace_releases(credential, limit=limit)
+
+
+@router.get("/api/workspaces/v1/releases/{release_id}")
+@router.get("/api/workspaces/v1/releases/{release_id}/events")
+def customer_release_observe(
+    release_id: str,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+) -> dict[str, object]:
+    return observe_workspace_release(credential, release_id)
+
+
+@router.post(
+    "/api/workspaces/v1/releases/{release_id}/resume",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def customer_release_resume(
+    release_id: str,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return resume_workspace_release(credential, release_id, settings)
+
+
+@router.post("/api/workspaces/v1/releases/{release_id}/activate")
+def customer_release_activate(
+    release_id: str,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+) -> dict[str, object]:
+    return activate_workspace_release(credential, release_id)
+
+
+@router.post("/api/workspaces/v1/releases/{release_id}/cancel")
+def customer_release_cancel(
+    release_id: str,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+) -> dict[str, object]:
+    return cancel_workspace_release(credential, release_id)
+
+
+@router.post("/api/workspaces/v1/releases/{release_id}/rollback")
+def customer_release_rollback(
+    release_id: str,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+) -> dict[str, object]:
+    return rollback_workspace_release(credential, release_id)
+
+
 @router.post("/api/workspaces/v1/jobs", status_code=status.HTTP_202_ACCEPTED)
 def customer_job_request(
     payload: dict[str, object] = Body(default={}),
@@ -337,9 +426,7 @@ def customer_deployment_observe(
     deployment_id: str,
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
 ) -> dict[str, object]:
-    return observe_workspace_deployment(
-        credential, _deployment_reference(deployment_id)
-    )
+    return observe_workspace_deployment(credential, _deployment_reference(deployment_id))
 
 
 @router.get("/api/workspaces/v1/deployments/{deployment_id}/logs")
@@ -348,20 +435,14 @@ def customer_deployment_logs(
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
 ) -> dict[str, object]:
     credential.require("logs:read")
-    observed = observe_workspace_deployment(
-        credential, _deployment_reference(deployment_id)
-    )
+    observed = observe_workspace_deployment(credential, _deployment_reference(deployment_id))
     return {
         "ok": True,
         "deployment_id": deployment_id,
         "status": observed["deployment"]["status"],
         "events": observed["events"],
-        "log_excerpt": (observed["deployment"].get("result") or {}).get(
-            "log_excerpt", []
-        ),
-        "diagnostic": (observed["deployment"].get("result") or {}).get(
-            "diagnostic"
-        ),
+        "log_excerpt": (observed["deployment"].get("result") or {}).get("log_excerpt", []),
+        "diagnostic": (observed["deployment"].get("result") or {}).get("diagnostic"),
     }
 
 
@@ -370,9 +451,7 @@ def customer_deployment_cancel(
     deployment_id: str,
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
 ) -> dict[str, object]:
-    return cancel_workspace_deployment(
-        credential, _deployment_reference(deployment_id)
-    )
+    return cancel_workspace_deployment(credential, _deployment_reference(deployment_id))
 
 
 @router.post(
@@ -397,9 +476,7 @@ def customer_deployment_activate(
     deployment_id: str,
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
 ) -> dict[str, object]:
-    return activate_workspace_deployment(
-        credential, _deployment_reference(deployment_id)
-    )
+    return activate_workspace_deployment(credential, _deployment_reference(deployment_id))
 
 
 @router.post("/api/workspaces/v1/deployments/{deployment_id}/accept")

@@ -100,26 +100,17 @@ def assistant_manifest() -> dict[str, object]:
             "status": "GET /api/hosting/v2/sessions/{session_id}?refresh=true",
             "events": "GET /api/hosting/v2/sessions/{session_id}/events",
             "source_upload": {
-                "initialize": (
-                    "POST /api/hosting/v2/sessions/{session_id}/source-uploads"
-                ),
+                "initialize": ("POST /api/hosting/v2/sessions/{session_id}/source-uploads"),
                 "part": (
                     "PUT /api/hosting/v2/sessions/{session_id}/source-uploads/"
                     "{upload_id}/parts/{part_no}"
                 ),
                 "complete": (
-                    "POST /api/hosting/v2/sessions/{session_id}/source-uploads/"
-                    "{upload_id}/complete"
+                    "POST /api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}/complete"
                 ),
-                "status": (
-                    "GET /api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}"
-                ),
-                "attach": (
-                    "POST /api/hosting/v2/sessions/{session_id}/sources/attach"
-                ),
-                "legacy_small_package": (
-                    "POST /api/hosting/v2/sessions/{session_id}/sources"
-                ),
+                "status": ("GET /api/hosting/v2/sessions/{session_id}/source-uploads/{upload_id}"),
+                "attach": ("POST /api/hosting/v2/sessions/{session_id}/sources/attach"),
+                "legacy_small_package": ("POST /api/hosting/v2/sessions/{session_id}/sources"),
             },
             "cancel": "POST /api/hosting/v2/sessions/{session_id}/cancel",
         },
@@ -133,12 +124,8 @@ def assistant_manifest() -> dict[str, object]:
             "hosting_session_api": {
                 "site": "GET /api/hosting/v2/sessions/{session_id}/pages",
                 "configure_site": "PUT /api/hosting/v2/sessions/{session_id}/pages",
-                "design_context": (
-                    "GET /api/hosting/v2/sessions/{session_id}/pages/design"
-                ),
-                "read_file": (
-                    "GET /api/hosting/v2/sessions/{session_id}/pages/files/{path}"
-                ),
+                "design_context": ("GET /api/hosting/v2/sessions/{session_id}/pages/design"),
+                "read_file": ("GET /api/hosting/v2/sessions/{session_id}/pages/files/{path}"),
             },
             "stable_url": "https://bonfirework.org/apps/{site_key}/",
             "entry_mode": "warehouse_os",
@@ -209,6 +196,13 @@ def assistant_manifest() -> dict[str, object]:
             "preview": "Set execute=false to return a plan without mutation.",
             "run": "Set execute=true after reviewing the returned desired state.",
             "idempotency": "A session/source/runtime tuple is replay-safe.",
+            "release_orchestration": {
+                "schema": "warehouse.workspace-release.v1",
+                "doctor": "POST /api/workspaces/v1/releases/plan",
+                "create": "POST /api/workspaces/v1/releases",
+                "server_owned_progress": True,
+                "implicit_activation": False,
+            },
             "raw_reasoning_exposed": False,
         },
         "downloads": [
@@ -230,7 +224,7 @@ def assistant_manifest() -> dict[str, object]:
 def _json_safe(value: object) -> object:
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_json_safe(item) for item in value]
     if isinstance(value, datetime):
         return value.isoformat()
@@ -296,9 +290,7 @@ def _merge_desired_state(current: dict[str, object], supplied: object) -> dict[s
                 },
             )
         pages["site_key"] = validate_site_key(pages.get("site_key"))
-        if "public_alias_enabled" in pages and not isinstance(
-            pages["public_alias_enabled"], bool
-        ):
+        if "public_alias_enabled" in pages and not isinstance(pages["public_alias_enabled"], bool):
             raise HTTPException(
                 status_code=422,
                 detail="desired_state.pages.public_alias_enabled must be a boolean",
@@ -629,13 +621,9 @@ def _plan(desired_state: dict[str, object], snapshot: dict[str, object]) -> dict
         desired_state.get("pages") if isinstance(desired_state.get("pages"), dict) else {}
     )
     if pages_options.get("site_key"):
-        pages_observation = (
-            snapshot.get("pages") if isinstance(snapshot.get("pages"), dict) else {}
-        )
+        pages_observation = snapshot.get("pages") if isinstance(snapshot.get("pages"), dict) else {}
         current_site = (
-            pages_observation.get("site")
-            if isinstance(pages_observation.get("site"), dict)
-            else {}
+            pages_observation.get("site") if isinstance(pages_observation.get("site"), dict) else {}
         )
         steps.append(
             {
@@ -649,9 +637,7 @@ def _plan(desired_state: dict[str, object], snapshot: dict[str, object]) -> dict
                             or bool(
                                 (
                                     current_site.get("public_alias")
-                                    if isinstance(
-                                        current_site.get("public_alias"), dict
-                                    )
+                                    if isinstance(current_site.get("public_alias"), dict)
                                     else {}
                                 ).get("enabled")
                             )
@@ -977,9 +963,7 @@ def _refresh_state(
         ):
             deployment_ref = latest.get("uuid") or latest.get("id")
             workspace_observation = (
-                snapshot.get("workspace")
-                if isinstance(snapshot.get("workspace"), dict)
-                else {}
+                snapshot.get("workspace") if isinstance(snapshot.get("workspace"), dict) else {}
             )
             already_active = bool(
                 deployment_ref

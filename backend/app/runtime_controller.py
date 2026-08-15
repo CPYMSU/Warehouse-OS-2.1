@@ -24,6 +24,7 @@ from app.services.source_uploads import (
     process_claimed_source_upload,
 )
 from app.services.workspace_autonomy import allocation_target_bytes
+from app.services.workspace_releases import reconcile_pending_releases
 
 DockerEngine = base.DockerEngine
 httpx = base.httpx
@@ -199,19 +200,32 @@ class RuntimeController(base.RuntimeController):
         return reconcile_repository_resources(self.settings)
 
     def run_once(self) -> bool:
-        """Prefer queued source verification, then preserve deployment behavior."""
+        """Advance durable releases, then preserve source/deployment fairness."""
 
         now = base.time.monotonic()
         if now - getattr(self, "_last_source_upload_cleanup", 0.0) >= 60:
             self._last_source_upload_cleanup = now
             expire_source_uploads(self.settings)
+        release_worked = False
+        try:
+            release_worked = bool(
+                reconcile_pending_releases(
+                    self.settings,
+                    worker_id=self.worker_id,
+                    limit=1,
+                )
+            )
+        except Exception:
+            # One malformed or temporarily blocked release must not prevent the
+            # shared controller from building unrelated tenant deployments.
+            base.traceback.print_exc()
         if getattr(self, "_source_upload_was_last", False):
             self._source_upload_was_last = False
             if super().run_once():
                 return True
         claimed_upload = claim_source_upload(self.worker_id, self.settings)
         if claimed_upload is None:
-            return super().run_once()
+            return super().run_once() or release_worked
         tenant_id, upload_id = claimed_upload
         try:
             process_claimed_source_upload(tenant_id, upload_id, self.settings)

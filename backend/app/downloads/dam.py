@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dm.py 2.7.0 — Warehouse OS 智能數字資產託管客戶端。
+"""dm.py 2.8.0 — Warehouse OS 智能數字資產託管客戶端。
 
 這個版本只呼叫 Warehouse OS 2.1 原生端點：
   GET /api/workspaces/v1/info
@@ -17,6 +17,9 @@
   POST /api/workspaces/v1/storage/probe
   POST /api/workspaces/v1/deployments
   POST /api/workspaces/v1/jobs
+  POST /api/workspaces/v1/releases/plan
+  POST|GET /api/workspaces/v1/releases[/{id}]
+  POST /api/workspaces/v1/releases/{id}/{resume|activate|cancel|rollback}
   GET|PUT /api/workspaces/v1/database/control|policy
   GET  /api/workspaces/v1/deployments[/{id}]
   GET  /api/hosting/v2/manifest
@@ -47,7 +50,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 DEFAULT_BASE = "__WAREHOUSE_BASE__"
 
 
@@ -130,6 +133,46 @@ class Client:
             raise SystemExit("服務端返回格式錯誤：預期 JSON 物件")
         return value
 
+    def wait_release(
+        self,
+        release_id: str,
+        *,
+        activate: bool,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        """Follow a server-owned release without making client uptime authoritative."""
+
+        deadline = time.monotonic() + timeout_seconds
+        passive = {
+            "awaiting_activation",
+            "verified",
+            "failed",
+            "rolled_back",
+            "cancelled",
+            "blocked",
+        }
+        observed: dict[str, object] = {}
+        while time.monotonic() < deadline:
+            reference = urllib.parse.quote(release_id, safe="")
+            observed = self.request("GET", f"/api/workspaces/v1/releases/{reference}")
+            release = observed.get("release") if isinstance(observed.get("release"), dict) else {}
+            state = str(release.get("state") or "")
+            if state in passive:
+                if state == "awaiting_activation" and activate:
+                    return self.request(
+                        "POST",
+                        f"/api/workspaces/v1/releases/{reference}/activate",
+                    )
+                return observed
+            # This is an idempotent nudge. The Runtime Controller remains the
+            # authority and continues after this CLI exits or loses connectivity.
+            self.request("POST", f"/api/workspaces/v1/releases/{reference}/resume")
+            time.sleep(2)
+        raise SystemExit(
+            f"發布 {release_id} 在 {timeout_seconds} 秒內未完成；"
+            "服務端仍會繼續，可使用 release status 查看"
+        )
+
     def upload_source(
         self,
         path: Path,
@@ -169,8 +212,7 @@ class Client:
             return upload
         if upload.get("status") in {"failed", "expired", "cancelled"}:
             raise SystemExit(
-                "源碼上傳無法恢復："
-                + json.dumps(upload.get("error") or upload, ensure_ascii=False)
+                "源碼上傳無法恢復：" + json.dumps(upload.get("error") or upload, ensure_ascii=False)
             )
         chunk_size = int(upload.get("chunk_size_bytes") or 4 * 1024 * 1024)
         part_count = int(upload.get("part_count") or 0)
@@ -182,8 +224,7 @@ class Client:
                 content = source.read(chunk_size)
             part_digest = hashlib.sha256(content).hexdigest()
             request = urllib.request.Request(
-                self.base
-                + f"/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
+                self.base + f"/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
                 data=content,
                 method="PUT",
                 headers={
@@ -223,9 +264,7 @@ class Client:
         )
         deadline = time.monotonic() + 15 * 60
         while time.monotonic() < deadline:
-            observed = self.request(
-                "GET", f"/api/workspaces/v1/source-uploads/{upload_id}"
-            )
+            observed = self.request("GET", f"/api/workspaces/v1/source-uploads/{upload_id}")
             state = str(observed.get("status") or "")
             if state == "verified":
                 return observed
@@ -317,6 +356,41 @@ class Client:
 
 def _show(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def _release_intent_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--source", dest="source_version_id")
+    parser.add_argument("--component")
+    parser.add_argument(
+        "--type",
+        dest="runtime_type",
+        choices=("auto", "static", "web", "api", "worker", "agent", "container", "compose"),
+        default="auto",
+    )
+    parser.add_argument("--runtime")
+    parser.add_argument("--profile", dest="runtime_profile")
+    parser.add_argument("--entrypoint")
+    parser.add_argument("--build-command")
+    parser.add_argument("--start-command")
+    parser.add_argument("--health-path")
+
+
+def _release_intent(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in {
+            "source_version_id": args.source_version_id,
+            "component": args.component,
+            "runtime_type": args.runtime_type,
+            "runtime": args.runtime,
+            "runtime_profile": args.runtime_profile,
+            "entrypoint": args.entrypoint,
+            "build_command": args.build_command,
+            "start_command": args.start_command,
+            "health_path": args.health_path,
+        }.items()
+        if value is not None
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -417,7 +491,10 @@ def _parser() -> argparse.ArgumentParser:
     runtime_set.add_argument("--command", dest="container_command", help="覆寫容器啟動命令")
     runtime_set.add_argument("--deploy", action="store_true")
     runtime_set.add_argument(
-        "--no-activate", dest="activate", action="store_false", default=True,
+        "--no-activate",
+        dest="activate",
+        action="store_false",
+        default=True,
         help="建置並驗證，但不切換正式流量",
     )
     runtime_set.add_argument("--idempotency-key")
@@ -433,6 +510,44 @@ def _parser() -> argparse.ArgumentParser:
         help="下載同版本的人類可讀標準與機器可讀契約",
     )
 
+    project_commands = commands.add_parser("project", help="發布前專案診斷")
+    project_subcommands = project_commands.add_subparsers(dest="project_command", required=True)
+    project_doctor = project_subcommands.add_parser(
+        "doctor", help="只讀檢查源碼、Runtime、資料庫任務、驗收與 Key 權限"
+    )
+    _release_intent_options(project_doctor)
+
+    release_commands = commands.add_parser("release", help="執行可恢復的候選優先發布流程")
+    release_subcommands = release_commands.add_subparsers(dest="release_command", required=True)
+    release_plan = release_subcommands.add_parser("plan", help="產生不帶副作用的權威發布計畫")
+    _release_intent_options(release_plan)
+    release_run = release_subcommands.add_parser(
+        "run", help="建立 Release 並等待候選任務與驗收完成"
+    )
+    _release_intent_options(release_run)
+    release_run.add_argument("--idempotency-key", required=True)
+    release_run.add_argument(
+        "--activate",
+        action="store_true",
+        help="候選驗收成功後顯式切換流量並驗證公共路由",
+    )
+    release_run.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="建立後立即返回；服務端仍會繼續推進",
+    )
+    release_run.add_argument("--timeout", type=int, default=3600)
+    release_status = release_subcommands.add_parser("status", help="查看 Release 狀態與事件")
+    release_status.add_argument("release_id", nargs="?")
+    for action, help_text in (
+        ("resume", "冪等恢復一個中斷的 Release"),
+        ("activate", "顯式激活已驗收的候選版本"),
+        ("cancel", "取消尚未完成的 Release"),
+        ("rollback", "切回 Release 建立時記錄的上一版本"),
+    ):
+        action_parser = release_subcommands.add_parser(action, help=help_text)
+        action_parser.add_argument("release_id")
+
     deploy_commands = commands.add_parser("deploy", help="提交及觀察部署")
     deploy_subcommands = deploy_commands.add_subparsers(dest="deploy_command", required=True)
     deploy_request = deploy_subcommands.add_parser(
@@ -447,7 +562,10 @@ def _parser() -> argparse.ArgumentParser:
     deploy_request.add_argument("--profile", dest="runtime_profile")
     deploy_request.add_argument("--idempotency-key")
     deploy_request.add_argument(
-        "--no-activate", dest="activate", action="store_false", default=True,
+        "--no-activate",
+        dest="activate",
+        action="store_false",
+        default=True,
         help="建立測試部署並保持目前 active 版本",
     )
     deploy_status = deploy_subcommands.add_parser("status", help="查看部署狀態")
@@ -456,9 +574,7 @@ def _parser() -> argparse.ArgumentParser:
     deploy_logs.add_argument("deployment_id")
     deploy_activate = deploy_subcommands.add_parser("activate", help="切換到既有 healthy 版本")
     deploy_activate.add_argument("deployment_id")
-    deploy_accept = deploy_subcommands.add_parser(
-        "accept", help="依源碼契約私網驗收 staged 版本"
-    )
+    deploy_accept = deploy_subcommands.add_parser("accept", help="依源碼契約私網驗收 staged 版本")
     deploy_accept.add_argument("deployment_id")
 
     job = commands.add_parser("job", help="執行不切換流量的受限一次性源碼任務")
@@ -649,6 +765,49 @@ def main() -> None:
             )
     elif args.command == "hosting":
         result = client.request("GET", "/api/hosting/v2/requirements")
+    elif args.command == "project":
+        result = client.request(
+            "POST",
+            "/api/workspaces/v1/releases/plan",
+            payload=_release_intent(args),
+        )
+    elif args.command == "release":
+        if args.release_command == "plan":
+            result = client.request(
+                "POST",
+                "/api/workspaces/v1/releases/plan",
+                payload=_release_intent(args),
+            )
+        elif args.release_command == "run":
+            if args.no_wait and args.activate:
+                raise SystemExit("--activate 不能與 --no-wait 同時使用")
+            result = client.request(
+                "POST",
+                "/api/workspaces/v1/releases",
+                payload=_release_intent(args),
+                headers={"Idempotency-Key": args.idempotency_key},
+            )
+            release = result.get("release") if isinstance(result.get("release"), dict) else {}
+            release_id = str(release.get("uuid") or release.get("id") or "")
+            if not release_id:
+                raise SystemExit("服務端沒有返回 release id")
+            if not args.no_wait:
+                result = client.wait_release(
+                    release_id,
+                    activate=args.activate,
+                    timeout_seconds=max(30, args.timeout),
+                )
+        elif args.release_command == "status":
+            path = "/api/workspaces/v1/releases"
+            if args.release_id:
+                path += "/" + urllib.parse.quote(args.release_id, safe="")
+            result = client.request("GET", path)
+        else:
+            release_id = urllib.parse.quote(args.release_id, safe="")
+            result = client.request(
+                "POST",
+                f"/api/workspaces/v1/releases/{release_id}/{args.release_command}",
+            )
     elif args.command == "info":
         result = client.request("GET", "/api/workspaces/v1/info")
     elif args.command == "usage":
@@ -760,11 +919,7 @@ def main() -> None:
             "POST",
             "/api/workspaces/v1/jobs",
             payload=job_payload,
-            headers=(
-                {"Idempotency-Key": args.idempotency_key}
-                if args.idempotency_key
-                else None
-            ),
+            headers=({"Idempotency-Key": args.idempotency_key} if args.idempotency_key else None),
         )
     elif args.deploy_command == "request":
         deployment_payload = {
