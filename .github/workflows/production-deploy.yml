@@ -10,7 +10,7 @@ on:
         required: true
         default: smart
         type: choice
-        options: [smart, quick, standard, full, primary-recovery]
+        options: [smart, quick, standard, full, storage-audit, primary-recovery]
       prepared_release:
         description: Prepared mac-primary release for primary-recovery
         required: false
@@ -53,13 +53,19 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           test -z "$(git status --porcelain=v1)"
       - name: Run coordinated fast deployment
-        if: env.DEPLOY_MODE != 'primary-recovery'
+        if: env.DEPLOY_MODE != 'primary-recovery' && env.DEPLOY_MODE != 'storage-audit'
         env:
           WAREHOUSE_CONTROL_REPL_PASSWORD: ${{ secrets.WAREHOUSE_CONTROL_REPL_PASSWORD }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           ops/cluster/rolling-deploy "${DEPLOY_MODE}"
+      - name: Audit Mac workspace runtime storage
+        if: env.DEPLOY_MODE == 'storage-audit'
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          ops/macos/audit-runtime-storage
       - name: Activate verified primary recovery release
         if: env.DEPLOY_MODE == 'primary-recovery'
         env:

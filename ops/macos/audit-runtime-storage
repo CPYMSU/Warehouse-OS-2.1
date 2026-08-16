@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Read-only evidence gate for the Mac primary's workspace runtime storage.
+# It deliberately inspects only storage metadata and selected container mount
+# fields; production environment values and secrets are never printed.
+
+export PATH="${HOME}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+storage_root="${WAREHOUSE_MAC_RUNTIME_STORAGE_ROOT:-/Volumes/BonfireworkData}"
+minimum_bytes="${WAREHOUSE_MAC_RUNTIME_STORAGE_MIN_BYTES:-2000000000000}"
+docker_bin="${WAREHOUSE_DOCKER_BIN:-${HOME}/.orbstack/bin/docker}"
+runtime_target="/data/hdd/runtime-volumes"
+
+fail() {
+  printf 'runtime_storage_status=blocked\nreason=%s\n' "$1" >&2
+  exit 2
+}
+
+[[ "${storage_root}" == /Volumes/* ]] \
+  || fail "runtime storage root must be a dedicated volume below /Volumes"
+[[ "${minimum_bytes}" =~ ^[1-9][0-9]+$ ]] \
+  || fail "minimum byte requirement must be a positive integer"
+[[ -d "${storage_root}" ]] \
+  || fail "runtime storage volume is not mounted: ${storage_root}"
+[[ -w "${storage_root}" ]] \
+  || fail "runtime storage volume is not writable: ${storage_root}"
+[[ -x "${docker_bin}" ]] \
+  || fail "OrbStack Docker CLI is unavailable: ${docker_bin}"
+"${docker_bin}" info >/dev/null 2>&1 \
+  || fail "OrbStack Docker engine is unavailable"
+
+plist="$(diskutil info -plist "${storage_root}")" \
+  || fail "diskutil cannot inspect runtime storage volume"
+plist_value() {
+  plutil -extract "$1" raw -o - - <<<"${plist}" 2>/dev/null || printf unknown
+}
+
+device="$(plist_value DeviceIdentifier)"
+whole_disk="$(plist_value ParentWholeDisk)"
+filesystem="$(plist_value FilesystemType)"
+volume_uuid="$(plist_value VolumeUUID)"
+internal="$(plist_value Internal)"
+solid_state="$(plist_value SolidState)"
+total_bytes="$(plist_value TotalSize)"
+
+[[ "${internal}" == false ]] \
+  || fail "runtime storage must be external to the Mac system disk"
+[[ "${solid_state}" == true ]] \
+  || fail "runtime storage is not reported as solid-state"
+[[ "${total_bytes}" =~ ^[0-9]+$ ]] \
+  || fail "diskutil did not report a numeric storage capacity"
+(( total_bytes >= minimum_bytes )) \
+  || fail "runtime SSD capacity is below the required 2 TB"
+
+raid_kind="external-volume"
+if raid_list="$(diskutil appleRAID list 2>/dev/null)" \
+  && grep -Fq "${device}" <<<"${raid_list}"; then
+  grep -Eiq 'Mirror|Mirrored' <<<"${raid_list}" \
+    || fail "runtime storage belongs to AppleRAID but is not mirrored"
+  raid_kind="apple-raid-mirror"
+elif [[ "${WAREHOUSE_HARDWARE_RAID_APPROVED:-false}" == true ]]; then
+  raid_kind="approved-hardware-raid1"
+else
+  fail "no mirrored AppleRAID detected and no verified hardware RAID1 approval is configured"
+fi
+
+resolved_root="$(cd "${storage_root}" && pwd -P)"
+
+inspect_runtime_mount() {
+  local container="$1"
+  local evidence
+  evidence="$("${docker_bin}" inspect "${container}" \
+    --format '{{json .Mounts}}' 2>/dev/null)" \
+    || fail "required container is unavailable: ${container}"
+  MOUNT_EVIDENCE="${evidence}" python3 - \
+    "${container}" "${runtime_target}" "${resolved_root}" <<'PY'
+import json
+import os
+import sys
+
+container, target, governed_root = sys.argv[1:]
+mounts = json.loads(os.environ["MOUNT_EVIDENCE"])
+matches = [item for item in mounts if str(item.get("Destination") or "").rstrip("/") == target]
+if len(matches) != 1:
+    raise SystemExit(f"{container} must have exactly one {target} mount")
+source = os.path.realpath(str(matches[0].get("Source") or ""))
+try:
+    common = os.path.commonpath((source, governed_root))
+except ValueError:
+    common = ""
+if common != governed_root:
+    raise SystemExit(f"{container} runtime mount is outside the governed 2 TB SSD")
+print(f"container={container}")
+print(f"runtime_mount_source={source}")
+print(f"runtime_mount_target={target}")
+PY
+}
+
+inspect_runtime_mount bonfirework-mac-api \
+  || fail "Mac API runtime mount is not governed by the 2 TB SSD"
+inspect_runtime_mount bonfirework-mac-runtime-controller \
+  || fail "Mac Runtime Controller mount is not governed by the 2 TB SSD"
+
+printf 'runtime_storage_status=ready\n'
+printf 'storage_root=%s\n' "${resolved_root}"
+printf 'device=%s\nwhole_disk=%s\nfilesystem=%s\nvolume_uuid=%s\n' \
+  "${device}" "${whole_disk}" "${filesystem}" "${volume_uuid}"
+printf 'solid_state=%s\ninternal=%s\nprotection=%s\n' \
+  "${solid_state}" "${internal}" "${raid_kind}"
+printf 'total_bytes=%s\nminimum_bytes=%s\n' "${total_bytes}" "${minimum_bytes}"
