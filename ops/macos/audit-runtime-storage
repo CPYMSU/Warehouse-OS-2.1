@@ -23,8 +23,6 @@ fail() {
   || fail "minimum byte requirement must be a positive integer"
 [[ -d "${storage_root}" ]] \
   || fail "runtime storage volume is not mounted: ${storage_root}"
-[[ -w "${storage_root}" ]] \
-  || fail "runtime storage volume is not writable: ${storage_root}"
 [[ -x "${docker_bin}" ]] \
   || fail "OrbStack Docker CLI is unavailable: ${docker_bin}"
 "${docker_bin}" info >/dev/null 2>&1 \
@@ -85,6 +83,8 @@ matches = [item for item in mounts if str(item.get("Destination") or "").rstrip(
 if len(matches) != 1:
     raise SystemExit(f"{container} must have exactly one {target} mount")
 source = os.path.realpath(str(matches[0].get("Source") or ""))
+if matches[0].get("RW") is not True:
+    raise SystemExit(f"{container} runtime mount is not writable")
 try:
     common = os.path.commonpath((source, governed_root))
 except ValueError:
