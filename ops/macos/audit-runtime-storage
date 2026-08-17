@@ -75,11 +75,89 @@ PY
     )"
   fi
 fi
+storage_profile="$(python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["system_profiler", "SPStorageDataType", "-json"],
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
+profile_value() {
+  STORAGE_PROFILE="${storage_profile}" python3 - "$1" "${device}" "${storage_root}" <<'PY'
+import json
+import os
+import sys
+
+wanted, device, root = sys.argv[1:]
+try:
+    document = json.loads(os.environ.get("STORAGE_PROFILE") or "{}")
+except (TypeError, ValueError):
+    document = {}
+
+def records(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from records(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from records(child)
+
+match = next(
+    (
+        item
+        for item in records(document)
+        if str(item.get("bsd_name") or "") == device
+        or str(item.get("mount_point") or "") == root
+    ),
+    {},
+)
+physical = match.get("physical_drive") if isinstance(match.get("physical_drive"), dict) else {}
+aliases = {
+    "medium": ("medium_type", "media_type"),
+    "model": ("device_name", "_name"),
+    "protocol": ("protocol",),
+}
+for key in aliases[wanted]:
+    value = physical.get(key)
+    if value not in (None, ""):
+        print(str(value).replace("\n", " ")[:160])
+        break
+else:
+    print("unknown")
+PY
+}
+profile_medium="$(profile_value medium)"
+profile_model="$(profile_value model)"
+profile_protocol="$(profile_value protocol)"
+profile_solid_state="unknown"
+normalized_profile_medium="$(printf '%s' "${profile_medium}" | tr '[:upper:]' '[:lower:]')"
+case "${normalized_profile_medium}" in
+  *ssd*|*solid*state*) profile_solid_state=true ;;
+  *hdd*|*rotational*|*hard*disk*) profile_solid_state=false ;;
+esac
+
 if [[ "${solid_state}" == unknown && "${physical_solid_state}" != unknown ]]; then
   solid_state="${physical_solid_state}"
 fi
+if [[ "${solid_state}" == unknown && "${profile_solid_state}" != unknown ]]; then
+  solid_state="${profile_solid_state}"
+fi
 
 printf 'storage_observation_physical_solid_state=%s\n' "${physical_solid_state}"
+printf 'storage_observation_profile_medium=%s\n' "${profile_medium}"
+printf 'storage_observation_profile_model=%s\n' "${profile_model}"
+printf 'storage_observation_profile_protocol=%s\n' "${profile_protocol}"
 
 [[ "${internal}" == false ]] \
   || fail "runtime storage must be external to the Mac system disk"
