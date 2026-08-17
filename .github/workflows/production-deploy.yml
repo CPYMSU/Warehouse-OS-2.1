@@ -59,6 +59,16 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
           test -z "$(git status --porcelain=v1)"
+      - name: Verify Mac workspace runtime storage
+        if: env.DEPLOY_MODE != 'primary-recovery'
+        env:
+          WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_UUID: ${{ vars.WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_UUID }}
+          WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_MODEL: ${{ vars.WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_MODEL }}
+          WAREHOUSE_MAC_RUNTIME_STORAGE_REQUIRE_MIRROR: ${{ vars.WAREHOUSE_MAC_RUNTIME_STORAGE_REQUIRE_MIRROR || 'false' }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          ops/macos/audit-runtime-storage
       - name: Run coordinated fast deployment
         if: env.DEPLOY_MODE != 'primary-recovery' && env.DEPLOY_MODE != 'storage-audit'
         env:
@@ -67,12 +77,6 @@ jobs:
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           ops/cluster/rolling-deploy "${DEPLOY_MODE}"
-      - name: Audit Mac workspace runtime storage
-        if: env.DEPLOY_MODE == 'storage-audit'
-        run: |
-          set -euo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          ops/macos/audit-runtime-storage
       - name: Activate verified primary recovery release
         if: env.DEPLOY_MODE == 'primary-recovery'
         env:

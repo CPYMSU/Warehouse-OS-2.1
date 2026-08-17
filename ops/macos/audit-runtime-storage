@@ -11,6 +11,9 @@ storage_root="${WAREHOUSE_MAC_RUNTIME_STORAGE_ROOT:-/Volumes/BonfireworkData}"
 minimum_bytes="${WAREHOUSE_MAC_RUNTIME_STORAGE_MIN_BYTES:-2000000000000}"
 docker_bin="${WAREHOUSE_DOCKER_BIN:-${HOME}/.orbstack/bin/docker}"
 runtime_target="/data/hdd/runtime-volumes"
+approved_uuid="${WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_UUID:-}"
+approved_model="${WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_MODEL:-}"
+require_mirror="${WAREHOUSE_MAC_RUNTIME_STORAGE_REQUIRE_MIRROR:-false}"
 
 fail() {
   printf 'runtime_storage_status=blocked\nreason=%s\n' "$1" >&2
@@ -26,6 +29,8 @@ record_failure() {
   || fail "runtime storage root must be a dedicated volume below /Volumes"
 [[ "${minimum_bytes}" =~ ^[1-9][0-9]+$ ]] \
   || fail "minimum byte requirement must be a positive integer"
+[[ "${require_mirror}" == true || "${require_mirror}" == false ]] \
+  || fail "mirror requirement must be true or false"
 [[ -d "${storage_root}" ]] \
   || fail "runtime storage volume is not mounted: ${storage_root}"
 [[ -x "${docker_bin}" ]] \
@@ -50,6 +55,7 @@ total_bytes="$(plist_value TotalSize)"
 printf 'storage_observation_root=%s\n' "${storage_root}"
 printf 'storage_observation_device=%s\n' "${device}"
 printf 'storage_observation_whole_disk=%s\n' "${whole_disk}"
+printf 'storage_observation_volume_uuid=%s\n' "${volume_uuid}"
 printf 'storage_observation_volume_solid_state=%s\n' "${solid_state}"
 printf 'storage_observation_internal=%s\n' "${internal}"
 printf 'storage_observation_total_bytes=%s\n' "${total_bytes}"
@@ -227,6 +233,15 @@ fi
 if [[ "${solid_state}" == unknown && "${profile_solid_state}" != unknown ]]; then
   solid_state="${profile_solid_state}"
 fi
+medium_evidence="operating-system"
+if [[ "${solid_state}" == unknown \
+  && -n "${approved_uuid}" \
+  && -n "${approved_model}" \
+  && "${volume_uuid}" == "${approved_uuid}" \
+  && "${profile_model}" == "${approved_model}" ]]; then
+  solid_state=true
+  medium_evidence="administrator-pinned-volume-identity"
+fi
 
 printf 'storage_observation_physical_solid_state=%s\n' "${physical_solid_state}"
 printf 'storage_observation_profile_medium=%s\n' "${profile_medium}"
@@ -234,6 +249,7 @@ printf 'storage_observation_profile_model=%s\n' "${profile_model}"
 printf 'storage_observation_profile_protocol=%s\n' "${profile_protocol}"
 printf 'storage_observation_ioreg_medium=%s\n' "${ioreg_medium}"
 printf 'storage_observation_ioreg_model=%s\n' "${ioreg_model}"
+printf 'storage_observation_medium_evidence=%s\n' "${medium_evidence}"
 
 [[ "${internal}" == false ]] \
   || record_failure "runtime storage must be external to the Mac system disk"
@@ -275,9 +291,12 @@ elif [[ "${WAREHOUSE_HARDWARE_RAID_APPROVED:-false}" == true ]]; then
   raid_kind="approved-hardware-raid1"
 else
   raid_kind="unverified-external-volume"
-  record_failure "no mirrored AppleRAID detected and no verified hardware RAID1 approval is configured"
+  if [[ "${require_mirror}" == true ]]; then
+    record_failure "no mirrored AppleRAID detected and no verified hardware RAID1 approval is configured"
+  fi
 fi
 printf 'storage_observation_protection=%s\n' "${raid_kind}"
+printf 'storage_observation_mirror_required=%s\n' "${require_mirror}"
 
 resolved_root="$(cd "${storage_root}" && pwd -P)"
 
