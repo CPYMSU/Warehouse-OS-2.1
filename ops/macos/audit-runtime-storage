@@ -146,8 +146,76 @@ PY
 profile_medium="$(profile_value medium)"
 profile_model="$(profile_value model)"
 profile_protocol="$(profile_value protocol)"
+ioreg_storage="$(python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["ioreg", "-a", "-r", "-c", "IOBlockStorageDevice"],
+        check=True,
+        capture_output=True,
+        timeout=15,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
+ioreg_value() {
+  IOREG_STORAGE="${ioreg_storage}" python3 - "$1" "${profile_model}" <<'PY'
+import os
+import plistlib
+import sys
+
+wanted, observed_model = sys.argv[1:]
+try:
+    document = plistlib.loads(os.environ.get("IOREG_STORAGE", "").encode())
+except (plistlib.InvalidFileException, TypeError, ValueError):
+    document = []
+
+def records(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from records(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from records(child)
+
+match = {}
+for item in records(document):
+    characteristics = item.get("Device Characteristics")
+    if not isinstance(characteristics, dict):
+        continue
+    product = str(characteristics.get("Product Name") or "")
+    if observed_model != "unknown" and product.casefold() == observed_model.casefold():
+        match = characteristics
+        break
+    if "thinkplus" in product.casefold():
+        match = characteristics
+        break
+
+aliases = {
+    "medium": ("Medium Type", "MediumType"),
+    "model": ("Product Name",),
+}
+for key in aliases[wanted]:
+    value = match.get(key)
+    if value not in (None, ""):
+        print(str(value).replace("\n", " ")[:160])
+        break
+else:
+    print("unknown")
+PY
+}
+ioreg_medium="$(ioreg_value medium)"
+ioreg_model="$(ioreg_value model)"
 profile_solid_state="unknown"
-normalized_profile_medium="$(printf '%s' "${profile_medium}" | tr '[:upper:]' '[:lower:]')"
+normalized_profile_medium="$(
+  printf '%s %s' "${profile_medium}" "${ioreg_medium}" | tr '[:upper:]' '[:lower:]'
+)"
 case "${normalized_profile_medium}" in
   *ssd*|*solid*state*) profile_solid_state=true ;;
   *hdd*|*rotational*|*hard*disk*) profile_solid_state=false ;;
@@ -164,6 +232,8 @@ printf 'storage_observation_physical_solid_state=%s\n' "${physical_solid_state}"
 printf 'storage_observation_profile_medium=%s\n' "${profile_medium}"
 printf 'storage_observation_profile_model=%s\n' "${profile_model}"
 printf 'storage_observation_profile_protocol=%s\n' "${profile_protocol}"
+printf 'storage_observation_ioreg_medium=%s\n' "${ioreg_medium}"
+printf 'storage_observation_ioreg_model=%s\n' "${ioreg_model}"
 
 [[ "${internal}" == false ]] \
   || record_failure "runtime storage must be external to the Mac system disk"
