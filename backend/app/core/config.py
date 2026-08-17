@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # Read-only compatibility mount used while an older local volume is being
     # migrated to the HDD.  New writes never target this path.
     asset_legacy_storage_root: Path | None = None
+    # Resumable Source uploads are streamed in fixed-size parts and may use the
+    # workspace's full logical quota. Keep the legacy multipart body limit
+    # separate so increasing Source capacity cannot create a multi-GiB request.
+    source_max_upload_bytes: int = 3 * 1024 * 1024 * 1024
     asset_max_upload_bytes: int = 100 * 1024 * 1024
     research_repository_root: Path = Path("var/research-repositories")
     research_max_upload_bytes: int = 250 * 1024 * 1024
