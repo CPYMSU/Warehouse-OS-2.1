@@ -74,6 +74,8 @@ def test_21_guide_and_cli_are_downloadable_without_legacy_runtime_paths() -> Non
     assert '"/api/workspaces/v1/info"' in cli_download.text
     assert '"/api/dam/v1/' not in cli_download.text
     compile(cli_download.text, "dam.py", "exec")
+    assert "isinstance(detail, (dict, list))" in cli_download.text
+    assert "isinstance(detail, dict | list)" not in cli_download.text
     assert standard.status_code == 200
     assert standard.json()["version"] == "2.3"
     assert standard.json()["schema"] == "warehouse.hosting-application.v2.3"

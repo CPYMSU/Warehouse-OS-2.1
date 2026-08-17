@@ -654,6 +654,41 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
         assert version_conflict.status_code == 409
         assert version_conflict.json()["detail"]["reason"] == "source_version_number_conflict"
 
+        above_legacy_limit = settings.asset_max_upload_bytes + 1
+        large_reservation = client.post(
+            "/api/workspaces/v1/source-uploads",
+            headers={**headers, "Idempotency-Key": "resumable-large-source-boundary"},
+            json={
+                "filename": "large-source.tar.gz",
+                "content_type": "application/gzip",
+                "size_bytes": above_legacy_limit,
+                "sha256": "a" * 64,
+                "version_no": "v1.0.1-large-reservation",
+                "component": "frontend",
+            },
+        )
+        assert large_reservation.status_code == 201, large_reservation.text
+        assert large_reservation.json()["expected_size_bytes"] == above_legacy_limit
+        host_limit = client.post(
+            "/api/workspaces/v1/source-uploads",
+            headers={**headers, "Idempotency-Key": "resumable-source-host-limit"},
+            json={
+                "filename": "too-large-source.tar.gz",
+                "content_type": "application/gzip",
+                "size_bytes": settings.source_max_upload_bytes + 1,
+                "sha256": "b" * 64,
+                "version_no": "v1.0.2-too-large",
+                "component": "frontend",
+            },
+        )
+        assert host_limit.status_code == 413
+        assert host_limit.json()["detail"] == {
+            "reason": "source_upload_exceeds_host_limit",
+            "requested_bytes": settings.source_max_upload_bytes + 1,
+            "max_bytes": settings.source_max_upload_bytes,
+            "next_action": "reduce the archive or request a governed host-limit increase",
+        }
+
         resumable_package = _source_zip(
             {
                 "index.html": "<!doctype html><title>Resumable Pages upload</title>",

@@ -4,6 +4,14 @@ from app.core.config import Settings
 from app.services import hosted_database
 
 
+def test_resumable_source_limit_is_separate_from_legacy_multipart_limit() -> None:
+    settings = Settings()
+
+    assert settings.source_max_upload_bytes == 3 * 1024 * 1024 * 1024
+    assert settings.asset_max_upload_bytes == 100 * 1024 * 1024
+    assert settings.source_max_upload_bytes > settings.asset_max_upload_bytes
+
+
 def test_settings_accepts_comma_separated_cors_origins() -> None:
     settings = Settings(
         cors_origins="http://127.0.0.1:8080, https://app.bonfirework.org",

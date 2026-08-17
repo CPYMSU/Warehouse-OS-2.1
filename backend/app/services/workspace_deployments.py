@@ -931,7 +931,10 @@ def _source_signals(source: dict[str, object] | None, settings: Settings) -> dic
         if path.is_file():
             return inspect_source_archive(
                 path,
-                max_uncompressed_bytes=settings.asset_max_upload_bytes * 8,
+                max_uncompressed_bytes=min(
+                    settings.source_max_upload_bytes * 200,
+                    64 * 1024 * 1024 * 1024,
+                ),
             ).signals
     raise HTTPException(status_code=409, detail="Verified source object is unavailable")
 
