@@ -42,9 +42,32 @@ internal="$(plist_value Internal)"
 solid_state="$(plist_value SolidState)"
 total_bytes="$(plist_value TotalSize)"
 
+printf 'storage_observation_root=%s\n' "${storage_root}"
+printf 'storage_observation_device=%s\n' "${device}"
+printf 'storage_observation_whole_disk=%s\n' "${whole_disk}"
+printf 'storage_observation_volume_solid_state=%s\n' "${solid_state}"
+printf 'storage_observation_internal=%s\n' "${internal}"
+printf 'storage_observation_total_bytes=%s\n' "${total_bytes}"
+
 physical_solid_state="unknown"
 if [[ "${whole_disk}" =~ ^disk[0-9]+$ ]]; then
-  physical_plist="$(diskutil info -plist "/dev/${whole_disk}" 2>/dev/null || true)"
+  physical_plist="$(python3 - "${whole_disk}" <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["diskutil", "info", "-plist", f"/dev/{sys.argv[1]}"],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
   if [[ -n "${physical_plist}" ]]; then
     physical_solid_state="$(
       plutil -extract SolidState raw -o - - <<<"${physical_plist}" 2>/dev/null \
@@ -56,13 +79,7 @@ if [[ "${solid_state}" == unknown && "${physical_solid_state}" != unknown ]]; th
   solid_state="${physical_solid_state}"
 fi
 
-printf 'storage_observation_root=%s\n' "${storage_root}"
-printf 'storage_observation_device=%s\n' "${device}"
-printf 'storage_observation_whole_disk=%s\n' "${whole_disk}"
-printf 'storage_observation_volume_solid_state=%s\n' "$(plist_value SolidState)"
 printf 'storage_observation_physical_solid_state=%s\n' "${physical_solid_state}"
-printf 'storage_observation_internal=%s\n' "${internal}"
-printf 'storage_observation_total_bytes=%s\n' "${total_bytes}"
 
 [[ "${internal}" == false ]] \
   || fail "runtime storage must be external to the Mac system disk"
