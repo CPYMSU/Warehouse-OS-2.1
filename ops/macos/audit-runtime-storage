@@ -17,6 +17,11 @@ fail() {
   exit 2
 }
 
+failures=()
+record_failure() {
+  failures[${#failures[@]}]="$1"
+}
+
 [[ "${storage_root}" == /Volumes/* ]] \
   || fail "runtime storage root must be a dedicated volume below /Volumes"
 [[ "${minimum_bytes}" =~ ^[1-9][0-9]+$ ]] \
@@ -124,15 +129,16 @@ match = next(
 )
 physical = match.get("physical_drive") if isinstance(match.get("physical_drive"), dict) else {}
 aliases = {
-    "medium": ("medium_type", "media_type"),
+    "medium": ("medium_type", "media_type", "solid_state", "is_solid_state", "is_ssd"),
     "model": ("device_name", "_name"),
     "protocol": ("protocol",),
 }
-for key in aliases[wanted]:
-    value = physical.get(key)
-    if value not in (None, ""):
-        print(str(value).replace("\n", " ")[:160])
-        break
+for source in (physical, match):
+    for key in aliases[wanted]:
+        value = source.get(key)
+        if value not in (None, ""):
+            print(str(value).replace("\n", " ")[:160])
+            raise SystemExit
 else:
     print("unknown")
 PY
@@ -160,25 +166,48 @@ printf 'storage_observation_profile_model=%s\n' "${profile_model}"
 printf 'storage_observation_profile_protocol=%s\n' "${profile_protocol}"
 
 [[ "${internal}" == false ]] \
-  || fail "runtime storage must be external to the Mac system disk"
+  || record_failure "runtime storage must be external to the Mac system disk"
 [[ "${solid_state}" == true ]] \
-  || fail "runtime storage is not reported as solid-state"
-[[ "${total_bytes}" =~ ^[0-9]+$ ]] \
-  || fail "diskutil did not report a numeric storage capacity"
-(( total_bytes >= minimum_bytes )) \
-  || fail "runtime SSD capacity is below the required 2 TB"
+  || record_failure "runtime storage is not reported as solid-state"
+if [[ ! "${total_bytes}" =~ ^[0-9]+$ ]]; then
+  record_failure "diskutil did not report a numeric storage capacity"
+elif (( total_bytes < minimum_bytes )); then
+  record_failure "runtime SSD capacity is below the required 2 TB"
+fi
 
 raid_kind="external-volume"
-if raid_list="$(diskutil appleRAID list 2>/dev/null)" \
-  && grep -Fq "${device}" <<<"${raid_list}"; then
-  grep -Eiq 'Mirror|Mirrored' <<<"${raid_list}" \
-    || fail "runtime storage belongs to AppleRAID but is not mirrored"
-  raid_kind="apple-raid-mirror"
+raid_list="$(python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["diskutil", "appleRAID", "list"],
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
+if grep -Fq "${device}" <<<"${raid_list}" \
+  || grep -Fq "${whole_disk}" <<<"${raid_list}"; then
+  if grep -Eiq 'Mirror|Mirrored' <<<"${raid_list}"; then
+    raid_kind="apple-raid-mirror"
+  else
+    raid_kind="apple-raid-non-mirror"
+    record_failure "runtime storage belongs to AppleRAID but is not mirrored"
+  fi
 elif [[ "${WAREHOUSE_HARDWARE_RAID_APPROVED:-false}" == true ]]; then
   raid_kind="approved-hardware-raid1"
 else
-  fail "no mirrored AppleRAID detected and no verified hardware RAID1 approval is configured"
+  raid_kind="unverified-external-volume"
+  record_failure "no mirrored AppleRAID detected and no verified hardware RAID1 approval is configured"
 fi
+printf 'storage_observation_protection=%s\n' "${raid_kind}"
 
 resolved_root="$(cd "${storage_root}" && pwd -P)"
 
@@ -187,7 +216,10 @@ inspect_runtime_mount() {
   local evidence
   evidence="$("${docker_bin}" inspect "${container}" \
     --format '{{json .Mounts}}' 2>/dev/null)" \
-    || fail "required container is unavailable: ${container}"
+    || {
+      printf 'container=%s\nruntime_mount_status=unavailable\n' "${container}"
+      return 1
+    }
   MOUNT_EVIDENCE="${evidence}" python3 - \
     "${container}" "${runtime_target}" "${resolved_root}" <<'PY'
 import json
@@ -215,9 +247,17 @@ PY
 }
 
 inspect_runtime_mount bonfirework-mac-api \
-  || fail "Mac API runtime mount is not governed by the 2 TB SSD"
+  || record_failure "Mac API runtime mount is not governed by the 2 TB SSD"
 inspect_runtime_mount bonfirework-mac-runtime-controller \
-  || fail "Mac Runtime Controller mount is not governed by the 2 TB SSD"
+  || record_failure "Mac Runtime Controller mount is not governed by the 2 TB SSD"
+
+if (( ${#failures[@]} > 0 )); then
+  printf 'runtime_storage_status=blocked\n' >&2
+  for reason in "${failures[@]}"; do
+    printf 'reason=%s\n' "${reason}" >&2
+  done
+  exit 2
+fi
 
 printf 'runtime_storage_status=ready\n'
 printf 'storage_root=%s\n' "${resolved_root}"
