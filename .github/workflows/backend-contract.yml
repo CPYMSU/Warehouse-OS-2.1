@@ -25,6 +25,7 @@ jobs:
             ops/cluster/configure-control-publication-macos \
             ops/cluster/rolling-deploy \
             ops/cluster/set-vultr-reverse-subscriptions \
+            ops/macos/audit-runtime-storage \
             ops/macos/warehouse-deploy-macos \
             ops/macos/warehouse-deploy-ssh-gate \
             ops/server/warehouse-deploy \
