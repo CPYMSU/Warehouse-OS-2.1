@@ -38,40 +38,79 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  direct-container-route:
+  repair-cloudflare-origin:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
-      - name: Test OrbStack container-direct origins read-only
+      - name: Switch cloudflared origin to OrbStack direct container DNS with rollback
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== container network metadata ==='
-          docker inspect bonfirework-mac-api --format '{{json .NetworkSettings.Networks}}' || true
-          echo '=== host DNS candidates ==='
-          for host in bonfirework-mac-api.orb.local bonfirework-mac-api; do
-            echo "host=${host}"
-            dscacheutil -q host -a name "$host" 2>/dev/null || true
-            curl -v --connect-timeout 3 --max-time 8 "http://${host}:8080/health" -o /tmp/direct.out 2>&1 | tail -n 25 || true
-            cat /tmp/direct.out 2>/dev/null || true; echo
-          done
-          echo '=== container IP candidates ==='
-          docker inspect bonfirework-mac-api --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}' | while read -r ip; do
-            [ -n "$ip" ] || continue
-            echo "ip=${ip}"
-            curl -v --connect-timeout 3 --max-time 8 "http://${ip}:8080/health" -o /tmp/ip.out 2>&1 | tail -n 25 || true
-            cat /tmp/ip.out 2>/dev/null || true; echo
-          done
-          echo '=== local HTTPS/Nginx candidates ==='
-          for port in 443 80; do
-            echo "port=${port}"
-            if [ "$port" = 443 ]; then
-              curl -k -v --connect-timeout 3 --max-time 8 --resolve bonfirework.org:443:127.0.0.1 https://bonfirework.org/health -o /tmp/local.out 2>&1 | tail -n 25 || true
-            else
-              curl -v --connect-timeout 3 --max-time 8 -H 'Host: bonfirework.org' http://127.0.0.1/health -o /tmp/local.out 2>&1 | tail -n 25 || true
+          old='http://127.0.0.1:8081'
+          new='http://bonfirework-mac-api.orb.local:8080'
+          uid="$(id -u)"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          configs=("$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/pages-config.yml")
+          labels=(org.bonfirework.cloudflared org.bonfirework.cloudflared-pages)
+          backups=()
+
+          curl -fsS --connect-timeout 3 --max-time 8 "${new}/health" >/tmp/direct-health.json
+          grep -Fq '"status":"ok"' /tmp/direct-health.json
+          echo 'direct_orb_origin=healthy'
+
+          changed=0
+          for i in 0 1; do
+            cfg="${configs[$i]}"
+            label="${labels[$i]}"
+            [ -f "$cfg" ] || continue
+            if grep -Fq "$old" "$cfg"; then
+              backup="${cfg}.bak-${stamp}"
+              cp -p "$cfg" "$backup"
+              backups+=("$cfg|$backup|$label")
+              python3 - "$cfg" "$old" "$new" <<'PY'
+          import pathlib, sys
+          path=pathlib.Path(sys.argv[1]); old=sys.argv[2]; new=sys.argv[3]
+          text=path.read_text()
+          if old not in text:
+              raise SystemExit('expected origin not found')
+          path.write_text(text.replace(old,new))
+          PY
+              changed=1
+              echo "updated_config=$(basename "$cfg")"
             fi
-            cat /tmp/local.out 2>/dev/null || true; echo
           done
+          [ "$changed" -eq 1 ] || { echo 'no cloudflared origin required change'; exit 1; }
+
+          rollback() {
+            echo 'restoring cloudflared config backups' >&2
+            for item in "${backups[@]}"; do
+              IFS='|' read -r cfg backup label <<<"$item"
+              cp -p "$backup" "$cfg"
+              launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+            done
+          }
+          trap rollback ERR
+
+          for item in "${backups[@]}"; do
+            IFS='|' read -r cfg backup label <<<"$item"
+            grep -Fq "$new" "$cfg"
+            launchctl kickstart -k "gui/${uid}/${label}"
+          done
+
+          sleep 3
+          echo '=== verify public health ==='
+          for attempt in $(seq 1 20); do
+            if curl -fsS --connect-timeout 3 --max-time 8 https://bonfirework.org/health >/tmp/public-health.json 2>/dev/null; then
+              grep -Fq '"status":"ok"' /tmp/public-health.json
+              echo "public_health_recovered=true attempt=${attempt}"
+              cat /tmp/public-health.json; echo
+              trap - ERR
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'public health did not recover after tunnel origin switch' >&2
+          false
