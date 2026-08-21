@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   publish:
+    if: vars.WAREHOUSE_ASSET_REGISTRY_ENABLED == 'true'
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 180
     env:
