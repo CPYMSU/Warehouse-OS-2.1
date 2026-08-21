@@ -1,0 +1,45 @@
+name: MK7 registry migration
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/mk7-registry-migration.yml
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 10
+    steps:
+      - name: Verify Mac mini can write CPYMSU/registry without changing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive='/Users/peiyuan/Server/bonfirework/shared/runtime-volumes-recovered.internal-rollback-20260812T125010Z/.staging/mk7-32ef4097.tar.gz'
+          test -f "$archive"
+          expected='32ef40976c7038e5e55ca9a7dbf844666386a7663f0da0be87265ce96a36bcb4'
+          actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+
+          tmp="$(mktemp -d /tmp/mk7-registry-probe.XXXXXX)"
+          trap 'rm -rf "$tmp"' EXIT
+          cd "$tmp"
+          git init -q
+          git config user.name 'Warehouse MK7 migration probe'
+          git config user.email 'noreply@bonfirework.org'
+          printf 'probe\n' > probe.txt
+          git add probe.txt
+          git commit -qm 'Probe registry write access'
+
+          remote='git@github.com:CPYMSU/registry.git'
+          git remote add origin "$remote"
+          if git push --dry-run origin HEAD:refs/heads/mk7-migration-auth-probe >/tmp/mk7-push-probe.out 2>/tmp/mk7-push-probe.err; then
+            echo 'REGISTRY_WRITE_TRANSPORT=ssh'
+            echo 'REGISTRY_WRITE_READY=true'
+          else
+            echo 'REGISTRY_WRITE_READY=false'
+            sed -n '1,20p' /tmp/mk7-push-probe.err
+          fi
