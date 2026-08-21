@@ -38,50 +38,34 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  tunnel-config:
+  port-8081:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 4
     steps:
-      - name: Read non-secret Cloudflare Tunnel target and errors
+      - name: Inspect Cloudflare local origin and old release binding
         shell: bash
         run: |
           set -u
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          python3 - <<'PY'
-          import plistlib, pathlib
-          names=('org.bonfirework.cloudflared.plist','org.bonfirework.cloudflared-pages.plist')
-          configs=[]; logs=[]
-          for name in names:
-              pth=pathlib.Path.home()/'Library'/'LaunchAgents'/name
-              if not pth.exists(): continue
-              p=plistlib.loads(pth.read_bytes()); args=p.get('ProgramArguments') or []
-              print('label=',p.get('Label'))
-              safe=[]; skip=False
-              for a in args:
-                  if skip: skip=False; continue
-                  if a in {'--token','--credentials-file','--origincert'}:
-                      safe.extend([a,'<redacted>']); skip=True; continue
-                  if a.startswith('eyJ') or len(a)>120: safe.append('<redacted>')
-                  else: safe.append(a)
-              print('args=',safe)
-              for i,a in enumerate(args[:-1]):
-                  if a=='--config': configs.append(pathlib.Path(args[i+1]).expanduser())
-              for k in ('StandardErrorPath','StandardOutPath'):
-                  if p.get(k): logs.append(pathlib.Path(p[k]).expanduser())
-          for p in [pathlib.Path.home()/'.cloudflared/config.yml', pathlib.Path.home()/'.cloudflared/config.yaml', *configs]:
-              if p.exists():
-                  print('config=',p)
-                  for line in p.read_text(errors='ignore').splitlines():
-                      s=line.strip()
-                      if s.startswith('hostname:') or s.startswith('service:'): print(s)
-          seen=set()
-          for f in logs:
-              if f in seen or not f.exists(): continue
-              seen.add(f); print('log=',f)
-              for line in f.read_text(errors='ignore').splitlines()[-150:]:
-                  low=line.lower()
-                  if any(w in low for w in ('error','failed','refused','connect','origin','service')):
-                      print(line[:900])
-          PY
+          echo '=== manager status ==='
+          /Users/peiyuan/Server/bonfirework/bin/warehouse-deploy status || true
+          echo '=== API container ports ==='
+          docker ps --filter name=bonfirework-mac-api --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+          docker inspect bonfirework-mac-api --format '{{json .NetworkSettings.Ports}}' 2>/dev/null || true
+          echo '=== listener 8081 ==='
+          lsof -nP -iTCP:8081 -sTCP:LISTEN 2>/dev/null || true
+          echo '=== host probes ==='
+          for path in /health /api/system/readiness /openapi.json; do
+            echo "-- ${path}"
+            curl -v --connect-timeout 3 --max-time 10 "http://127.0.0.1:8081${path}" -o /tmp/probe.out 2>&1 | tail -n 30 || true
+            if [ -f /tmp/probe.out ]; then head -c 500 /tmp/probe.out; echo; fi
+          done
+          echo '=== relevant compose port declarations ==='
+          for f in /Users/peiyuan/Server/bonfirework/compose.macos.yaml /Users/peiyuan/Server/bonfirework/state/compose.release.yaml /Users/peiyuan/Server/bonfirework/state/compose.previous.yaml; do
+            if [ -f "$f" ]; then
+              echo "file=$f"
+              grep -nE 'bonfirework-mac-api|ports:|8080|8081' "$f" | head -n 80 || true
+            fi
+          done
