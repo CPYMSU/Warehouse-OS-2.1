@@ -24,7 +24,8 @@ jobs:
           PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/python-cache" \
             python3 -m compileall -q backend/app backend/alembic/versions \
               ops/macos/warehouse-clash-route-optimizer \
-              ops/macos/publish-digital-assets.py
+              ops/macos/publish-digital-assets.py \
+              ops/macos/publish-digital-assets-from-registry.py
           bash -n \
             ops/deploy \
             ops/fast-deploy \
