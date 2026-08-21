@@ -38,61 +38,40 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  recreate-old-api:
+  direct-container-route:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 6
+    timeout-minutes: 4
     steps:
-      - name: Force-recreate current old API with existing production compose
+      - name: Test OrbStack container-direct origins read-only
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          root="$HOME/Server/bonfirework"
-          expected_release='20260817T025629Z-57c7a4d691a2-mac-primary-smart'
-          expected_image="bonfirework-api-mac:${expected_release}"
-
-          status="$(${root}/bin/warehouse-deploy status)"
-          printf '%s\n' "$status"
-          grep -Fq "release=${expected_release}" <<<"$status"
-          current_image="$(docker inspect bonfirework-mac-api --format '{{.Config.Image}}')"
-          [ "$current_image" = "$expected_image" ] || { echo "refusing recreate: current image=${current_image}" >&2; exit 1; }
-
-          args=(-f "$root/compose.macos.yaml")
-          [ ! -f "$root/state/compose.release.yaml" ] || args+=(-f "$root/state/compose.release.yaml")
-          [ ! -f "$root/state/compose.shield.yaml" ] || args+=(-f "$root/state/compose.shield.yaml")
-
-          rendered="$(docker compose "${args[@]}" config --format json)"
-          rendered_image="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["api"]["image"])' <<<"$rendered")"
-          [ "$rendered_image" = "$expected_image" ] || { echo "refusing recreate: rendered image=${rendered_image}" >&2; exit 1; }
-
-          echo '=== force-recreate current old API ==='
-          docker compose "${args[@]}" up -d --no-build --no-deps --force-recreate api
-
-          for attempt in $(seq 1 60); do
-            health="$(docker inspect bonfirework-mac-api --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null || true)"
-            if [ "$health" = healthy ] && curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8081/health >/tmp/local-health.json 2>/dev/null; then
-              echo "local_origin_recovered=true attempt=${attempt}"
-              cat /tmp/local-health.json; echo
-              break
-            fi
-            if [ "$attempt" -eq 60 ]; then
-              echo "local_origin_recovered=false health=${health}" >&2
-              docker ps --filter name=bonfirework-mac-api --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' >&2 || true
-              exit 1
-            fi
-            sleep 1
+          echo '=== container network metadata ==='
+          docker inspect bonfirework-mac-api --format '{{json .NetworkSettings.Networks}}' || true
+          echo '=== host DNS candidates ==='
+          for host in bonfirework-mac-api.orb.local bonfirework-mac-api; do
+            echo "host=${host}"
+            dscacheutil -q host -a name "$host" 2>/dev/null || true
+            curl -v --connect-timeout 3 --max-time 8 "http://${host}:8080/health" -o /tmp/direct.out 2>&1 | tail -n 25 || true
+            cat /tmp/direct.out 2>/dev/null || true; echo
           done
-
-          echo '=== public Cloudflare health ==='
-          for attempt in $(seq 1 30); do
-            if curl -fsS --connect-timeout 3 --max-time 8 https://bonfirework.org/health >/tmp/public-health.json 2>/dev/null; then
-              echo "public_health_recovered=true attempt=${attempt}"
-              cat /tmp/public-health.json; echo
-              exit 0
-            fi
-            sleep 2
+          echo '=== container IP candidates ==='
+          docker inspect bonfirework-mac-api --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}' | while read -r ip; do
+            [ -n "$ip" ] || continue
+            echo "ip=${ip}"
+            curl -v --connect-timeout 3 --max-time 8 "http://${ip}:8080/health" -o /tmp/ip.out 2>&1 | tail -n 25 || true
+            cat /tmp/ip.out 2>/dev/null || true; echo
           done
-          echo 'public_health_recovered=false after local recovery' >&2
-          exit 2
+          echo '=== local HTTPS/Nginx candidates ==='
+          for port in 443 80; do
+            echo "port=${port}"
+            if [ "$port" = 443 ]; then
+              curl -k -v --connect-timeout 3 --max-time 8 --resolve bonfirework.org:443:127.0.0.1 https://bonfirework.org/health -o /tmp/local.out 2>&1 | tail -n 25 || true
+            else
+              curl -v --connect-timeout 3 --max-time 8 -H 'Host: bonfirework.org' http://127.0.0.1/health -o /tmp/local.out 2>&1 | tail -n 25 || true
+            fi
+            cat /tmp/local.out 2>/dev/null || true; echo
+          done
