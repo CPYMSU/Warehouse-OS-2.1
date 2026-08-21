@@ -41,3 +41,20 @@ jobs:
           if command -v docker >/dev/null 2>&1; then
             docker ps --format '{{.Names}}\t{{.Image}}\t{{.Labels}}' 2>/dev/null | grep -i 'mk7' || true
           fi
+
+      - name: Inspect MK7 archive structure read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive='/Users/peiyuan/Server/bonfirework/shared/runtime-volumes-recovered.internal-rollback-20260812T125010Z/.staging/mk7-32ef4097.tar.gz'
+          if [ ! -f "$archive" ]; then
+            echo 'MK7 archive is no longer present'
+            exit 0
+          fi
+          echo '=== Archive metadata ==='
+          stat -f 'size=%z bytes modified=%Sm' "$archive"
+          shasum -a 256 "$archive"
+          echo '=== Archive entries (first 200) ==='
+          tar -tzf "$archive" | sed -n '1,200p'
+          echo '=== Project markers ==='
+          tar -tzf "$archive" | grep -E '(^|/)(package.json|package-lock.json|requirements[^/]*\.txt|pyproject.toml|Dockerfile|docker-compose[^/]*|compose[^/]*\.ya?ml|index\.html|vite\.config\.[^/]+|next\.config\.[^/]+|warehouse\.hosting\.json)$' | sed -n '1,100p' || true
