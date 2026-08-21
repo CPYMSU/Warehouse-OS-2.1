@@ -10,7 +10,7 @@ Digital-asset source repositories
         |
         | read-only HTTPS clone
         v
-CPYMSU/Warehouse-Digital-Asset-Registry
+CPYMSU/registry
         |
         | registry.json only; no wak_ credentials
         v
@@ -45,15 +45,14 @@ resolved `wak_` key.
 
 ## Dedicated publishing registry
 
-Create a dedicated repository named:
+The dedicated private registry is:
 
-`CPYMSU/Warehouse-Digital-Asset-Registry`
+`CPYMSU/registry`
 
-Keep it private unless there is a deliberate reason to expose deployment
-metadata. It contains declarative bindings only; it must never contain a
-`wak_` key or database/server credential.
+It contains declarative bindings only; it must never contain a `wak_` key or
+database/server credential.
 
-At the repository root create `registry.json` using this shape:
+At the repository root, `registry.json` uses this shape:
 
 ```json
 {
@@ -74,6 +73,8 @@ At the repository root create `registry.json` using this shape:
 ```
 
 A committed example also lives at `docs/digital-asset-registry.example.json`.
+The registry repository itself contains `registry.schema.json` for editor and
+review validation.
 
 Fields:
 
@@ -105,18 +106,19 @@ workspace credentials:
 }
 ```
 
-For a private registry and/or private source repositories also create
-`WAREHOUSE_ASSET_GITHUB_TOKEN`. Use a fine-grained token with **Contents: Read**
-only for `Warehouse-Digital-Asset-Registry` and the source repositories the Mac
-runner must clone. Do not grant repository administration or write access.
+Because `CPYMSU/registry` is private, create
+`WAREHOUSE_ASSET_GITHUB_TOKEN` as well. Use a fine-grained token with
+**Contents: Read** for `CPYMSU/registry` and any private source repositories the
+Mac runner must clone. Do not grant repository administration or write access.
 
 Optional repository variables:
 
-- `WAREHOUSE_ASSET_REGISTRY_REPOSITORY` — defaults to
-  `CPYMSU/Warehouse-Digital-Asset-Registry`.
+- `WAREHOUSE_ASSET_REGISTRY_REPOSITORY` — defaults to `CPYMSU/registry`.
 - `WAREHOUSE_ASSET_REGISTRY_REF` — defaults to `main`.
 - `WAREHOUSE_ASSET_REGISTRY_PATH` — defaults to `registry.json`.
 - `WAREHOUSE_BASE_URL` — defaults to `https://bonfirework.org`.
+- `WAREHOUSE_ASSET_REGISTRY_ENABLED` — must be `true` before scheduled/manual
+  registry publishing jobs execute.
 
 ## What happens on each check
 
@@ -129,7 +131,7 @@ runs-on: [self-hosted, macOS, ARM64, warehouse-production]
 
 `ops/macos/publish-digital-assets-from-registry.py` first:
 
-1. read-only clones the dedicated registry repository;
+1. read-only clones `CPYMSU/registry`;
 2. validates `registry.json` and rejects committed `wak_` credentials;
 3. resolves every `workspace_key_ref` from
    `WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON`;
