@@ -38,36 +38,28 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  tunnel-state:
+  orbstack-inventory:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 4
     steps:
-      - name: Inspect tunnel host mapping, connection state, and post-restart logs
+      - name: Inspect OrbStack restart surface read-only
         shell: bash
         run: |
           set -u
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== config ingress map ==='
-          for f in "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/pages-config.yml"; do
-            [ -f "$f" ] || continue
-            echo "config=$(basename "$f")"
-            grep -nE 'hostname:|service:|protocol:' "$f" || true
-          done
-          echo '=== direct orb origin with public Host ==='
-          curl -fsS --connect-timeout 3 --max-time 8 -H 'Host: bonfirework.org' http://bonfirework-mac-api.orb.local:8080/health || true
-          echo
-          echo '=== launchd processes ==='
-          launchctl list | grep -E 'org\.bonfirework\.cloudflared' || true
-          pgrep -lf cloudflared || true
-          echo '=== main tunnel info ==='
-          /opt/homebrew/bin/cloudflared --config "$HOME/.cloudflared/config.yml" tunnel info ee0c238e-a4c0-4913-a5f7-85b912c86211 2>&1 | sed -n '1,100p' || true
-          echo '=== pages tunnel info ==='
-          /opt/homebrew/bin/cloudflared --config "$HOME/.cloudflared/pages-config.yml" tunnel info 802da61a-bef0-4c1f-a354-a1e3bf5780bf 2>&1 | sed -n '1,100p' || true
-          echo '=== logs since 16:52 UTC ==='
-          for f in "$HOME/Server/bonfirework/shared/logs/cloudflared.stderr.log" "$HOME/Server/bonfirework/shared/logs/cloudflared.stdout.log" "$HOME/Server/bonfirework/shared/logs/cloudflared-pages.stderr.log" "$HOME/Server/bonfirework/shared/logs/cloudflared-pages.stdout.log"; do
-            [ -f "$f" ] || continue
-            echo "log=$(basename "$f")"
-            tail -n 250 "$f" | grep -E '2026-08-21T16:(5[2-9]|[6-9][0-9]):|Registered tunnel connection|Unable to reach the origin|Request failed|ERR|WRN' | tail -n 120 || true
-          done
+          echo '=== running containers ==='
+          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
+          echo '=== restart policies ==='
+          ids="$(docker ps -aq)"
+          if [ -n "$ids" ]; then
+            docker inspect $ids --format '{{.Name}} restart={{.HostConfig.RestartPolicy.Name}} state={{.State.Status}} image={{.Config.Image}}' | sed 's#^/##'
+          fi
+          echo '=== orb command ==='
+          command -v orb || true
+          orb --help 2>&1 | sed -n '1,180p' || true
+          echo '=== orb status ==='
+          orb status 2>&1 | sed -n '1,120p' || true
+          echo '=== related processes ==='
+          pgrep -lf 'OrbStack|orb|docker' | sed -n '1,120p' || true
