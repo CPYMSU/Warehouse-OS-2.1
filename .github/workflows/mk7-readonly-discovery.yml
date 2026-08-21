@@ -1,0 +1,43 @@
+name: MK7 read-only discovery
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/mk7-readonly-discovery.yml
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 5
+    steps:
+      - name: Locate MK7 without modifying host state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== MK7-named paths under approved server roots ==='
+          for root in /Users/peiyuan/Server /opt/warehouse-os /mnt/warehouse-data; do
+            if [ -d "$root" ]; then
+              find "$root" -maxdepth 7 \( -type d -o -type f \) -iname '*mk7*' -print 2>/dev/null || true
+            fi
+          done
+
+          echo '=== Git repositories whose remote or path mentions MK7 ==='
+          if [ -d /Users/peiyuan/Server ]; then
+            find /Users/peiyuan/Server -maxdepth 7 -type d -name .git -print0 2>/dev/null |
+            while IFS= read -r -d '' gitdir; do
+              repo="${gitdir%/.git}"
+              remote="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+              if printf '%s\n%s\n' "$repo" "$remote" | grep -qi 'mk7'; then
+                printf 'repo=%s\norigin=%s\n' "$repo" "$remote"
+              fi
+            done
+          fi
+
+          echo '=== Running containers mentioning MK7 ==='
+          if command -v docker >/dev/null 2>&1; then
+            docker ps --format '{{.Names}}\t{{.Image}}\t{{.Labels}}' 2>/dev/null | grep -i 'mk7' || true
+          fi
