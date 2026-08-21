@@ -1,0 +1,38 @@
+name: Verify Registry production rollout
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/verify-registry-production.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only production verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          manager=/Users/peiyuan/Server/bonfirework/bin/warehouse-deploy
+          test -x "$manager"
+
+          echo '=== manager status ==='
+          "$manager" status
+
+          echo '=== public root ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSI https://bonfirework.org/ | sed -n '1,12p'
+
+          echo '=== digital asset CLI ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/digital-assets/cli -o /tmp/dam-production.py
+          test -s /tmp/dam-production.py
+          shasum -a 256 /tmp/dam-production.py
+          head -n 3 /tmp/dam-production.py
+
+          echo '=== recent deployment history ==='
+          "$manager" history | sed -n '1,20p'
