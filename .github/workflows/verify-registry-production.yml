@@ -38,28 +38,72 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  orbstack-inventory:
+  restart-orbstack:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 4
+    timeout-minutes: 8
     steps:
-      - name: Inspect OrbStack restart surface read-only
+      - name: Restart OrbStack engine and verify production recovery
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== running containers ==='
-          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
-          echo '=== restart policies ==='
-          ids="$(docker ps -aq)"
-          if [ -n "$ids" ]; then
-            docker inspect $ids --format '{{.Name}} restart={{.HostConfig.RestartPolicy.Name}} state={{.State.Status}} image={{.Config.Image}}' | sed 's#^/##'
-          fi
-          echo '=== orb command ==='
-          command -v orb || true
-          orb --help 2>&1 | sed -n '1,180p' || true
-          echo '=== orb status ==='
-          orb status 2>&1 | sed -n '1,120p' || true
-          echo '=== related processes ==='
-          pgrep -lf 'OrbStack|orb|docker' | sed -n '1,120p' || true
+          critical=(bonfirework-mac-api bonfirework-mac-runtime-controller bonfirework-mac-research bonfirework-mac-browser)
+          expected_release='20260817T025629Z-57c7a4d691a2-mac-primary-smart'
+
+          status="$($HOME/Server/bonfirework/bin/warehouse-deploy status)"
+          printf '%s\n' "$status"
+          grep -Fq "release=${expected_release}" <<<"$status"
+          for name in "${critical[@]}"; do
+            policy="$(docker inspect "$name" --format '{{.HostConfig.RestartPolicy.Name}}')"
+            [ "$policy" = unless-stopped ] || { echo "refusing OrbStack restart: ${name} restart=${policy}" >&2; exit 1; }
+          done
+
+          echo '=== restart OrbStack ==='
+          orbctl restart
+
+          for attempt in $(seq 1 120); do
+            if [ "$(orbctl status 2>/dev/null || true)" = Running ] && docker info >/dev/null 2>&1; then
+              echo "orbstack_running=true attempt=${attempt}"
+              break
+            fi
+            [ "$attempt" -lt 120 ] || { echo 'OrbStack did not return' >&2; exit 1; }
+            sleep 1
+          done
+
+          echo '=== wait critical containers ==='
+          for attempt in $(seq 1 120); do
+            all_ok=1
+            for name in "${critical[@]}"; do
+              state="$(docker inspect "$name" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null || true)"
+              if [ "$state" != healthy ] && [ "$state" != running ]; then all_ok=0; fi
+            done
+            [ "$all_ok" -eq 1 ] && break
+            [ "$attempt" -lt 120 ] || { echo 'critical containers did not recover' >&2; docker ps; exit 1; }
+            sleep 1
+          done
+          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'bonfirework-mac-(api|runtime-controller|research|browser)'
+
+          echo '=== verify 8081 ==='
+          for attempt in $(seq 1 60); do
+            if curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8081/health >/tmp/local-health.json 2>/dev/null; then
+              echo "local_8081_recovered=true attempt=${attempt}"
+              cat /tmp/local-health.json; echo
+              break
+            fi
+            [ "$attempt" -lt 60 ] || { echo 'local 8081 still unhealthy after OrbStack restart' >&2; exit 1; }
+            sleep 1
+          done
+
+          echo '=== verify Cloudflare public health ==='
+          for attempt in $(seq 1 60); do
+            if curl -fsS --connect-timeout 3 --max-time 8 https://bonfirework.org/health >/tmp/public-health.json 2>/dev/null; then
+              echo "public_health_recovered=true attempt=${attempt}"
+              cat /tmp/public-health.json; echo
+              curl -fsS --connect-timeout 3 --max-time 8 https://bonfirework.org/api/system/cluster; echo
+              exit 0
+            fi
+            [ "$attempt" -lt 60 ] || { echo 'public health still unavailable after OrbStack recovery' >&2; exit 2; }
+            sleep 2
+          done
