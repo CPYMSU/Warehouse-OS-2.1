@@ -27,6 +27,18 @@ jobs:
           test "$actual" = "$expected"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
+          push_with_retry() {
+            ref="$1"
+            for delay in 0 5 15 30 45; do
+              if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+              if git push --force origin "HEAD:refs/heads/${ref}"; then
+                return 0
+              fi
+              echo "push retry for ${ref} after transient GitHub transport failure" >&2
+            done
+            return 1
+          }
+
           tmp="$(mktemp -d /tmp/mk7-public-transfer.XXXXXX)"
           trap 'rm -rf "$tmp"' EXIT
 
@@ -46,7 +58,7 @@ jobs:
           git add -- mk7-32ef4097.tar.gz SHA256SUMS README.md
           git commit -qm 'Transfer verified MK7 source snapshot'
           git remote add origin "$remote"
-          git push --force origin HEAD:refs/heads/mk7-transfer-32ef4097
+          push_with_retry 'mk7-transfer-32ef4097'
 
           mkdir -p "$tmp/source"
           tar -xzf "$archive" -C "$tmp/source"
@@ -59,7 +71,7 @@ jobs:
           git add -- .
           git commit -qm 'Expand verified MK7 source snapshot'
           git remote add origin "$remote"
-          git push --force origin HEAD:refs/heads/mk7-expanded-32ef4097
+          push_with_retry 'mk7-expanded-32ef4097'
 
           echo 'TRANSFER_ARCHIVE_BRANCH=mk7-transfer-32ef4097'
           echo 'TRANSFER_EXPANDED_BRANCH=mk7-expanded-32ef4097'
