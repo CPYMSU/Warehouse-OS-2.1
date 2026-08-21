@@ -38,34 +38,54 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  port-8081:
+  recover-api-forwarding:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
-      - name: Inspect Cloudflare local origin and old release binding
+      - name: Restart current old API container and verify forwarding
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== manager status ==='
-          /Users/peiyuan/Server/bonfirework/bin/warehouse-deploy status || true
-          echo '=== API container ports ==='
-          docker ps --filter name=bonfirework-mac-api --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' || true
-          docker inspect bonfirework-mac-api --format '{{json .NetworkSettings.Ports}}' 2>/dev/null || true
-          echo '=== listener 8081 ==='
-          lsof -nP -iTCP:8081 -sTCP:LISTEN 2>/dev/null || true
-          echo '=== host probes ==='
-          for path in /health /api/system/readiness /openapi.json; do
-            echo "-- ${path}"
-            curl -v --connect-timeout 3 --max-time 10 "http://127.0.0.1:8081${path}" -o /tmp/probe.out 2>&1 | tail -n 30 || true
-            if [ -f /tmp/probe.out ]; then head -c 500 /tmp/probe.out; echo; fi
-          done
-          echo '=== relevant compose port declarations ==='
-          for f in /Users/peiyuan/Server/bonfirework/compose.macos.yaml /Users/peiyuan/Server/bonfirework/state/compose.release.yaml /Users/peiyuan/Server/bonfirework/state/compose.previous.yaml; do
-            if [ -f "$f" ]; then
-              echo "file=$f"
-              grep -nE 'bonfirework-mac-api|ports:|8080|8081' "$f" | head -n 80 || true
+          expected_release='20260817T025629Z-57c7a4d691a2-mac-primary-smart'
+          status="$(/Users/peiyuan/Server/bonfirework/bin/warehouse-deploy status)"
+          printf '%s\n' "$status"
+          grep -Fq "release=${expected_release}" <<<"$status"
+          image="$(docker inspect bonfirework-mac-api --format '{{.Config.Image}}')"
+          case "$image" in
+            *"${expected_release}"*) ;;
+            *) echo "refusing restart: unexpected API image=${image}" >&2; exit 1 ;;
+          esac
+
+          echo '=== restart current old API container ==='
+          docker restart bonfirework-mac-api
+          for attempt in $(seq 1 45); do
+            health="$(docker inspect bonfirework-mac-api --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null || true)"
+            if [ "$health" = healthy ] && curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8081/health >/tmp/local-health.json 2>/dev/null; then
+              echo "local_origin_recovered=true attempt=${attempt}"
+              cat /tmp/local-health.json
+              echo
+              break
             fi
+            if [ "$attempt" -eq 45 ]; then
+              echo "local_origin_recovered=false health=${health}" >&2
+              docker ps --filter name=bonfirework-mac-api --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' >&2 || true
+              exit 1
+            fi
+            sleep 1
           done
+
+          echo '=== cloudflare public health ==='
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 3 --max-time 8 https://bonfirework.org/health >/tmp/public-health.json 2>/dev/null; then
+              echo "public_health_recovered=true attempt=${attempt}"
+              cat /tmp/public-health.json
+              echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'public_health_recovered=false; local origin is healthy' >&2
+          exit 2
