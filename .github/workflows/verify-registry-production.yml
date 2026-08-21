@@ -16,57 +16,66 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Cancel temporary Mac-runner backlog from this diagnostic branch
+      - name: Cancel older diagnostics on this branch
         shell: bash
         run: |
           set -euo pipefail
           auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
-          : > /tmp/cancel-ids.txt
+          : > /tmp/cancel.txt
           for workflow in 321396252 339511072; do
-            api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?branch=${GITHUB_HEAD_REF}&event=pull_request&per_page=100"
-            curl -fsS "${auth[@]}" "$api" > "/tmp/runs-${workflow}.json"
-            CURRENT_RUN_ID="${GITHUB_RUN_ID}" python3 - "$workflow" <<'PY' >> /tmp/cancel-ids.txt
-          import json, os, sys
-          workflow=sys.argv[1]
+            curl -fsS "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?branch=${GITHUB_HEAD_REF}&event=pull_request&per_page=100" > /tmp/runs.json
+            CURRENT_RUN_ID="$GITHUB_RUN_ID" python3 - <<'PY' >> /tmp/cancel.txt
+          import json, os
+          data=json.load(open('/tmp/runs.json'))
           current=int(os.environ['CURRENT_RUN_ID'])
-          with open(f'/tmp/runs-{workflow}.json') as f:
-              data=json.load(f)
-          for run in data.get('workflow_runs', []):
-              if int(run.get('id',0)) != current and run.get('status') in {'queued','in_progress','waiting','requested','pending'}:
-                  print(run['id'])
+          for r in data.get('workflow_runs',[]):
+              if int(r.get('id',0)) != current and r.get('status') in {'queued','in_progress','waiting','requested','pending'}:
+                  print(r['id'])
           PY
           done
-          sort -u /tmp/cancel-ids.txt -o /tmp/cancel-ids.txt
-          while read -r run_id; do
-            [ -n "$run_id" ] || continue
-            echo "cancel temporary run ${run_id}"
-            curl -fsS -X POST "${auth[@]}" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null || true
-          done </tmp/cancel-ids.txt
+          sort -u /tmp/cancel.txt -o /tmp/cancel.txt
+          while read -r id; do
+            [ -n "$id" ] || continue
+            curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" >/dev/null || true
+          done < /tmp/cancel.txt
 
-  mac-status:
+  origin-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Compare Cloudflare and direct Vultr origin
+        shell: bash
+        run: |
+          set -u
+          echo '=== cloudflare ==='
+          curl --connect-timeout 5 --max-time 15 -sS -D - https://bonfirework.org/health -o /tmp/cf.out || true
+          cat /tmp/cf.out 2>/dev/null || true
+          echo '=== direct vultr origin ==='
+          curl -k --connect-timeout 5 --max-time 15 --resolve bonfirework.org:443:207.148.120.30 -sS -D - https://bonfirework.org/health -o /tmp/origin.out || true
+          cat /tmp/origin.out 2>/dev/null || true
+
+  standby-status:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Read current production state after failed rollout
+      - name: Read Mac and Vultr production state
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          manager=/Users/peiyuan/Server/bonfirework/bin/warehouse-deploy
-          echo '=== manager status ==='
-          "$manager" status || true
-          echo '=== containers ==='
-          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}' | grep -E 'bonfirework|warehouse' || true
-          echo '=== mac api recent logs ==='
-          docker logs --tail 120 bonfirework-mac-api 2>&1 || true
-          echo '=== local TLS health ==='
-          curl -k --connect-timeout 5 --max-time 15 --resolve bonfirework.org:443:127.0.0.1 -sS -D - https://bonfirework.org/health -o /tmp/local-health.out || true
-          cat /tmp/local-health.out 2>/dev/null || true
-          echo '=== public health ==='
-          curl --connect-timeout 5 --max-time 15 -sS -D - https://bonfirework.org/health -o /tmp/public-health.out || true
-          cat /tmp/public-health.out 2>/dev/null || true
-          echo '=== recent deployment history ==='
-          "$manager" history | sed -n '1,30p' || true
+          echo '=== mac primary ==='
+          /Users/peiyuan/Server/bonfirework/bin/warehouse-deploy status || true
+          echo '=== vultr standby ==='
+          ssh -F /dev/null \
+            -i "$HOME/.ssh/warehouse_os_deploy_ed25519" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o ConnectTimeout=15 \
+            warehouse-deploy@207.148.120.30 'sudo -n /usr/local/sbin/warehouse-deploy status' || true
+          echo '=== vultr api logs ==='
+          ssh -F /dev/null \
+            -i "$HOME/.ssh/warehouse_os_deploy_ed25519" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o ConnectTimeout=15 \
+            warehouse-deploy@207.148.120.30 'sudo -n /usr/local/sbin/warehouse-deploy api-logs' 2>&1 | tail -n 100 || true
