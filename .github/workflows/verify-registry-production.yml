@@ -9,6 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  public-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read public production identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== public cluster identity ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/cluster
+          echo
+          echo '=== public readiness ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/readiness
+          echo
+          echo '=== public health ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/health
+          echo
+
   verify:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
