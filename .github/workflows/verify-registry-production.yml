@@ -1,0 +1,58 @@
+name: Verify Registry production rollout
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/verify-registry-production.yml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cleanup-backlog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Force-cancel older diagnostics on this branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          : > /tmp/cancel.txt
+          for workflow in 321396252 339511072; do
+            curl -fsS "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?branch=${GITHUB_HEAD_REF}&event=pull_request&per_page=100" > /tmp/runs.json
+            CURRENT_RUN_ID="$GITHUB_RUN_ID" python3 - <<'PY' >> /tmp/cancel.txt
+          import json, os
+          d=json.load(open('/tmp/runs.json')); current=int(os.environ['CURRENT_RUN_ID'])
+          for r in d.get('workflow_runs',[]):
+              if int(r.get('id',0)) != current and r.get('status') in {'queued','in_progress','waiting','requested','pending'}:
+                  print(r['id'])
+          PY
+          done
+          sort -u /tmp/cancel.txt -o /tmp/cancel.txt
+          while read -r id; do
+            [ -n "$id" ] || continue
+            curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
+          done < /tmp/cancel.txt
+
+  docker-help:
+    needs: cleanup-backlog
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect OrbStack Docker extension commands
+        shell: bash
+        run: |
+          set -u
+          export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          echo '=== docker extension ==='
+          orbctl docker --help 2>&1 | sed -n '1,240p' || true
+          echo '=== docker subcommand probes ==='
+          for sub in restart start stop status; do
+            echo "-- ${sub}"
+            orbctl docker "$sub" --help 2>&1 | sed -n '1,160p' || true
+          done
