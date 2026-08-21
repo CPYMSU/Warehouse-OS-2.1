@@ -38,24 +38,21 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  orbctl-help:
+  docker-help:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 3
     steps:
-      - name: Inspect OrbStack Docker-engine restart commands
+      - name: Inspect OrbStack Docker extension commands
         shell: bash
         run: |
           set -u
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== version ==='
-          orbctl version 2>&1 || true
-          echo '=== orbctl help ==='
-          orbctl --help 2>&1 | sed -n '1,240p' || true
-          echo '=== restart help ==='
-          orbctl restart --help 2>&1 | sed -n '1,200p' || true
-          echo '=== list ==='
-          orbctl list 2>&1 | sed -n '1,160p' || true
-          echo '=== docker target status ==='
-          orbctl status docker 2>&1 | sed -n '1,120p' || true
+          echo '=== docker extension ==='
+          orbctl docker --help 2>&1 | sed -n '1,240p' || true
+          echo '=== docker subcommand probes ==='
+          for sub in restart start stop status; do
+            echo "-- ${sub}"
+            orbctl docker "$sub" --help 2>&1 | sed -n '1,160p' || true
+          done
