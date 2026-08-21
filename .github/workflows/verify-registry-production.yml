@@ -18,7 +18,7 @@ jobs:
         run: |
           set -euo pipefail
           expected='ee8eb2d8b782af6c8e161b5a4671ca4d345cef06'
-          echo 'PROBE_ITERATION=2'
+          echo 'PROBE_ITERATION=3'
           echo "EXPECTED_GIT_SHA=${expected}"
           echo '=== public cluster identity ==='
           curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/cluster
