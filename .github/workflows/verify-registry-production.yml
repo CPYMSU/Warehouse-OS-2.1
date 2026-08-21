@@ -16,7 +16,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Cancel older diagnostics on this branch
+      - name: Force-cancel older diagnostics on this branch
         shell: bash
         run: |
           set -euo pipefail
@@ -36,7 +36,8 @@ jobs:
           sort -u /tmp/cancel.txt -o /tmp/cancel.txt
           while read -r id; do
             [ -n "$id" ] || continue
-            curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" >/dev/null || true
+            echo "force-cancel temporary run ${id}"
+            curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
   tunnel-config:
@@ -55,54 +56,39 @@ jobs:
           import plistlib, pathlib
           for name in ('org.bonfirework.cloudflared.plist','org.bonfirework.cloudflared-pages.plist'):
               path=pathlib.Path.home()/'Library'/'LaunchAgents'/name
-              if not path.exists():
-                  continue
+              if not path.exists(): continue
               p=plistlib.loads(path.read_bytes())
               print('label=', p.get('Label'))
-              print('program=', p.get('Program'))
               args=p.get('ProgramArguments') or []
-              safe=[]
-              skip=False
-              for i,a in enumerate(args):
-                  if skip:
-                      skip=False
-                      continue
+              safe=[]; skip=False
+              for a in args:
+                  if skip: skip=False; continue
                   if a in {'--token','--credentials-file','--origincert'}:
                       safe.extend([a,'<redacted>']); skip=True; continue
-                  if a.startswith('eyJ') or len(a)>120:
-                      safe.append('<redacted>'); continue
+                  if a.startswith('eyJ') or len(a)>120: safe.append('<redacted>'); continue
                   safe.append(a)
               print('args=', safe)
               print('stdout=', p.get('StandardOutPath'))
               print('stderr=', p.get('StandardErrorPath'))
           PY
-          echo '=== config route lines only ==='
-          for f in "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/config.yaml" /opt/homebrew/etc/cloudflared/config.yml /opt/homebrew/etc/cloudflared/config.yaml; do
-            if [ -f "$f" ]; then
-              echo "config=$f"
-              grep -E '^[[:space:]]*(hostname|service):' "$f" || true
-            fi
-          done
-          echo '=== launch-agent referenced config files ==='
+          echo '=== ingress routes only ==='
           python3 - <<'PY'
           import plistlib, pathlib
-          paths=[]
+          files=[]
           for name in ('org.bonfirework.cloudflared.plist','org.bonfirework.cloudflared-pages.plist'):
               pth=pathlib.Path.home()/'Library'/'LaunchAgents'/name
               if not pth.exists(): continue
               p=plistlib.loads(pth.read_bytes()); args=p.get('ProgramArguments') or []
               for i,a in enumerate(args[:-1]):
-                  if a == '--config': paths.append(args[i+1])
-          for raw in paths:
-              p=pathlib.Path(raw).expanduser()
+                  if a == '--config': files.append(pathlib.Path(args[i+1]).expanduser())
+          for p in [pathlib.Path.home()/'.cloudflared/config.yml', pathlib.Path.home()/'.cloudflared/config.yaml', *files]:
               if p.exists():
-                  print('config=',p)
+                  print('config=', p)
                   for line in p.read_text(errors='ignore').splitlines():
                       s=line.strip()
-                      if s.startswith('hostname:') or s.startswith('service:'):
-                          print(s)
+                      if s.startswith('hostname:') or s.startswith('service:'): print(s)
           PY
-          echo '=== cloudflared recent errors ==='
+          echo '=== cloudflared recent routing errors ==='
           python3 - <<'PY'
           import plistlib, pathlib
           seen=set()
@@ -112,13 +98,10 @@ jobs:
               p=plistlib.loads(pth.read_bytes())
               for key in ('StandardErrorPath','StandardOutPath'):
                   raw=p.get(key)
-                  if raw and raw not in seen:
-                      seen.add(raw); f=pathlib.Path(raw).expanduser()
-                      print('log=', f)
-                      if f.exists():
-                          lines=f.read_text(errors='ignore').splitlines()[-80:]
-                          for line in lines:
-                              low=line.lower()
-                              if any(w in low for w in ('error','failed','refused','connect','origin','service')):
-                                  print(line[:800])
+                  if not raw or raw in seen: continue
+                  seen.add(raw); f=pathlib.Path(raw).expanduser(); print('log=',f)
+                  if f.exists():
+                      for line in f.read_text(errors='ignore').splitlines()[-120:]:
+                          low=line.lower()
+                          if any(w in low for w in ('error','failed','refused','connect','origin','service')): print(line[:800])
           PY
