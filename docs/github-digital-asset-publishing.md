@@ -6,9 +6,13 @@ custody, release, runtime, database, and routing boundary.
 ## Topology
 
 ```text
-GitHub source repository
+Digital-asset source repositories
         |
-        | HTTPS clone (read only)
+        | read-only HTTPS clone
+        v
+CPYMSU/Warehouse-Digital-Asset-Registry
+        |
+        | registry.json only; no wak_ credentials
         v
 Warehouse-OS-2.1 GitHub Actions
         |
@@ -16,9 +20,10 @@ Warehouse-OS-2.1 GitHub Actions
         v
 Mac mini runner
         |
-        | workspace-scoped wak_ credential over HTTPS only
+        | resolve workspace_key_ref from Actions secret
+        | use workspace-scoped wak_ over HTTPS only
         v
-Warehouse source version
+Warehouse Source Version
         |
         v
 Release candidate -> lifecycle jobs -> acceptance
@@ -30,62 +35,88 @@ explicit pre-authorized activation
 public-route verification -> automatic rollback on failure
 ```
 
-The source repository does **not** need a self-hosted runner. This matters for a
-personal GitHub account, where self-hosted runners are normally repository
-scoped. The only Actions workflow that performs publishing lives in
-`Warehouse-OS-2.1`, so the existing Mac mini runner can execute every publish.
+The source repositories and the registry repository do **not** need self-hosted
+runners. Publishing Actions live only in `Warehouse-OS-2.1`, so the existing
+Mac mini production runner executes every publish.
 
 The publisher never needs Mac SSH, the Docker socket, PostgreSQL credentials, or
-host filesystem paths. It can affect only the workspace represented by its
-`wak_` key.
+host filesystem paths. It can affect only the workspace represented by each
+resolved `wak_` key.
 
-## Configure linked assets
+## Dedicated publishing registry
 
-Create the following Actions secret in `CPYMSU/Warehouse-OS-2.1`:
+Create a dedicated repository named:
 
-`WAREHOUSE_ASSET_LINKS_JSON`
+`CPYMSU/Warehouse-Digital-Asset-Registry`
 
-Example:
+Keep it private unless there is a deliberate reason to expose deployment
+metadata. It contains declarative bindings only; it must never contain a
+`wak_` key or database/server credential.
+
+At the repository root create `registry.json` using this shape:
 
 ```json
 {
+  "schema": "warehouse.digital-asset-registry.v1",
   "links": [
     {
       "repository": "CPYMSU/MK7",
       "ref": "main",
-      "workspace_key": "wak_REDACTED",
+      "workspace_key_ref": "mk7",
       "runtime_type": "auto",
       "component": "",
       "activate": true,
-      "timeout_seconds": 3600
+      "timeout_seconds": 3600,
+      "enabled": true
     }
   ]
 }
 ```
 
+A committed example also lives at `docs/digital-asset-registry.example.json`.
+
 Fields:
 
-- `repository`: exact `owner/repository`.
-- `ref`: branch or tag to follow. Defaults to `main`.
-- `workspace_key`: the target workspace's `wak_` key. Store it only in the
-  GitHub Actions secret; never commit it.
-- `runtime_type`: usually `auto`. It may also be `static`, `web`, `api`,
-  `worker`, `agent`, `container`, or `compose`.
+- `repository`: exact source `owner/repository`.
+- `ref`: branch or tag to follow.
+- `workspace_key_ref`: non-secret lookup name for the target Warehouse
+  Workspace credential.
+- `runtime_type`: normally `auto`; may also be `static`, `web`, `api`, `worker`,
+  `agent`, `container`, or `compose`.
 - `component`: optional existing Warehouse component name.
-- `activate`: defaults to `true`. When false, the candidate is built and
-  accepted but stays at `awaiting_activation`.
-- `timeout_seconds`: 60–7200, default 3600.
-- `enabled`: optional. Set to `false` to keep an entry without publishing it.
+- `activate`: defaults to `true`. When false the release may stop at
+  `awaiting_activation` after verification.
+- `timeout_seconds`: 60–7200, normally 3600.
+- `enabled`: optional; set `false` to retain the declaration without publishing.
 
-For **public** source repositories this is the only required secret.
+The resolver rejects any registry entry containing `workspace_key`; secrets are
+not allowed in Git history.
 
-For **private** source repositories also create
-`WAREHOUSE_ASSET_GITHUB_TOKEN`. Use a fine-grained GitHub token with read-only
-Contents access only to the source repositories that Warehouse must clone. Do
-not grant administration or write access.
+## Warehouse Actions secrets
 
-`WAREHOUSE_BASE_URL` may be set as a repository variable. It defaults to
-`https://bonfirework.org`.
+Create `WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON` in
+`CPYMSU/Warehouse-OS-2.1` Actions secrets. It maps registry references to real
+workspace credentials:
+
+```json
+{
+  "mk7": "wak_REDACTED",
+  "another-app": "wak_REDACTED"
+}
+```
+
+For a private registry and/or private source repositories also create
+`WAREHOUSE_ASSET_GITHUB_TOKEN`. Use a fine-grained token with **Contents: Read**
+only for `Warehouse-Digital-Asset-Registry` and the source repositories the Mac
+runner must clone. Do not grant repository administration or write access.
+
+Optional repository variables:
+
+- `WAREHOUSE_ASSET_REGISTRY_REPOSITORY` — defaults to
+  `CPYMSU/Warehouse-Digital-Asset-Registry`.
+- `WAREHOUSE_ASSET_REGISTRY_REF` — defaults to `main`.
+- `WAREHOUSE_ASSET_REGISTRY_PATH` — defaults to `registry.json`.
+- `WAREHOUSE_BASE_URL` — defaults to `https://bonfirework.org`.
 
 ## What happens on each check
 
@@ -96,12 +127,22 @@ also be started manually. Every job uses:
 runs-on: [self-hosted, macOS, ARM64, warehouse-production]
 ```
 
-For each enabled link, `ops/macos/publish-digital-assets.py`:
+`ops/macos/publish-digital-assets-from-registry.py` first:
 
-1. shallow-clones the configured ref on the Mac mini;
+1. read-only clones the dedicated registry repository;
+2. validates `registry.json` and rejects committed `wak_` credentials;
+3. resolves every `workspace_key_ref` from
+   `WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON`;
+4. passes the resolved in-memory bindings to the publisher. The resolved JSON is
+   never written back to Git.
+
+For each enabled binding, `ops/macos/publish-digital-assets.py` then:
+
+1. shallow-clones the configured source ref on the Mac mini;
 2. resolves the exact 40-character commit SHA;
 3. checks whether that commit is already a Warehouse Source Version;
-4. if needed, creates a Git archive and uploads it through the workspace API;
+4. if needed, creates a deterministic Git archive and uploads it through the
+   workspace API;
 5. creates or reuses an idempotent governed Release for that commit;
 6. lets the Runtime Controller build the candidate;
 7. runs declared lifecycle jobs and acceptance checks;
@@ -110,27 +151,17 @@ For each enabled link, `ops/macos/publish-digital-assets.py`:
    behavior if the new revision cannot be verified.
 
 Unchanged commits are safe to re-check. Source registration and Release creation
-are idempotent, so the five-minute schedule does not create a new release every
-time.
+are idempotent, so the schedule does not create a new release every five minutes.
 
 ## Manual publish
 
-Open the **Digital asset publish** workflow in the Warehouse repository and run
-it. Leave `repository` blank to check all configured assets, or enter an exact
-value such as `CPYMSU/MK7` to publish only that link.
-
-## Existing Hosting Fabric repository sync
-
-Warehouse's Runtime Controller already supports `repository` resources with
-`auto_sync` and can register immutable source versions from GitHub/GitLab. The
-Mac-runner publisher intentionally uses the public workspace API and the newer
-Release orchestration layer for the final build/accept/activate path. Both paths
-remain workspace-scoped and can coexist; source SHA/version idempotency prevents
-duplicate custody records for identical content.
+Open **Digital asset publish** in the Warehouse repository and run it. Leave the
+`repository` input blank to check all registry entries, or enter an exact value
+such as `CPYMSU/MK7` to publish only that binding.
 
 ## Mac-only Actions policy
 
 Warehouse workflows use the production Mac mini runner labels. The PR contract
 workflow has an additional same-repository guard: fork PR code is not executed
-on the Mac mini. A maintainer can run the contract workflow manually after
-review when needed.
+on the Mac mini. Publishing remains centralized in Warehouse rather than
+registering the production runner independently in every source repository.
