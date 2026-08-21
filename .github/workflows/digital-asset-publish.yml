@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       repository:
-        description: Optional owner/repository to publish; blank checks every linked asset
+        description: Optional owner/repository to publish; blank checks every registered asset
         required: false
         type: string
 
@@ -19,11 +19,15 @@ concurrency:
 
 jobs:
   publish:
+    if: vars.WAREHOUSE_ASSET_REGISTRY_ENABLED == 'true'
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 180
     env:
       WAREHOUSE_BASE_URL: ${{ vars.WAREHOUSE_BASE_URL || 'https://bonfirework.org' }}
-      WAREHOUSE_ASSET_LINKS_JSON: ${{ secrets.WAREHOUSE_ASSET_LINKS_JSON }}
+      WAREHOUSE_ASSET_REGISTRY_REPOSITORY: ${{ vars.WAREHOUSE_ASSET_REGISTRY_REPOSITORY || 'CPYMSU/registry' }}
+      WAREHOUSE_ASSET_REGISTRY_REF: ${{ vars.WAREHOUSE_ASSET_REGISTRY_REF || 'main' }}
+      WAREHOUSE_ASSET_REGISTRY_PATH: ${{ vars.WAREHOUSE_ASSET_REGISTRY_PATH || 'registry.json' }}
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
       WAREHOUSE_ASSET_GITHUB_TOKEN: ${{ secrets.WAREHOUSE_ASSET_GITHUB_TOKEN }}
       WAREHOUSE_ASSET_REPOSITORY: ${{ inputs.repository }}
     steps:
@@ -34,4 +38,4 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          python3 ops/macos/publish-digital-assets.py
+          python3 ops/macos/publish-digital-assets-from-registry.py

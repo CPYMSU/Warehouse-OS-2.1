@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -81,6 +81,11 @@ def _load_links(raw: str) -> list[dict[str, Any]]:
         repository = str(item.get("repository") or "").strip()
         if not REPOSITORY_RE.fullmatch(repository):
             raise RuntimeError(f"link #{index + 1} has an invalid repository: {repository!r}")
+        source_path = str(item.get("source_path") or "").strip().strip("/")
+        if source_path:
+            parsed_source = PurePosixPath(source_path)
+            if parsed_source.is_absolute() or ".." in parsed_source.parts:
+                raise RuntimeError(f"link {repository} has unsafe source_path={source_path!r}")
         workspace_key = str(item.get("workspace_key") or "").strip()
         if not workspace_key.startswith("wak_"):
             raise RuntimeError(f"link {repository} requires a wak_ workspace_key")
@@ -101,6 +106,7 @@ def _load_links(raw: str) -> list[dict[str, Any]]:
             {
                 "repository": repository,
                 "ref": str(item.get("ref") or "main").strip(),
+                "source_path": source_path,
                 "workspace_key": workspace_key,
                 "runtime_type": runtime_type,
                 "component": str(item.get("component") or "").strip(),
@@ -150,11 +156,11 @@ def _source_id(item: dict[str, Any]) -> str:
     return str(item.get("uuid") or item.get("source_version_id") or item.get("id") or "")
 
 
-def _find_source_for_commit(
+def _find_source_for_version(
     python: str,
     cli: Path,
     env: dict[str, str],
-    commit: str,
+    version_no: str,
 ) -> str | None:
     data = _json_output(
         _run([python, str(cli), "source", "list"], env=env, timeout=120),
@@ -166,7 +172,7 @@ def _find_source_for_commit(
     for item in sources:
         if not isinstance(item, dict):
             continue
-        if str(item.get("version_no") or "") != commit:
+        if str(item.get("version_no") or "") != version_no:
             continue
         reference = _source_id(item)
         if reference:
@@ -181,10 +187,22 @@ def _push_source(
     checkout: Path,
     commit: str,
     component: str,
+    source_path: str,
+    version_no: str,
 ) -> str:
-    archive = checkout.parent / f"{commit}.tar.gz"
+    archive = checkout.parent / f"{version_no}.tar.gz"
+    treeish = commit
+    if source_path:
+        source_root = (checkout / source_path).resolve()
+        try:
+            source_root.relative_to(checkout.resolve())
+        except ValueError as exc:
+            raise RuntimeError(f"source_path escaped checkout: {source_path!r}") from exc
+        if not source_root.is_dir():
+            raise RuntimeError(f"source_path does not exist: {source_path!r}")
+        treeish = f"{commit}:{source_path}"
     _run(
-        ["git", "archive", "--format=tar.gz", f"--output={archive}", commit],
+        ["git", "archive", "--format=tar.gz", f"--output={archive}", treeish],
         cwd=checkout,
         timeout=300,
     )
@@ -195,7 +213,7 @@ def _push_source(
         "push",
         str(archive),
         "--version",
-        commit,
+        version_no,
     ]
     if component:
         argv.extend(["--component", component])
@@ -215,6 +233,7 @@ def _create_release(
     env: dict[str, str],
     *,
     repository: str,
+    source_path: str,
     commit: str,
     source_id: str,
     runtime_type: str,
@@ -231,7 +250,7 @@ def _create_release(
         runtime_type,
         "--idempotency-key",
         "github:" + hashlib.sha256(
-            f"{repository}:{commit}:{runtime_type}:{component}".encode("utf-8")
+            f"{repository}:{source_path}:{commit}:{runtime_type}:{component}".encode("utf-8")
         ).hexdigest(),
         "--no-wait",
     ]
@@ -312,6 +331,7 @@ def _publish_link(
 ) -> dict[str, str]:
     repository = link["repository"]
     ref = link["ref"]
+    source_path = str(link.get("source_path") or "")
     checkout = temp_root / repository.replace("/", "__")
     url = f"https://github.com/{repository}.git"
     print(f"checking {repository}@{ref}", flush=True)
@@ -335,8 +355,13 @@ def _publish_link(
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise RuntimeError(f"{repository} returned an invalid commit id")
 
+    version_no = (
+        commit
+        if not source_path
+        else f"{commit}-{hashlib.sha256(source_path.encode('utf-8')).hexdigest()[:12]}"
+    )
     workspace_env = _workspace_environment(base_url, link["workspace_key"])
-    source_id = _find_source_for_commit(python, cli, workspace_env, commit)
+    source_id = _find_source_for_version(python, cli, workspace_env, version_no)
     source_reused = source_id is not None
     if source_id is None:
         source_id = _push_source(
@@ -346,6 +371,8 @@ def _publish_link(
             checkout,
             commit,
             link["component"],
+            source_path,
+            version_no,
         )
 
     release_id = _create_release(
@@ -353,6 +380,7 @@ def _publish_link(
         cli,
         workspace_env,
         repository=repository,
+        source_path=source_path,
         commit=commit,
         source_id=source_id,
         runtime_type=link["runtime_type"],
@@ -369,7 +397,9 @@ def _publish_link(
     return {
         "repository": repository,
         "ref": ref,
+        "source_path": source_path,
         "commit": commit,
+        "source_version": version_no,
         "source_version_id": source_id,
         "source": "reused" if source_reused else "uploaded",
         "release_id": release_id,
