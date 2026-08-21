@@ -12,11 +12,11 @@ jobs:
   transfer:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Publish validated MK7 snapshot to temporary Warehouse branch
+      - name: Publish validated MK7 snapshot and expanded tree to temporary Warehouse branches
         shell: bash
         run: |
           set -euo pipefail
@@ -25,10 +25,13 @@ jobs:
           test -f "$archive"
           actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
           test "$actual" = "$expected"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           tmp="$(mktemp -d /tmp/mk7-public-transfer.XXXXXX)"
           trap 'rm -rf "$tmp"' EXIT
-          cd "$tmp"
+
+          mkdir -p "$tmp/archive"
+          cd "$tmp/archive"
           cp "$archive" mk7-32ef4097.tar.gz
           printf '%s  %s\n' "$actual" 'mk7-32ef4097.tar.gz' > SHA256SUMS
           cat > README.md <<'EOF'
@@ -42,8 +45,22 @@ jobs:
           git config user.email 'noreply@bonfirework.org'
           git add -- mk7-32ef4097.tar.gz SHA256SUMS README.md
           git commit -qm 'Transfer verified MK7 source snapshot'
-          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git remote add origin "$remote"
           git push --force origin HEAD:refs/heads/mk7-transfer-32ef4097
-          echo 'TRANSFER_BRANCH=mk7-transfer-32ef4097'
+
+          mkdir -p "$tmp/source"
+          tar -xzf "$archive" -C "$tmp/source"
+          cd "$tmp/source"
+          test -f index.html
+          test -f warehouse.hosting.json
+          git init -q
+          git config user.name 'Warehouse MK7 transfer'
+          git config user.email 'noreply@bonfirework.org'
+          git add -- .
+          git commit -qm 'Expand verified MK7 source snapshot'
+          git remote add origin "$remote"
+          git push --force origin HEAD:refs/heads/mk7-expanded-32ef4097
+
+          echo 'TRANSFER_ARCHIVE_BRANCH=mk7-transfer-32ef4097'
+          echo 'TRANSFER_EXPANDED_BRANCH=mk7-expanded-32ef4097'
           echo "TRANSFER_SHA256=$actual"
