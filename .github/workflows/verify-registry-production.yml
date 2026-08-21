@@ -10,13 +10,13 @@ permissions:
   actions: write
 
 jobs:
-  queue-cleanup-and-status:
+  cleanup-backlog:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Clear this diagnostic branch and list remaining active runs
+      - name: Force-cancel older diagnostics on this branch
         shell: bash
         run: |
           set -euo pipefail
@@ -35,18 +35,53 @@ jobs:
           sort -u /tmp/cancel.txt -o /tmp/cancel.txt
           while read -r id; do
             [ -n "$id" ] || continue
-            echo "force-cancel diagnostic run ${id}"
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
-          sleep 2
-          echo '=== remaining active runs ==='
-          for status in in_progress queued waiting; do
-            curl -fsS "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=${status}&per_page=100" > /tmp/active.json
-            STATUS="$status" CURRENT_RUN_ID="$GITHUB_RUN_ID" python3 - <<'PY'
-          import json, os
-          d=json.load(open('/tmp/active.json')); current=int(os.environ['CURRENT_RUN_ID'])
-          for r in d.get('workflow_runs',[]):
-              if int(r.get('id',0)) == current: continue
-              print(json.dumps({"status":os.environ['STATUS'],"id":r.get('id'),"name":r.get('name'),"head_branch":r.get('head_branch'),"event":r.get('event'),"created_at":r.get('created_at')},ensure_ascii=False))
+
+  tunnel-config:
+    needs: cleanup-backlog
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 4
+    steps:
+      - name: Read non-secret Cloudflare Tunnel target and errors
+        shell: bash
+        run: |
+          set -u
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          python3 - <<'PY'
+          import plistlib, pathlib
+          names=('org.bonfirework.cloudflared.plist','org.bonfirework.cloudflared-pages.plist')
+          configs=[]; logs=[]
+          for name in names:
+              pth=pathlib.Path.home()/'Library'/'LaunchAgents'/name
+              if not pth.exists(): continue
+              p=plistlib.loads(pth.read_bytes()); args=p.get('ProgramArguments') or []
+              print('label=',p.get('Label'))
+              safe=[]; skip=False
+              for a in args:
+                  if skip: skip=False; continue
+                  if a in {'--token','--credentials-file','--origincert'}:
+                      safe.extend([a,'<redacted>']); skip=True; continue
+                  if a.startswith('eyJ') or len(a)>120: safe.append('<redacted>')
+                  else: safe.append(a)
+              print('args=',safe)
+              for i,a in enumerate(args[:-1]):
+                  if a=='--config': configs.append(pathlib.Path(args[i+1]).expanduser())
+              for k in ('StandardErrorPath','StandardOutPath'):
+                  if p.get(k): logs.append(pathlib.Path(p[k]).expanduser())
+          for p in [pathlib.Path.home()/'.cloudflared/config.yml', pathlib.Path.home()/'.cloudflared/config.yaml', *configs]:
+              if p.exists():
+                  print('config=',p)
+                  for line in p.read_text(errors='ignore').splitlines():
+                      s=line.strip()
+                      if s.startswith('hostname:') or s.startswith('service:'): print(s)
+          seen=set()
+          for f in logs:
+              if f in seen or not f.exists(): continue
+              seen.add(f); print('log=',f)
+              for line in f.read_text(errors='ignore').splitlines()[-150:]:
+                  low=line.lower()
+                  if any(w in low for w in ('error','failed','refused','connect','origin','service')):
+                      print(line[:900])
           PY
-          done
