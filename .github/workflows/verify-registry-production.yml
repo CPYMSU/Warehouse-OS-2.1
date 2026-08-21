@@ -39,34 +39,86 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  cloudflare-route-status:
+  tunnel-config:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 4
     steps:
-      - name: Inspect Mac Cloudflare/Tunnel runtime without exposing arguments
+      - name: Read non-secret Cloudflare Tunnel routing and errors
         shell: bash
         run: |
           set -u
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== cloudflared process ==='
-          pgrep -x cloudflared >/tmp/cloudflared-pids 2>/dev/null || true
-          while read -r pid; do [ -n "$pid" ] && ps -p "$pid" -o pid=,comm=; done </tmp/cloudflared-pids
-          echo '=== launchd labels ==='
-          launchctl list 2>/dev/null | awk 'tolower($0) ~ /cloudflare|cloudflared/ {print $1, $2, $3}' || true
-          echo '=== docker tunnel containers ==='
-          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}' | grep -Ei 'cloudflare|cloudflared|tunnel' || true
-          echo '=== cloudflare-related service files (names only) ==='
-          for dir in "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons; do
-            [ -d "$dir" ] && find "$dir" -maxdepth 1 -type f -iname '*cloud*' -print 2>/dev/null || true
-          done
-          echo '=== cloudflare credential variable names only ==='
-          env | cut -d= -f1 | grep -Ei '^(CLOUDFLARE|CF_)' || true
-          for f in /Users/peiyuan/Server/bonfirework/shared/.env.production /opt/warehouse-os/shared/.env.production; do
+          echo '=== launch agent routing metadata ==='
+          python3 - <<'PY'
+          import plistlib, pathlib
+          for name in ('org.bonfirework.cloudflared.plist','org.bonfirework.cloudflared-pages.plist'):
+              path=pathlib.Path.home()/'Library'/'LaunchAgents'/name
+              if not path.exists():
+                  continue
+              p=plistlib.loads(path.read_bytes())
+              print('label=', p.get('Label'))
+              print('program=', p.get('Program'))
+              args=p.get('ProgramArguments') or []
+              safe=[]
+              skip=False
+              for i,a in enumerate(args):
+                  if skip:
+                      skip=False
+                      continue
+                  if a in {'--token','--credentials-file','--origincert'}:
+                      safe.extend([a,'<redacted>']); skip=True; continue
+                  if a.startswith('eyJ') or len(a)>120:
+                      safe.append('<redacted>'); continue
+                  safe.append(a)
+              print('args=', safe)
+              print('stdout=', p.get('StandardOutPath'))
+              print('stderr=', p.get('StandardErrorPath'))
+          PY
+          echo '=== config route lines only ==='
+          for f in "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/config.yaml" /opt/homebrew/etc/cloudflared/config.yml /opt/homebrew/etc/cloudflared/config.yaml; do
             if [ -f "$f" ]; then
-              sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$f" | grep -Ei 'CLOUDFLARE|CF_' || true
+              echo "config=$f"
+              grep -E '^[[:space:]]*(hostname|service):' "$f" || true
             fi
           done
-          echo '=== listeners ==='
-          lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -Ei 'cloudflared|nginx' || true
+          echo '=== launch-agent referenced config files ==='
+          python3 - <<'PY'
+          import plistlib, pathlib
+          paths=[]
+          for name in ('org.bonfirework.cloudflared.plist','org.bonfirework.cloudflared-pages.plist'):
+              pth=pathlib.Path.home()/'Library'/'LaunchAgents'/name
+              if not pth.exists(): continue
+              p=plistlib.loads(pth.read_bytes()); args=p.get('ProgramArguments') or []
+              for i,a in enumerate(args[:-1]):
+                  if a == '--config': paths.append(args[i+1])
+          for raw in paths:
+              p=pathlib.Path(raw).expanduser()
+              if p.exists():
+                  print('config=',p)
+                  for line in p.read_text(errors='ignore').splitlines():
+                      s=line.strip()
+                      if s.startswith('hostname:') or s.startswith('service:'):
+                          print(s)
+          PY
+          echo '=== cloudflared recent errors ==='
+          python3 - <<'PY'
+          import plistlib, pathlib
+          seen=set()
+          for name in ('org.bonfirework.cloudflared.plist','org.bonfirework.cloudflared-pages.plist'):
+              pth=pathlib.Path.home()/'Library'/'LaunchAgents'/name
+              if not pth.exists(): continue
+              p=plistlib.loads(pth.read_bytes())
+              for key in ('StandardErrorPath','StandardOutPath'):
+                  raw=p.get(key)
+                  if raw and raw not in seen:
+                      seen.add(raw); f=pathlib.Path(raw).expanduser()
+                      print('log=', f)
+                      if f.exists():
+                          lines=f.read_text(errors='ignore').splitlines()[-80:]
+                          for line in lines:
+                              low=line.lower()
+                              if any(w in low for w in ('error','failed','refused','connect','origin','service')):
+                                  print(line[:800])
+          PY
