@@ -80,6 +80,7 @@ Fields:
 
 - `repository`: exact source `owner/repository`.
 - `ref`: branch or tag to follow.
+- `source_path`: optional repository-relative subtree, for example `assets/mk7`; only that subtree is archived as the asset source.
 - `workspace_key_ref`: non-secret lookup name for the target Warehouse
   Workspace credential.
 - `runtime_type`: normally `auto`; may also be `static`, `web`, `api`, `worker`,
@@ -140,7 +141,7 @@ runs-on: [self-hosted, macOS, ARM64, warehouse-production]
 
 For each enabled binding, `ops/macos/publish-digital-assets.py` then:
 
-1. shallow-clones the configured source ref on the Mac mini;
+1. shallow-clones the configured source ref on the Mac mini and, when `source_path` is set, selects only that subtree;
 2. resolves the exact 40-character commit SHA;
 3. checks whether that commit is already a Warehouse Source Version;
 4. if needed, creates a deterministic Git archive and uploads it through the
