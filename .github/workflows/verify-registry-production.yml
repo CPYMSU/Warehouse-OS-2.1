@@ -25,6 +25,14 @@ jobs:
           echo '=== manager status ==='
           "$manager" status
 
+          echo '=== public cluster identity ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/cluster
+          echo
+
+          echo '=== public readiness ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/readiness
+          echo
+
           echo '=== public root ==='
           curl --retry 5 --retry-all-errors --retry-delay 2 -fsSI https://bonfirework.org/ | sed -n '1,12p'
 
