@@ -38,79 +38,36 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  repair-cloudflare-origin:
+  tunnel-state:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 5
+    timeout-minutes: 4
     steps:
-      - name: Switch cloudflared origin to OrbStack direct container DNS with rollback
+      - name: Inspect tunnel host mapping, connection state, and post-restart logs
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          old='http://127.0.0.1:8081'
-          new='http://bonfirework-mac-api.orb.local:8080'
-          uid="$(id -u)"
-          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          configs=("$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/pages-config.yml")
-          labels=(org.bonfirework.cloudflared org.bonfirework.cloudflared-pages)
-          backups=()
-
-          curl -fsS --connect-timeout 3 --max-time 8 "${new}/health" >/tmp/direct-health.json
-          grep -Fq '"status":"ok"' /tmp/direct-health.json
-          echo 'direct_orb_origin=healthy'
-
-          changed=0
-          for i in 0 1; do
-            cfg="${configs[$i]}"
-            label="${labels[$i]}"
-            [ -f "$cfg" ] || continue
-            if grep -Fq "$old" "$cfg"; then
-              backup="${cfg}.bak-${stamp}"
-              cp -p "$cfg" "$backup"
-              backups+=("$cfg|$backup|$label")
-              python3 - "$cfg" "$old" "$new" <<'PY'
-          import pathlib, sys
-          path=pathlib.Path(sys.argv[1]); old=sys.argv[2]; new=sys.argv[3]
-          text=path.read_text()
-          if old not in text:
-              raise SystemExit('expected origin not found')
-          path.write_text(text.replace(old,new))
-          PY
-              changed=1
-              echo "updated_config=$(basename "$cfg")"
-            fi
+          echo '=== config ingress map ==='
+          for f in "$HOME/.cloudflared/config.yml" "$HOME/.cloudflared/pages-config.yml"; do
+            [ -f "$f" ] || continue
+            echo "config=$(basename "$f")"
+            grep -nE 'hostname:|service:|protocol:' "$f" || true
           done
-          [ "$changed" -eq 1 ] || { echo 'no cloudflared origin required change'; exit 1; }
-
-          rollback() {
-            echo 'restoring cloudflared config backups' >&2
-            for item in "${backups[@]}"; do
-              IFS='|' read -r cfg backup label <<<"$item"
-              cp -p "$backup" "$cfg"
-              launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
-            done
-          }
-          trap rollback ERR
-
-          for item in "${backups[@]}"; do
-            IFS='|' read -r cfg backup label <<<"$item"
-            grep -Fq "$new" "$cfg"
-            launchctl kickstart -k "gui/${uid}/${label}"
+          echo '=== direct orb origin with public Host ==='
+          curl -fsS --connect-timeout 3 --max-time 8 -H 'Host: bonfirework.org' http://bonfirework-mac-api.orb.local:8080/health || true
+          echo
+          echo '=== launchd processes ==='
+          launchctl list | grep -E 'org\.bonfirework\.cloudflared' || true
+          pgrep -lf cloudflared || true
+          echo '=== main tunnel info ==='
+          /opt/homebrew/bin/cloudflared --config "$HOME/.cloudflared/config.yml" tunnel info ee0c238e-a4c0-4913-a5f7-85b912c86211 2>&1 | sed -n '1,100p' || true
+          echo '=== pages tunnel info ==='
+          /opt/homebrew/bin/cloudflared --config "$HOME/.cloudflared/pages-config.yml" tunnel info 802da61a-bef0-4c1f-a354-a1e3bf5780bf 2>&1 | sed -n '1,100p' || true
+          echo '=== logs since 16:52 UTC ==='
+          for f in "$HOME/Server/bonfirework/shared/logs/cloudflared.stderr.log" "$HOME/Server/bonfirework/shared/logs/cloudflared.stdout.log" "$HOME/Server/bonfirework/shared/logs/cloudflared-pages.stderr.log" "$HOME/Server/bonfirework/shared/logs/cloudflared-pages.stdout.log"; do
+            [ -f "$f" ] || continue
+            echo "log=$(basename "$f")"
+            tail -n 250 "$f" | grep -E '2026-08-21T16:(5[2-9]|[6-9][0-9]):|Registered tunnel connection|Unable to reach the origin|Request failed|ERR|WRN' | tail -n 120 || true
           done
-
-          sleep 3
-          echo '=== verify public health ==='
-          for attempt in $(seq 1 20); do
-            if curl -fsS --connect-timeout 3 --max-time 8 https://bonfirework.org/health >/tmp/public-health.json 2>/dev/null; then
-              grep -Fq '"status":"ok"' /tmp/public-health.json
-              echo "public_health_recovered=true attempt=${attempt}"
-              cat /tmp/public-health.json; echo
-              trap - ERR
-              exit 0
-            fi
-            sleep 2
-          done
-          echo 'public health did not recover after tunnel origin switch' >&2
-          false
