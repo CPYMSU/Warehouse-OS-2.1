@@ -39,43 +39,34 @@ jobs:
             curl -fsS -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" >/dev/null || true
           done < /tmp/cancel.txt
 
-  origin-probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - name: Compare Cloudflare and direct Vultr origin
-        shell: bash
-        run: |
-          set -u
-          echo '=== cloudflare ==='
-          curl --connect-timeout 5 --max-time 15 -sS -D - https://bonfirework.org/health -o /tmp/cf.out || true
-          cat /tmp/cf.out 2>/dev/null || true
-          echo '=== direct vultr origin ==='
-          curl -k --connect-timeout 5 --max-time 15 --resolve bonfirework.org:443:207.148.120.30 -sS -D - https://bonfirework.org/health -o /tmp/origin.out || true
-          cat /tmp/origin.out 2>/dev/null || true
-
-  standby-status:
+  cloudflare-route-status:
     needs: cleanup-backlog
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 5
+    timeout-minutes: 4
     steps:
-      - name: Read Mac and Vultr production state
+      - name: Inspect Mac Cloudflare/Tunnel runtime without exposing arguments
         shell: bash
         run: |
           set -u
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== mac primary ==='
-          /Users/peiyuan/Server/bonfirework/bin/warehouse-deploy status || true
-          echo '=== vultr standby ==='
-          ssh -F /dev/null \
-            -i "$HOME/.ssh/warehouse_os_deploy_ed25519" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o ConnectTimeout=15 \
-            warehouse-deploy@207.148.120.30 'sudo -n /usr/local/sbin/warehouse-deploy status' || true
-          echo '=== vultr api logs ==='
-          ssh -F /dev/null \
-            -i "$HOME/.ssh/warehouse_os_deploy_ed25519" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o ConnectTimeout=15 \
-            warehouse-deploy@207.148.120.30 'sudo -n /usr/local/sbin/warehouse-deploy api-logs' 2>&1 | tail -n 100 || true
+          echo '=== cloudflared process ==='
+          pgrep -x cloudflared >/tmp/cloudflared-pids 2>/dev/null || true
+          while read -r pid; do [ -n "$pid" ] && ps -p "$pid" -o pid=,comm=; done </tmp/cloudflared-pids
+          echo '=== launchd labels ==='
+          launchctl list 2>/dev/null | awk 'tolower($0) ~ /cloudflare|cloudflared/ {print $1, $2, $3}' || true
+          echo '=== docker tunnel containers ==='
+          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}' | grep -Ei 'cloudflare|cloudflared|tunnel' || true
+          echo '=== cloudflare-related service files (names only) ==='
+          for dir in "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons; do
+            [ -d "$dir" ] && find "$dir" -maxdepth 1 -type f -iname '*cloud*' -print 2>/dev/null || true
+          done
+          echo '=== cloudflare credential variable names only ==='
+          env | cut -d= -f1 | grep -Ei '^(CLOUDFLARE|CF_)' || true
+          for f in /Users/peiyuan/Server/bonfirework/shared/.env.production /opt/warehouse-os/shared/.env.production; do
+            if [ -f "$f" ]; then
+              sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$f" | grep -Ei 'CLOUDFLARE|CF_' || true
+            fi
+          done
+          echo '=== listeners ==='
+          lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -Ei 'cloudflared|nginx' || true
