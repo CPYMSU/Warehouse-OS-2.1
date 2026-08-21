@@ -1,0 +1,15 @@
+{
+  "schema": "warehouse.digital-asset-registry.v1",
+  "links": [
+    {
+      "repository": "CPYMSU/MK7",
+      "ref": "main",
+      "workspace_key_ref": "mk7",
+      "runtime_type": "auto",
+      "component": "",
+      "activate": true,
+      "timeout_seconds": 3600,
+      "enabled": true
+    }
+  ]
+}
