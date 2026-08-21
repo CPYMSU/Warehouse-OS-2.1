@@ -16,31 +16,31 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Cancel temporary branch backend-contract backlog
+      - name: Cancel temporary Mac-runner backlog from this diagnostic branch
         shell: bash
         run: |
           set -euo pipefail
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/321396252/runs?branch=${GITHUB_HEAD_REF}&event=pull_request&per_page=100"
-          curl -fsS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$api" > /tmp/runs.json
-          python3 - <<'PY' >/tmp/cancel-ids.txt
-          import json
-          with open('/tmp/runs.json') as f:
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          : > /tmp/cancel-ids.txt
+          for workflow in 321396252 339511072; do
+            api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?branch=${GITHUB_HEAD_REF}&event=pull_request&per_page=100"
+            curl -fsS "${auth[@]}" "$api" > "/tmp/runs-${workflow}.json"
+            CURRENT_RUN_ID="${GITHUB_RUN_ID}" python3 - "$workflow" <<'PY' >> /tmp/cancel-ids.txt
+          import json, os, sys
+          workflow=sys.argv[1]
+          current=int(os.environ['CURRENT_RUN_ID'])
+          with open(f'/tmp/runs-{workflow}.json') as f:
               data=json.load(f)
           for run in data.get('workflow_runs', []):
-              if run.get('status') in {'queued','in_progress','waiting','requested','pending'}:
+              if int(run.get('id',0)) != current and run.get('status') in {'queued','in_progress','waiting','requested','pending'}:
                   print(run['id'])
           PY
+          done
+          sort -u /tmp/cancel-ids.txt -o /tmp/cancel-ids.txt
           while read -r run_id; do
             [ -n "$run_id" ] || continue
-            echo "cancel backend-contract run ${run_id}"
-            curl -fsS -X POST \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
+            echo "cancel temporary run ${run_id}"
+            curl -fsS -X POST "${auth[@]}" \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null || true
           done </tmp/cancel-ids.txt
 
