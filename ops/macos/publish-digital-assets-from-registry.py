@@ -20,7 +20,7 @@ from typing import Any
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 KEY_REF_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
-DEFAULT_REGISTRY = "CPYMSU/Warehouse-Digital-Asset-Registry"
+DEFAULT_REGISTRY = "CPYMSU/registry"
 DEFAULT_REF = "main"
 DEFAULT_PATH = "registry.json"
 
@@ -80,6 +80,9 @@ def _workspace_keys() -> dict[str, str]:
 
 def _registry_links(path: Path, workspace_keys: dict[str, str]) -> list[dict[str, Any]]:
     payload = _load_json_object(path.read_text(encoding="utf-8"), source=str(path))
+    schema = str(payload.get("schema") or "").strip()
+    if schema and schema != "warehouse.digital-asset-registry.v1":
+        raise RuntimeError(f"unsupported registry schema: {schema!r}")
     links = payload.get("links")
     if not isinstance(links, list):
         raise RuntimeError("registry.json must contain a links array")
