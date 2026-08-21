@@ -1,0 +1,49 @@
+name: MK7 public transfer
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/mk7-public-transfer.yml
+
+permissions:
+  contents: write
+
+jobs:
+  transfer:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Publish validated MK7 snapshot to temporary Warehouse branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive='/Users/peiyuan/Server/bonfirework/shared/runtime-volumes-recovered.internal-rollback-20260812T125010Z/.staging/mk7-32ef4097.tar.gz'
+          expected='32ef40976c7038e5e55ca9a7dbf844666386a7663f0da0be87265ce96a36bcb4'
+          test -f "$archive"
+          actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+
+          tmp="$(mktemp -d /tmp/mk7-public-transfer.XXXXXX)"
+          trap 'rm -rf "$tmp"' EXIT
+          cd "$tmp"
+          cp "$archive" mk7-32ef4097.tar.gz
+          printf '%s  %s\n' "$actual" 'mk7-32ef4097.tar.gz' > SHA256SUMS
+          cat > README.md <<'EOF'
+          Temporary verified MK7 source transfer branch.
+
+          This branch exists only to move the validated MK7 source snapshot from
+          the Mac mini into the connected GitHub workflow. Do not deploy from it.
+          EOF
+          git init -q
+          git config user.name 'Warehouse MK7 transfer'
+          git config user.email 'noreply@bonfirework.org'
+          git add -- mk7-32ef4097.tar.gz SHA256SUMS README.md
+          git commit -qm 'Transfer verified MK7 source snapshot'
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add origin "$remote"
+          git push --force origin HEAD:refs/heads/mk7-transfer-32ef4097
+          echo 'TRANSFER_BRANCH=mk7-transfer-32ef4097'
+          echo "TRANSFER_SHA256=$actual"
