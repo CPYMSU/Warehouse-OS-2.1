@@ -40,7 +40,11 @@ from app.services.workspace_deployments import (
     workspace_source_upload_target,
 )
 
-SOURCE_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+# Keep each request comfortably inside Cloudflare's non-configurable origin
+# write window, including deployments whose origin is reached over a
+# higher-latency Tunnel.  Clients already negotiate this value from the
+# upload-session response, so reducing it preserves the resumable protocol.
+SOURCE_UPLOAD_CHUNK_BYTES = 512 * 1024
 SOURCE_UPLOAD_TTL_HOURS = 24
 SOURCE_UPLOAD_MAX_ATTEMPTS = 3
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -676,9 +677,11 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
         assert upload_created.status_code == 201, upload_created.text
         upload_id = upload_created.json()["upload_id"]
         assert upload_created.json()["status"] == "created"
-        assert upload_created.json()["part_count"] == 2
         chunk_size = upload_created.json()["chunk_size_bytes"]
-        for part_no in range(2):
+        part_count = upload_created.json()["part_count"]
+        assert chunk_size == 512 * 1024
+        assert part_count == math.ceil(len(resumable_package) / chunk_size)
+        for part_no in range(part_count):
             part_content = resumable_package[part_no * chunk_size : (part_no + 1) * chunk_size]
             part = client.put(
                 f"/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
