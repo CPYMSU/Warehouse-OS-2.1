@@ -542,6 +542,30 @@ def _ensure_managed_database_capabilities(
         ) from exc
 
 
+def _partition_runtime_schemas(
+    schemas: list[dict[str, Any]], owner_role_ref: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate provider-owned schemas from workspace-managed ownership domains."""
+
+    provider_schema_owners = {owner_role_ref, "pg_database_owner"}
+
+    def owner_name(schema: dict[str, Any]) -> str:
+        value = schema["owner_name"]
+        return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+    provider_schemas = [
+        schema
+        for schema in schemas
+        if owner_name(schema) in provider_schema_owners
+    ]
+    workspace_managed_schemas = [
+        schema
+        for schema in schemas
+        if owner_name(schema) not in provider_schema_owners
+    ]
+    return provider_schemas, workspace_managed_schemas
+
+
 def _ensure_managed_runtime_role(
     *,
     settings: Settings,
@@ -618,15 +642,19 @@ def _ensure_managed_runtime_role(
         ) as connection:
             schemas = connection.execute(
                 """
-                SELECT nspname,pg_get_userbyid(nspowner) AS owner_name
+                SELECT nspname::text AS nspname,
+                       pg_get_userbyid(nspowner)::text AS owner_name
                 FROM pg_namespace
                 WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
                 ORDER BY nspname
                 """
             ).fetchall()
+            provider_schemas, workspace_managed_schemas = _partition_runtime_schemas(
+                schemas, owner_role_ref
+            )
             relation_count = 0
             function_count = 0
-            for schema in schemas:
+            for schema in provider_schemas:
                 schema_name = str(schema["nspname"])
                 connection.execute(
                     sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
@@ -749,7 +777,10 @@ def _ensure_managed_runtime_role(
             "database_owner": False,
             "superuser": False,
             "bypass_rls": False,
-            "schema_count": len(schemas),
+            "schema_scope": "provider_owned_only",
+            "observed_schema_count": len(schemas),
+            "schema_count": len(provider_schemas),
+            "workspace_managed_schema_count": len(workspace_managed_schemas),
             "relation_count": relation_count,
             "function_count": function_count,
             "reconciled_at": datetime.now(UTC).isoformat(),
