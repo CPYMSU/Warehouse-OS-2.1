@@ -62,6 +62,22 @@ def test_external_database_defaults_block_private_hosts_and_plaintext_tls() -> N
         )
 
 
+def test_managed_runtime_schema_scope_is_limited_to_provider_owners() -> None:
+    schemas = [
+        {"nspname": "app", "owner_name": "workspace_owner"},
+        {"nspname": "public", "owner_name": b"pg_database_owner"},
+        {"nspname": "governance", "owner_name": "workspace_migration_owner"},
+    ]
+    provider_schemas, workspace_managed_schemas = (
+        hosted_database._partition_runtime_schemas(  # noqa: SLF001
+            schemas, "workspace_owner"
+        )
+    )
+
+    assert [schema["nspname"] for schema in provider_schemas] == ["app", "public"]
+    assert [schema["nspname"] for schema in workspace_managed_schemas] == ["governance"]
+
+
 def test_settings_accepts_comma_separated_webauthn_origins() -> None:
     settings = Settings(
         webauthn_origins="http://localhost:8080, https://app.bonfirework.org",
