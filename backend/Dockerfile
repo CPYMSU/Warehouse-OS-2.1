@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 FROM postgres:18.4-bookworm AS postgresql-client
 
 FROM python:3.13-slim-bookworm
