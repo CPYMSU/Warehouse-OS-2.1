@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Trace MK7 by source fingerprint and workspace catalog
+      - name: Inventory current Warehouse workspaces read-only
         shell: bash
         run: |
           set -euo pipefail
@@ -25,43 +25,29 @@ jobs:
           from sqlalchemy import text
           from app.db.session import system_session
 
-          source_sha = '32ef40976c7038e5e55ca9a7dbf844666386a7663f0da0be87265ce96a36bcb4'
           with system_session() as session:
               session.execute(text("SET TRANSACTION READ ONLY"))
+              counts = session.execute(text("""
+                  SELECT t.id, t.slug, t.name,
+                         count(DISTINCT a.id) AS asset_count,
+                         count(DISTINCT w.id) AS workspace_count
+                  FROM iam.tenants t
+                  LEFT JOIN digital_asset.assets a ON a.tenant_id=t.id
+                  LEFT JOIN digital_asset.workspaces w ON w.tenant_id=t.id
+                  GROUP BY t.id,t.slug,t.name
+                  ORDER BY workspace_count DESC, asset_count DESC, t.slug
+              """)).mappings().all()
+              print('TENANT_COUNT=' + str(len(counts)))
+              for row in counts:
+                  print('TENANT=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()}, ensure_ascii=False))
 
-              jobs = session.execute(text("""
-                  SELECT
-                    t.slug AS tenant_slug,
-                    j.id AS upload_id,
-                    j.workspace_id,
-                    j.filename,
-                    j.version_no,
-                    j.component_name,
-                    j.expected_size_bytes,
-                    j.expected_sha256,
-                    j.status,
-                    j.source_version_id,
-                    j.completed_at,
-                    j.created_at
-                  FROM digital_asset.source_upload_jobs j
-                  JOIN iam.tenants t ON t.id = j.tenant_id
-                  WHERE lower(coalesce(j.filename,'')) LIKE '%mk7%'
-                     OR j.expected_sha256 = :sha
-                  ORDER BY j.created_at DESC
-                  LIMIT 20
-              """), {'sha': source_sha}).mappings().all()
-              print('SOURCE_MATCH_COUNT=' + str(len(jobs)))
-              for row in jobs:
-                  print('SOURCE_MATCH=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()}, ensure_ascii=False))
-
-              workspaces = session.execute(text("""
+              rows = session.execute(text("""
                   SELECT
                     t.slug AS tenant_slug,
                     a.asset_no,
                     a.name AS asset_name,
                     a.asset_kind,
                     a.status AS asset_status,
-                    a.created_at AS asset_created_at,
                     w.id AS workspace_id,
                     w.workspace_key,
                     w.status AS workspace_status,
@@ -70,16 +56,15 @@ jobs:
                     w.active_deployment_id,
                     w.hosting_mode,
                     w.compute_node,
-                    w.created_at AS workspace_created_at,
-                    w.updated_at AS workspace_updated_at
+                    w.created_at,
+                    w.updated_at
                   FROM digital_asset.workspaces w
                   JOIN digital_asset.assets a ON a.id=w.asset_id AND a.tenant_id=w.tenant_id
                   JOIN iam.tenants t ON t.id=w.tenant_id
-                  WHERE t.slug='bonfire'
                   ORDER BY w.updated_at DESC
-                  LIMIT 100
+                  LIMIT 200
               """)).mappings().all()
-              print('BONFIRE_WORKSPACE_COUNT=' + str(len(workspaces)))
-              for row in workspaces:
+              print('WORKSPACE_COUNT=' + str(len(rows)))
+              for row in rows:
                   print('WORKSPACE=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()}, ensure_ascii=False))
           PY
