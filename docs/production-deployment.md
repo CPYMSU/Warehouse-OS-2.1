@@ -133,6 +133,24 @@ Vultr. Both candidates are prepared in parallel; standby schema runs before
 primary data, replication is refreshed and verified, and activation is sent
 to both nodes together. Dispatching computers only need GitHub authorization.
 
+Before an ordinary coordinated deployment starts, the Mac runner executes
+`ops/macos/audit-runtime-storage`. The gate verifies that the governed runtime
+root is a dedicated external volume of at least 2 TB and that both the API and
+Runtime Controller have one writable bind mount from that root. USB bridges
+that do not expose macOS `SolidState` metadata must be pinned by exact volume
+UUID and device model through these repository variables:
+
+- `WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_UUID`
+- `WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_MODEL`
+- `WAREHOUSE_MAC_RUNTIME_STORAGE_REQUIRE_MIRROR` (`true` or `false`)
+
+The identity pair is an administrator attestation for one observed device, not
+a wildcard vendor allowance. Reformatting or replacing the disk changes the
+UUID and blocks the next deployment. Use the `storage-audit` workflow-dispatch
+mode for a read-only evidence run; it never calls the coordinated deploy route.
+The mirror flag governs workspace runtime storage only and does not relax the
+separate mirrored-storage requirements for migrating PostgreSQL PGDATA.
+
 The workflow refuses stale queued revisions, serializes the entire two-target
 release and requires each node's live manifest. It fixes
 `WAREHOUSE_CLUSTER_PREFLIGHT=basic`, so GitHub performs only Python

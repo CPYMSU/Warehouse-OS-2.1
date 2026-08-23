@@ -192,6 +192,12 @@ def test_dm_and_guide_are_delivered_by_the_intelligent_interface() -> None:
     assert contract.status_code == 200
     assert contract.json()["example_manifest"]["runtime"]["health_path"] == ("/healthz")
     assert contract.json()["compute_placement_guidance"]["advisory_only"] is True
+    assert contract.json()["source_archive"]["resumable_max_compressed_bytes"] == (
+        3 * 1024 * 1024 * 1024
+    )
+    assert contract.json()["source_archive"]["legacy_direct_max_compressed_bytes"] == (
+        100 * 1024 * 1024
+    )
 
 
 def test_workspace_key_session_surface_uses_one_conversation_contract(monkeypatch) -> None:

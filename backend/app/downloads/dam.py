@@ -119,7 +119,7 @@ class Client:
                 detail = error.get("detail") or error.get("error") or error
                 message = (
                     json.dumps(detail, ensure_ascii=False)
-                    if isinstance(detail, dict | list)
+                    if isinstance(detail, (dict, list))
                     else str(detail)
                 )
             except (json.JSONDecodeError, AttributeError):

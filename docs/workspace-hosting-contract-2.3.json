@@ -66,6 +66,10 @@
       "tar.gz",
       "tgz"
     ],
+    "resumable_max_compressed_bytes": 3221225472,
+    "resumable_chunk_bytes": 4194304,
+    "legacy_direct_max_compressed_bytes": 104857600,
+    "effective_limit_also_requires_workspace_quota": true,
     "server_sha256_required": true,
     "reject": [
       "absolute paths",

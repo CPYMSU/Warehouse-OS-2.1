@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Read-only evidence gate for the Mac primary's workspace runtime storage.
+# It deliberately inspects only storage metadata and selected container mount
+# fields; production environment values and secrets are never printed.
+
+export PATH="${HOME}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+storage_root="${WAREHOUSE_MAC_RUNTIME_STORAGE_ROOT:-/Volumes/BonfireworkData}"
+minimum_bytes="${WAREHOUSE_MAC_RUNTIME_STORAGE_MIN_BYTES:-2000000000000}"
+docker_bin="${WAREHOUSE_DOCKER_BIN:-${HOME}/.orbstack/bin/docker}"
+runtime_target="/data/hdd/runtime-volumes"
+approved_uuid="${WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_UUID:-}"
+approved_model="${WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_MODEL:-}"
+require_mirror="${WAREHOUSE_MAC_RUNTIME_STORAGE_REQUIRE_MIRROR:-false}"
+
+fail() {
+  printf 'runtime_storage_status=blocked\nreason=%s\n' "$1" >&2
+  exit 2
+}
+
+failures=()
+record_failure() {
+  failures[${#failures[@]}]="$1"
+}
+
+[[ "${storage_root}" == /Volumes/* ]] \
+  || fail "runtime storage root must be a dedicated volume below /Volumes"
+[[ "${minimum_bytes}" =~ ^[1-9][0-9]+$ ]] \
+  || fail "minimum byte requirement must be a positive integer"
+[[ "${require_mirror}" == true || "${require_mirror}" == false ]] \
+  || fail "mirror requirement must be true or false"
+[[ -d "${storage_root}" ]] \
+  || fail "runtime storage volume is not mounted: ${storage_root}"
+[[ -x "${docker_bin}" ]] \
+  || fail "OrbStack Docker CLI is unavailable: ${docker_bin}"
+"${docker_bin}" info >/dev/null 2>&1 \
+  || fail "OrbStack Docker engine is unavailable"
+
+plist="$(diskutil info -plist "${storage_root}")" \
+  || fail "diskutil cannot inspect runtime storage volume"
+plist_value() {
+  plutil -extract "$1" raw -o - - <<<"${plist}" 2>/dev/null || printf unknown
+}
+
+device="$(plist_value DeviceIdentifier)"
+whole_disk="$(plist_value ParentWholeDisk)"
+filesystem="$(plist_value FilesystemType)"
+volume_uuid="$(plist_value VolumeUUID)"
+internal="$(plist_value Internal)"
+solid_state="$(plist_value SolidState)"
+total_bytes="$(plist_value TotalSize)"
+
+printf 'storage_observation_root=%s\n' "${storage_root}"
+printf 'storage_observation_device=%s\n' "${device}"
+printf 'storage_observation_whole_disk=%s\n' "${whole_disk}"
+printf 'storage_observation_volume_uuid=%s\n' "${volume_uuid}"
+printf 'storage_observation_volume_solid_state=%s\n' "${solid_state}"
+printf 'storage_observation_internal=%s\n' "${internal}"
+printf 'storage_observation_total_bytes=%s\n' "${total_bytes}"
+
+physical_solid_state="unknown"
+if [[ "${whole_disk}" =~ ^disk[0-9]+$ ]]; then
+  physical_plist="$(python3 - "${whole_disk}" <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["diskutil", "info", "-plist", f"/dev/{sys.argv[1]}"],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
+  if [[ -n "${physical_plist}" ]]; then
+    physical_solid_state="$(
+      plutil -extract SolidState raw -o - - <<<"${physical_plist}" 2>/dev/null \
+        || printf unknown
+    )"
+  fi
+fi
+storage_profile="$(python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["system_profiler", "SPStorageDataType", "-json"],
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
+profile_value() {
+  STORAGE_PROFILE="${storage_profile}" python3 - "$1" "${device}" "${storage_root}" <<'PY'
+import json
+import os
+import sys
+
+wanted, device, root = sys.argv[1:]
+try:
+    document = json.loads(os.environ.get("STORAGE_PROFILE") or "{}")
+except (TypeError, ValueError):
+    document = {}
+
+def records(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from records(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from records(child)
+
+match = next(
+    (
+        item
+        for item in records(document)
+        if str(item.get("bsd_name") or "") == device
+        or str(item.get("mount_point") or "") == root
+    ),
+    {},
+)
+physical = match.get("physical_drive") if isinstance(match.get("physical_drive"), dict) else {}
+aliases = {
+    "medium": ("medium_type", "media_type", "solid_state", "is_solid_state", "is_ssd"),
+    "model": ("device_name", "_name"),
+    "protocol": ("protocol",),
+}
+for source in (physical, match):
+    for key in aliases[wanted]:
+        value = source.get(key)
+        if value not in (None, ""):
+            print(str(value).replace("\n", " ")[:160])
+            raise SystemExit
+else:
+    print("unknown")
+PY
+}
+profile_medium="$(profile_value medium)"
+profile_model="$(profile_value model)"
+profile_protocol="$(profile_value protocol)"
+ioreg_storage="$(python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["ioreg", "-a", "-r", "-c", "IOBlockStorageDevice"],
+        check=True,
+        capture_output=True,
+        timeout=15,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
+ioreg_value() {
+  IOREG_STORAGE="${ioreg_storage}" python3 - "$1" "${profile_model}" <<'PY'
+import os
+import plistlib
+import sys
+
+wanted, observed_model = sys.argv[1:]
+try:
+    document = plistlib.loads(os.environ.get("IOREG_STORAGE", "").encode())
+except (plistlib.InvalidFileException, TypeError, ValueError):
+    document = []
+
+def records(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from records(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from records(child)
+
+match = {}
+for item in records(document):
+    characteristics = item.get("Device Characteristics")
+    if not isinstance(characteristics, dict):
+        continue
+    product = str(characteristics.get("Product Name") or "")
+    if observed_model != "unknown" and product.casefold() == observed_model.casefold():
+        match = characteristics
+        break
+    if "thinkplus" in product.casefold():
+        match = characteristics
+        break
+
+aliases = {
+    "medium": ("Medium Type", "MediumType"),
+    "model": ("Product Name",),
+}
+for key in aliases[wanted]:
+    value = match.get(key)
+    if value not in (None, ""):
+        print(str(value).replace("\n", " ")[:160])
+        break
+else:
+    print("unknown")
+PY
+}
+ioreg_medium="$(ioreg_value medium)"
+ioreg_model="$(ioreg_value model)"
+profile_solid_state="unknown"
+normalized_profile_medium="$(
+  printf '%s %s' "${profile_medium}" "${ioreg_medium}" | tr '[:upper:]' '[:lower:]'
+)"
+case "${normalized_profile_medium}" in
+  *ssd*|*solid*state*) profile_solid_state=true ;;
+  *hdd*|*rotational*|*hard*disk*) profile_solid_state=false ;;
+esac
+
+if [[ "${solid_state}" == unknown && "${physical_solid_state}" != unknown ]]; then
+  solid_state="${physical_solid_state}"
+fi
+if [[ "${solid_state}" == unknown && "${profile_solid_state}" != unknown ]]; then
+  solid_state="${profile_solid_state}"
+fi
+medium_evidence="operating-system"
+if [[ "${solid_state}" == unknown \
+  && -n "${approved_uuid}" \
+  && -n "${approved_model}" \
+  && "${volume_uuid}" == "${approved_uuid}" \
+  && "${profile_model}" == "${approved_model}" ]]; then
+  solid_state=true
+  medium_evidence="administrator-pinned-volume-identity"
+fi
+
+printf 'storage_observation_physical_solid_state=%s\n' "${physical_solid_state}"
+printf 'storage_observation_profile_medium=%s\n' "${profile_medium}"
+printf 'storage_observation_profile_model=%s\n' "${profile_model}"
+printf 'storage_observation_profile_protocol=%s\n' "${profile_protocol}"
+printf 'storage_observation_ioreg_medium=%s\n' "${ioreg_medium}"
+printf 'storage_observation_ioreg_model=%s\n' "${ioreg_model}"
+printf 'storage_observation_medium_evidence=%s\n' "${medium_evidence}"
+
+[[ "${internal}" == false ]] \
+  || record_failure "runtime storage must be external to the Mac system disk"
+[[ "${solid_state}" == true ]] \
+  || record_failure "runtime storage is not reported as solid-state"
+if [[ ! "${total_bytes}" =~ ^[0-9]+$ ]]; then
+  record_failure "diskutil did not report a numeric storage capacity"
+elif (( total_bytes < minimum_bytes )); then
+  record_failure "runtime SSD capacity is below the required 2 TB"
+fi
+
+raid_kind="external-volume"
+raid_list="$(python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["diskutil", "appleRAID", "list"],
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
+except (subprocess.SubprocessError, OSError):
+    pass
+else:
+    sys.stdout.buffer.write(result.stdout)
+PY
+)"
+if grep -Fq "${device}" <<<"${raid_list}" \
+  || grep -Fq "${whole_disk}" <<<"${raid_list}"; then
+  if grep -Eiq 'Mirror|Mirrored' <<<"${raid_list}"; then
+    raid_kind="apple-raid-mirror"
+  else
+    raid_kind="apple-raid-non-mirror"
+    record_failure "runtime storage belongs to AppleRAID but is not mirrored"
+  fi
+elif [[ "${WAREHOUSE_HARDWARE_RAID_APPROVED:-false}" == true ]]; then
+  raid_kind="approved-hardware-raid1"
+else
+  raid_kind="unverified-external-volume"
+  if [[ "${require_mirror}" == true ]]; then
+    record_failure "no mirrored AppleRAID detected and no verified hardware RAID1 approval is configured"
+  fi
+fi
+printf 'storage_observation_protection=%s\n' "${raid_kind}"
+printf 'storage_observation_mirror_required=%s\n' "${require_mirror}"
+
+resolved_root="$(cd "${storage_root}" && pwd -P)"
+
+inspect_runtime_mount() {
+  local container="$1"
+  local evidence
+  evidence="$("${docker_bin}" inspect "${container}" \
+    --format '{{json .Mounts}}' 2>/dev/null)" \
+    || {
+      printf 'container=%s\nruntime_mount_status=unavailable\n' "${container}"
+      return 1
+    }
+  MOUNT_EVIDENCE="${evidence}" python3 - \
+    "${container}" "${runtime_target}" "${resolved_root}" <<'PY'
+import json
+import os
+import sys
+
+container, target, governed_root = sys.argv[1:]
+mounts = json.loads(os.environ["MOUNT_EVIDENCE"])
+matches = [item for item in mounts if str(item.get("Destination") or "").rstrip("/") == target]
+if len(matches) != 1:
+    raise SystemExit(f"{container} must have exactly one {target} mount")
+source = os.path.realpath(str(matches[0].get("Source") or ""))
+if matches[0].get("RW") is not True:
+    raise SystemExit(f"{container} runtime mount is not writable")
+try:
+    common = os.path.commonpath((source, governed_root))
+except ValueError:
+    common = ""
+if common != governed_root:
+    raise SystemExit(f"{container} runtime mount is outside the governed 2 TB SSD")
+print(f"container={container}")
+print(f"runtime_mount_source={source}")
+print(f"runtime_mount_target={target}")
+PY
+}
+
+inspect_runtime_mount bonfirework-mac-api \
+  || record_failure "Mac API runtime mount is not governed by the 2 TB SSD"
+inspect_runtime_mount bonfirework-mac-runtime-controller \
+  || record_failure "Mac Runtime Controller mount is not governed by the 2 TB SSD"
+
+if (( ${#failures[@]} > 0 )); then
+  printf 'runtime_storage_status=blocked\n' >&2
+  for reason in "${failures[@]}"; do
+    printf 'reason=%s\n' "${reason}" >&2
+  done
+  exit 2
+fi
+
+printf 'runtime_storage_status=ready\n'
+printf 'storage_root=%s\n' "${resolved_root}"
+printf 'device=%s\nwhole_disk=%s\nfilesystem=%s\nvolume_uuid=%s\n' \
+  "${device}" "${whole_disk}" "${filesystem}" "${volume_uuid}"
+printf 'solid_state=%s\ninternal=%s\nprotection=%s\n' \
+  "${solid_state}" "${internal}" "${raid_kind}"
+printf 'total_bytes=%s\nminimum_bytes=%s\n' "${total_bytes}" "${minimum_bytes}"

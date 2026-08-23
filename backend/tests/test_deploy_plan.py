@@ -197,6 +197,10 @@ def test_github_uses_one_coordinated_dual_node_route() -> None:
     assert "run-full-verification" not in production
     assert "tailscale/github-action" not in production
     assert "primary-recovery" in production
+    assert "storage-audit" in production
+    assert "ops/macos/audit-runtime-storage" in production
+    assert "WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_UUID" in production
+    assert "WAREHOUSE_MAC_RUNTIME_STORAGE_APPROVED_MODEL" in production
     assert "ACTIVATE_PRIMARY_ONLY" in production
     assert '"${manager}" prepared-status "${PREPARED_RELEASE}"' in production
     assert '"${manager}" activate "${PREPARED_RELEASE}"' in production

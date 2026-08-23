@@ -2,29 +2,37 @@ name: Backend contract
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   contract:
-    runs-on: ubuntu-latest
+    # The production runner is repository-scoped and privileged by location.
+    # Never execute untrusted fork code on the Mac mini.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Verify committed release contract
         run: |
           set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           node scripts/build_v2_frontend.cjs --check
           PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/python-cache" \
             python3 -m compileall -q backend/app backend/alembic/versions \
-              ops/macos/warehouse-clash-route-optimizer
+              ops/macos/warehouse-clash-route-optimizer \
+              ops/macos/publish-digital-assets.py \
+              ops/macos/publish-digital-assets-from-registry.py
           bash -n \
             ops/deploy \
             ops/fast-deploy \
             ops/cluster/configure-control-publication-macos \
             ops/cluster/rolling-deploy \
             ops/cluster/set-vultr-reverse-subscriptions \
+            ops/macos/audit-runtime-storage \
             ops/macos/warehouse-deploy-macos \
             ops/macos/warehouse-deploy-ssh-gate \
             ops/server/warehouse-deploy \

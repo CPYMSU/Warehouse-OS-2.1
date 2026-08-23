@@ -165,8 +165,16 @@ def create_source_upload(
         raise HTTPException(status_code=422, detail="size_bytes must be an integer") from exc
     if size_bytes <= 0:
         raise HTTPException(status_code=422, detail="size_bytes must be positive")
-    if size_bytes > settings.asset_max_upload_bytes:
-        raise HTTPException(status_code=413, detail="Source upload exceeds the host upload limit")
+    if size_bytes > settings.source_max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "reason": "source_upload_exceeds_host_limit",
+                "requested_bytes": size_bytes,
+                "max_bytes": settings.source_max_upload_bytes,
+                "next_action": "reduce the archive or request a governed host-limit increase",
+            },
+        )
     version_no = str(payload.get("version_no") or "").strip() or None
     if version_no and len(version_no) > 80:
         raise HTTPException(status_code=422, detail="version_no is too long")
@@ -786,7 +794,7 @@ def process_claimed_source_upload(
     archive_limit = max(
         remaining,
         stored.size_bytes,
-        min(settings.asset_max_upload_bytes * 200, 64 * 1024 * 1024 * 1024),
+        min(settings.source_max_upload_bytes * 200, 64 * 1024 * 1024 * 1024),
     )
     archive = inspect_source_archive(
         store.path_for(stored.object_key),
