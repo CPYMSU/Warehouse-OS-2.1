@@ -899,186 +899,68 @@ const DatabaseDrawer = ({ project, onClose }) => {
   );
 };
 
-const routeProgramName = project => databaseName(project) || databaseWorkspaceKey(project) || "PROGRAM";
-const blankDataRoute = () => ({
-  route_key: `route-${Date.now().toString(36)}`,
-  name: "未命名多程序路由",
-  description: "MK7、MK5 或其他用戶托管程序之間的只讀資料檢索拓撲",
-  state: "draft",
-  revision: 0,
-  nodes: [],
-  edges: [],
-  rules: { timeout_ms: 5000, max_rows: 500, partial_result: true },
-});
 const routeNodeMeta = {
   program: ["PROGRAM", "程序資料庫"], input: ["INPUT", "輸入參數"],
   filter: ["FILTER", "條件過濾"], map: ["MAP", "字段映射"],
   join: ["JOIN", "資料關聯"], output: ["OUTPUT", "輸出結果"],
 };
 
-const DataRouteStudio = ({ projects }) => {
+const DataRouteObserver = () => {
   const [routes, setRoutes] = _s(null);
-  const [draft, setDraft] = _s(blankDataRoute);
-  const [persisted, setPersisted] = _s(false);
-  const [selectedNode, setSelectedNode] = _s("");
-  const [linkSource, setLinkSource] = _s("");
-  const [busy, setBusy] = _s(false);
-  const [notice, setNotice] = _s("");
+  const [selectedKey, setSelectedKey] = _s("");
   const [error, setError] = _s("");
-  const dragRef = _r(null);
-
-  const loadRoutes = () => {
+  const [reload, setReload] = _s(0);
+  _e(() => {
+    let disposed = false;
     setError("");
     W2.json("/api/data-routes?limit=100", { cache: "no-store" }).then(data => {
-      setRoutes(Array.isArray(data && data.routes) ? data.routes : []);
+      if (disposed) return;
+      const items = Array.isArray(data && data.routes) ? data.routes : [];
+      setRoutes(items);
+      setSelectedKey(current => current && items.some(item => item.route_key === current)
+        ? current : items.length ? items[0].route_key : "");
     }).catch(reason => {
-      setRoutes([]);
-      setError(reason && reason.message || "路由清單載入失敗");
+      if (!disposed) { setRoutes([]); setError(reason && reason.message || "路由代碼讀取失敗"); }
     });
-  };
-  _e(loadRoutes, []);
-
-  _e(() => {
-    const move = event => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      const x = Math.max(8, Math.min(740, event.clientX - drag.left - drag.offsetX));
-      const y = Math.max(8, Math.min(350, event.clientY - drag.top - drag.offsetY));
-      setDraft(current => ({ ...current, nodes: current.nodes.map(node => node.id === drag.id ? { ...node, x: Math.round(x), y: Math.round(y) } : node) }));
-    };
-    const up = () => { dragRef.current = null; };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
-  }, []);
-
-  const chooseRoute = route => {
-    setDraft(JSON.parse(JSON.stringify(route)));
-    setPersisted(true); setSelectedNode(""); setLinkSource(""); setNotice(""); setError("");
-  };
-  const newRoute = () => {
-    setDraft(blankDataRoute()); setPersisted(false); setSelectedNode(""); setLinkSource(""); setNotice(""); setError("");
-  };
-  const updateDraft = patch => setDraft(current => ({ ...current, ...patch }));
-  const updateNode = patch => setDraft(current => ({ ...current, nodes: current.nodes.map(node => node.id === selectedNode ? { ...node, ...patch } : node) }));
-  const selected = draft.nodes.find(node => node.id === selectedNode) || null;
-  const addNode = (type, project) => {
-    const count = draft.nodes.length;
-    const id = `${type}-${Date.now().toString(36)}-${count}`;
-    const node = {
-      id, type,
-      label: project ? routeProgramName(project) : routeNodeMeta[type][1],
-      x: 24 + (count % 4) * 190, y: 24 + Math.floor(count / 4) * 126,
-      ...(project ? { workspace_key: databaseWorkspaceKey(project), resource: "選擇資料資源" } : {}),
-      ...(type === "output" ? { output_name: "unified_result" } : {}),
-    };
-    setDraft(current => ({ ...current, nodes: [...current.nodes, node] }));
-    setSelectedNode(id); setNotice("");
-  };
-  const nodeClick = (event, node) => {
-    event.stopPropagation();
-    if (linkSource && linkSource !== node.id) {
-      const exists = draft.edges.some(edge => edge.source === linkSource && edge.target === node.id);
-      if (!exists) setDraft(current => ({ ...current, edges: [...current.edges, { id: `${linkSource}--${node.id}`, source: linkSource, target: node.id, label: "" }] }));
-      setLinkSource(""); setSelectedNode(node.id); return;
-    }
-    setSelectedNode(node.id);
-  };
-  const beginDrag = (event, node) => {
-    if (linkSource) return;
-    const canvas = event.currentTarget.parentElement.getBoundingClientRect();
-    dragRef.current = { id: node.id, left: canvas.left, top: canvas.top, offsetX: event.clientX - canvas.left - node.x, offsetY: event.clientY - canvas.top - node.y };
-    event.currentTarget.setPointerCapture && event.currentTarget.setPointerCapture(event.pointerId);
-  };
-  const removeSelected = () => {
-    if (!selectedNode) return;
-    setDraft(current => ({
-      ...current,
-      nodes: current.nodes.filter(node => node.id !== selectedNode),
-      edges: current.edges.filter(edge => edge.source !== selectedNode && edge.target !== selectedNode),
-    }));
-    setSelectedNode(""); setLinkSource("");
-  };
-  const save = async state => {
-    setBusy(true); setError(""); setNotice("");
-    const payload = { ...draft, state: state || draft.state, expected_revision: persisted ? draft.revision : undefined };
-    try {
-      const response = await W2.json(persisted ? `/api/data-routes/${encodeURIComponent(draft.route_key)}` : "/api/data-routes", {
-        method: persisted ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      setDraft(response.route); setPersisted(true);
-      setNotice(state === "active" ? "路由已發布" : state === "suspended" ? "路由已暫停" : "草稿已保存");
-      loadRoutes();
-    } catch (reason) {
-      const detail = reason && reason.data && reason.data.detail;
-      setError(typeof detail === "string" ? detail : reason && reason.message || "路由保存失敗");
-    } finally { setBusy(false); }
-  };
-  const programs = Array.isArray(projects) ? projects : [];
-  const stateLabel = { draft: "草稿", active: "運行中", suspended: "已暫停" }[draft.state] || draft.state;
-
-  return <div className="data-route-studio" data-testid="data-route-studio">
+    return () => { disposed = true; };
+  }, [reload]);
+  const route = (routes || []).find(item => item.route_key === selectedKey) || null;
+  const source = route && route.source || {};
+  const stateLabel = { draft: "未發布", active: "已生效", suspended: "已暫停" };
+  const sourceLabel = [source.repository, source.path].filter(Boolean).join(" / ") || "尚未提供來源位置";
+  return <div className="data-route-studio data-route-observer" data-testid="data-route-observer">
     <header className="data-route-studio-head">
-      <div><span>WAREHOUSE 09.4 / CONTROL PLANE</span><h3>多程序資料路由空間</h3><p>WAREHOUSE 只保存拓撲、規則與狀態；實際資料鏈路是 MK7 ↔ MK5／其他用戶程序。</p></div>
-      <div className="data-route-head-actions"><T tone={draft.state === "active" ? "ok" : draft.state === "suspended" ? "bad" : "plain"} dot={draft.state === "active"}>{stateLabel} · R{draft.revision || 0}</T><B size="sm" icon="plus" onClick={newRoute}>新建路由</B></div>
+      <div><span>WAREHOUSE 09.4 / READ-ONLY CODE TOPOLOGY</span><h3>多程序資料路由空間</h3><p>自動呈現程序代碼／Route Manifest 中的路由設計。WAREHOUSE 只觀察、解析與審計，不在此頁建立、連線或修改路由。</p></div>
+      <div className="data-route-head-actions"><T tone="ok">CODE IS SOURCE OF TRUTH</T><B size="sm" icon="refresh" onClick={() => setReload(value => value + 1)}>刷新解析結果</B></div>
     </header>
-    <div className="data-route-shell">
+    {!error && routes === null && <div className="database-load-state"><I name="refresh" size={14}/><span>正在讀取路由代碼拓撲…</span></div>}
+    {error && <div className="database-load-state is-error"><div><strong>路由代碼讀取失敗</strong><span>{error}</span></div><B size="sm" onClick={() => setReload(value => value + 1)}>重新載入</B></div>}
+    {!error && routes && !routes.length && <div className="data-route-code-empty">
+      <span>NO ROUTE MANIFEST DISCOVERED</span><h4>尚未發現可展示的程序路由代碼</h4><p>程序在發布時提交 Route Manifest；WAREHOUSE 解析後自動在此顯示拓撲。空狀態不會猜測 MK7、MK5 之間存在連線。</p>
+      <pre>{`route_key: mk7-mk5-context\nsource: program-code\nnodes: [mk7, mk5, join, output]\nedges: [mk7->join, mk5->join, join->output]`}</pre>
+    </div>}
+    {!error && route && <div className="data-route-observer-shell">
       <aside className="data-route-library">
-        <LB red>ROUTE LIBRARY</LB>
-        <div className="data-route-list">
-          {routes === null && <span className="muted">路由載入中…</span>}
-          {routes && !routes.length && <span className="muted">尚無已保存路由</span>}
-          {(routes || []).map(route => <button key={route.route_key} className={persisted && draft.route_key === route.route_key ? "on" : ""} onClick={() => chooseRoute(route)}><strong>{route.name}</strong><code>{route.route_key}</code><small>{route.state} · R{route.revision}</small></button>)}
-        </div>
-        <LB red>PROGRAM DATABASES</LB>
-        <div className="data-route-palette">
-          {programs.map(project => <button key={databaseWorkspaceKey(project)} onClick={() => addNode("program", project)}><i></i><span>{routeProgramName(project)}</span><code>{databaseWorkspaceKey(project)}</code></button>)}
-          {!programs.length && <small className="muted">先在下方登記資料庫服務</small>}
-        </div>
-        <LB red>RULE NODES</LB>
-        <div className="data-route-tools">{["input", "filter", "map", "join", "output"].map(type => <button key={type} onClick={() => addNode(type)}><b>＋</b>{routeNodeMeta[type][1]}</button>)}</div>
+        <LB red>DISCOVERED ROUTES</LB>
+        <div className="data-route-list">{routes.map(item => <button key={item.route_key} className={item.route_key === selectedKey ? "on" : ""} onClick={() => setSelectedKey(item.route_key)}><strong>{item.name}</strong><code>{item.route_key}</code><small>{stateLabel[item.state] || item.state} · R{item.revision}</small></button>)}</div>
+        <div className="data-route-code-source"><LB red>CODE SOURCE</LB><strong>{sourceLabel}</strong><code>{source.ref || "—"}</code><small>{source.digest ? source.digest.slice(0, 18) : "NO DIGEST"}</small></div>
       </aside>
-
       <main className="data-route-workbench">
-        <div className="data-route-namebar">
-          <label><span>ROUTE NAME</span><input value={draft.name} onChange={event => updateDraft({ name: event.target.value })}/></label>
-          <label><span>ROUTE KEY</span><input value={draft.route_key} disabled={persisted} onChange={event => updateDraft({ route_key: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-") })}/></label>
+        <div className="data-route-readonly-title"><div><span>ROUTE LOGIC</span><h4>{route.name}</h4></div><T tone={route.state === "active" ? "ok" : "plain"} dot={route.state === "active"}>{stateLabel[route.state] || route.state}</T></div>
+        <div className="data-route-canvas is-readonly">
+          <svg aria-hidden="true" viewBox="0 0 900 440" preserveAspectRatio="none"><defs><marker id="data-route-readonly-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z"/></marker></defs>{route.edges.map(edge => { const from = route.nodes.find(node => node.id === edge.source); const to = route.nodes.find(node => node.id === edge.target); if (!from || !to) return null; const x1 = from.x + 154, y1 = from.y + 42, x2 = to.x, y2 = to.y + 42, mid = Math.round((x1 + x2) / 2); return <path key={edge.id} d={`M${x1} ${y1} C${mid} ${y1},${mid} ${y2},${x2} ${y2}`} markerEnd="url(#data-route-readonly-arrow)"/>; })}</svg>
+          {route.nodes.map(node => <div key={node.id} className={`data-route-node type-${node.type}`} style={{ left: node.x, top: node.y }}><small>{routeNodeMeta[node.type] ? routeNodeMeta[node.type][0] : node.type}</small><strong>{node.label}</strong><span>{node.workspace_key || node.resource || node.output_name || "聲明式規則"}</span></div>)}
         </div>
-        <div className={`data-route-canvas${linkSource ? " is-linking" : ""}`} onClick={() => setSelectedNode("")}>
-          <svg aria-hidden="true" viewBox="0 0 900 440" preserveAspectRatio="none">
-            <defs><marker id="data-route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z"/></marker></defs>
-            {draft.edges.map(edge => { const from = draft.nodes.find(node => node.id === edge.source); const to = draft.nodes.find(node => node.id === edge.target); if (!from || !to) return null; const x1 = from.x + 154, y1 = from.y + 42, x2 = to.x, y2 = to.y + 42, mid = Math.round((x1 + x2) / 2); return <path key={edge.id} d={`M${x1} ${y1} C${mid} ${y1},${mid} ${y2},${x2} ${y2}`} markerEnd="url(#data-route-arrow)"/>; })}
-          </svg>
-          {draft.nodes.map(node => <button type="button" key={node.id} className={`data-route-node type-${node.type}${selectedNode === node.id ? " on" : ""}${linkSource === node.id ? " linking" : ""}`} style={{ left: node.x, top: node.y }} onClick={event => nodeClick(event, node)} onPointerDown={event => beginDrag(event, node)}>
-            <small>{routeNodeMeta[node.type][0]}</small><strong>{node.label}</strong><span>{node.workspace_key || node.resource || node.output_name || "配置規則"}</span>
-          </button>)}
-          {!draft.nodes.length && <div className="data-route-empty"><b>從左側加入兩個程序資料庫</b><span>再加入過濾、映射、關聯或輸出節點，拖動排列並連線。</span></div>}
-          {linkSource && <div className="data-route-link-hint">請點擊下一個節點完成連線 · ESC 取消</div>}
-        </div>
-        <div className="data-route-statusbar"><span>PROGRAMS <b>{draft.nodes.filter(node => node.type === "program").length}</b></span><span>NODES <b>{draft.nodes.length}</b></span><span>EDGES <b>{draft.edges.length}</b></span><span>BUSINESS DATA STORED <b>NO</b></span></div>
+        <div className="data-route-statusbar"><span>PROGRAMS <b>{route.nodes.filter(node => node.type === "program").length}</b></span><span>NODES <b>{route.nodes.length}</b></span><span>EDGES <b>{route.edges.length}</b></span><span>WAREHOUSE EDITABLE <b>NO</b></span></div>
       </main>
-
-      <aside className="data-route-inspector">
-        <LB red>RULE INSPECTOR</LB>
-        {selected ? <>
-          <label><span>節點名稱</span><input value={selected.label || ""} onChange={event => updateNode({ label: event.target.value })}/></label>
-          {selected.type === "program" && <><label><span>查詢資源</span><input value={selected.resource || ""} onChange={event => updateNode({ resource: event.target.value })} placeholder="schema.resource"/></label><label><span>允許字段</span><textarea value={(selected.fields || []).join(", ")} onChange={event => updateNode({ fields: event.target.value.split(",").map(value => value.trim()).filter(Boolean) })} placeholder="name, status, version"/></label></>}
-          {["filter", "map", "join"].includes(selected.type) && <label><span>規則表達式</span><textarea value={selected.expression || ""} onChange={event => updateNode({ expression: event.target.value })} placeholder="只保存聲明式規則，不接受任意 SQL"/></label>}
-          {selected.type === "output" && <label><span>輸出名稱</span><input value={selected.output_name || ""} onChange={event => updateNode({ output_name: event.target.value })}/></label>}
-          <div className="data-route-node-actions"><button onClick={() => setLinkSource(selected.id)}>從此節點連線</button><button className="danger" onClick={removeSelected}>移除節點</button></div>
-        </> : <div className="data-route-inspector-empty">選擇畫布節點後，在這裡設定資料資源、字段與聲明式規則。</div>}
-        <LB red>EXECUTION POLICY</LB>
-        <label><span>最大返回行數</span><input type="number" min="1" max="10000" value={draft.rules.max_rows || 500} onChange={event => updateDraft({ rules: { ...draft.rules, max_rows: Number(event.target.value) } })}/></label>
-        <label><span>超時（毫秒）</span><input type="number" min="100" max="60000" value={draft.rules.timeout_ms || 5000} onChange={event => updateDraft({ rules: { ...draft.rules, timeout_ms: Number(event.target.value) } })}/></label>
-        <label className="data-route-check"><input type="checkbox" checked={draft.rules.partial_result !== false} onChange={event => updateDraft({ rules: { ...draft.rules, partial_result: event.target.checked } })}/><span>允許部分結果並標記來源錯誤</span></label>
+      <aside className="data-route-inspector data-route-code-inspector">
+        <LB red>CODE FACTS</LB>
+        <dl><div><dt>Route Key</dt><dd>{route.route_key}</dd></div><div><dt>Revision</dt><dd>R{route.revision}</dd></div><div><dt>Parser</dt><dd>{source.parser || "manifest"}</dd></div><div><dt>Observed</dt><dd>{source.observed_at ? String(source.observed_at).slice(0, 19).replace("T", " ") : "—"}</dd></div></dl>
+        <LB red>DECLARED RULES</LB><pre>{JSON.stringify(route.rules || {}, null, 2)}</pre>
+        <LB red>CONNECTIONS</LB><ol>{route.edges.map(edge => <li key={edge.id}><code>{edge.source}</code><span>→</span><code>{edge.target}</code>{edge.label && <small>{edge.label}</small>}</li>)}</ol>
+        <p>只顯示代碼事實；不顯示 DSN、密碼、Token 或業務查詢結果。</p>
       </aside>
-    </div>
-    <footer className="data-route-footer">
-      <div>{error && <span className="data-route-error">{error}</span>}{notice && <span className="data-route-ok">{notice}</span>}<small>憑據不進入路由定義 · WAREHOUSE 不保存業務查詢結果</small></div>
-      <div><B size="sm" disabled={busy} onClick={() => save("draft")}>保存草稿</B>{draft.state === "active" ? <B size="sm" disabled={busy} onClick={() => save("suspended")}>暫停路由</B> : <B kind="primary" size="sm" disabled={busy} onClick={() => save("active")}>驗證並發布</B>}</div>
-    </footer>
+    </div>}
   </div>;
 };
 
@@ -1622,8 +1504,8 @@ const Page = ({ boot }) => {
         foot={<span className="muted" style={{ fontSize: 11.5 }}>POSTGRESQL · TENANT ISOLATED</span>}/>
     </div>
 
-    <Band no="01" title="多程序資料路由空間" sub="在 WAREHOUSE 設計與發布規則；實際資料只在 MK7、MK5 和其他授權程序之間經外部 Gateway 流動。" delay={.08}>
-      <DataRouteStudio projects={dbProjects || []}/>
+    <Band no="01" title="多程序資料路由空間" sub="自動顯示程序代碼與 Route Manifest 的路由邏輯；WAREHOUSE 不在此建立或修改連線。" delay={.08}>
+      <DataRouteObserver/>
     </Band>
 
     <Band no="02" title={t("資料庫服務登記冊")} sub={t("獨立前端或應用都可以共用平台托管資料庫；規則預設全部拒絕。")} delay={.1}

@@ -194,10 +194,21 @@ def _normalise_payload(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "Published routes require two program nodes, "
-                    "one output node and connections"
+                    "Published routes require two program nodes, one output node and connections"
                 ),
             )
+    source = payload.get("source", (existing or {}).get("source", {}))
+    if not isinstance(source, dict):
+        raise HTTPException(status_code=422, detail="source must be an object")
+    normalised_source = {
+        "kind": _text(source.get("kind") or "route_manifest", "source.kind", maximum=40),
+        "repository": _text(source.get("repository"), "source.repository", maximum=300),
+        "ref": _text(source.get("ref"), "source.ref", maximum=160),
+        "path": _text(source.get("path"), "source.path", maximum=500),
+        "digest": _text(source.get("digest"), "source.digest", maximum=160),
+        "parser": _text(source.get("parser"), "source.parser", maximum=120),
+        "observed_at": _text(source.get("observed_at") or _now(), "source.observed_at", maximum=80),
+    }
     return {
         "id": str((existing or {}).get("id") or uuid4()),
         "route_key": route_key,
@@ -213,6 +224,9 @@ def _normalise_payload(
         "nodes": nodes,
         "edges": edges,
         "rules": rules,
+        "source": normalised_source,
+        "source_of_truth": "program_code",
+        "editable_in_warehouse": False,
         "revision": int((existing or {}).get("revision", 0)) + 1,
         "created_at": str((existing or {}).get("created_at") or _now()),
         "updated_at": _now(),
@@ -256,7 +270,13 @@ def list_routes(actor: ActorContext, *, limit: int = 100) -> dict[str, object]:
             .all()
         )
     routes = [route for row in rows if (route := _row_payload(row)) is not None]
-    return {"routes": routes, "count": len(routes), "business_data_stored": False}
+    return {
+        "routes": routes,
+        "count": len(routes),
+        "business_data_stored": False,
+        "source_of_truth": "program_code",
+        "editable_in_warehouse": False,
+    }
 
 
 def get_route(actor: ActorContext, route_key: str) -> dict[str, object]:

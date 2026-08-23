@@ -21,6 +21,15 @@ def _route_payload(**changes: object) -> dict[str, object]:
             {"source": "mk5", "target": "out"},
         ],
         "rules": {"max_rows": 500, "timeout_ms": 5000},
+        "source": {
+            "kind": "route_manifest",
+            "repository": "warehouse://programs/mk7",
+            "ref": "main@c24774c",
+            "path": "routes/mk7-mk5.yaml",
+            "digest": "sha256:route-manifest",
+            "parser": "warehouse-route-manifest/v1",
+            "observed_at": "2026-08-23T12:00:00+00:00",
+        },
     }
     payload.update(changes)
     return payload
@@ -45,6 +54,9 @@ def test_route_definition_keeps_business_data_out_of_the_control_plane() -> None
     assert route["state"] == "active"
     assert route["route_key"] == "mk7-mk5-context"
     assert route["revision"] == 1
+    assert route["source_of_truth"] == "program_code"
+    assert route["editable_in_warehouse"] is False
+    assert route["source"]["path"] == "routes/mk7-mk5.yaml"
     assert all("database_url" not in node for node in route["nodes"])
 
 
@@ -67,16 +79,20 @@ def test_published_route_requires_two_programs_output_and_connections() -> None:
         )
 
 
-def test_assets_page_exposes_route_studio_without_business_query_execution() -> None:
+def test_assets_page_exposes_read_only_code_route_topology() -> None:
     from pathlib import Path
 
     source = (
         Path(__file__).resolve().parents[2] / "frontend/v2/pages/pages-assets.jsx"
     ).read_text()
     css = (Path(__file__).resolve().parents[2] / "frontend/v2/pages/pages-assets.css").read_text()
-    assert 'data-testid="data-route-studio"' in source
+    assert 'data-testid="data-route-observer"' in source
+    assert "<DataRouteObserver/>" in source
+    assert "<DataRouteStudioEditor" not in source
     assert 'W2.json("/api/data-routes?limit=100"' in source
-    assert "實際資料鏈路是 MK7 ↔ MK5" in source
-    assert "WAREHOUSE 不保存業務查詢結果" in source
+    assert "不在此頁建立、連線或修改路由" in source
+    assert "CODE IS SOURCE OF TRUTH" in source
+    assert "WAREHOUSE EDITABLE <b>NO</b>" in source
     assert ".data-route-canvas" in css
+    assert ".data-route-canvas.is-readonly" in css
     assert ".data-route-node.type-program" in css

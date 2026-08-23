@@ -1,4 +1,4 @@
-"""Warehouse 09.4 data-route design and lifecycle API."""
+"""Warehouse 09.4 read model and automated route-manifest sync API."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ def data_route_create(
     payload: dict[str, object] = Body(default={}),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
+    """Receive a code-derived manifest; this is not a browser route editor."""
     return save_route(actor, payload)
 
 
@@ -40,4 +41,5 @@ def data_route_update(
     payload: dict[str, object] = Body(default={}),
     actor: ActorContext = Depends(current_actor),
 ) -> dict[str, object]:
+    """Refresh one code-derived manifest while preserving its route identity."""
     return save_route(actor, payload, route_key=route_key)
