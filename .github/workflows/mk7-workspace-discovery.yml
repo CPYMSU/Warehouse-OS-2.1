@@ -1,4 +1,4 @@
-name: MK7 current workspace inspection
+name: MK7 tenant-scoped workspace inspection
 
 on:
   pull_request:
@@ -44,7 +44,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Inspect MK7 assets and workspace ownership read-only
+      - name: Inspect Bonfire MK7 state under tenant RLS
         shell: bash
         run: |
           set -euo pipefail
@@ -52,18 +52,25 @@ jobs:
           docker exec -i bonfirework-mac-api python - <<'PY'
           import json
           from sqlalchemy import text
-          from app.db.session import system_session
+          from app.db.session import system_session, tenant_session
 
           with system_session() as session:
+              tenant = session.execute(
+                  text("SELECT id FROM iam.tenants WHERE slug='bonfire' AND status='active'")
+              ).scalar_one()
+              service_user = session.execute(
+                  text("SELECT id,active FROM iam.users WHERE username='warehouse-registry-bootstrap'")
+              ).mappings().one_or_none()
+
+          with tenant_session(tenant) as session:
               session.execute(text('SET TRANSACTION READ ONLY'))
               rows = session.execute(text("""
-                  SELECT t.slug AS tenant_slug,a.asset_no,a.name AS asset_name,
-                         a.source_ref_type,a.source_ref_id,a.status AS asset_status,
-                         w.workspace_key,w.status AS workspace_status,w.runtime_status,
-                         w.public_url,w.active_deployment_id,w.created_at,w.updated_at
+                  SELECT a.asset_no,a.name AS asset_name,a.source_ref_type,a.source_ref_id,
+                         a.status AS asset_status,w.id AS workspace_id,w.workspace_key,
+                         w.status AS workspace_status,w.runtime_status,w.public_url,
+                         w.active_deployment_id,w.created_at,w.updated_at
                   FROM digital_asset.workspaces w
                   JOIN digital_asset.assets a ON a.id=w.asset_id AND a.tenant_id=w.tenant_id
-                  JOIN iam.tenants t ON t.id=w.tenant_id
                   WHERE w.workspace_key='mk7-workspace'
                   ORDER BY w.updated_at DESC
               """)).mappings().all()
@@ -72,11 +79,10 @@ jobs:
                   print('MK7_WORKSPACE=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()},ensure_ascii=False))
 
               assets = session.execute(text("""
-                  SELECT t.slug AS tenant_slug,a.asset_no,a.name,a.source_ref_type,a.source_ref_id,
+                  SELECT a.id,a.asset_no,a.name,a.source_ref_type,a.source_ref_id,
                          a.status,a.created_at,a.updated_at,
                          EXISTS(SELECT 1 FROM digital_asset.workspaces w WHERE w.asset_id=a.id) AS has_workspace
                   FROM digital_asset.assets a
-                  JOIN iam.tenants t ON t.id=a.tenant_id
                   WHERE lower(a.name)='mk7'
                      OR a.source_ref_id='CPYMSU/registry:assets/mk7'
                   ORDER BY a.updated_at DESC
@@ -85,16 +91,19 @@ jobs:
               for row in assets:
                   print('MK7_ASSET=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()},ensure_ascii=False))
 
-              svc = session.execute(text("""
-                  SELECT u.active,m.active AS membership_active,m.role_level
-                  FROM iam.users u
-                  LEFT JOIN iam.memberships m ON m.user_id=u.id
-                  WHERE u.username='warehouse-registry-bootstrap'
-                  LIMIT 1
-              """)).mappings().one_or_none()
-              print('BOOTSTRAP_IDENTITY_PRESENT=' + str(svc is not None).lower())
-              if svc is not None:
-                  print('BOOTSTRAP_USER_ACTIVE=' + str(bool(svc['active'])).lower())
-                  print('BOOTSTRAP_MEMBERSHIP_ACTIVE=' + str(bool(svc['membership_active'])).lower())
-                  print('BOOTSTRAP_ROLE_LEVEL=' + str(svc['role_level']))
+              if service_user is not None:
+                  membership = session.execute(text("""
+                      SELECT active,role_level
+                      FROM iam.memberships
+                      WHERE user_id=:user_id
+                  """), {'user_id': service_user['id']}).mappings().one_or_none()
+              else:
+                  membership = None
+          print('BOOTSTRAP_IDENTITY_PRESENT=' + str(service_user is not None).lower())
+          if service_user is not None:
+              print('BOOTSTRAP_USER_ACTIVE=' + str(bool(service_user['active'])).lower())
+          print('BOOTSTRAP_MEMBERSHIP_PRESENT=' + str(membership is not None).lower())
+          if membership is not None:
+              print('BOOTSTRAP_MEMBERSHIP_ACTIVE=' + str(bool(membership['active'])).lower())
+              print('BOOTSTRAP_ROLE_LEVEL=' + str(membership['role_level']))
           PY
