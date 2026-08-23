@@ -1,4 +1,4 @@
-name: MK7 workspace manager discovery
+name: MK7 IAM bootstrap discovery
 
 on:
   pull_request:
@@ -21,15 +21,12 @@ jobs:
         run: |
           set -euo pipefail
           auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
-          branch="${GITHUB_HEAD_REF}"
-          encoded="$(python3 - "$branch" <<'PY'
+          encoded="$(python3 - "${GITHUB_HEAD_REF}" <<'PY'
           import sys, urllib.parse
           print(urllib.parse.quote(sys.argv[1], safe=''))
           PY
           )"
-          curl -fsS "${auth[@]}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/backend-contract.yml/runs?branch=${encoded}&event=pull_request&per_page=100" \
-            > /tmp/runs.json
+          curl -fsS "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/backend-contract.yml/runs?branch=${encoded}&event=pull_request&per_page=100" > /tmp/runs.json
           python3 - <<'PY' > /tmp/cancel.txt
           import json
           for r in json.load(open('/tmp/runs.json')).get('workflow_runs', []):
@@ -38,8 +35,7 @@ jobs:
           PY
           while read -r id; do
             [ -n "$id" ] || continue
-            curl -sS -o /dev/null -X POST "${auth[@]}" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" || true
+            curl -sS -o /dev/null -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" || true
           done < /tmp/cancel.txt
 
   discover:
@@ -48,7 +44,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Discover authorized digital asset managers read-only
+      - name: Inspect IAM bootstrap constraints read-only
         shell: bash
         run: |
           set -euo pipefail
@@ -56,44 +52,39 @@ jobs:
           docker inspect bonfirework-mac-api >/dev/null
           docker exec -i bonfirework-mac-api python - <<'PY'
           from sqlalchemy import text
-          from app.api.deps import _load_actor
           from app.db.session import system_session
 
+          targets = [('iam','users'),('iam','memberships'),('iam','membership_permission_overrides')]
           with system_session() as session:
-              tenants = session.execute(text("""
-                  SELECT id, slug
-                  FROM iam.tenants
-                  WHERE status='active'
-                  ORDER BY slug
+              session.execute(text('SET TRANSACTION READ ONLY'))
+              for schema, table in targets:
+                  cols = session.execute(text("""
+                      SELECT column_name,data_type,is_nullable,column_default
+                      FROM information_schema.columns
+                      WHERE table_schema=:schema AND table_name=:table
+                      ORDER BY ordinal_position
+                  """), {'schema':schema,'table':table}).all()
+                  print(f'TABLE={schema}.{table}')
+                  for name, dtype, nullable, default in cols:
+                      if any(word in name.lower() for word in ('password','secret','token','hash')):
+                          print(f'COLUMN={name};type={dtype};nullable={nullable};default=<sensitive-field>')
+                      else:
+                          print(f'COLUMN={name};type={dtype};nullable={nullable};default={default}')
+              fks = session.execute(text("""
+                  SELECT tc.table_schema,tc.table_name,kcu.column_name,
+                         ccu.table_schema AS foreign_table_schema,
+                         ccu.table_name AS foreign_table_name,
+                         ccu.column_name AS foreign_column_name
+                  FROM information_schema.table_constraints tc
+                  JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema
+                  JOIN information_schema.constraint_column_usage ccu
+                    ON ccu.constraint_name=tc.constraint_name AND ccu.table_schema=tc.table_schema
+                  WHERE tc.constraint_type='FOREIGN KEY'
+                    AND tc.table_schema='iam'
+                    AND tc.table_name IN ('memberships','membership_permission_overrides')
+                  ORDER BY tc.table_name,kcu.column_name
               """)).all()
-
-          manage_tenants = []
-          for tenant_id, slug in tenants:
-              with system_session() as session:
-                  user_ids = session.execute(text("""
-                      SELECT user_id
-                      FROM iam.memberships
-                      WHERE tenant_id=:tenant_id AND active
-                      ORDER BY role_level DESC, created_at
-                  """), {'tenant_id': tenant_id}).scalars().all()
-              count = 0
-              max_role = 0
-              for user_id in user_ids:
-                  try:
-                      actor = _load_actor(user_id, tenant_id)
-                  except Exception:
-                      continue
-                  max_role = max(max_role, int(actor.role_level))
-                  if actor.role_level >= 10 or {'assets.manage','asset_mgmt.manage'}.intersection(actor.permissions):
-                      count += 1
-              if slug == 'bonfire':
-                  print('BONFIRE_ACTIVE_MEMBERS=' + str(len(user_ids)))
-                  print('BONFIRE_MAX_ROLE_LEVEL=' + str(max_role))
-                  print('BONFIRE_ASSET_MANAGERS=' + str(count))
-              if count:
-                  manage_tenants.append((slug, count, max_role))
-
-          print('TENANTS_WITH_ASSET_MANAGERS=' + str(len(manage_tenants)))
-          for slug, count, max_role in manage_tenants:
-              print(f'MANAGE_TENANT={slug};count={count};max_role={max_role}')
+              for row in fks:
+                  print('FK=' + '.'.join(str(x) for x in row))
           PY
