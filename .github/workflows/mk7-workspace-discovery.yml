@@ -7,9 +7,43 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
+  clear-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Cancel Backend contract runs for this temporary branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          branch="${GITHUB_HEAD_REF}"
+          encoded="$(python3 - "$branch" <<'PY'
+          import sys, urllib.parse
+          print(urllib.parse.quote(sys.argv[1], safe=''))
+          PY
+          )"
+          curl -fsS "${auth[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/backend-contract.yml/runs?branch=${encoded}&event=pull_request&per_page=100" \
+            > /tmp/runs.json
+          python3 - <<'PY' > /tmp/cancel.txt
+          import json
+          for r in json.load(open('/tmp/runs.json')).get('workflow_runs', []):
+              if r.get('status') in {'queued','in_progress','waiting','requested','pending'}:
+                  print(r['id'])
+          PY
+          while read -r id; do
+            [ -n "$id" ] || continue
+            curl -sS -o /dev/null -X POST "${auth[@]}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" || true
+          done < /tmp/cancel.txt
+
   discover:
+    needs: clear-contract
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
@@ -33,8 +67,6 @@ jobs:
                   ORDER BY slug
               """)).all()
 
-          bonfire_count = 0
-          bonfire_max_role = 0
           manage_tenants = []
           for tenant_id, slug in tenants:
               with system_session() as session:
@@ -55,8 +87,6 @@ jobs:
                   if actor.role_level >= 10 or {'assets.manage','asset_mgmt.manage'}.intersection(actor.permissions):
                       count += 1
               if slug == 'bonfire':
-                  bonfire_count = count
-                  bonfire_max_role = max_role
                   print('BONFIRE_ACTIVE_MEMBERS=' + str(len(user_ids)))
                   print('BONFIRE_MAX_ROLE_LEVEL=' + str(max_role))
                   print('BONFIRE_ASSET_MANAGERS=' + str(count))
