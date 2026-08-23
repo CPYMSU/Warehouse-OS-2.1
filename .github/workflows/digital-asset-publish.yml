@@ -19,7 +19,9 @@ concurrency:
 
 jobs:
   publish:
-    if: vars.WAREHOUSE_ASSET_REGISTRY_ENABLED == 'true'
+    # Manual runs are the commissioning lane. Scheduled publishing stays off
+    # until the repository variable is deliberately enabled after first release verification.
+    if: github.event_name == 'workflow_dispatch' || vars.WAREHOUSE_ASSET_REGISTRY_ENABLED == 'true'
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 180
     env:
@@ -28,6 +30,7 @@ jobs:
       WAREHOUSE_ASSET_REGISTRY_REF: ${{ vars.WAREHOUSE_ASSET_REGISTRY_REF || 'main' }}
       WAREHOUSE_ASSET_REGISTRY_PATH: ${{ vars.WAREHOUSE_ASSET_REGISTRY_PATH || 'registry.json' }}
       WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE: ${{ vars.WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE || '/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json' }}
       WAREHOUSE_ASSET_GITHUB_TOKEN: ${{ secrets.WAREHOUSE_ASSET_GITHUB_TOKEN }}
       WAREHOUSE_ASSET_REPOSITORY: ${{ inputs.repository }}
     steps:

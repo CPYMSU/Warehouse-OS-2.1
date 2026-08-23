@@ -3,7 +3,9 @@
 
 This helper is intentionally runner-side only. It never needs host SSH, a Docker
 socket, or database credentials: every deployment goes through the workspace
-HTTPS API with the workspace's own ``wak_`` credential.
+HTTPS API with the workspace's own ``wak_`` credential. Private GitHub source
+reads prefer an injected token when available and otherwise use the Mac mini's
+repository-scoped read-only Deploy Key.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -26,6 +30,10 @@ RUNTIME_TYPES = frozenset(
     {"auto", "static", "web", "api", "worker", "agent", "container", "compose"}
 )
 FAILURE_STATES = frozenset({"failed", "rolled_back", "cancelled", "blocked"})
+DEFAULT_REGISTRY_SSH_KEY = Path(
+    "/Users/peiyuan/Server/bonfirework/secrets/registry-read-ed25519"
+)
+DEFAULT_GITHUB_KNOWN_HOSTS = Path("/Users/peiyuan/.ssh/known_hosts")
 
 
 def _run(
@@ -129,6 +137,52 @@ def _git_environment(token: str) -> dict[str, str]:
             }
         )
     return env
+
+
+def _protected_file(path: Path, *, label: str) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"{label} is unavailable")
+    metadata = path.stat()
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise RuntimeError(f"{label} must not be group/world accessible")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise RuntimeError(f"{label} must be owned by the runner user")
+
+
+def _ssh_git_environment(key_path: Path) -> dict[str, str]:
+    _protected_file(key_path, label="Registry SSH Deploy Key")
+    known_hosts = Path(
+        os.environ.get("WAREHOUSE_ASSET_GITHUB_KNOWN_HOSTS") or DEFAULT_GITHUB_KNOWN_HOSTS
+    ).expanduser()
+    if not known_hosts.is_file():
+        raise RuntimeError("GitHub known_hosts file is unavailable")
+    command = " ".join(
+        [
+            "ssh",
+            "-F", "/dev/null",
+            "-i", shlex.quote(str(key_path)),
+            "-o", "BatchMode=yes",
+            "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={shlex.quote(str(known_hosts))}",
+            "-o", "ConnectTimeout=15",
+        ]
+    )
+    return {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": command,
+    }
+
+
+def _git_access(repository: str, token: str) -> tuple[str, dict[str, str]]:
+    if token.strip():
+        return f"https://github.com/{repository}.git", _git_environment(token)
+    configured = os.environ.get("WAREHOUSE_ASSET_REGISTRY_SSH_KEY") or ""
+    key_path = Path(configured).expanduser() if configured.strip() else DEFAULT_REGISTRY_SSH_KEY
+    if key_path.is_file():
+        return f"git@github.com:{repository}.git", _ssh_git_environment(key_path)
+    return f"https://github.com/{repository}.git", _git_environment("")
 
 
 def _workspace_environment(base_url: str, workspace_key: str) -> dict[str, str]:
@@ -309,8 +363,6 @@ def _wait_for_release(
                 )
                 activation_sent = True
         elif state:
-            # The Runtime Controller remains authoritative. This idempotent nudge
-            # simply avoids waiting for its next poll when the Mac runner is alive.
             _run(
                 [python, str(cli), "release", "resume", release_id],
                 env=env,
@@ -333,7 +385,7 @@ def _publish_link(
     ref = link["ref"]
     source_path = str(link.get("source_path") or "")
     checkout = temp_root / repository.replace("/", "__")
-    url = f"https://github.com/{repository}.git"
+    url, git_env = _git_access(repository, github_token)
     print(f"checking {repository}@{ref}", flush=True)
     _run(
         [
@@ -348,7 +400,7 @@ def _publish_link(
             url,
             str(checkout),
         ],
-        env=_git_environment(github_token),
+        env=git_env,
         timeout=600,
     )
     commit = _run(["git", "rev-parse", "HEAD"], cwd=checkout, timeout=30).strip()

@@ -2,8 +2,11 @@
 """Resolve a Git-backed digital-asset registry, then invoke the Mac publisher.
 
 The registry contains no Warehouse credentials. Each entry names a
-``workspace_key_ref``; the corresponding ``wak_`` value comes only from the
-``WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON`` Actions secret.
+``workspace_key_ref``; the corresponding ``wak_`` value comes either from the
+``WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON`` Actions secret or, on the governed Mac
+mini runner, from a local owner-only JSON file. Private GitHub reads may use an
+Actions token when supplied or the Mac mini's repository-scoped read-only SSH
+Deploy Key. Secret values are never written back to Git or printed.
 """
 
 from __future__ import annotations
@@ -12,6 +15,8 @@ import argparse
 import json
 import os
 import re
+import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +28,13 @@ KEY_REF_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 DEFAULT_REGISTRY = "CPYMSU/registry"
 DEFAULT_REF = "main"
 DEFAULT_PATH = "registry.json"
+DEFAULT_WORKSPACE_KEYS_FILE = Path(
+    "/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
+)
+DEFAULT_REGISTRY_SSH_KEY = Path(
+    "/Users/peiyuan/Server/bonfirework/secrets/registry-read-ed25519"
+)
+DEFAULT_GITHUB_KNOWN_HOSTS = Path("/Users/peiyuan/.ssh/known_hosts")
 
 
 def _run(argv: list[str], *, env: dict[str, str] | None = None, timeout: int = 300) -> None:
@@ -53,6 +65,52 @@ def _git_environment(token: str) -> dict[str, str]:
     return env
 
 
+def _protected_file(path: Path, *, label: str) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"{label} is unavailable")
+    metadata = path.stat()
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise RuntimeError(f"{label} must not be group/world accessible")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise RuntimeError(f"{label} must be owned by the runner user")
+
+
+def _ssh_git_environment(key_path: Path) -> dict[str, str]:
+    _protected_file(key_path, label="Registry SSH Deploy Key")
+    known_hosts = Path(
+        os.environ.get("WAREHOUSE_ASSET_GITHUB_KNOWN_HOSTS") or DEFAULT_GITHUB_KNOWN_HOSTS
+    ).expanduser()
+    if not known_hosts.is_file():
+        raise RuntimeError("GitHub known_hosts file is unavailable")
+    command = " ".join(
+        [
+            "ssh",
+            "-F", "/dev/null",
+            "-i", shlex.quote(str(key_path)),
+            "-o", "BatchMode=yes",
+            "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={shlex.quote(str(known_hosts))}",
+            "-o", "ConnectTimeout=15",
+        ]
+    )
+    return {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": command,
+    }
+
+
+def _git_access(repository: str, token: str) -> tuple[str, dict[str, str]]:
+    if token.strip():
+        return f"https://github.com/{repository}.git", _git_environment(token)
+    configured = os.environ.get("WAREHOUSE_ASSET_REGISTRY_SSH_KEY") or ""
+    key_path = Path(configured).expanduser() if configured.strip() else DEFAULT_REGISTRY_SSH_KEY
+    if key_path.is_file():
+        return f"git@github.com:{repository}.git", _ssh_git_environment(key_path)
+    return f"https://github.com/{repository}.git", _git_environment("")
+
+
 def _load_json_object(raw: str, *, source: str) -> dict[str, Any]:
     try:
         value = json.loads(raw)
@@ -63,9 +121,24 @@ def _load_json_object(raw: str, *, source: str) -> dict[str, Any]:
     return value
 
 
+def _workspace_key_file() -> Path:
+    configured = os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE") or ""
+    path = Path(configured).expanduser() if configured.strip() else DEFAULT_WORKSPACE_KEYS_FILE
+    if not path.is_absolute():
+        raise RuntimeError("WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE must be an absolute path")
+    return path
+
+
 def _workspace_keys() -> dict[str, str]:
-    raw = os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON") or ""
-    values = _load_json_object(raw, source="WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON")
+    raw = (os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON") or "").strip()
+    source = "WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON"
+    if not raw:
+        path = _workspace_key_file()
+        _protected_file(path, label="protected Mac workspace-key file")
+        raw = path.read_text(encoding="utf-8")
+        source = "protected Mac workspace-key file"
+
+    values = _load_json_object(raw, source=source)
     keys: dict[str, str] = {}
     for raw_name, raw_value in values.items():
         name = str(raw_name).strip()
@@ -88,7 +161,7 @@ def _registry_links(path: Path, workspace_keys: dict[str, str]) -> list[dict[str
         raise RuntimeError("registry.json must contain a links array")
 
     resolved: list[dict[str, Any]] = []
-    seen_repositories: set[str] = set()
+    seen_sources: set[tuple[str, str]] = set()
     for index, raw in enumerate(links, start=1):
         if not isinstance(raw, dict):
             raise RuntimeError(f"registry link #{index} must be an object")
@@ -101,9 +174,13 @@ def _registry_links(path: Path, workspace_keys: dict[str, str]) -> list[dict[str
         repository = str(raw.get("repository") or "").strip()
         if not REPOSITORY_RE.fullmatch(repository):
             raise RuntimeError(f"registry link #{index} has invalid repository {repository!r}")
-        if repository in seen_repositories:
-            raise RuntimeError(f"registry contains duplicate repository {repository!r}")
-        seen_repositories.add(repository)
+        source_path = str(raw.get("source_path") or "").strip().strip("/")
+        source_identity = (repository, source_path)
+        if source_identity in seen_sources:
+            raise RuntimeError(
+                f"registry contains duplicate source {repository!r} path {source_path!r}"
+            )
+        seen_sources.add(source_identity)
         key_ref = str(raw.get("workspace_key_ref") or "").strip()
         if not KEY_REF_RE.fullmatch(key_ref):
             raise RuntimeError(f"registry link {repository} requires workspace_key_ref")
@@ -134,6 +211,7 @@ def _checkout_registry(target: Path) -> Path:
         raise RuntimeError("WAREHOUSE_ASSET_REGISTRY_PATH must be a safe relative path")
 
     checkout = target / "registry"
+    url, git_env = _git_access(repository, token)
     _run(
         [
             "git",
@@ -144,10 +222,10 @@ def _checkout_registry(target: Path) -> Path:
             ref,
             "--single-branch",
             "--no-tags",
-            f"https://github.com/{repository}.git",
+            url,
             str(checkout),
         ],
-        env=_git_environment(token),
+        env=git_env,
         timeout=300,
     )
     registry_path = (checkout / relative_path).resolve()
