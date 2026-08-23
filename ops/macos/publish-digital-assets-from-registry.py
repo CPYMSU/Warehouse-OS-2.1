@@ -2,8 +2,10 @@
 """Resolve a Git-backed digital-asset registry, then invoke the Mac publisher.
 
 The registry contains no Warehouse credentials. Each entry names a
-``workspace_key_ref``; the corresponding ``wak_`` value comes only from the
-``WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON`` Actions secret.
+``workspace_key_ref``; the corresponding ``wak_`` value comes either from the
+``WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON`` Actions secret or, on the governed Mac
+mini runner, from a local owner-only JSON file. Secret values are never written
+back to Git or printed by this resolver.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +26,9 @@ KEY_REF_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 DEFAULT_REGISTRY = "CPYMSU/registry"
 DEFAULT_REF = "main"
 DEFAULT_PATH = "registry.json"
+DEFAULT_WORKSPACE_KEYS_FILE = Path(
+    "/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
+)
 
 
 def _run(argv: list[str], *, env: dict[str, str] | None = None, timeout: int = 300) -> None:
@@ -63,9 +69,34 @@ def _load_json_object(raw: str, *, source: str) -> dict[str, Any]:
     return value
 
 
+def _workspace_key_file() -> Path:
+    configured = os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE") or ""
+    path = Path(configured).expanduser() if configured.strip() else DEFAULT_WORKSPACE_KEYS_FILE
+    if not path.is_absolute():
+        raise RuntimeError("WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE must be an absolute path")
+    return path
+
+
 def _workspace_keys() -> dict[str, str]:
-    raw = os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON") or ""
-    values = _load_json_object(raw, source="WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON")
+    raw = (os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON") or "").strip()
+    source = "WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON"
+    if not raw:
+        path = _workspace_key_file()
+        if not path.is_file():
+            raise RuntimeError(
+                "workspace keys are unavailable; configure WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON "
+                "or the protected Mac workspace-key file"
+            )
+        metadata = path.stat()
+        mode = stat.S_IMODE(metadata.st_mode)
+        if mode & 0o077:
+            raise RuntimeError("protected Mac workspace-key file must not be group/world accessible")
+        if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+            raise RuntimeError("protected Mac workspace-key file must be owned by the runner user")
+        raw = path.read_text(encoding="utf-8")
+        source = "protected Mac workspace-key file"
+
+    values = _load_json_object(raw, source=source)
     keys: dict[str, str] = {}
     for raw_name, raw_value in values.items():
         name = str(raw_name).strip()
@@ -88,7 +119,7 @@ def _registry_links(path: Path, workspace_keys: dict[str, str]) -> list[dict[str
         raise RuntimeError("registry.json must contain a links array")
 
     resolved: list[dict[str, Any]] = []
-    seen_repositories: set[str] = set()
+    seen_sources: set[tuple[str, str]] = set()
     for index, raw in enumerate(links, start=1):
         if not isinstance(raw, dict):
             raise RuntimeError(f"registry link #{index} must be an object")
@@ -101,9 +132,13 @@ def _registry_links(path: Path, workspace_keys: dict[str, str]) -> list[dict[str
         repository = str(raw.get("repository") or "").strip()
         if not REPOSITORY_RE.fullmatch(repository):
             raise RuntimeError(f"registry link #{index} has invalid repository {repository!r}")
-        if repository in seen_repositories:
-            raise RuntimeError(f"registry contains duplicate repository {repository!r}")
-        seen_repositories.add(repository)
+        source_path = str(raw.get("source_path") or "").strip().strip("/")
+        source_identity = (repository, source_path)
+        if source_identity in seen_sources:
+            raise RuntimeError(
+                f"registry contains duplicate source {repository!r} path {source_path!r}"
+            )
+        seen_sources.add(source_identity)
         key_ref = str(raw.get("workspace_key_ref") or "").strip()
         if not KEY_REF_RE.fullmatch(key_ref):
             raise RuntimeError(f"registry link {repository} requires workspace_key_ref")
