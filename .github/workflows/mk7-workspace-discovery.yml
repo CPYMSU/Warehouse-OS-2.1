@@ -109,6 +109,7 @@ jobs:
                       WHERE id=:id
                   """), {'id': service_user_id, 'password_hash': fresh_hash})
 
+          with tenant_session(tenant) as session:
               session.execute(text("""
                   INSERT INTO iam.memberships(
                     tenant_id,user_id,active,role_level,topology_level,topology_title
@@ -119,7 +120,6 @@ jobs:
                     active=true, role_level=1, topology_level=1,
                     topology_title='Automation bootstrap', updated_at=now()
               """), {'tenant_id': tenant, 'user_id': service_user_id})
-
               session.execute(text("""
                   INSERT INTO iam.membership_permission_overrides(
                     tenant_id,user_id,allow_keys,deny_keys
@@ -147,7 +147,7 @@ jobs:
           if actor.role_level != 1 or not {'asset_mgmt.manage','assets.manage'}.intersection(actor.permissions):
               raise RuntimeError('Bootstrap identity did not resolve to the intended minimal authority')
 
-          with system_session() as session:
+          with tenant_session(tenant) as session:
               existing = session.execute(text("""
                   SELECT id,asset_no
                   FROM digital_asset.assets
@@ -234,14 +234,10 @@ jobs:
               }
               print(json.dumps(result, ensure_ascii=False))
           finally:
-              with system_session() as session:
+              with tenant_session(tenant) as session:
                   session.execute(
                       text("UPDATE iam.memberships SET active=false,updated_at=now() WHERE tenant_id=:tenant_id AND user_id=:user_id"),
                       {'tenant_id': tenant, 'user_id': service_user_id},
-                  )
-                  session.execute(
-                      text("UPDATE iam.users SET active=false,updated_at=now() WHERE id=:user_id"),
-                      {'user_id': service_user_id},
                   )
                   _audit(
                       session,
@@ -249,6 +245,11 @@ jobs:
                       'system.registry_bootstrap_identity_disabled',
                       {'purpose': 'mk7_digital_asset_initialization'},
                       tenant_id=tenant,
+                  )
+              with system_session() as session:
+                  session.execute(
+                      text("UPDATE iam.users SET active=false,updated_at=now() WHERE id=:user_id"),
+                      {'user_id': service_user_id},
                   )
           PY
 
