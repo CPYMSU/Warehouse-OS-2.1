@@ -14,36 +14,55 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Discover MK7 workspace metadata read-only
+      - name: Locate MK7 asset and workspace read-only
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           docker inspect bonfirework-mac-api >/dev/null
           docker exec -i bonfirework-mac-api python - <<'PY'
+          import json
           from sqlalchemy import text
           from app.db.session import system_session
 
-          blocked = ('secret','password','token','hash','credential','key_material')
           with system_session() as session:
               session.execute(text("SET TRANSACTION READ ONLY"))
               rows = session.execute(text("""
-                  SELECT table_schema, table_name
-                  FROM information_schema.tables
-                  WHERE table_type='BASE TABLE'
-                    AND table_schema NOT IN ('pg_catalog','information_schema')
-                  ORDER BY table_schema, table_name
-              """)).all()
-              print('TABLE_COUNT=' + str(len(rows)))
-              for schema, table in rows:
-                  if not any(word in table.lower() for word in ('asset','workspace','tenant','company','organization','source','deployment')):
-                      continue
-                  cols = session.execute(text("""
-                      SELECT column_name
-                      FROM information_schema.columns
-                      WHERE table_schema=:schema AND table_name=:table
-                      ORDER BY ordinal_position
-                  """), {'schema': schema, 'table': table}).scalars().all()
-                  public_cols = [c for c in cols if not any(x in c.lower() for x in blocked)]
-                  print(f'TABLE {schema}.{table}=' + ','.join(public_cols))
+                  SELECT
+                    t.slug AS tenant_slug,
+                    t.name AS tenant_name,
+                    a.id AS asset_id,
+                    a.asset_no,
+                    a.asset_kind,
+                    a.name AS asset_name,
+                    a.source_module,
+                    a.source_ref_type,
+                    a.source_ref_id,
+                    a.status AS asset_status,
+                    a.lifecycle_stage,
+                    w.id AS workspace_id,
+                    w.workspace_key,
+                    w.status AS workspace_status,
+                    w.runtime_status,
+                    w.public_url,
+                    w.active_deployment_id,
+                    w.hosting_mode,
+                    w.compute_node
+                  FROM digital_asset.assets a
+                  JOIN digital_asset.workspaces w ON w.asset_id = a.id AND w.tenant_id = a.tenant_id
+                  JOIN iam.tenants t ON t.id = a.tenant_id
+                  WHERE
+                    lower(coalesce(a.name,'')) LIKE '%mk7%'
+                    OR lower(coalesce(a.asset_no,'')) LIKE '%mk7%'
+                    OR lower(coalesce(a.summary,'')) LIKE '%mk7%'
+                    OR lower(coalesce(a.source_module,'')) LIKE '%mk7%'
+                    OR lower(coalesce(a.source_ref_id,'')) LIKE '%mk7%'
+                    OR lower(coalesce(w.workspace_key,'')) LIKE '%mk7%'
+                    OR lower(coalesce(w.public_url,'')) LIKE '%mk7%'
+                  ORDER BY a.updated_at DESC, w.updated_at DESC
+                  LIMIT 20
+              """)).mappings().all()
+              print('MK7_MATCH_COUNT=' + str(len(rows)))
+              for row in rows:
+                  print('MK7_MATCH=' + json.dumps({k: str(v) if v is not None else None for k,v in row.items()}, ensure_ascii=False))
           PY
