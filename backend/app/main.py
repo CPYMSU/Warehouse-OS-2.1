@@ -19,6 +19,7 @@ from app.api.civilization import router as civilization_router
 from app.api.compat import router as compatibility_router
 from app.api.confirmation_actions import router as confirmation_actions_router
 from app.api.database_browser_gateway import router as database_browser_gateway_router
+from app.api.data_routes import router as data_routes_router
 from app.api.digital_assets import router as digital_asset_router
 from app.api.error_diagnostics import install_error_diagnostics
 from app.api.full_stack import router as full_stack_router
@@ -189,6 +190,7 @@ app.include_router(intelligent_hosting_compat_router)
 app.include_router(shield_router)
 app.include_router(browser_runtime_router)
 app.include_router(database_browser_gateway_router)
+app.include_router(data_routes_router)
 app.include_router(confirmation_actions_router)
 app.include_router(lighthouse_federation_router)
 app.include_router(full_stack_router)
