@@ -7,62 +7,45 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Read current public production identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo '=== cluster ==='
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/cluster
-          echo
-          echo '=== readiness ==='
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/readiness
-          echo
-          echo '=== health ==='
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/health
-          echo
-
-      - name: Inspect recent production deploy runs across branches
+      - name: Verify integrated production branch head
         shell: bash
         run: |
           set -euo pipefail
           auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
-          curl -fsS "${auth[@]}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/production-deploy.yml/runs?per_page=30" \
-            > /tmp/runs.json
-          echo '=== recent production runs ==='
-          python3 - <<'PY'
-          import json
-          data=json.load(open('/tmp/runs.json'))
-          for r in data.get('workflow_runs', []):
-              print(json.dumps({
-                  'id': r.get('id'),
-                  'status': r.get('status'),
-                  'conclusion': r.get('conclusion'),
-                  'event': r.get('event'),
-                  'head_branch': r.get('head_branch'),
-                  'head_sha': r.get('head_sha'),
-                  'run_number': r.get('run_number'),
-                  'created_at': r.get('created_at'),
-                  'updated_at': r.get('updated_at'),
-                  'html_url': r.get('html_url'),
-              }, ensure_ascii=False))
+          encoded="$(python3 - <<'PY'
+          import urllib.parse
+          print(urllib.parse.quote('fix/managed-runtime-owner-boundary', safe=''))
           PY
+          )"
+          curl -fsS "${auth[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/branches/${encoded}" \
+            > /tmp/branch.json
+          actual="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/branch.json'))['commit']['sha'])
+          PY
+          )"
+          expected='1b6f9cfc199ee7184c4cf0dc1e256ed5af660caa'
+          echo "TARGET_HEAD=${actual}"
+          test "$actual" = "$expected"
 
-          echo '=== branches where production head is current head ==='
-          curl -fsS "${auth[@]}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/acfc85870a97974ca8216c8d3f2aeedfd861da95/branches-where-head" \
-            > /tmp/branches.json
-          python3 - <<'PY'
-          import json
-          for b in json.load(open('/tmp/branches.json')):
-              print(b.get('name'))
-          PY
+      - name: Dispatch smart production deploy on integrated branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/production-deploy.yml/dispatches" \
+            -d '{"ref":"fix/managed-runtime-owner-boundary","inputs":{"mode":"smart"}}'
+          echo 'PRODUCTION_DISPATCHED=true'
