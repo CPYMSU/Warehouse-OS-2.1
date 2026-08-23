@@ -24,23 +24,26 @@ jobs:
           from sqlalchemy import text
           from app.db.session import system_session
 
+          blocked = ('secret','password','token','hash','credential','key_material')
           with system_session() as session:
               session.execute(text("SET TRANSACTION READ ONLY"))
-              tables = session.execute(text("""
-                  SELECT table_name
+              rows = session.execute(text("""
+                  SELECT table_schema, table_name
                   FROM information_schema.tables
-                  WHERE table_schema='public'
-                    AND (table_name ILIKE '%asset%' OR table_name ILIKE '%workspace%' OR table_name ILIKE '%tenant%')
-                  ORDER BY table_name
-              """)).scalars().all()
-              print('TABLES=' + ','.join(tables))
-              for table in tables:
+                  WHERE table_type='BASE TABLE'
+                    AND table_schema NOT IN ('pg_catalog','information_schema')
+                  ORDER BY table_schema, table_name
+              """)).all()
+              print('TABLE_COUNT=' + str(len(rows)))
+              for schema, table in rows:
+                  if not any(word in table.lower() for word in ('asset','workspace','tenant','company','organization','source','deployment')):
+                      continue
                   cols = session.execute(text("""
                       SELECT column_name
                       FROM information_schema.columns
-                      WHERE table_schema='public' AND table_name=:table
+                      WHERE table_schema=:schema AND table_name=:table
                       ORDER BY ordinal_position
-                  """), {'table': table}).scalars().all()
-                  public_cols = [c for c in cols if not any(x in c.lower() for x in ('secret','password','token','hash','credential'))]
-                  print(f'COLUMNS {table}=' + ','.join(public_cols))
+                  """), {'schema': schema, 'table': table}).scalars().all()
+                  public_cols = [c for c in cols if not any(x in c.lower() for x in blocked)]
+                  print(f'TABLE {schema}.{table}=' + ','.join(public_cols))
           PY
