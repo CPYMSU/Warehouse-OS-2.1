@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Locate MK7 asset and workspace read-only
+      - name: Trace MK7 by source fingerprint and workspace catalog
         shell: bash
         run: |
           set -euo pipefail
@@ -25,21 +25,43 @@ jobs:
           from sqlalchemy import text
           from app.db.session import system_session
 
+          source_sha = '32ef40976c7038e5e55ca9a7dbf844666386a7663f0da0be87265ce96a36bcb4'
           with system_session() as session:
               session.execute(text("SET TRANSACTION READ ONLY"))
-              rows = session.execute(text("""
+
+              jobs = session.execute(text("""
                   SELECT
                     t.slug AS tenant_slug,
-                    t.name AS tenant_name,
-                    a.id AS asset_id,
+                    j.id AS upload_id,
+                    j.workspace_id,
+                    j.filename,
+                    j.version_no,
+                    j.component_name,
+                    j.expected_size_bytes,
+                    j.expected_sha256,
+                    j.status,
+                    j.source_version_id,
+                    j.completed_at,
+                    j.created_at
+                  FROM digital_asset.source_upload_jobs j
+                  JOIN iam.tenants t ON t.id = j.tenant_id
+                  WHERE lower(coalesce(j.filename,'')) LIKE '%mk7%'
+                     OR j.expected_sha256 = :sha
+                  ORDER BY j.created_at DESC
+                  LIMIT 20
+              """), {'sha': source_sha}).mappings().all()
+              print('SOURCE_MATCH_COUNT=' + str(len(jobs)))
+              for row in jobs:
+                  print('SOURCE_MATCH=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()}, ensure_ascii=False))
+
+              workspaces = session.execute(text("""
+                  SELECT
+                    t.slug AS tenant_slug,
                     a.asset_no,
-                    a.asset_kind,
                     a.name AS asset_name,
-                    a.source_module,
-                    a.source_ref_type,
-                    a.source_ref_id,
+                    a.asset_kind,
                     a.status AS asset_status,
-                    a.lifecycle_stage,
+                    a.created_at AS asset_created_at,
                     w.id AS workspace_id,
                     w.workspace_key,
                     w.status AS workspace_status,
@@ -47,22 +69,17 @@ jobs:
                     w.public_url,
                     w.active_deployment_id,
                     w.hosting_mode,
-                    w.compute_node
-                  FROM digital_asset.assets a
-                  JOIN digital_asset.workspaces w ON w.asset_id = a.id AND w.tenant_id = a.tenant_id
-                  JOIN iam.tenants t ON t.id = a.tenant_id
-                  WHERE
-                    lower(coalesce(a.name,'')) LIKE '%mk7%'
-                    OR lower(coalesce(a.asset_no,'')) LIKE '%mk7%'
-                    OR lower(coalesce(a.summary,'')) LIKE '%mk7%'
-                    OR lower(coalesce(a.source_module,'')) LIKE '%mk7%'
-                    OR lower(coalesce(a.source_ref_id,'')) LIKE '%mk7%'
-                    OR lower(coalesce(w.workspace_key,'')) LIKE '%mk7%'
-                    OR lower(coalesce(w.public_url,'')) LIKE '%mk7%'
-                  ORDER BY a.updated_at DESC, w.updated_at DESC
-                  LIMIT 20
+                    w.compute_node,
+                    w.created_at AS workspace_created_at,
+                    w.updated_at AS workspace_updated_at
+                  FROM digital_asset.workspaces w
+                  JOIN digital_asset.assets a ON a.id=w.asset_id AND a.tenant_id=w.tenant_id
+                  JOIN iam.tenants t ON t.id=w.tenant_id
+                  WHERE t.slug='bonfire'
+                  ORDER BY w.updated_at DESC
+                  LIMIT 100
               """)).mappings().all()
-              print('MK7_MATCH_COUNT=' + str(len(rows)))
-              for row in rows:
-                  print('MK7_MATCH=' + json.dumps({k: str(v) if v is not None else None for k,v in row.items()}, ensure_ascii=False))
+              print('BONFIRE_WORKSPACE_COUNT=' + str(len(workspaces)))
+              for row in workspaces:
+                  print('WORKSPACE=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()}, ensure_ascii=False))
           PY
