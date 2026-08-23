@@ -1,4 +1,4 @@
-name: MK7 official workspace provisioning
+name: MK7 current workspace inspection
 
 on:
   pull_request:
@@ -38,271 +38,63 @@ jobs:
             curl -sS -o /dev/null -X POST "${auth[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/force-cancel" || true
           done < /tmp/cancel.txt
 
-  provision:
+  inspect:
     needs: clear-contract
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Provision audited MK7 asset, workspace, and delegated key
+      - name: Inspect MK7 assets and workspace ownership read-only
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          docker inspect bonfirework-mac-api >/dev/null
-          result_file="${RUNNER_TEMP}/mk7-provision-result.json"
-          secret_dir="/Users/peiyuan/Server/bonfirework/secrets"
-          secret_file="${secret_dir}/digital-asset-workspace-keys.json"
-          rm -f "${result_file}"
-          umask 077
-
-          docker exec -i bonfirework-mac-api python - >"${result_file}" <<'PY'
+          docker exec -i bonfirework-mac-api python - <<'PY'
           import json
-          import secrets
-          from uuid import uuid4
           from sqlalchemy import text
-          from app.api.deps import _load_actor
-          from app.core.config import get_settings
-          from app.core.security import hash_password
-          from app.db.session import system_session, tenant_session
-          from app.services.digital_asset_hosting import (
-              _audit,
-              create_asset,
-              create_workspace,
-              issue_workspace_key,
-          )
-
-          tenant_slug = 'bonfire'
-          username = 'warehouse-registry-bootstrap'
-          source_ref_id = 'CPYMSU/registry:assets/mk7'
-          allow_keys = ['asset_mgmt.manage', 'assets.manage']
-          settings = get_settings()
+          from app.db.session import system_session
 
           with system_session() as session:
-              tenant = session.execute(
-                  text("SELECT id FROM iam.tenants WHERE slug=:slug AND status='active'"),
-                  {'slug': tenant_slug},
-              ).scalar_one()
-              row = session.execute(
-                  text("SELECT id FROM iam.users WHERE username=:username"),
-                  {'username': username},
-              ).scalar_one_or_none()
-              service_user_id = row or uuid4()
-              fresh_hash = hash_password(secrets.token_urlsafe(72))
-              if row is None:
-                  session.execute(text("""
-                      INSERT INTO iam.users(
-                        id,username,display_name,password_hash,active,is_platform_owner
-                      ) VALUES (
-                        :id,:username,'Warehouse Registry Bootstrap',:password_hash,true,false
-                      )
-                  """), {
-                      'id': service_user_id,
-                      'username': username,
-                      'password_hash': fresh_hash,
-                  })
-              else:
-                  session.execute(text("""
-                      UPDATE iam.users
-                      SET password_hash=:password_hash, active=true, is_platform_owner=false,
-                          updated_at=now()
-                      WHERE id=:id
-                  """), {'id': service_user_id, 'password_hash': fresh_hash})
+              session.execute(text('SET TRANSACTION READ ONLY'))
+              rows = session.execute(text("""
+                  SELECT t.slug AS tenant_slug,a.asset_no,a.name AS asset_name,
+                         a.source_ref_type,a.source_ref_id,a.status AS asset_status,
+                         w.workspace_key,w.status AS workspace_status,w.runtime_status,
+                         w.public_url,w.active_deployment_id,w.created_at,w.updated_at
+                  FROM digital_asset.workspaces w
+                  JOIN digital_asset.assets a ON a.id=w.asset_id AND a.tenant_id=w.tenant_id
+                  JOIN iam.tenants t ON t.id=w.tenant_id
+                  WHERE w.workspace_key='mk7-workspace'
+                  ORDER BY w.updated_at DESC
+              """)).mappings().all()
+              print('MK7_WORKSPACE_MATCHES=' + str(len(rows)))
+              for row in rows:
+                  print('MK7_WORKSPACE=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()},ensure_ascii=False))
 
-          with tenant_session(tenant) as session:
-              session.execute(text("""
-                  INSERT INTO iam.memberships(
-                    tenant_id,user_id,active,role_level,topology_level,topology_title
-                  ) VALUES (
-                    :tenant_id,:user_id,true,1,1,'Automation bootstrap'
-                  )
-                  ON CONFLICT (tenant_id,user_id) DO UPDATE SET
-                    active=true, role_level=1, topology_level=1,
-                    topology_title='Automation bootstrap', updated_at=now()
-              """), {'tenant_id': tenant, 'user_id': service_user_id})
-              session.execute(text("""
-                  INSERT INTO iam.membership_permission_overrides(
-                    tenant_id,user_id,allow_keys,deny_keys
-                  ) VALUES (
-                    :tenant_id,:user_id,CAST(:allow_keys AS jsonb),'[]'::jsonb
-                  )
-                  ON CONFLICT (tenant_id,user_id) DO UPDATE SET
-                    allow_keys=EXCLUDED.allow_keys,
-                    deny_keys='[]'::jsonb,
-                    updated_at=now()
-              """), {
-                  'tenant_id': tenant,
-                  'user_id': service_user_id,
-                  'allow_keys': json.dumps(allow_keys),
-              })
-              _audit(
-                  session,
-                  None,
-                  'system.registry_bootstrap_identity_enabled',
-                  {'purpose': 'mk7_digital_asset_initialization', 'role_level': 1, 'permissions': allow_keys},
-                  tenant_id=tenant,
-              )
+              assets = session.execute(text("""
+                  SELECT t.slug AS tenant_slug,a.asset_no,a.name,a.source_ref_type,a.source_ref_id,
+                         a.status,a.created_at,a.updated_at,
+                         EXISTS(SELECT 1 FROM digital_asset.workspaces w WHERE w.asset_id=a.id) AS has_workspace
+                  FROM digital_asset.assets a
+                  JOIN iam.tenants t ON t.id=a.tenant_id
+                  WHERE lower(a.name)='mk7'
+                     OR a.source_ref_id='CPYMSU/registry:assets/mk7'
+                  ORDER BY a.updated_at DESC
+              """)).mappings().all()
+              print('MK7_ASSET_MATCHES=' + str(len(assets)))
+              for row in assets:
+                  print('MK7_ASSET=' + json.dumps({k:str(v) if v is not None else None for k,v in row.items()},ensure_ascii=False))
 
-          actor = _load_actor(service_user_id, tenant)
-          if actor.role_level != 1 or not {'asset_mgmt.manage','assets.manage'}.intersection(actor.permissions):
-              raise RuntimeError('Bootstrap identity did not resolve to the intended minimal authority')
-
-          with tenant_session(tenant) as session:
-              existing = session.execute(text("""
-                  SELECT id,asset_no
-                  FROM digital_asset.assets
-                  WHERE tenant_id=:tenant_id AND source_ref_id=:source_ref_id
-                  ORDER BY created_at DESC LIMIT 1
-              """), {'tenant_id': tenant, 'source_ref_id': source_ref_id}).mappings().one_or_none()
-
-          try:
-              if existing is None:
-                  asset = create_asset(actor, {
-                      'name': 'MK7',
-                      'asset_kind': 'software',
-                      'risk_level': 'medium',
-                      'summary': '输电专业学习、安全与经验知识站点',
-                      'source_module': 'github',
-                      'source_ref_type': 'git_repository_subtree',
-                      'source_ref_id': source_ref_id,
-                      'tags': ['mk7', 'training', 'safety'],
-                      'metadata': {
-                          'repository': 'CPYMSU/registry',
-                          'source_path': 'assets/mk7',
-                          'imported_source_sha256': '32ef40976c7038e5e55ca9a7dbf844666386a7663f0da0be87265ce96a36bcb4',
-                      },
-                  })['asset']
-                  asset_ref = asset['uuid']
-                  asset_created = True
-              else:
-                  asset = {'asset_no': str(existing['asset_no']), 'uuid': str(existing['id'])}
-                  asset_ref = existing['id']
-                  asset_created = False
-
-              workspace_result = create_workspace(actor, asset_ref, {
-                  'workspace_key': 'mk7-workspace',
-                  'service_plan': 'hosted',
-                  'runtime_type': 'static',
-                  'code_storage': 'hdd',
-                  'data_storage': 'hdd',
-                  'no_database': True,
-              })
-              workspace = workspace_result['workspace']
-              workspace_id = workspace['uuid']
-
-              with tenant_session(actor.tenant_id) as session:
-                  primary_exists = session.execute(text("""
-                      SELECT id FROM digital_asset.api_credentials
-                      WHERE workspace_id=:workspace_id AND key_kind='primary'
-                        AND revoked_at IS NULL
-                        AND (expires_at IS NULL OR expires_at > now())
-                      ORDER BY issued_at DESC LIMIT 1
-                  """), {'workspace_id': workspace_id}).scalar_one_or_none()
-              if primary_exists is None:
-                  primary = issue_workspace_key(
-                      actor,
-                      workspace_id,
-                      {'label': 'Registry bootstrap primary', 'expires_days': 365},
-                      signing_secret=settings.integration_secret,
-                      key_kind='primary',
-                  )
-                  primary.pop('api_key', None)
-
-              delegated = issue_workspace_key(
-                  actor,
-                  workspace_id,
-                  {
-                      'label': 'GitHub Registry Publisher',
-                      'expires_days': 365,
-                      'scopes': ['workspace:read', 'deploy:read', 'deploy:write'],
-                  },
-                  signing_secret=settings.integration_secret,
-              )
-              api_key = str(delegated['api_key'])
-              if not api_key.startswith('wak_'):
-                  raise RuntimeError('Delegated workspace key has an unexpected format')
-
-              result = {
-                  'api_key': api_key,
-                  'credential_id': str(delegated['credential_id']),
-                  'asset_no': str(asset['asset_no']),
-                  'asset_created': asset_created,
-                  'workspace_key': str(workspace['workspace_key']),
-                  'workspace_created': bool(workspace_result.get('created', False)),
-                  'entry_url': str(workspace['entry_url']),
-                  'database_bound': workspace_result.get('database') is not None,
-              }
-              print(json.dumps(result, ensure_ascii=False))
-          finally:
-              with tenant_session(tenant) as session:
-                  session.execute(
-                      text("UPDATE iam.memberships SET active=false,updated_at=now() WHERE tenant_id=:tenant_id AND user_id=:user_id"),
-                      {'tenant_id': tenant, 'user_id': service_user_id},
-                  )
-                  _audit(
-                      session,
-                      None,
-                      'system.registry_bootstrap_identity_disabled',
-                      {'purpose': 'mk7_digital_asset_initialization'},
-                      tenant_id=tenant,
-                  )
-              with system_session() as session:
-                  session.execute(
-                      text("UPDATE iam.users SET active=false,updated_at=now() WHERE id=:user_id"),
-                      {'user_id': service_user_id},
-                  )
+              svc = session.execute(text("""
+                  SELECT u.active,m.active AS membership_active,m.role_level
+                  FROM iam.users u
+                  LEFT JOIN iam.memberships m ON m.user_id=u.id
+                  WHERE u.username='warehouse-registry-bootstrap'
+                  LIMIT 1
+              """)).mappings().one_or_none()
+              print('BOOTSTRAP_IDENTITY_PRESENT=' + str(svc is not None).lower())
+              if svc is not None:
+                  print('BOOTSTRAP_USER_ACTIVE=' + str(bool(svc['active'])).lower())
+                  print('BOOTSTRAP_MEMBERSHIP_ACTIVE=' + str(bool(svc['membership_active'])).lower())
+                  print('BOOTSTRAP_ROLE_LEVEL=' + str(svc['role_level']))
           PY
-
-          mkdir -p "${secret_dir}"
-          chmod 700 "${secret_dir}"
-          python3 - "${result_file}" "${secret_file}" <<'PY'
-          import json, os, sys, tempfile
-          result_path, secret_path = sys.argv[1:]
-          result = json.load(open(result_path, encoding='utf-8'))
-          key = str(result.pop('api_key'))
-          if not key.startswith('wak_'):
-              raise SystemExit('Refusing to persist an invalid workspace key')
-          existing = {}
-          if os.path.exists(secret_path):
-              with open(secret_path, encoding='utf-8') as handle:
-                  value = json.load(handle)
-                  if isinstance(value, dict):
-                      existing = value
-          existing['mk7'] = key
-          directory = os.path.dirname(secret_path)
-          fd, tmp = tempfile.mkstemp(prefix='.workspace-keys.', dir=directory, text=True)
-          try:
-              os.fchmod(fd, 0o600)
-              with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-                  json.dump(existing, handle, ensure_ascii=False, separators=(',', ':'))
-                  handle.write('\n')
-              os.replace(tmp, secret_path)
-              os.chmod(secret_path, 0o600)
-          finally:
-              if os.path.exists(tmp):
-                  os.unlink(tmp)
-          print('MK7_ASSET_NO=' + str(result['asset_no']))
-          print('MK7_ASSET_CREATED=' + str(result['asset_created']).lower())
-          print('MK7_WORKSPACE_KEY=' + str(result['workspace_key']))
-          print('MK7_WORKSPACE_CREATED=' + str(result['workspace_created']).lower())
-          print('MK7_ENTRY_URL=' + str(result['entry_url']))
-          print('MK7_DATABASE_BOUND=' + str(result['database_bound']).lower())
-          print('MK7_DELEGATED_KEY_STORED_LOCAL=true')
-          print('MK7_BOOTSTRAP_IDENTITY_DISABLED=true')
-          PY
-          rm -f "${result_file}"
-
-      - name: Probe SSH read access to private Registry
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          known_hosts="${RUNNER_TEMP}/github-known-hosts"
-          : > "${known_hosts}"
-          if GIT_SSH_COMMAND="ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${known_hosts} -o ConnectTimeout=10" \
-             git ls-remote git@github.com:CPYMSU/registry.git HEAD >/tmp/registry-ls-remote.out 2>/dev/null; then
-            test -s /tmp/registry-ls-remote.out
-            echo 'REGISTRY_SSH_READ=ready'
-          else
-            echo 'REGISTRY_SSH_READ=unavailable'
-          fi
