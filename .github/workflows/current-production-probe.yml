@@ -1,0 +1,28 @@
+name: Current production probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/current-production-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read current public production identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== cluster ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/cluster
+          echo
+          echo '=== readiness ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/api/system/readiness
+          echo
+          echo '=== health ==='
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/health
+          echo
