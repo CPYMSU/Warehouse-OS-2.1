@@ -1,4 +1,4 @@
-name: MK7 workspace provisioning
+name: MK7 workspace manager discovery
 
 on:
   pull_request:
@@ -9,28 +9,12 @@ permissions:
   contents: read
 
 jobs:
-  provision:
+  discover:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Probe private registry access without exposing credentials
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          if command -v gh >/dev/null 2>&1; then
-            if gh api repos/CPYMSU/registry --jq '.full_name' >/tmp/registry-access.out 2>/dev/null; then
-              test "$(cat /tmp/registry-access.out)" = "CPYMSU/registry"
-              echo 'REGISTRY_GH_ACCESS=ready'
-            else
-              echo 'REGISTRY_GH_ACCESS=unavailable'
-            fi
-          else
-            echo 'REGISTRY_GH_ACCESS=gh_missing'
-          fi
-
-      - name: Provision official MK7 digital asset and static workspace
+      - name: Discover authorized digital asset managers read-only
         shell: bash
         run: |
           set -euo pipefail
@@ -40,73 +24,46 @@ jobs:
           from sqlalchemy import text
           from app.api.deps import _load_actor
           from app.db.session import system_session
-          from app.services.digital_asset_hosting import create_asset, create_workspace
 
-          tenant_slug = 'bonfire'
-          source_ref_id = 'CPYMSU/registry:assets/mk7'
           with system_session() as session:
-              tenant = session.execute(
-                  text("SELECT id FROM iam.tenants WHERE slug=:slug AND status='active'"),
-                  {'slug': tenant_slug},
-              ).scalar_one()
-              user_id = session.execute(text("""
-                  SELECT user_id
-                  FROM iam.memberships
-                  WHERE tenant_id=:tenant_id AND active AND role_level >= 10
-                  ORDER BY role_level DESC, created_at
-                  LIMIT 1
-              """), {'tenant_id': tenant}).scalar_one_or_none()
-              if user_id is None:
-                  raise RuntimeError('No active Bonfire administrator is available for audited provisioning')
-              existing = session.execute(text("""
-                  SELECT id, asset_no
-                  FROM digital_asset.assets
-                  WHERE tenant_id=:tenant_id AND source_ref_id=:source_ref_id
-                  ORDER BY created_at DESC
-                  LIMIT 1
-              """), {'tenant_id': tenant, 'source_ref_id': source_ref_id}).mappings().one_or_none()
+              tenants = session.execute(text("""
+                  SELECT id, slug
+                  FROM iam.tenants
+                  WHERE status='active'
+                  ORDER BY slug
+              """)).all()
 
-          actor = _load_actor(user_id, tenant)
-          if actor.role_level < 10:
-              raise RuntimeError('Resolved actor is not authorized for digital-asset provisioning')
+          bonfire_count = 0
+          bonfire_max_role = 0
+          manage_tenants = []
+          for tenant_id, slug in tenants:
+              with system_session() as session:
+                  user_ids = session.execute(text("""
+                      SELECT user_id
+                      FROM iam.memberships
+                      WHERE tenant_id=:tenant_id AND active
+                      ORDER BY role_level DESC, created_at
+                  """), {'tenant_id': tenant_id}).scalars().all()
+              count = 0
+              max_role = 0
+              for user_id in user_ids:
+                  try:
+                      actor = _load_actor(user_id, tenant_id)
+                  except Exception:
+                      continue
+                  max_role = max(max_role, int(actor.role_level))
+                  if actor.role_level >= 10 or {'assets.manage','asset_mgmt.manage'}.intersection(actor.permissions):
+                      count += 1
+              if slug == 'bonfire':
+                  bonfire_count = count
+                  bonfire_max_role = max_role
+                  print('BONFIRE_ACTIVE_MEMBERS=' + str(len(user_ids)))
+                  print('BONFIRE_MAX_ROLE_LEVEL=' + str(max_role))
+                  print('BONFIRE_ASSET_MANAGERS=' + str(count))
+              if count:
+                  manage_tenants.append((slug, count, max_role))
 
-          if existing is None:
-              asset = create_asset(actor, {
-                  'name': 'MK7',
-                  'asset_kind': 'software',
-                  'risk_level': 'medium',
-                  'summary': '输电专业学习、安全与经验知识站点',
-                  'source_module': 'github',
-                  'source_ref_type': 'git_repository_subtree',
-                  'source_ref_id': source_ref_id,
-                  'tags': ['mk7', 'training', 'safety'],
-                  'metadata': {
-                      'repository': 'CPYMSU/registry',
-                      'source_path': 'assets/mk7',
-                      'imported_source_sha256': '32ef40976c7038e5e55ca9a7dbf844666386a7663f0da0be87265ce96a36bcb4',
-                  },
-              })['asset']
-              asset_ref = asset['uuid']
-              created_asset = True
-          else:
-              asset_ref = existing['id']
-              asset = {'asset_no': existing['asset_no']}
-              created_asset = False
-
-          workspace_result = create_workspace(actor, asset_ref, {
-              'workspace_key': 'mk7-workspace',
-              'service_plan': 'hosted',
-              'runtime_type': 'static',
-              'code_storage': 'hdd',
-              'data_storage': 'hdd',
-              'no_database': True,
-          })
-          workspace = workspace_result['workspace']
-          print('MK7_ASSET_CREATED=' + str(created_asset).lower())
-          print('MK7_ASSET_NO=' + str(asset['asset_no']))
-          print('MK7_WORKSPACE_CREATED=' + str(workspace_result.get('created', False)).lower())
-          print('MK7_WORKSPACE_KEY=' + str(workspace['workspace_key']))
-          print('MK7_ENTRY_URL=' + str(workspace['entry_url']))
-          print('MK7_RUNTIME_TYPE=' + str((workspace.get('config') or {}).get('runtime_type', 'static')))
-          print('MK7_DATABASE_BOUND=' + str(workspace_result.get('database') is not None).lower())
+          print('TENANTS_WITH_ASSET_MANAGERS=' + str(len(manage_tenants)))
+          for slug, count, max_role in manage_tenants:
+              print(f'MANAGE_TENANT={slug};count={count};max_role={max_role}')
           PY
