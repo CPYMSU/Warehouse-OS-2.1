@@ -1,0 +1,46 @@
+name: MK7 workspace discovery
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/mk7-workspace-discovery.yml
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 5
+    steps:
+      - name: Discover MK7 workspace metadata read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          docker inspect bonfirework-mac-api >/dev/null
+          docker exec -i bonfirework-mac-api python - <<'PY'
+          from sqlalchemy import text
+          from app.db.session import system_session
+
+          with system_session() as session:
+              session.execute(text("SET TRANSACTION READ ONLY"))
+              tables = session.execute(text("""
+                  SELECT table_name
+                  FROM information_schema.tables
+                  WHERE table_schema='public'
+                    AND (table_name ILIKE '%asset%' OR table_name ILIKE '%workspace%' OR table_name ILIKE '%tenant%')
+                  ORDER BY table_name
+              """)).scalars().all()
+              print('TABLES=' + ','.join(tables))
+              for table in tables:
+                  cols = session.execute(text("""
+                      SELECT column_name
+                      FROM information_schema.columns
+                      WHERE table_schema='public' AND table_name=:table
+                      ORDER BY ordinal_position
+                  """), {'table': table}).scalars().all()
+                  public_cols = [c for c in cols if not any(x in c.lower() for x in ('secret','password','token','hash','credential'))]
+                  print(f'COLUMNS {table}=' + ','.join(public_cols))
+          PY
