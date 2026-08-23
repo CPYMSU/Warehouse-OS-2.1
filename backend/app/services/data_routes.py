@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from uuid import uuid4
+from hashlib import sha256
+from pathlib import Path
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -18,6 +20,7 @@ from app.api.deps import ActorContext
 from app.db.session import tenant_session
 
 NAMESPACE = "database.data_routes"
+CODE_ROUTE_DIRECTORY = Path(__file__).resolve().parents[1] / "manifests" / "data_routes"
 ROUTE_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{2,79}$")
 NODE_TYPES = frozenset({"program", "input", "filter", "map", "join", "output"})
 ROUTE_STATES = frozenset({"draft", "active", "suspended"})
@@ -250,6 +253,54 @@ def _row_payload(row: object) -> dict[str, object] | None:
     return result
 
 
+def _code_route_manifests(tenant_slug: str) -> list[dict[str, object]]:
+    """Load tenant-scoped, code-managed route declarations shipped with Warehouse."""
+
+    routes: list[dict[str, object]] = []
+    normalised_tenant_slug = str(tenant_slug).strip().lower()
+    if not CODE_ROUTE_DIRECTORY.is_dir():
+        return routes
+    for manifest_path in sorted(CODE_ROUTE_DIRECTORY.glob("*.json")):
+        raw = manifest_path.read_bytes()
+        document = json.loads(raw)
+        if not isinstance(document, dict):
+            raise HTTPException(status_code=500, detail="Invalid code route manifest")
+        tenant_slugs = document.get("tenant_slugs", [])
+        if not isinstance(tenant_slugs, list):
+            raise HTTPException(status_code=500, detail="Invalid code route tenant scope")
+        if normalised_tenant_slug not in {str(item).strip().lower() for item in tenant_slugs}:
+            continue
+        payload = document.get("route")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=500, detail="Invalid code route definition")
+        declared_revision = max(1, int(payload.get("revision") or 1))
+        source = dict(payload.get("source") or {})
+        source["digest"] = f"sha256:{sha256(raw).hexdigest()}"
+        payload = {**payload, "source": source}
+        observed_at = str(source.get("observed_at") or _now())
+        route_key = str(payload.get("route_key") or "")
+        route = _normalise_payload(
+            payload,
+            existing={
+                "id": str(uuid5(NAMESPACE_URL, f"warehouse:data-route:{route_key}")),
+                "revision": declared_revision - 1,
+                "created_at": observed_at,
+            },
+        )
+        route["created_at"] = observed_at
+        route["updated_at"] = observed_at
+        route["code_managed"] = True
+        routes.append(route)
+    return routes
+
+
+def _code_route(tenant_slug: str, route_key: str) -> dict[str, object] | None:
+    return next(
+        (route for route in _code_route_manifests(tenant_slug) if route["route_key"] == route_key),
+        None,
+    )
+
+
 def list_routes(actor: ActorContext, *, limit: int = 100) -> dict[str, object]:
     _require_read(actor)
     with tenant_session(actor.tenant_id) as session:
@@ -269,7 +320,18 @@ def list_routes(actor: ActorContext, *, limit: int = 100) -> dict[str, object]:
             .mappings()
             .all()
         )
-    routes = [route for row in rows if (route := _row_payload(row)) is not None]
+    stored_routes = [route for row in rows if (route := _row_payload(row)) is not None]
+    routes_by_key = {str(route["route_key"]): route for route in stored_routes}
+    for route in _code_route_manifests(actor.tenant_slug):
+        routes_by_key[str(route["route_key"])] = route
+    routes = sorted(
+        routes_by_key.values(),
+        key=lambda route: (
+            bool(route.get("code_managed")),
+            str(route.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )[: max(1, min(int(limit), 200))]
     return {
         "routes": routes,
         "count": len(routes),
@@ -281,6 +343,9 @@ def list_routes(actor: ActorContext, *, limit: int = 100) -> dict[str, object]:
 
 def get_route(actor: ActorContext, route_key: str) -> dict[str, object]:
     _require_read(actor)
+    code_route = _code_route(actor.tenant_slug, route_key)
+    if code_route is not None:
+        return code_route
     with tenant_session(actor.tenant_id) as session:
         row = (
             session.execute(
@@ -306,6 +371,13 @@ def save_route(
     actor: ActorContext, payload: object, *, route_key: str | None = None
 ) -> dict[str, object]:
     _require_manage(actor)
+    candidate_key = route_key
+    if candidate_key is None and isinstance(payload, dict):
+        candidate_key = str(payload.get("route_key") or "").strip().lower()
+    if candidate_key and _code_route(actor.tenant_slug, candidate_key) is not None:
+        raise HTTPException(
+            status_code=409, detail="Code-managed route manifests cannot be modified through API"
+        )
     existing = get_route(actor, route_key) if route_key else None
     route = _normalise_payload(payload, existing=existing)
     if route_key and route["route_key"] != route_key:

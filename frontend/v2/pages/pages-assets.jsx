@@ -926,7 +926,9 @@ const DataRouteObserver = () => {
   }, [reload]);
   const route = (routes || []).find(item => item.route_key === selectedKey) || null;
   const source = route && route.source || {};
+  const activationGate = route && route.rules && route.rules.activation_gate || {};
   const stateLabel = { draft: "未發布", active: "已生效", suspended: "已暫停" };
+  const displayState = activationGate.display_label || stateLabel[route && route.state] || route && route.state;
   const sourceLabel = [source.repository, source.path].filter(Boolean).join(" / ") || "尚未提供來源位置";
   return <div className="data-route-studio data-route-observer" data-testid="data-route-observer">
     <header className="data-route-studio-head">
@@ -942,11 +944,11 @@ const DataRouteObserver = () => {
     {!error && route && <div className="data-route-observer-shell">
       <aside className="data-route-library">
         <LB red>DISCOVERED ROUTES</LB>
-        <div className="data-route-list">{routes.map(item => <button key={item.route_key} className={item.route_key === selectedKey ? "on" : ""} onClick={() => setSelectedKey(item.route_key)}><strong>{item.name}</strong><code>{item.route_key}</code><small>{stateLabel[item.state] || item.state} · R{item.revision}</small></button>)}</div>
+        <div className="data-route-list">{routes.map(item => { const gate = item.rules && item.rules.activation_gate || {}; return <button key={item.route_key} className={item.route_key === selectedKey ? "on" : ""} onClick={() => setSelectedKey(item.route_key)}><strong>{item.name}</strong><code>{item.route_key}</code><small>{gate.display_label || stateLabel[item.state] || item.state} · R{item.revision}</small></button>; })}</div>
         <div className="data-route-code-source"><LB red>CODE SOURCE</LB><strong>{sourceLabel}</strong><code>{source.ref || "—"}</code><small>{source.digest ? source.digest.slice(0, 18) : "NO DIGEST"}</small></div>
       </aside>
       <main className="data-route-workbench">
-        <div className="data-route-readonly-title"><div><span>ROUTE LOGIC</span><h4>{route.name}</h4></div><T tone={route.state === "active" ? "ok" : "plain"} dot={route.state === "active"}>{stateLabel[route.state] || route.state}</T></div>
+        <div className="data-route-readonly-title"><div><span>ROUTE LOGIC</span><h4>{route.name}</h4></div><T tone={route.state === "active" ? "ok" : "plain"} dot={route.state === "active"}>{displayState}</T></div>
         <div className="data-route-canvas is-readonly">
           <svg aria-hidden="true" viewBox="0 0 900 440" preserveAspectRatio="none"><defs><marker id="data-route-readonly-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z"/></marker></defs>{route.edges.map(edge => { const from = route.nodes.find(node => node.id === edge.source); const to = route.nodes.find(node => node.id === edge.target); if (!from || !to) return null; const x1 = from.x + 154, y1 = from.y + 42, x2 = to.x, y2 = to.y + 42, mid = Math.round((x1 + x2) / 2); return <path key={edge.id} d={`M${x1} ${y1} C${mid} ${y1},${mid} ${y2},${x2} ${y2}`} markerEnd="url(#data-route-readonly-arrow)"/>; })}</svg>
           {route.nodes.map(node => <div key={node.id} className={`data-route-node type-${node.type}`} style={{ left: node.x, top: node.y }}><small>{routeNodeMeta[node.type] ? routeNodeMeta[node.type][0] : node.type}</small><strong>{node.label}</strong><span>{node.workspace_key || node.resource || node.output_name || "聲明式規則"}</span></div>)}
@@ -955,7 +957,7 @@ const DataRouteObserver = () => {
       </main>
       <aside className="data-route-inspector data-route-code-inspector">
         <LB red>CODE FACTS</LB>
-        <dl><div><dt>Route Key</dt><dd>{route.route_key}</dd></div><div><dt>Revision</dt><dd>R{route.revision}</dd></div><div><dt>Parser</dt><dd>{source.parser || "manifest"}</dd></div><div><dt>Observed</dt><dd>{source.observed_at ? String(source.observed_at).slice(0, 19).replace("T", " ") : "—"}</dd></div></dl>
+        <dl><div><dt>Route Key</dt><dd>{route.route_key}</dd></div><div><dt>Revision</dt><dd>R{route.revision}</dd></div><div><dt>Route Gate</dt><dd>{displayState}</dd></div><div><dt>Parser</dt><dd>{source.parser || "manifest"}</dd></div><div><dt>Observed</dt><dd>{source.observed_at ? String(source.observed_at).slice(0, 19).replace("T", " ") : "—"}</dd></div></dl>
         <LB red>DECLARED RULES</LB><pre>{JSON.stringify(route.rules || {}, null, 2)}</pre>
         <LB red>CONNECTIONS</LB><ol>{route.edges.map(edge => <li key={edge.id}><code>{edge.source}</code><span>→</span><code>{edge.target}</code>{edge.label && <small>{edge.label}</small>}</li>)}</ol>
         <p>只顯示代碼事實；不顯示 DSN、密碼、Token 或業務查詢結果。</p>

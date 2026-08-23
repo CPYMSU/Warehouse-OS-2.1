@@ -1,0 +1,147 @@
+{
+  "tenant_slugs": [
+    "bonfire"
+  ],
+  "route": {
+    "route_key": "mk7-tidi-mk4-federated-search",
+    "name": "MK7 ↔ 输电智能数据基础设施 ↔ MK4",
+    "description": "三个用户托管程序通过各自的受控服务 API 进行只读联合检索；数据库、表结构和工作区保持隔离，WAREHOUSE 仅解析并显示路由代码。",
+    "state": "suspended",
+    "revision": 1,
+    "nodes": [
+      {
+        "id": "query",
+        "type": "input",
+        "label": "联合检索请求",
+        "operation": "federated_search",
+        "x": 12,
+        "y": 174
+      },
+      {
+        "id": "mk7",
+        "type": "program",
+        "label": "MK7 培训网站",
+        "workspace_key": "mk7-workspace",
+        "resource": "published-learning-and-safety",
+        "x": 185,
+        "y": 28
+      },
+      {
+        "id": "tidi",
+        "type": "program",
+        "label": "MK5 输电智能数据基础设施",
+        "resource": "public-capability-catalog",
+        "x": 185,
+        "y": 174
+      },
+      {
+        "id": "mk4",
+        "type": "program",
+        "label": "MK4 刷题软件",
+        "workspace_key": "mk4-workspace",
+        "resource": "published-question-bank-catalog",
+        "x": 185,
+        "y": 320
+      },
+      {
+        "id": "mk7-policy",
+        "type": "filter",
+        "label": "MK7 发布态过滤",
+        "expression": "published learning resources and released safety cards only",
+        "x": 370,
+        "y": 28
+      },
+      {
+        "id": "tidi-policy",
+        "type": "filter",
+        "label": "MK5 权威事实闸门",
+        "expression": "capability catalog now; published fact after second review only",
+        "x": 370,
+        "y": 174
+      },
+      {
+        "id": "mk4-policy",
+        "type": "filter",
+        "label": "MK4 公共题库过滤",
+        "expression": "published question-bank catalog and non-personal topic metadata only",
+        "x": 370,
+        "y": 320
+      },
+      {
+        "id": "merge",
+        "type": "join",
+        "label": "来源保留型结果合并",
+        "operation": "rank_and_merge",
+        "x": 555,
+        "y": 174
+      },
+      {
+        "id": "result",
+        "type": "output",
+        "label": "带来源的联合结果",
+        "output_name": "federated_results",
+        "x": 735,
+        "y": 174
+      }
+    ],
+    "edges": [
+      {"source": "query", "target": "mk7", "label": "受控查询"},
+      {"source": "query", "target": "tidi", "label": "受控查询"},
+      {"source": "query", "target": "mk4", "label": "受控查询"},
+      {"source": "mk7", "target": "mk7-policy", "label": "公开资料"},
+      {"source": "tidi", "target": "tidi-policy", "label": "能力目录"},
+      {"source": "mk4", "target": "mk4-policy", "label": "公开题库"},
+      {"source": "mk7-policy", "target": "merge", "label": "已发布"},
+      {"source": "tidi-policy", "target": "merge", "label": "已授权"},
+      {"source": "mk4-policy", "target": "merge", "label": "已发布"},
+      {"source": "merge", "target": "result", "label": "来源标注"}
+    ],
+    "rules": {
+      "execution_mode": "external_service_api_federation",
+      "database_direct_access": "forbidden",
+      "database_schema_change": "none",
+      "write_mode": "deny",
+      "credential_model": "one_minimal_service_identity_per_target_workspace",
+      "result_policy": {
+        "preserve_source_program": true,
+        "partial_results_allowed": true,
+        "maximum_rows": 100,
+        "timeout_ms": 5000,
+        "cache_seconds": 60,
+        "audit_required": true
+      },
+      "activation_gate": {
+        "status": "blocked",
+        "display_label": "等待端点授权",
+        "reasons": [
+          "mk7_service_identity_unconfigured",
+          "mk5_published_fact_api_unavailable",
+          "mk4_service_identity_unconfigured"
+        ]
+      },
+      "source_policies": {
+        "mk7": {
+          "allow": ["published_learning_resource", "published_safety_card"],
+          "deny": ["user_profile", "learning_progress", "draft_resource", "held_safety_card", "raw_source_path"]
+        },
+        "mk5_tidi": {
+          "allow_now": ["public_capability_catalog"],
+          "allow_after_gate": ["published_fact_after_completed_second_review"],
+          "deny": ["candidate_fact", "unfinished_second_review_decision", "unpublished_fact", "precise_coordinates", "personnel_information", "sensitive_identifier", "raw_source_path"]
+        },
+        "mk4": {
+          "allow": ["published_question_bank_catalog", "non_personal_topic_metadata"],
+          "deny": ["user_profile", "learning_progress", "exam_submission", "answer_sheet", "private_question_bank", "raw_source_path"]
+        }
+      }
+    },
+    "source": {
+      "kind": "route_manifest",
+      "repository": "Warehouse-OS-2.1",
+      "ref": "fix/managed-runtime-owner-boundary",
+      "path": "backend/app/manifests/data_routes/mk7-tidi-mk4-federated-search.json",
+      "parser": "warehouse-route-manifest/v1",
+      "observed_at": "2026-08-23T21:03:30+08:00"
+    }
+  }
+}

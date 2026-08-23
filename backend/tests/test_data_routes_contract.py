@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.services.data_routes import _normalise_payload
+from app.services.data_routes import _code_route_manifests, _normalise_payload
 
 
 def _route_payload(**changes: object) -> dict[str, object]:
@@ -79,6 +79,29 @@ def test_published_route_requires_two_programs_output_and_connections() -> None:
         )
 
 
+def test_bonfire_code_manifest_declares_safe_three_program_route() -> None:
+    routes = _code_route_manifests("bonfire")
+    route = next(item for item in routes if item["route_key"] == "mk7-tidi-mk4-federated-search")
+    program_ids = {node["id"] for node in route["nodes"] if node["type"] == "program"}
+    rules = route["rules"]
+    assert program_ids == {"mk7", "tidi", "mk4"}
+    assert route["state"] == "suspended"
+    assert route["code_managed"] is True
+    assert route["editable_in_warehouse"] is False
+    assert rules["database_direct_access"] == "forbidden"
+    assert rules["database_schema_change"] == "none"
+    assert rules["write_mode"] == "deny"
+    assert rules["activation_gate"]["display_label"] == "等待端点授权"
+    assert "candidate_fact" in rules["source_policies"]["mk5_tidi"]["deny"]
+    assert "published_fact_after_completed_second_review" in (
+        rules["source_policies"]["mk5_tidi"]["allow_after_gate"]
+    )
+
+
+def test_code_manifest_is_tenant_scoped() -> None:
+    assert not _code_route_manifests("another-company")
+
+
 def test_assets_page_exposes_read_only_code_route_topology() -> None:
     from pathlib import Path
 
@@ -93,6 +116,8 @@ def test_assets_page_exposes_read_only_code_route_topology() -> None:
     assert "不在此頁建立、連線或修改路由" in source
     assert "CODE IS SOURCE OF TRUTH" in source
     assert "WAREHOUSE EDITABLE <b>NO</b>" in source
+    assert "Route Gate" in source
+    assert "activation_gate" in source
     assert ".data-route-canvas" in css
     assert ".data-route-canvas.is-readonly" in css
     assert ".data-route-node.type-program" in css

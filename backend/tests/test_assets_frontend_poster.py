@@ -98,8 +98,8 @@ def test_digital_asset_drawer_exposes_the_pages_hosting_console():
 
 def test_assets_poster_styles_are_loaded_and_cache_busted():
     index = INDEX.read_text(encoding="utf-8")
-    assert 'pages/pages-assets.css?v=20260823-data-route-observer1' in index
-    assert 'pages/pages-assets.jsx?v=20260823-data-route-observer1' in index
+    assert 'pages/pages-assets.css?v=20260823-federated-route1' in index
+    assert 'pages/pages-assets.jsx?v=20260823-federated-route1' in index
     assert 'pages/pages-logs.jsx?v=20260804-audit-conversation1' in index
     assert 'vendor/katex.min.css?v=0.16.11' in index
     assert 'pages/pages-tasks.css?v=20260814-task-docformat3' in index
@@ -109,7 +109,7 @@ def test_assets_poster_styles_are_loaded_and_cache_busted():
     assert 'action-center.jsx?v=20260807-passkey-action1' in index
     assert 'pages/pages-research-continuity.css?v=20260807-continuity1' in index
     assert 'pages/pages-research-typography.css?v=20260807-autosize1' in index
-    assert 'dist/app.bundle.js?v=20260823-data-route-observer1' in index
+    assert 'dist/app.bundle.js?v=20260823-federated-route1' in index
     assert 'dist/personal.bundle.js?v=20260815-approval-guard1' in PERSONAL.read_text(
         encoding="utf-8"
     )
