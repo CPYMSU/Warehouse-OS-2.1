@@ -30,16 +30,15 @@ jobs:
           curl --retry 5 --retry-all-errors --retry-delay 2 -fsS https://bonfirework.org/health
           echo
 
-      - name: Inspect recent main production deploy runs
+      - name: Inspect recent production deploy runs across branches
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsS \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/production-deploy.yml/runs?branch=main&per_page=20" \
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsS "${auth[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/production-deploy.yml/runs?per_page=30" \
             > /tmp/runs.json
+          echo '=== recent production runs ==='
           python3 - <<'PY'
           import json
           data=json.load(open('/tmp/runs.json'))
@@ -56,4 +55,14 @@ jobs:
                   'updated_at': r.get('updated_at'),
                   'html_url': r.get('html_url'),
               }, ensure_ascii=False))
+          PY
+
+          echo '=== branches where production head is current head ==='
+          curl -fsS "${auth[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/acfc85870a97974ca8216c8d3f2aeedfd861da95/branches-where-head" \
+            > /tmp/branches.json
+          python3 - <<'PY'
+          import json
+          for b in json.load(open('/tmp/branches.json')):
+              print(b.get('name'))
           PY
