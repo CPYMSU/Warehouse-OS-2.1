@@ -19,7 +19,6 @@ concurrency:
 
 jobs:
   publish:
-    if: vars.WAREHOUSE_ASSET_REGISTRY_ENABLED == 'true'
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 180
     env:
@@ -28,13 +27,50 @@ jobs:
       WAREHOUSE_ASSET_REGISTRY_REF: ${{ vars.WAREHOUSE_ASSET_REGISTRY_REF || 'main' }}
       WAREHOUSE_ASSET_REGISTRY_PATH: ${{ vars.WAREHOUSE_ASSET_REGISTRY_PATH || 'registry.json' }}
       WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
       WAREHOUSE_ASSET_GITHUB_TOKEN: ${{ secrets.WAREHOUSE_ASSET_GITHUB_TOKEN }}
+      WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519
       WAREHOUSE_ASSET_REPOSITORY: ${{ inputs.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Check least-privilege Registry credentials
+        id: registry_auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if [ -n "${WAREHOUSE_ASSET_GITHUB_TOKEN:-}" ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'Registry auth: Actions token'
+            exit 0
+          fi
+
+          key="${WAREHOUSE_ASSET_REGISTRY_SSH_KEY}"
+          workspace_keys="${WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE}"
+          if [ ! -f "$key" ] || [ ! -f "$workspace_keys" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Registry publishing is not provisioned on this runner; skipping.'
+            exit 0
+          fi
+          if [ "$(stat -f '%Lp' "$key")" != "600" ] || [ "$(stat -f '%Lp' "$workspace_keys")" != "600" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Registry publishing credential permissions are not 0600; skipping.'
+            exit 0
+          fi
+
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_SSH_COMMAND="ssh -i ${key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          if git ls-remote "git@github.com:${WAREHOUSE_ASSET_REGISTRY_REPOSITORY}.git" "refs/heads/${WAREHOUSE_ASSET_REGISTRY_REF}" >/dev/null 2>&1; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'Registry auth: runner-local read-only deploy key'
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Registry deploy key is present locally but not authorized by GitHub yet; skipping.'
+          fi
       - name: Publish governed digital-asset releases
+        if: steps.registry_auth.outputs.ready == 'true'
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
