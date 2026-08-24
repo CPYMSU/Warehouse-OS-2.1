@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -97,6 +99,69 @@ def test_non_runtime_change_stops_before_packaging() -> None:
     assert plan["mode"] == "none"
     assert plan["deploy_required"] is False
     assert set(plan["impacts"]) == {"docs_only", "tests_only"}
+
+
+def test_smart_noop_prepare_writes_explicit_plan_contract(tmp_path: Path) -> None:
+    for command in ("node", "python3", "rsync", "shasum"):
+        if shutil.which(command) is None:
+            pytest.skip(f"{command} is required for the deploy contract test")
+
+    planner_namespace = runpy.run_path(str(PLANNER))
+    tree_manifest = planner_namespace["_tree_manifest"]
+    assert callable(tree_manifest)
+    active_manifest = tmp_path / "active-files.sha256"
+    active_manifest.write_text(
+        "".join(
+            f"{digest}  ./{path}\n" for path, digest in sorted(tree_manifest(REPO_ROOT).items())
+        ),
+        encoding="utf-8",
+    )
+    manager = tmp_path / "warehouse-deploy"
+    manager.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'test "$#" -eq 1\n'
+        'test "$1" = manifest\n'
+        'cat "$WAREHOUSE_TEST_ACTIVE_MANIFEST"\n',
+        encoding="utf-8",
+    )
+    manager.chmod(0o700)
+    git_command = tmp_path / "git"
+    git_command.write_text(
+        '#!/bin/sh\nset -eu\ntest "$#" -eq 2\ntest "$1" = diff\ntest "$2" = --check\n',
+        encoding="utf-8",
+    )
+    git_command.chmod(0o700)
+    release_output = tmp_path / "release-id"
+    plan_output = tmp_path / "plan"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{tmp_path}:{environment['PATH']}",
+            "WAREHOUSE_DEPLOY_TRANSPORT": "local",
+            "WAREHOUSE_REMOTE_DEPLOY_MANAGER": str(manager),
+            "WAREHOUSE_DEPLOY_MANAGER_SUDO": "0",
+            "WAREHOUSE_DEPLOY_PREPARE_INCOMING": "0",
+            "WAREHOUSE_DEPLOY_LOCAL_VALIDATION": "basic",
+            "WAREHOUSE_DEPLOY_RELEASE_ID_FILE": str(release_output),
+            "WAREHOUSE_DEPLOY_PLAN_FILE": str(plan_output),
+            "WAREHOUSE_DEPLOY_TARGET": "noop-contract-test",
+            "WAREHOUSE_TEST_ACTIVE_MANIFEST": str(active_manifest),
+        }
+    )
+
+    completed = subprocess.run(
+        [str(REPO_ROOT / "ops" / "deploy"), "prepare", "smart"],
+        cwd=REPO_ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "no runtime deployment required" in completed.stdout
+    assert not release_output.exists()
+    assert plan_output.read_text(encoding="utf-8") == ("deploy_required=0\nmigration_required=0\n")
 
 
 def test_unknown_packaged_file_fails_closed() -> None:
@@ -251,6 +316,213 @@ def test_cluster_deploy_prepares_and_activates_both_nodes_in_parallel() -> None:
     assert "activation_duration <= ACTIVATION_SLO_SECONDS" in source
     assert 'if [[ "${transport}" == ssh ]]; then' in source
     assert "identity is missing for ${label}: ${identity}" in source
+
+
+def test_cluster_deploy_supports_an_asymmetric_code_only_noop() -> None:
+    source = (REPO_ROOT / "ops" / "cluster" / "rolling-deploy").read_text(encoding="utf-8")
+
+    assert "plan_value()" in source
+    assert "deploy_required primary" in source
+    assert "deploy_required standby" in source
+    assert "primary no-op unexpectedly emitted a release id" in source
+    assert "standby no-op unexpectedly emitted a release id" in source
+    assert source.count("status=skipped reason=already_current") == 4
+    assert 'if [[ "${primary_deploy}" == 1 ]]' in source
+    assert 'if [[ "${standby_deploy}" == 1 ]]' in source
+    assert "asymmetric database migration requires explicit recovery" in source
+    assert '"${primary_deploy}" == 1 && "${primary_status}" == 0' in source
+    assert '"${standby_deploy}" == 1 && "${standby_status}" == 0' in source
+    assert "full_git_sha" in source
+
+
+def test_cluster_deploy_runs_only_the_stale_node_for_an_asymmetric_noop(
+    tmp_path: Path,
+) -> None:
+    for command in ("git", "node", "python3"):
+        if shutil.which(command) is None:
+            pytest.skip(f"{command} is required for the cluster deploy simulation")
+
+    simulated_root = tmp_path / "warehouse"
+    shutil.copytree(
+        REPO_ROOT,
+        simulated_root,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+            "node_modules",
+        ),
+    )
+    deploy_driver = simulated_root / "ops" / "deploy"
+    deploy_driver.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -Eeuo pipefail
+            root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+            target="${WAREHOUSE_DEPLOY_TARGET:?}"
+            action="${1:?}"
+            scenario="${WAREHOUSE_TEST_SCENARIO:?}"
+            printf '%s %s\n' "${target}" "$*" >> "${WAREHOUSE_TEST_ACTION_LOG:?}"
+            full_sha="$(git -C "${root}" rev-parse HEAD)"
+            short_sha="${full_sha:0:12}"
+            case "${action}" in
+              prepare)
+                test "${2:?}" = smart
+                deploy_required=1
+                migration_required=0
+                case "${scenario}:${target}" in
+                  primary-current:mac-primary|standby-current:vultr-standby|all-current:*)
+                    deploy_required=0
+                    ;;
+                  asymmetric-migration:mac-primary)
+                    deploy_required=0
+                    ;;
+                  asymmetric-migration:vultr-standby)
+                    migration_required=1
+                    ;;
+                esac
+                printf 'deploy_required=%s\nmigration_required=%s\n' \
+                  "${deploy_required}" "${migration_required}" \
+                  > "${WAREHOUSE_DEPLOY_PLAN_FILE:?}"
+                if [[ "${deploy_required}" == 1 ]]; then
+                  printf '20260824T120000Z-%s-%s-smart\n' "${short_sha}" "${target}" \
+                    > "${WAREHOUSE_DEPLOY_RELEASE_ID_FILE:?}"
+                fi
+                ;;
+              prepared-status|activate)
+                case "${scenario}" in
+                  primary-current) test "${target}" = vultr-standby ;;
+                  standby-current) test "${target}" = mac-primary ;;
+                  *) exit 65 ;;
+                esac
+                ;;
+              status)
+                if [[ "${target}" == mac-primary ]]; then
+                  node_id=mac-primary
+                  identity="${full_sha}"
+                else
+                  node_id=vultr-standby
+                  identity="${short_sha}"
+                fi
+                printf 'readiness={"node_id":"%s","git_sha":"%s"}\n' \
+                  "${node_id}" "${identity}"
+                ;;
+              rollback)
+                ;;
+              *)
+                exit 64
+                ;;
+            esac
+            """
+        ),
+        encoding="utf-8",
+    )
+    deploy_driver.chmod(0o700)
+    subprocess.run(["git", "init", "-q"], cwd=simulated_root, check=True)
+    subprocess.run(["git", "config", "user.name", "Warehouse Test"], cwd=simulated_root, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "warehouse-test@example.invalid"],
+        cwd=simulated_root,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=simulated_root, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "Simulate asymmetric cluster deployment"],
+        cwd=simulated_root,
+        check=True,
+    )
+    action_log = tmp_path / "actions.log"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "WAREHOUSE_CLUSTER_PREFLIGHT": "basic",
+            "WAREHOUSE_CLUSTER_ACTIVATION_SLO_SECONDS": "10",
+            "WAREHOUSE_PRIMARY_TRANSPORT": "local",
+            "WAREHOUSE_STANDBY_TRANSPORT": "local",
+            "WAREHOUSE_TEST_SCENARIO": "primary-current",
+            "WAREHOUSE_TEST_ACTION_LOG": str(action_log),
+        }
+    )
+
+    completed = subprocess.run(
+        [str(simulated_root / "ops" / "cluster" / "rolling-deploy"), "smart"],
+        cwd=simulated_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "prepare decisions primary_deploy=0 standby_deploy=1" in completed.stdout
+    assert "node=mac-primary action=prepared-status status=skipped reason=already_current" in (
+        completed.stdout
+    )
+    assert "node=mac-primary action=activate status=skipped reason=already_current" in (
+        completed.stdout
+    )
+    assert "cluster deployment complete" in completed.stdout
+    actions = action_log.read_text(encoding="utf-8").splitlines()
+    assert not any(line.startswith("mac-primary prepared-status") for line in actions)
+    assert not any(line.startswith("mac-primary activate") for line in actions)
+    assert sum(line.startswith("vultr-standby prepared-status") for line in actions) == 1
+    assert sum(line.startswith("vultr-standby activate") for line in actions) == 1
+
+    reverse_log = tmp_path / "reverse-actions.log"
+    environment["WAREHOUSE_TEST_SCENARIO"] = "standby-current"
+    environment["WAREHOUSE_TEST_ACTION_LOG"] = str(reverse_log)
+    reverse = subprocess.run(
+        [str(simulated_root / "ops" / "cluster" / "rolling-deploy"), "smart"],
+        cwd=simulated_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "prepare decisions primary_deploy=1 standby_deploy=0" in reverse.stdout
+    reverse_actions = reverse_log.read_text(encoding="utf-8").splitlines()
+    assert sum(line.startswith("mac-primary prepared-status") for line in reverse_actions) == 1
+    assert sum(line.startswith("mac-primary activate") for line in reverse_actions) == 1
+    assert not any(line.startswith("vultr-standby prepared-status") for line in reverse_actions)
+    assert not any(line.startswith("vultr-standby activate") for line in reverse_actions)
+
+    all_current_log = tmp_path / "all-current-actions.log"
+    environment["WAREHOUSE_TEST_SCENARIO"] = "all-current"
+    environment["WAREHOUSE_TEST_ACTION_LOG"] = str(all_current_log)
+    all_current = subprocess.run(
+        [str(simulated_root / "ops" / "cluster" / "rolling-deploy"), "smart"],
+        cwd=simulated_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "prepare decisions primary_deploy=0 standby_deploy=0" in all_current.stdout
+    assert "activation_seconds=0" in all_current.stdout
+    all_current_actions = all_current_log.read_text(encoding="utf-8").splitlines()
+    assert not any(" prepared-status" in line for line in all_current_actions)
+    assert not any(" activate" in line for line in all_current_actions)
+
+    migration_log = tmp_path / "migration-actions.log"
+    environment["WAREHOUSE_TEST_SCENARIO"] = "asymmetric-migration"
+    environment["WAREHOUSE_TEST_ACTION_LOG"] = str(migration_log)
+    asymmetric_migration = subprocess.run(
+        [str(simulated_root / "ops" / "cluster" / "rolling-deploy"), "smart"],
+        cwd=simulated_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert asymmetric_migration.returncode != 0
+    assert "asymmetric database migration requires explicit recovery" in (
+        asymmetric_migration.stderr
+    )
+    migration_actions = migration_log.read_text(encoding="utf-8").splitlines()
+    assert not any(" prepared-status" in line for line in migration_actions)
+    assert not any(" activate" in line for line in migration_actions)
 
 
 def test_dependency_free_alembic_head_matches_the_declared_graph() -> None:

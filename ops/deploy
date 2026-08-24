@@ -104,6 +104,19 @@ fail() {
   exit 1
 }
 
+write_plan_output() {
+  local deploy_required="$1" migration_required="$2"
+  [[ "${deploy_required}" =~ ^[01]$ ]] \
+    || fail "deploy-required output must be 0 or 1"
+  [[ "${migration_required}" =~ ^[01]$ ]] \
+    || fail "migration-required output must be 0 or 1"
+  [[ -n "${PLAN_FILE}" ]] || return 0
+  [[ "${PLAN_FILE}" == /* ]] \
+    || fail "WAREHOUSE_DEPLOY_PLAN_FILE must be an absolute path"
+  printf 'deploy_required=%s\nmigration_required=%s\n' \
+    "${deploy_required}" "${migration_required}" > "${PLAN_FILE}"
+}
+
 remote() {
   ssh "${ssh_options[@]}" "${USER}@${HOST}" "$@"
 }
@@ -359,6 +372,10 @@ if [[ "${MODE}" == smart ]]; then
       "${PLAN_UNMATCHED_FILES}"
   fi
   if [[ "${PLAN_DEPLOY_REQUIRED}" != 1 ]]; then
+    if [[ -n "${RELEASE_ID_FILE}" && "${RELEASE_ID_FILE}" != /* ]]; then
+      fail "WAREHOUSE_DEPLOY_RELEASE_ID_FILE must be an absolute path"
+    fi
+    write_plan_output 0 0
     printf '==> no runtime deployment required for the observed change set\n'
     exit 0
   fi
@@ -529,11 +546,7 @@ if [[ -n "${RELEASE_ID_FILE}" ]]; then
     || fail "WAREHOUSE_DEPLOY_RELEASE_ID_FILE must be an absolute path"
   printf '%s\n' "${release_id}" > "${RELEASE_ID_FILE}"
 fi
-if [[ -n "${PLAN_FILE}" ]]; then
-  [[ "${PLAN_FILE}" == /* ]] \
-    || fail "WAREHOUSE_DEPLOY_PLAN_FILE must be an absolute path"
-  printf 'migration_required=%s\n' "${PLAN_MIGRATION:-1}" > "${PLAN_FILE}"
-fi
+write_plan_output 1 "${PLAN_MIGRATION:-1}"
 
 printf '==> server %s and verification\n' "${DEPLOY_ACTION}"
 manager_action="${DEPLOY_ACTION}"

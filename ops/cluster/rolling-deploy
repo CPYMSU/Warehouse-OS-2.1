@@ -136,8 +136,23 @@ upload_node_secret() {
 
 wait_phase() {
   local primary_pid="$1" standby_pid="$2"
-  if wait "${primary_pid}"; then PRIMARY_STATUS=0; else PRIMARY_STATUS=$?; fi
-  if wait "${standby_pid}"; then STANDBY_STATUS=0; else STANDBY_STATUS=$?; fi
+  PRIMARY_STATUS=0
+  STANDBY_STATUS=0
+  if [[ -n "${primary_pid}" ]]; then
+    if wait "${primary_pid}"; then PRIMARY_STATUS=0; else PRIMARY_STATUS=$?; fi
+  fi
+  if [[ -n "${standby_pid}" ]]; then
+    if wait "${standby_pid}"; then STANDBY_STATUS=0; else STANDBY_STATUS=$?; fi
+  fi
+}
+
+plan_value() {
+  local plan_file="$1" key="$2" label="$3" count value
+  [[ -s "${plan_file}" ]] || fail "${label} prepare plan is missing"
+  count="$(awk -F= -v key="${key}" '$1 == key {count++} END {print count+0}' "${plan_file}")"
+  [[ "${count}" == 1 ]] || fail "${label} prepare plan must contain one ${key}"
+  value="$(awk -F= -v key="${key}" '$1 == key {print $2; exit}' "${plan_file}")"
+  printf '%s\n' "${value}"
 }
 
 run_preflight() {
@@ -189,19 +204,47 @@ cat "${WORK_DIR}/standby.prepare.log"
 [[ "${primary_status}" == 0 && "${standby_status}" == 0 ]] \
   || fail "parallel prepare failed (primary=${primary_status}, standby=${standby_status})"
 
-primary_release="$(tr -d '\r\n' < "${primary_release_file}")"
-standby_release="$(tr -d '\r\n' < "${standby_release_file}")"
-[[ "${primary_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
-  || fail "primary prepared release id is invalid"
-[[ "${standby_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
-  || fail "standby prepared release id is invalid"
-primary_migration="$(awk -F= '$1 == "migration_required" {print $2; exit}' "${primary_plan_file}")"
-standby_migration="$(awk -F= '$1 == "migration_required" {print $2; exit}' "${standby_plan_file}")"
+primary_deploy="$(plan_value "${primary_plan_file}" deploy_required primary)"
+standby_deploy="$(plan_value "${standby_plan_file}" deploy_required standby)"
+primary_migration="$(plan_value "${primary_plan_file}" migration_required primary)"
+standby_migration="$(plan_value "${standby_plan_file}" migration_required standby)"
+[[ "${primary_deploy}" =~ ^[01]$ && "${standby_deploy}" =~ ^[01]$ ]] \
+  || fail "prepared deployment impact is invalid"
 [[ "${primary_migration}" =~ ^[01]$ && "${standby_migration}" =~ ^[01]$ ]] \
   || fail "prepared migration impact is invalid"
+[[ "${primary_deploy}" == 1 || "${primary_migration}" == 0 ]] \
+  || fail "primary no-op cannot require a database migration"
+[[ "${standby_deploy}" == 1 || "${standby_migration}" == 0 ]] \
+  || fail "standby no-op cannot require a database migration"
+
+primary_release=""
+if [[ "${primary_deploy}" == 1 ]]; then
+  [[ -s "${primary_release_file}" ]] || fail "primary prepared release id is missing"
+  primary_release="$(tr -d '\r\n' < "${primary_release_file}")"
+  [[ "${primary_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
+    || fail "primary prepared release id is invalid"
+elif [[ -s "${primary_release_file}" ]]; then
+  fail "primary no-op unexpectedly emitted a release id"
+fi
+
+standby_release=""
+if [[ "${standby_deploy}" == 1 ]]; then
+  [[ -s "${standby_release_file}" ]] || fail "standby prepared release id is missing"
+  standby_release="$(tr -d '\r\n' < "${standby_release_file}")"
+  [[ "${standby_release}" =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]{1,80}$ ]] \
+    || fail "standby prepared release id is invalid"
+elif [[ -s "${standby_release_file}" ]]; then
+  fail "standby no-op unexpectedly emitted a release id"
+fi
+
+printf '==> prepare decisions primary_deploy=%s standby_deploy=%s\n' \
+  "${primary_deploy}" "${standby_deploy}"
 migration_required=0
 if [[ "${primary_migration}" == 1 || "${standby_migration}" == 1 ]]; then
   migration_required=1
+fi
+if [[ "${migration_required}" == 1 && "${primary_deploy}" != "${standby_deploy}" ]]; then
+  fail "asymmetric database migration requires explicit recovery"
 fi
 
 if [[ "${migration_required}" == 1 ]]; then
@@ -234,12 +277,24 @@ else
 fi
 
 printf '==> prepared gate\n'
-run_node WAREHOUSE_PRIMARY mac-primary "prepared-status ${primary_release}" "" \
-  >"${WORK_DIR}/primary.gate.log" 2>&1 &
-primary_pid=$!
-run_node WAREHOUSE_STANDBY vultr-standby "prepared-status ${standby_release}" "" \
-  >"${WORK_DIR}/standby.gate.log" 2>&1 &
-standby_pid=$!
+primary_pid=""
+standby_pid=""
+if [[ "${primary_deploy}" == 1 ]]; then
+  run_node WAREHOUSE_PRIMARY mac-primary "prepared-status ${primary_release}" "" \
+    >"${WORK_DIR}/primary.gate.log" 2>&1 &
+  primary_pid=$!
+else
+  printf 'node=mac-primary action=prepared-status status=skipped reason=already_current\n' \
+    >"${WORK_DIR}/primary.gate.log"
+fi
+if [[ "${standby_deploy}" == 1 ]]; then
+  run_node WAREHOUSE_STANDBY vultr-standby "prepared-status ${standby_release}" "" \
+    >"${WORK_DIR}/standby.gate.log" 2>&1 &
+  standby_pid=$!
+else
+  printf 'node=vultr-standby action=prepared-status status=skipped reason=already_current\n' \
+    >"${WORK_DIR}/standby.gate.log"
+fi
 wait_phase "${primary_pid}" "${standby_pid}"
 primary_status="${PRIMARY_STATUS}"
 standby_status="${STANDBY_STATUS}"
@@ -250,12 +305,24 @@ cat "${WORK_DIR}/standby.gate.log"
 
 printf '==> coordinated activation (SLO=%ss)\n' "${ACTIVATION_SLO_SECONDS}"
 activation_started="${SECONDS}"
-run_node WAREHOUSE_PRIMARY mac-primary "activate ${primary_release}" "" \
-  >"${WORK_DIR}/primary.activate.log" 2>&1 &
-primary_pid=$!
-run_node WAREHOUSE_STANDBY vultr-standby "activate ${standby_release}" "" \
-  >"${WORK_DIR}/standby.activate.log" 2>&1 &
-standby_pid=$!
+primary_pid=""
+standby_pid=""
+if [[ "${primary_deploy}" == 1 ]]; then
+  run_node WAREHOUSE_PRIMARY mac-primary "activate ${primary_release}" "" \
+    >"${WORK_DIR}/primary.activate.log" 2>&1 &
+  primary_pid=$!
+else
+  printf 'node=mac-primary action=activate status=skipped reason=already_current\n' \
+    >"${WORK_DIR}/primary.activate.log"
+fi
+if [[ "${standby_deploy}" == 1 ]]; then
+  run_node WAREHOUSE_STANDBY vultr-standby "activate ${standby_release}" "" \
+    >"${WORK_DIR}/standby.activate.log" 2>&1 &
+  standby_pid=$!
+else
+  printf 'node=vultr-standby action=activate status=skipped reason=already_current\n' \
+    >"${WORK_DIR}/standby.activate.log"
+fi
 wait_phase "${primary_pid}" "${standby_pid}"
 primary_status="${PRIMARY_STATUS}"
 standby_status="${STANDBY_STATUS}"
@@ -265,10 +332,10 @@ cat "${WORK_DIR}/standby.activate.log"
 
 if [[ "${primary_status}" != 0 || "${standby_status}" != 0 ]]; then
   printf '==> coordinated rollback after partial activation failure\n' >&2
-  if [[ "${primary_status}" == 0 ]]; then
+  if [[ "${primary_deploy}" == 1 && "${primary_status}" == 0 ]]; then
     run_node WAREHOUSE_PRIMARY mac-primary rollback "" || true
   fi
-  if [[ "${standby_status}" == 0 ]]; then
+  if [[ "${standby_deploy}" == 1 && "${standby_status}" == 0 ]]; then
     run_node WAREHOUSE_STANDBY vultr-standby rollback "" || true
   fi
   fail "activation failed (primary=${primary_status}, standby=${standby_status})"
@@ -280,13 +347,14 @@ run_node WAREHOUSE_STANDBY vultr-standby status "" >"${WORK_DIR}/standby.status"
 cat "${WORK_DIR}/primary.status"
 cat "${WORK_DIR}/standby.status"
 git_sha="$(git -C "${ROOT}" rev-parse --short=12 HEAD)"
+full_git_sha="$(git -C "${ROOT}" rev-parse HEAD)"
 grep -Fq "\"node_id\":\"mac-primary\"" "${WORK_DIR}/primary.status" \
   || fail "primary identity gate failed"
 grep -Fq "\"node_id\":\"vultr-standby\"" "${WORK_DIR}/standby.status" \
   || fail "standby identity gate failed"
-grep -Fq "\"git_sha\":\"${git_sha}\"" "${WORK_DIR}/primary.status" \
+grep -Eq "\"git_sha\":\"(${git_sha}|${full_git_sha})\"" "${WORK_DIR}/primary.status" \
   || fail "primary Git baseline does not match ${git_sha}"
-grep -Fq "\"git_sha\":\"${git_sha}\"" "${WORK_DIR}/standby.status" \
+grep -Eq "\"git_sha\":\"(${git_sha}|${full_git_sha})\"" "${WORK_DIR}/standby.status" \
   || fail "standby Git baseline does not match ${git_sha}"
 
 (( activation_duration <= ACTIVATION_SLO_SECONDS )) \
