@@ -1,4 +1,4 @@
-name: MK7 registry read validation
+name: Registry deploy key bootstrap
 
 on:
   pull_request:
@@ -9,43 +9,27 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  bootstrap:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Validate local MK7 key and private Registry read path
+      - name: Create or reuse read-only Registry deploy key
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          secret_file="/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
-          test -f "$secret_file"
-          test "$(stat -f '%Lp' "$secret_file")" = "600"
-          python3 - "$secret_file" <<'PY'
-          import json,sys
-          value=json.load(open(sys.argv[1],encoding='utf-8'))
-          key=str(value.get('mk7') or '')
-          if not key.startswith('wak_'):
-              raise SystemExit('mk7 delegated key missing')
-          print('MK7_LOCAL_KEY_PRESENT=true')
-          PY
-
-          export GIT_TERMINAL_PROMPT=0
-          if git ls-remote https://github.com/CPYMSU/registry.git refs/heads/main >/dev/null 2>&1; then
-            echo 'REGISTRY_HTTPS_READ_WITH_EXISTING_CREDENTIALS=true'
-          else
-            echo 'REGISTRY_HTTPS_READ_WITH_EXISTING_CREDENTIALS=false'
+          secret_dir="/Users/peiyuan/Server/bonfirework/secrets"
+          private_key="${secret_dir}/registry-readonly-ed25519"
+          public_key="${private_key}.pub"
+          install -d -m 700 "$secret_dir"
+          if [ ! -f "$private_key" ]; then
+            ssh-keygen -q -t ed25519 -N '' -C 'warehouse-registry-readonly' -f "$private_key"
           fi
-
-          if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-            echo 'GH_AUTH_AVAILABLE=true'
-            gh auth setup-git >/dev/null 2>&1 || true
-            if git ls-remote https://github.com/CPYMSU/registry.git refs/heads/main >/dev/null 2>&1; then
-              echo 'REGISTRY_HTTPS_READ_AFTER_GH_SETUP=true'
-            else
-              echo 'REGISTRY_HTTPS_READ_AFTER_GH_SETUP=false'
-            fi
-          else
-            echo 'GH_AUTH_AVAILABLE=false'
-          fi
+          chmod 600 "$private_key"
+          chmod 644 "$public_key"
+          test "$(stat -f '%Lp' "$private_key")" = "600"
+          echo 'REGISTRY_DEPLOY_KEY_READY=true'
+          echo 'REGISTRY_DEPLOY_PUBLIC_KEY_BEGIN'
+          cat "$public_key"
+          echo 'REGISTRY_DEPLOY_PUBLIC_KEY_END'
