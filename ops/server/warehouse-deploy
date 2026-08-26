@@ -1738,6 +1738,31 @@ hosting_smoke() {
   trap - RETURN
 }
 
+pdf_native_replay() {
+  local filename="$1" digest="$2" archive action role receipt
+  [[ "${filename}" =~ ^pdf-native-replay-[a-f0-9]{16}\.zip$ ]] \
+    || fail "invalid pdf native replay filename"
+  [[ "${digest}" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "invalid pdf native replay digest"
+  [[ "${filename}" == "pdf-native-replay-${digest:0:16}.zip" ]] \
+    || fail "pdf native replay filename does not match digest"
+  archive="${INCOMING}/${filename}"
+  [[ -f "${archive}" && ! -L "${archive}" ]] \
+    || fail "pdf native replay archive is missing"
+  role="$(configured_node_role)"
+  [[ "${role}" == standby ]] \
+    || fail "pdf native replay is limited to the standby node"
+  action="${CURRENT}/ops/server/warehouse-pdf-native-replay.py"
+  [[ -f "${action}" && -x "${action}" ]] \
+    || fail "pdf native replay action is unavailable"
+  receipt="$("${action}" "${archive}" "${digest}")"
+  [[ -n "${receipt}" && "${receipt}" != *$'\n'* ]] \
+    || fail "pdf native replay receipt is invalid"
+  log_event pdf_native_replay succeeded "$(slot_release "$(active_slot)")" \
+    native_x86 synthetic
+  printf '%s\n' "${receipt}"
+}
+
 mkdir -p "${RELEASES}" "${STATE}"
 touch "${LOG_FILE}"
 exec 9>"${LOCK_FILE}"
@@ -1876,6 +1901,11 @@ case "${command}" in
     [[ "$#" -eq 11 ]] \
       || fail "usage: warehouse-deploy hosting-smoke ARCHIVE SHA256 TENANT WORKSPACE RUNTIME COMPONENT ENTRYPOINT VERSION EXPECT_TEXT NAME"
     hosting_smoke "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}"
+    ;;
+  pdf-native-replay)
+    [[ "$#" -eq 3 ]] \
+      || fail "usage: warehouse-deploy pdf-native-replay ARCHIVE SHA256"
+    pdf_native_replay "$2" "$3"
     ;;
   history)
     [[ "$#" -eq 1 ]] || fail "history takes no arguments"
