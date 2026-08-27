@@ -113,8 +113,34 @@ def test_manager_exposes_only_the_exact_bounded_command() -> None:
     assert "warehouse-deploy pdf-native-replay ARCHIVE SHA256" in source
     assert "^pdf-native-replay-[a-f0-9]{16}\\.zip$" in source
     assert '[[ "${role}" == standby ]]' in source
+    assert 'WAREHOUSE_PDF_NATIVE_EFFECTIVE_NODE_ROLE="${role}"' in source
     assert '"${action}" "${archive}" "${digest}"' in source
     assert "warehouse-pdf-native-replay.py" in source
+
+
+def test_host_requires_native_x86_and_normalized_manager_role(monkeypatch) -> None:
+    module = _load_action()
+    assert not hasattr(module, "PRODUCTION_ENV")
+
+    monkeypatch.setattr(module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
+    monkeypatch.delenv(module.MANAGER_ROLE_ENV, raising=False)
+    with pytest.raises(module.ReplayFailure) as captured:
+        module._verify_host()
+    assert captured.value.code == "native_x86_standby_required"
+
+    monkeypatch.setenv(module.MANAGER_ROLE_ENV, "primary")
+    with pytest.raises(module.ReplayFailure) as captured:
+        module._verify_host()
+    assert captured.value.code == "native_x86_standby_required"
+
+    monkeypatch.setenv(module.MANAGER_ROLE_ENV, "standby")
+    module._verify_host()
+
+    monkeypatch.setattr(module.platform, "machine", lambda: "aarch64")
+    with pytest.raises(module.ReplayFailure) as captured:
+        module._verify_host()
+    assert captured.value.code == "native_x86_standby_required"
 
 
 def test_bundle_validation_is_exact_and_fails_closed(tmp_path: Path, monkeypatch) -> None:

@@ -29,8 +29,8 @@ from typing import Any
 INCOMING_ROOT = Path("/var/lib/warehouse-deploy/incoming")
 WORK_ROOT = Path("/var/lib/warehouse-deploy/pdf-native-replay")
 STATE_ROOT = Path("/opt/warehouse-os/shared/deploy-state")
-PRODUCTION_ENV = Path("/opt/warehouse-os/shared/.env.production")
 DOCKER = Path("/usr/bin/docker")
+MANAGER_ROLE_ENV = "WAREHOUSE_PDF_NATIVE_EFFECTIVE_NODE_ROLE"
 
 ARCHIVE_PATTERN = re.compile(r"^pdf-native-replay-[a-f0-9]{16}\.zip$")
 HEX_SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -133,18 +133,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _verify_host() -> None:
-    if platform.system() != "Linux" or platform.machine() != "x86_64":
-        raise ReplayFailure("native_x86_standby_required")
-    try:
-        raw = PRODUCTION_ENV.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        raise ReplayFailure("native_x86_standby_required") from error
-    roles: list[str] = []
-    for line in raw.splitlines():
-        key, separator, value = line.partition("=")
-        if separator and key.strip() == "WAREHOUSE_NODE_ROLE":
-            roles.append(value.strip().strip("'\""))
-    if roles != ["standby"]:
+    if (
+        platform.system() != "Linux"
+        or platform.machine() != "x86_64"
+        or os.environ.get(MANAGER_ROLE_ENV) != "standby"
+    ):
         raise ReplayFailure("native_x86_standby_required")
 
 

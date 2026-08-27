@@ -1755,7 +1755,8 @@ pdf_native_replay() {
   action="${CURRENT}/ops/server/warehouse-pdf-native-replay.py"
   [[ -f "${action}" && -x "${action}" ]] \
     || fail "pdf native replay action is unavailable"
-  receipt="$("${action}" "${archive}" "${digest}")"
+  receipt="$(WAREHOUSE_PDF_NATIVE_EFFECTIVE_NODE_ROLE="${role}" \
+    "${action}" "${archive}" "${digest}")"
   [[ -n "${receipt}" && "${receipt}" != *$'\n'* ]] \
     || fail "pdf native replay receipt is invalid"
   log_event pdf_native_replay succeeded "$(slot_release "$(active_slot)")" \
