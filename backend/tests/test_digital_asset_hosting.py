@@ -17,6 +17,7 @@ from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
+from app import runtime_controller_base
 from app.api import router as api_router
 from app.api.deps import ActorContext, current_actor
 from app.core.config import Settings, get_settings
@@ -252,6 +253,10 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
 
         with tenant_session(actor.tenant_id) as session:
             for index, deployment in enumerate(deployments):
+                container_name = (
+                    "warehouse-runtime-"
+                    + deployment["uuid"].replace("-", "")[:20]
+                )
                 session.execute(
                     text(
                         """
@@ -259,11 +264,22 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
                         SET status='ready',health='healthy',
                             created_at=now() - (:age * interval '1 hour'),
                             completed_at=now() - (:age * interval '1 hour'),
-                            result=jsonb_build_object('public_route_verified',false)
+                            result=jsonb_build_object(
+                              'public_route_verified',false,
+                              'container_names',
+                              CASE WHEN :has_container
+                                THEN jsonb_build_array(CAST(:container_name AS text))
+                                ELSE '[]'::jsonb END
+                            )
                         WHERE id=:id
                         """
                     ),
-                    {"id": deployment["uuid"], "age": 10 - index},
+                    {
+                        "id": deployment["uuid"],
+                        "age": 10 - index,
+                        "has_container": index == 0,
+                        "container_name": container_name,
+                    },
                 )
                 release = (
                     settings.hosted_runtime_data_root
@@ -323,10 +339,57 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
             },
         )
         assert applied.status_code == 200, applied.text
-        assert applied.json()["ok"] is True
+        assert applied.json()["ok"] is False
         assert applied.json()["counts"] == {
             "deployments": 1,
             "sources": 2,
+            "expired_uploads": 0,
+            "errors": 1,
+        }
+        assert applied.json()["errors"][0]["error"] == "runtime_controller_cleanup_pending"
+
+        removed: list[str] = []
+
+        class FakeDockerEngine:
+            def __init__(self, _socket) -> None:
+                pass
+
+            def remove(self, name: str) -> None:
+                removed.append(name)
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr(runtime_controller_base, "DockerEngine", FakeDockerEngine)
+        controller = RuntimeController(settings)
+        monkeypatch.setattr(controller, "_tenants", lambda: [actor.tenant_id])
+        assert controller.reconcile_retention_runtime_containers() == 1
+        assert removed == [
+            "warehouse-runtime-" + deployments[0]["uuid"].replace("-", "")[:20]
+        ]
+
+        retry_plan = client.get(
+            "/api/workspaces/v1/retention/plan",
+            headers=headers,
+            params={
+                "keep_recent_deployments": 2,
+                "keep_recent_sources": 5,
+                "min_age_hours": 0,
+            },
+        ).json()
+        retried = client.post(
+            "/api/workspaces/v1/retention/apply",
+            headers=headers,
+            json={
+                **retry_plan["policy"],
+                "confirm_plan_digest": retry_plan["plan_digest"],
+            },
+        )
+        assert retried.status_code == 200, retried.text
+        assert retried.json()["ok"] is True
+        assert retried.json()["counts"] == {
+            "deployments": 1,
+            "sources": 0,
             "expired_uploads": 0,
             "errors": 0,
         }

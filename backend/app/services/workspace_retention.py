@@ -22,7 +22,6 @@ from sqlalchemy import text
 
 from app.core.config import Settings
 from app.db.session import tenant_session
-from app.runtime_controller_base import DockerEngine
 from app.services.digital_asset_hosting import (
     WorkspaceCredential,
     _audit,
@@ -127,6 +126,10 @@ def _deployment_container_names(
         for name in (raw_names if isinstance(raw_names, list) else [])
         if _SAFE_CONTAINER_NAME.fullmatch(str(name)) and str(name).startswith(prefix)
     ]
+
+
+def _containers_retired(result: object) -> bool:
+    return bool(_retention(result).get("containers_retired_at"))
 
 
 def _release_path(
@@ -298,6 +301,7 @@ def _build_plan(
                 "created_at": row["created_at"].isoformat(),
                 "estimated_runtime_bytes": _tree_bytes(target),
                 "_container_names": container_names,
+                "_containers_retired": _containers_retired(result),
                 "_path": str(target),
             }
         )
@@ -486,6 +490,7 @@ def _build_plan(
                 {
                     "id": item["id"],
                     "container_names": item["_container_names"],
+                    "containers_retired": item["_containers_retired"],
                 }
                 for item in deployment_candidates
             ],
@@ -728,38 +733,13 @@ def apply_workspace_retention(
     source_results: dict[str, dict[str, object]] = {}
     upload_results: dict[str, dict[str, object]] = {}
 
-    container_names = sorted(
-        {
-            str(name)
-            for item in plan["deployment_candidates"]
-            for name in item.get("_container_names", [])
-        }
-    )
-    container_errors: dict[str, str] = {}
-    if container_names:
-        engine: DockerEngine | None = None
-        try:
-            engine = DockerEngine(settings.runtime_docker_socket)
-            for name in container_names:
-                try:
-                    engine.remove(name)
-                except Exception as exc:  # bounded provider error becomes retry evidence
-                    container_errors[name] = str(exc)[:500]
-        except Exception as exc:
-            for name in container_names:
-                container_errors[name] = str(exc)[:500]
-        finally:
-            if engine is not None:
-                engine.close()
-
     for item in plan["deployment_candidates"]:
         deployment_id = str(item["id"])
         names = [str(name) for name in item.get("_container_names", [])]
-        failures = [container_errors[name] for name in names if name in container_errors]
-        if failures:
+        if names and not bool(item.get("_containers_retired")):
             deployment_results[deployment_id] = {
                 "ok": False,
-                "error": failures[0],
+                "error": "runtime_controller_cleanup_pending",
                 "reclaimed_bytes": 0,
             }
             continue
