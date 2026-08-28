@@ -46,6 +46,9 @@ jobs:
       WAREHOUSE_PRIMARY_MANAGER_SUDO: "0"
       WAREHOUSE_PRIMARY_PREPARE_INCOMING: "0"
       WAREHOUSE_STANDBY_TRANSPORT: ssh
+      # The production runner and standby already share an authenticated
+      # Tailscale route. Avoid the observed public-IP SSH send stall.
+      WAREHOUSE_STANDBY_HOST: 100.98.166.49
     steps:
       - uses: actions/checkout@v4
         with:
