@@ -220,6 +220,29 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
         headers = {"Authorization": f"Bearer {key}"}
         workspace_id = provisioned.json()["workspace"]["uuid"]
 
+        abandoned_upload = client.post(
+            "/api/workspaces/v1/source-uploads",
+            headers={**headers, "Idempotency-Key": "retention-abandoned-upload"},
+            json={
+                "filename": "abandoned.zip",
+                "content_type": "application/zip",
+                "size_bytes": 1,
+                "sha256": "a" * 64,
+                "version_no": "retention-abandoned-v1",
+                "component": "frontend",
+            },
+        )
+        assert abandoned_upload.status_code == 201, abandoned_upload.text
+        abandoned_upload_id = abandoned_upload.json()["upload_id"]
+        with tenant_session(actor.tenant_id) as session:
+            session.execute(
+                text(
+                    "UPDATE digital_asset.source_upload_jobs "
+                    "SET status='expired',expires_at=now() - interval '1 hour' WHERE id=:id"
+                ),
+                {"id": abandoned_upload_id},
+            )
+
         sources = []
         for index in range(7):
             package = _source_zip(
@@ -311,6 +334,9 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
             sources[0]["uuid"],
             sources[1]["uuid"],
         }
+        assert [item["upload_id"] for item in plan["expired_uploads"]] == [
+            abandoned_upload_id
+        ]
         protected = {
             item["id"]: item["reasons"] for item in plan["protected"]["deployments"]
         }
@@ -343,7 +369,7 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
         assert applied.json()["counts"] == {
             "deployments": 1,
             "sources": 2,
-            "expired_uploads": 0,
+            "expired_uploads": 1,
             "errors": 1,
         }
         assert applied.json()["errors"][0]["error"] == "runtime_controller_cleanup_pending"
@@ -377,6 +403,7 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
                 "min_age_hours": 0,
             },
         ).json()
+        assert retry_plan["expired_uploads"] == []
         retried = client.post(
             "/api/workspaces/v1/retention/apply",
             headers=headers,
@@ -421,6 +448,7 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
         ).json()
         assert replanned["deployment_candidates"] == []
         assert replanned["source_candidates"] == []
+        assert replanned["expired_uploads"] == []
     finally:
         app.dependency_overrides.clear()
 

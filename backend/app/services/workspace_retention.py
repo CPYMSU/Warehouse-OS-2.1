@@ -430,6 +430,7 @@ def _build_plan(
                 SELECT id,status,storage_provider,received_bytes,expires_at
                 FROM digital_asset.source_upload_jobs
                 WHERE workspace_id=:workspace_id
+                  AND NOT (result ? 'staging_cleaned_at')
                   AND (
                     (status IN ('created','uploading','failed') AND expires_at <= now())
                     OR status IN ('expired','cancelled')
@@ -908,6 +909,32 @@ def apply_workspace_retention(
                     version_id=UUID(str(item["source_version_id"])),
                     artifact_id=UUID(artifact_id),
                 )
+        for item in plan["expired_uploads"]:
+            upload_id = str(item["upload_id"])
+            outcome = upload_results[upload_id]
+            if not outcome["ok"]:
+                continue
+            row = session.execute(
+                text("SELECT result FROM digital_asset.source_upload_jobs WHERE id=:id"),
+                {"id": UUID(upload_id)},
+            ).mappings().one()
+            result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
+            result["staging_cleaned_at"] = finished_at
+            result["retention"] = {
+                "state": "retired",
+                "run_id": str(run_id),
+                "plan_digest": plan["plan_digest"],
+                "finished_at": finished_at,
+                "reclaimed_bytes": int(outcome.get("reclaimed_bytes") or 0),
+            }
+            session.execute(
+                text(
+                    "UPDATE digital_asset.source_upload_jobs "
+                    "SET received_bytes=0,received_parts=0,updated_at=now(),"
+                    "result=CAST(:result AS jsonb) WHERE id=:id"
+                ),
+                {"id": UUID(upload_id), "result": json.dumps(result, default=str)},
+            )
         usage = _workspace_billable_usage(
             session,
             tenant_id=credential.tenant_id,
