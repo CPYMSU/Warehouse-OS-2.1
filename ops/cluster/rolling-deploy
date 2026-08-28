@@ -64,6 +64,12 @@ run_node() {
     [[ -f "${identity}" ]] || fail "identity is missing for ${label}: ${identity}"
   fi
   read -r action_command action_argument <<<"${action}"
+  if [[ "${prefix}" == WAREHOUSE_STANDBY && "${action_command}" == prepare ]]; then
+    # The standby's Tailscale route is reliable for the bounded release upload,
+    # while short control-plane SSH commands are more reliable on its public
+    # address.  Keep these routes independently configurable.
+    host="$(node_value "${prefix}" PREPARE_HOST "${host}")"
+  fi
   [[ "${action_command}" =~ ^(prepare|prepared-status|migration-start|migration-status|migration-wait|migration-reconcile|activate|status|rollback)$ ]] \
     || fail "unsupported node action: ${action_command}"
   if [[ "${action_command}" =~ ^(status|rollback)$ ]]; then

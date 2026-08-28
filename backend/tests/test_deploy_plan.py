@@ -316,6 +316,8 @@ def test_cluster_deploy_prepares_and_activates_both_nodes_in_parallel() -> None:
     assert "activation_duration <= ACTIVATION_SLO_SECONDS" in source
     assert 'if [[ "${transport}" == ssh ]]; then' in source
     assert "identity is missing for ${label}: ${identity}" in source
+    assert '"${action_command}" == prepare' in source
+    assert 'node_value "${prefix}" PREPARE_HOST "${host}"' in source
 
 
 def test_cluster_deploy_supports_an_asymmetric_code_only_noop() -> None:
