@@ -41,13 +41,51 @@ MAX_MEMBER_COUNT = 64
 MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
 
+EXPECTED_ARCHIVE_BYTES = 14_653_155
+EXPECTED_ARCHIVE_SHA256 = (
+    "381fb733b4959dd7eae49c7002adbb811ee12bdea50d53cbb5463a242416daa6"
+)
+BUNDLE_MANIFEST_SCHEMA = "tidi.pdf-subset-compatibility-replay-bundle.v1"
+BUNDLE_MANIFEST_VERSION = "2026-08-28.1"
+EXPECTED_PAYLOAD_ROOT_SHA256 = (
+    "98db9610d18ef893b5cca797880f431f2a896d1c528fc1b8a9bc6f0eb8ed0f45"
+)
+BUNDLE_CONTRACT_SCHEMA = "tidi.pdf-subset-compatibility-replay-bundle-contract.v1"
+BUNDLE_CONTRACT_VERSION = "2026-08-28.1"
+BUNDLE_CONTRACT_SHA256 = (
+    "cc40a460577bbf167f8de6471dcdb2fe25c8656d96da45acc1e11a10fc27c6ee"
+)
 TARGET_SCHEMA = "tidi.pdf-product-target-replay-receipt.v1"
 HOST_SCHEMA = "tidi.pdf-native-x86-production-host-receipt.v1"
 REPLAY_CONTRACT_SCHEMA = "tidi.pdf-product-dependency-isolation-contract.v1"
 REPLAY_CONTRACT_VERSION = "2026-08-26.4"
+REPLAY_CONTRACT_SHA256 = (
+    "785a64a6c77f730e56404db99c4007b77762fbb2d2032d792bf8e9f108e16dc7"
+)
+COMPATIBILITY_CONTRACT_SCHEMA = "tidi.pdf-subset-compatibility-repair-contract.v1"
+COMPATIBILITY_CONTRACT_VERSION = "2026-08-27.1"
+COMPATIBILITY_CONTRACT_SHA256 = (
+    "8b5489a11dd5af6856d3d149d5858196e2c18127a2e555aa51e0614ecd2e1150"
+)
 X86_WHEEL = "pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 ARM_WHEEL = "pypdfium2-5.13.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
 ENTRYPOINT = "scripts/run_pdf_product_target_replay.py"
+EXPECTED_FIXTURE_MANIFEST_SHA256S = {
+    "pdf_poc": "3b884adddae14ff2fec7f6259c4a47ad69f6b3e508994a59a9d99a85b672b540",
+    "pdf_advanced_poc": (
+        "6b4d496825125c9a1cacbcd23f2998abff6ef5d27d61913fb280f7496f63389e"
+    ),
+    "pdf_subset_compatibility_poc": (
+        "9cd3513ec8928cf9b804d3b366bf0ce98dadd57557897a2f900d63bfc08561b8"
+    ),
+}
+EXPECTED_MAP_SHA256 = "06a62f1cd8504c8804fac065a2426bc085f2aee7f4b4734b4396dfe3ce138401"
+EXPECTED_SEMANTIC_MAP_SHA256 = (
+    "bc2986d639f98fea4107897c04139fbe1801e38b4066bdf365f5256805699bcb"
+)
+EXPECTED_REJECTION_MAP_SHA256 = (
+    "0682da0a30bcaff8718d8b73a123ecbb420e3a2f1f0a107d42beb8f2b476de93"
+)
 
 EXPECTED_ARCHIVE_FILES = {
     "backend/app/__init__.py",
@@ -56,7 +94,9 @@ EXPECTED_ARCHIVE_FILES = {
     "backend/app/poc/pdf_product_candidate.py",
     "backend/app/poc/pdf_product_worker.py",
     "backend/app/poc/pdf_syntax.py",
+    "bundle-contract.json",
     "bundle-manifest.json",
+    "compatibility-contract.json",
     "contract.json",
     "fixtures/pdf_advanced_poc/form_xobject_cycle.pdf",
     "fixtures/pdf_advanced_poc/manifest.json",
@@ -76,6 +116,23 @@ EXPECTED_ARCHIVE_FILES = {
     "fixtures/pdf_poc/multiple_content_streams.pdf",
     "fixtures/pdf_poc/native_text_complete.pdf",
     "fixtures/pdf_poc/rotated_native_text.pdf",
+    "fixtures/pdf_subset_compatibility_poc/combined_transparent_container_text.pdf",
+    "fixtures/pdf_subset_compatibility_poc/double_quote_text_operator.pdf",
+    "fixtures/pdf_subset_compatibility_poc/identity_decode_parameters_text.pdf",
+    "fixtures/pdf_subset_compatibility_poc/identity_params_embedded_content.pdf",
+    "fixtures/pdf_subset_compatibility_poc/incremental_xref_resource_limit.pdf",
+    "fixtures/pdf_subset_compatibility_poc/incremental_xref_signature.pdf",
+    "fixtures/pdf_subset_compatibility_poc/incremental_xref_text.pdf",
+    "fixtures/pdf_subset_compatibility_poc/incremental_xref_text_plus_image.pdf",
+    "fixtures/pdf_subset_compatibility_poc/indirect_length_active_action.pdf",
+    "fixtures/pdf_subset_compatibility_poc/indirect_length_text.pdf",
+    "fixtures/pdf_subset_compatibility_poc/indirect_length_text_plus_vector.pdf",
+    "fixtures/pdf_subset_compatibility_poc/inline_image_operator.pdf",
+    "fixtures/pdf_subset_compatibility_poc/manifest.json",
+    "fixtures/pdf_subset_compatibility_poc/single_quote_text_operator.pdf",
+    "fixtures/pdf_subset_compatibility_poc/unknown_content_operator.pdf",
+    "fixtures/pdf_subset_compatibility_poc/unsupported_decode_predictor.pdf",
+    "fixtures/pdf_subset_compatibility_poc/unsupported_stream_filter.pdf",
     "fonts/NotoSansSC-Regular.otf",
     "fonts/OFL-1.1.txt",
     ENTRYPOINT,
@@ -156,6 +213,10 @@ def _verify_archive(path: Path, digest: str) -> None:
         raise ReplayFailure("archive_type_invalid")
     if not 1 <= metadata.st_size <= MAX_ARCHIVE_BYTES:
         raise ReplayFailure("archive_size_invalid")
+    if metadata.st_size != EXPECTED_ARCHIVE_BYTES or not hmac.compare_digest(
+        digest, EXPECTED_ARCHIVE_SHA256
+    ):
+        raise ReplayFailure("archive_identity_not_allowlisted")
     if not hmac.compare_digest(_sha256(path), digest):
         raise ReplayFailure("archive_checksum_mismatch")
 
@@ -251,12 +312,51 @@ def _extract_bundle(archive: Path, bundle: Path) -> None:
 def _verify_bundle(bundle: Path) -> None:
     manifest = _read_json(bundle / "bundle-manifest.json")
     entries = manifest.get("files")
+    matrix = manifest.get("fixture_matrix")
+    targets = manifest.get("targets")
     if (
-        manifest.get("schema") != "tidi.pdf-product-replay-bundle.v1"
+        manifest.get("schema") != BUNDLE_MANIFEST_SCHEMA
+        or manifest.get("version") != BUNDLE_MANIFEST_VERSION
+        or manifest.get("preparation_only") is not True
+        or manifest.get("execution_authorized") is not False
+        or manifest.get("warehouse_native_x86_execution_authorized") is not False
+        or manifest.get("warehouse_platform_activation_authorized") is not False
+        or manifest.get("current_warehouse_platform_compatible") is not False
+        or manifest.get("controlled_corpus_used") is not False
+        or manifest.get("runtime_parser_registered") is not False
+        or manifest.get("ocr_invoked") is not False
         or manifest.get("fully_synthetic_only") is not True
         or manifest.get("business_data") is not False
         or not isinstance(entries, list)
-        or manifest.get("file_count") != len(entries)
+        or len(entries) != 49
+        or manifest.get("payload_file_count") != len(entries)
+        or manifest.get("archive_entry_count") != len(EXPECTED_ARCHIVE_FILES)
+        or manifest.get("payload_root_sha256") != EXPECTED_PAYLOAD_ROOT_SHA256
+        or manifest.get("product_contract_sha256") != REPLAY_CONTRACT_SHA256
+        or manifest.get("compatibility_contract_sha256")
+        != COMPATIBILITY_CONTRACT_SHA256
+        or manifest.get("bundle_contract_sha256") != BUNDLE_CONTRACT_SHA256
+        or not isinstance(matrix, dict)
+        or not isinstance(targets, dict)
+    ):
+        raise ReplayFailure("bundle_manifest_invalid")
+    if (
+        matrix.get("fixture_count") != 32
+        or matrix.get("existing_fixture_count") != 16
+        or matrix.get("new_fixture_count") != 16
+        or matrix.get("success_count") != 15
+        or matrix.get("rejection_count") != 17
+        or matrix.get("worker_execution_count") != 64
+        or matrix.get("repeat_count_per_fixture") != 2
+        or matrix.get("fixture_manifest_sha256s") != EXPECTED_FIXTURE_MANIFEST_SHA256S
+        or matrix.get("expected_map_sha256") != EXPECTED_MAP_SHA256
+        or matrix.get("semantic_output_map_sha256") != EXPECTED_SEMANTIC_MAP_SHA256
+        or matrix.get("rejection_map_sha256") != EXPECTED_REJECTION_MAP_SHA256
+        or targets.get("linux-arm64") != "native-isolated-pending-separate-confirmation"
+        or targets.get("linux-x86_64")
+        != "hardware-emulated-diagnostic-pending-separate-confirmation"
+        or targets.get("warehouse-linux-x86_64")
+        != "native-pending-new-platform-and-separate-confirmation"
     ):
         raise ReplayFailure("bundle_manifest_invalid")
     expected_payloads = EXPECTED_ARCHIVE_FILES - {"bundle-manifest.json"}
@@ -280,13 +380,65 @@ def _verify_bundle(bundle: Path) -> None:
             raise ReplayFailure("bundle_manifest_mismatch")
     if observed != expected_payloads:
         raise ReplayFailure("bundle_manifest_invalid")
+    if not hmac.compare_digest(
+        _canonical_sha256(entries), EXPECTED_PAYLOAD_ROOT_SHA256
+    ):
+        raise ReplayFailure("bundle_manifest_mismatch")
 
-    contract = _read_json(bundle / "contract.json")
+    contract_path = bundle / "contract.json"
+    contract = _read_json(contract_path)
     if (
         contract.get("schema") != REPLAY_CONTRACT_SCHEMA
         or contract.get("version") != REPLAY_CONTRACT_VERSION
+        or not hmac.compare_digest(_sha256(contract_path), REPLAY_CONTRACT_SHA256)
     ):
         raise ReplayFailure("replay_contract_invalid")
+
+    compatibility_path = bundle / "compatibility-contract.json"
+    compatibility = _read_json(compatibility_path)
+    if (
+        compatibility.get("schema") != COMPATIBILITY_CONTRACT_SCHEMA
+        or compatibility.get("version") != COMPATIBILITY_CONTRACT_VERSION
+        or not hmac.compare_digest(
+            _sha256(compatibility_path), COMPATIBILITY_CONTRACT_SHA256
+        )
+    ):
+        raise ReplayFailure("compatibility_contract_invalid")
+
+    bundle_contract_path = bundle / "bundle-contract.json"
+    bundle_contract = _read_json(bundle_contract_path)
+    authorization = bundle_contract.get("authorization")
+    bundle_specification = bundle_contract.get("bundle")
+    target_handoff = bundle_contract.get("target_handoff")
+    if not all(
+        isinstance(value, dict)
+        for value in (authorization, bundle_specification, target_handoff)
+    ):
+        raise ReplayFailure("bundle_contract_invalid")
+    if (
+        bundle_contract.get("schema") != BUNDLE_CONTRACT_SCHEMA
+        or bundle_contract.get("version") != BUNDLE_CONTRACT_VERSION
+        or bundle_contract.get("status")
+        != "bundle_preparation_only_execution_confirmation_pending"
+        or not hmac.compare_digest(
+            _sha256(bundle_contract_path), BUNDLE_CONTRACT_SHA256
+        )
+        or authorization.get("confirmed_scope") != "prepare_immutable_bundle_only"
+        or authorization.get("warehouse_native_x86_replay_allowed") is not False
+        or authorization.get("warehouse_platform_activation_allowed") is not False
+        or authorization.get("controlled_pdf_read_allowed") is not False
+        or bundle_specification.get("payload_file_count") != 49
+        or bundle_specification.get("archive_entry_count") != 50
+        or bundle_specification.get("execution_authorized") is not False
+        or target_handoff.get("current_warehouse_platform_accepts_this_bundle")
+        is not False
+        or target_handoff.get(
+            "new_bounded_platform_candidate_required_before_native_execution"
+        )
+        is not True
+        or target_handoff.get("prior_16_fixture_native_receipt_reusable") is not False
+    ):
+        raise ReplayFailure("bundle_contract_invalid")
 
 
 def _limit_output() -> None:
@@ -509,6 +661,8 @@ def _run_replay(
             "/bundle/fixtures",
             "--contract",
             "/bundle/contract.json",
+            "--compatibility-contract",
+            "/bundle/compatibility-contract.json",
             "--wheel",
             f"/bundle/wheels/{X86_WHEEL}",
             "--site-root",
@@ -556,9 +710,15 @@ def _verify_target_receipt(receipt: dict[str, Any]) -> None:
         isinstance(value, dict) for value in (dependency, font, isolation, matrix)
     ):
         raise ReplayFailure("target_receipt_invalid")
+    successes = matrix.get("success_outputs")
+    rejections = matrix.get("rejections")
+    seccomp_filters = isolation.get("seccomp_filters")
     if (
         receipt.get("schema") != TARGET_SCHEMA
         or receipt.get("contract_version") != REPLAY_CONTRACT_VERSION
+        or receipt.get("compatibility_contract_version")
+        != COMPATIBILITY_CONTRACT_VERSION
+        or receipt.get("compatibility_contract_sha256") != COMPATIBILITY_CONTRACT_SHA256
         or receipt.get("target") != "linux-x86_64"
         or receipt.get("platform_system") != "Linux"
         or receipt.get("platform_machine") != "x86_64"
@@ -567,28 +727,64 @@ def _verify_target_receipt(receipt: dict[str, Any]) -> None:
         or receipt.get("product_isolation_proven_for_target") is not True
         or receipt.get("controlled_corpus_used") is not False
         or receipt.get("runtime_parser_registered") is not False
+        or dependency.get("wheel_file") != X86_WHEEL
+        or dependency.get("wheel_bytes") != 3_730_077
+        or dependency.get("wheel_sha256")
+        != "81df25c1ab4c13ff773102d3cbea1967511d079123b067fc077bd0c4d57d91d8"
+        or dependency.get("offline_file_install") is not True
+        or dependency.get("license_file_count") != 19
         or dependency.get("pypdfium2_version") != "5.13.0"
         or dependency.get("pdfium_version") != "153.0.7999.0"
+        or dependency.get("pdfium_flags") != []
         or dependency.get("native_elf_machine") != 62
+        or font.get("file") != "NotoSansSC-Regular.otf"
+        or font.get("bytes") != 8_331_336
+        or font.get("sha256")
+        != "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9"
+        or font.get("license_file") != "OFL-1.1.txt"
+        or font.get("license_bytes") != 4_301
+        or font.get("license_sha256")
+        != "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
         or font.get("read_only_mount") is not True
+        or font.get("network_resolution_used") is not False
+        or font.get("semantic_authority") is not False
+        or font.get("proves_embedded_font_truth") is not False
         or isolation.get("network_egress_denied") is not True
         or isolation.get("root_filesystem_write_denied") is not True
         or isolation.get("dedicated_tmpfs_noexec") is not True
         or isolation.get("capabilities_dropped") is not True
+        or isolation.get("cap_eff_hex") != "0000000000000000"
         or isolation.get("no_new_privileges") is not True
+        or isolation.get("seccomp_active") is not True
         or isolation.get("seccomp_mode") != 2
+        or not isinstance(seccomp_filters, int)
+        or isinstance(seccomp_filters, bool)
+        or seccomp_filters < 1
         or isolation.get("non_root_user") is not True
         or isolation.get("pids_limit") != 64
+        or isolation.get("process_limit_bounded") is not True
         or isolation.get("memory_limit_bytes") != 536870912
+        or isolation.get("memory_limit_bounded") is not True
         or isolation.get("external_business_mounts_absent") is not True
-        or matrix.get("fixture_count") != 16
-        or matrix.get("success_count") != 9
-        or matrix.get("rejection_count") != 7
+        or isolation.get("environment_allowlisted") is not True
+        or isolation.get("product_isolation_proven_for_target") is not True
+        or matrix.get("fixture_count") != 32
+        or matrix.get("existing_fixture_count") != 16
+        or matrix.get("new_fixture_count") != 16
+        or matrix.get("success_count") != 15
+        or matrix.get("rejection_count") != 17
+        or matrix.get("worker_execution_count") != 64
         or matrix.get("repeat_count_per_fixture") != 2
-        or matrix.get("semantic_output_map_sha256")
-        != "7297c59cd5ccbb90b837b553287da149b5fa689b94a3f8565110eb4b76a28c68"
-        or matrix.get("rejection_map_sha256")
-        != "5ff6e6c5392f5967223df1ec73afe7c0e7a65a854dc4931a5d7ea26e99f96f88"
+        or matrix.get("fixture_manifest_sha256s") != EXPECTED_FIXTURE_MANIFEST_SHA256S
+        or matrix.get("expected_map_sha256") != EXPECTED_MAP_SHA256
+        or matrix.get("semantic_output_map_sha256") != EXPECTED_SEMANTIC_MAP_SHA256
+        or matrix.get("rejection_map_sha256") != EXPECTED_REJECTION_MAP_SHA256
+        or not isinstance(successes, dict)
+        or len(successes) != 15
+        or _canonical_sha256(successes) != EXPECTED_SEMANTIC_MAP_SHA256
+        or not isinstance(rejections, dict)
+        or len(rejections) != 17
+        or _canonical_sha256(rejections) != EXPECTED_REJECTION_MAP_SHA256
     ):
         raise ReplayFailure("target_receipt_invalid")
 
