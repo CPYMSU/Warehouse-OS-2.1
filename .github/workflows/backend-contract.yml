@@ -23,6 +23,11 @@ jobs:
       GIT_CONFIG_VALUE_0: HTTP/1.1
     steps:
       - uses: actions/checkout@v4
+        env:
+          # actions/checkout does not inherit macOS System Proxy settings.
+          # Scope the existing local Clash proxy to GitHub transport only.
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
       - name: Verify committed release contract
         run: |
           set -euo pipefail
