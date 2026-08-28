@@ -301,7 +301,7 @@ def _workspace_billable_usage(
                 AS data_object_bytes
             FROM digital_asset.artifacts
             WHERE asset_id = :asset_id
-              AND state IN ('pending','stored','verified','quarantined','released')
+              AND state IN ('pending','stored','verified','quarantined')
             """
             ),
             {"asset_id": asset_id},

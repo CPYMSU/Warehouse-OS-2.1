@@ -150,6 +150,35 @@ class LocalContentAddressedObjectStore:
         root = self.path_for(f".source-uploads/{tenant_id}/{upload_id}")
         shutil.rmtree(root, ignore_errors=True)
 
+    def retire_content_addressed_object(
+        self,
+        *,
+        tenant_id: UUID,
+        object_key: str,
+        sha256: str,
+    ) -> int:
+        """Remove one exact immutable object after database reference checks.
+
+        The caller is responsible for proving that no live artifact references
+        the object.  This adapter independently binds the supplied key back to
+        the tenant and digest so a malformed database row can never widen the
+        deletion target.
+        """
+
+        expected_key = self.object_key_for_sha256(tenant_id, sha256)
+        if object_key != expected_key:
+            raise RuntimeError("Content-addressed object key does not match its digest")
+        target = self.path_for(object_key)
+        if target.is_symlink():
+            raise RuntimeError("Refusing to retire a symlinked content object")
+        if not target.exists():
+            return 0
+        if not target.is_file():
+            raise RuntimeError("Content-addressed object is not a regular file")
+        size_bytes = max(0, int(target.stat().st_size))
+        target.unlink()
+        return size_bytes
+
     def put_stream(
         self,
         *,

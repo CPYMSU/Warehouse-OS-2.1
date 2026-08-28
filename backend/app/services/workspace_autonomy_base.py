@@ -639,6 +639,7 @@ def autonomy_manifest(credential: WorkspaceCredential) -> dict[str, object]:
             ],
             "credential_management": ["list", "issue_delegated", "rotate_primary", "revoke"],
             "quota": ["observe", "resize", "automatic_growth"],
+            "retention": ["plan", "digest_bound_apply", "audited_recovery"],
         },
     }
 
