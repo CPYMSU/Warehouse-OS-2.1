@@ -40,7 +40,10 @@ from app.services.workspace_deployments import (
     workspace_source_upload_target,
 )
 
-SOURCE_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+# Keep each request comfortably below Cloudflare's origin-response window even
+# when the governed HDD writer is under load. Larger archives remain resumable;
+# they simply use more independently verified parts.
+SOURCE_UPLOAD_CHUNK_BYTES = 1 * 1024 * 1024
 SOURCE_UPLOAD_TTL_HOURS = 24
 SOURCE_UPLOAD_MAX_ATTEMPTS = 3
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -638,6 +641,79 @@ def source_upload_status(
     if UUID(str(row["workspace_id"])) != credential.workspace_id:
         raise HTTPException(status_code=404, detail="Source upload not found")
     return _job_public(row)
+
+
+def cancel_source_upload(
+    credential: WorkspaceCredential,
+    upload_id: UUID,
+    *,
+    settings: Settings,
+) -> dict[str, object]:
+    """Cancel one unfinished upload and retire only its private staging parts."""
+
+    credential.require("deploy:write")
+    with tenant_session(credential.tenant_id) as session:
+        row = _job_row(session, upload_id, lock=True)
+        if UUID(str(row["workspace_id"])) != credential.workspace_id:
+            raise HTTPException(status_code=404, detail="Source upload not found")
+        result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
+        if str(row["status"]) == "cancelled" and result.get("staging_cleaned_at"):
+            return _job_public(row, idempotent_replay=True)
+        if str(row["status"]) not in {"created", "uploading", "failed", "cancelled"}:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "source_upload_not_cancellable",
+                    "status": row["status"],
+                },
+            )
+        session.execute(
+            text(
+                "UPDATE digital_asset.source_upload_jobs "
+                "SET status='cancelled',updated_at=now(),lease_owner=NULL,"
+                "lease_expires_at=NULL,error=jsonb_build_object("
+                "'reason','source_upload_cancelled','retryable',false) WHERE id=:id"
+            ),
+            {"id": upload_id},
+        )
+        _audit(
+            session,
+            None,
+            "digital_asset.source_upload_cancelled",
+            {
+                "workspace_id": str(credential.workspace_id),
+                "upload_id": str(upload_id),
+                "sha256": str(row["expected_sha256"]),
+            },
+            tenant_id=credential.tenant_id,
+        )
+        provider = str(row["storage_provider"])
+
+    store = object_store_for_provider(settings, provider)
+    store.remove_source_upload(
+        tenant_id=credential.tenant_id,
+        upload_id=upload_id,
+    )
+    cleaned_at = datetime.now(UTC).isoformat()
+    with tenant_session(credential.tenant_id) as session:
+        row = _job_row(session, upload_id, lock=True)
+        result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
+        result["staging_cleaned_at"] = cleaned_at
+        result["cancelled_at"] = cleaned_at
+        session.execute(
+            text("DELETE FROM digital_asset.source_upload_parts WHERE upload_id=:id"),
+            {"id": upload_id},
+        )
+        session.execute(
+            text(
+                "UPDATE digital_asset.source_upload_jobs "
+                "SET received_bytes=0,received_parts=0,updated_at=now(),"
+                "result=CAST(:result AS jsonb) WHERE id=:id"
+            ),
+            {"id": upload_id, "result": json.dumps(result, default=str)},
+        )
+        updated = _job_row(session, upload_id)
+    return _job_public(updated)
 
 
 class _PartSequenceStream:
