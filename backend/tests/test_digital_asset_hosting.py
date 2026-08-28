@@ -190,6 +190,178 @@ def test_upload_requires_explicit_new_asset_intent_and_leaves_no_orphan() -> Non
         app.dependency_overrides.clear()
 
 
+def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chain(
+    tmp_path, monkeypatch
+) -> None:
+    actor = _actor("workspace-retention")
+    settings = Settings(
+        asset_storage_root=tmp_path / "hdd",
+        asset_code_ssd_root=tmp_path / "ssd",
+        hosted_runtime_data_root=tmp_path / "runtime",
+        runtime_host_data_root=tmp_path / "runtime",
+    )
+    app.dependency_overrides[current_actor] = lambda: actor
+    app.dependency_overrides[get_settings] = lambda: settings
+    client = TestClient(app)
+    try:
+        provisioned = client.post(
+            "/api/digital-assets/provision",
+            json={
+                "name": "Retention Contract App",
+                "asset_kind": "software",
+                "workspace_key": "retention-contract-app",
+                "runtime_type": "static",
+                "service_plan": "hosted",
+            },
+        )
+        assert provisioned.status_code == 201, provisioned.text
+        key = provisioned.json()["api_key"]
+        headers = {"Authorization": f"Bearer {key}"}
+        workspace_id = provisioned.json()["workspace"]["uuid"]
+
+        sources = []
+        for index in range(7):
+            package = _source_zip(
+                {"index.html": f"<!doctype html><title>Retention {index}</title>"}
+            )
+            uploaded = client.post(
+                "/api/workspaces/v1/sources/upload",
+                headers={
+                    **headers,
+                    "Content-SHA256": hashlib.sha256(package).hexdigest(),
+                },
+                files={"file": (f"source-{index}.zip", package, "application/zip")},
+                data={"version_no": f"retention-v{index}", "component": "frontend"},
+            )
+            assert uploaded.status_code == 201, uploaded.text
+            sources.append(uploaded.json()["source"])
+
+        deployments = []
+        for index in range(3):
+            requested = client.post(
+                "/api/workspaces/v1/deployments",
+                headers={**headers, "Idempotency-Key": f"retention-deploy-{index}"},
+                json={
+                    "source_version_id": sources[-1]["uuid"],
+                    "component": "frontend",
+                    "activate": False,
+                },
+            )
+            assert requested.status_code == 202, requested.text
+            deployments.append(requested.json()["deployment"])
+
+        with tenant_session(actor.tenant_id) as session:
+            for index, deployment in enumerate(deployments):
+                session.execute(
+                    text(
+                        """
+                        UPDATE digital_asset.deployments
+                        SET status='ready',health='healthy',
+                            created_at=now() - (:age * interval '1 hour'),
+                            completed_at=now() - (:age * interval '1 hour'),
+                            result=jsonb_build_object('public_route_verified',false)
+                        WHERE id=:id
+                        """
+                    ),
+                    {"id": deployment["uuid"], "age": 10 - index},
+                )
+                release = (
+                    settings.hosted_runtime_data_root
+                    / "tenants"
+                    / str(actor.tenant_id)
+                    / "workspaces"
+                    / workspace_id
+                    / "releases"
+                    / deployment["uuid"]
+                )
+                release.mkdir(parents=True)
+                (release / "source.bin").write_bytes(f"runtime-{index}".encode())
+
+        plan_response = client.get(
+            "/api/workspaces/v1/retention/plan",
+            headers=headers,
+            params={
+                "keep_recent_deployments": 2,
+                "keep_recent_sources": 5,
+                "min_age_hours": 0,
+            },
+        )
+        assert plan_response.status_code == 200, plan_response.text
+        plan = plan_response.json()
+        assert [item["id"] for item in plan["deployment_candidates"]] == [
+            deployments[0]["uuid"]
+        ]
+        assert {item["source_version_id"] for item in plan["source_candidates"]} == {
+            sources[0]["uuid"],
+            sources[1]["uuid"],
+        }
+        protected = {
+            item["id"]: item["reasons"] for item in plan["protected"]["deployments"]
+        }
+        assert "recent_service" in protected[deployments[1]["uuid"]]
+        assert "recent_service" in protected[deployments[2]["uuid"]]
+
+        stale_confirmation = client.post(
+            "/api/workspaces/v1/retention/apply",
+            headers=headers,
+            json={
+                "keep_recent_deployments": 2,
+                "keep_recent_sources": 6,
+                "min_age_hours": 0,
+                "confirm_plan_digest": plan["plan_digest"],
+            },
+        )
+        assert stale_confirmation.status_code == 409
+        assert stale_confirmation.json()["detail"]["reason"] == "retention_plan_changed"
+
+        applied = client.post(
+            "/api/workspaces/v1/retention/apply",
+            headers=headers,
+            json={
+                **plan["policy"],
+                "confirm_plan_digest": plan["plan_digest"],
+            },
+        )
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["ok"] is True
+        assert applied.json()["counts"] == {
+            "deployments": 1,
+            "sources": 2,
+            "expired_uploads": 0,
+            "errors": 0,
+        }
+
+        with tenant_session(actor.tenant_id) as session:
+            retired_deployment = session.execute(
+                text("SELECT status,result FROM digital_asset.deployments WHERE id=:id"),
+                {"id": deployments[0]["uuid"]},
+            ).mappings().one()
+            assert retired_deployment["status"] == "rolled_back"
+            assert retired_deployment["result"]["retention"]["state"] == "retired"
+            released = session.execute(
+                text(
+                    "SELECT count(*) FROM digital_asset.artifacts "
+                    "WHERE version_id=ANY(:ids) AND state='released'"
+                ),
+                {"ids": [sources[0]["uuid"], sources[1]["uuid"]]},
+            ).scalar_one()
+            assert released == 2
+
+        replanned = client.get(
+            "/api/workspaces/v1/retention/plan",
+            headers=headers,
+            params={
+                "keep_recent_deployments": 2,
+                "keep_recent_sources": 5,
+                "min_age_hours": 0,
+            },
+        ).json()
+        assert replanned["deployment_candidates"] == []
+        assert replanned["source_candidates"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_native_21_guide_cli_and_provision_contract(tmp_path, monkeypatch) -> None:
     actor = _actor("native-guide")
     settings = Settings(asset_storage_root=tmp_path / "digital-assets")

@@ -14,6 +14,13 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
+    env:
+      # The Mac mini route occasionally negotiates a broken HTTP/2 stream to
+      # github.com.  Keep checkout deterministic without changing host-global
+      # Git configuration.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
     steps:
       - uses: actions/checkout@v4
       - name: Verify committed release contract

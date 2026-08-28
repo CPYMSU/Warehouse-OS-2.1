@@ -36,6 +36,11 @@ jobs:
     timeout-minutes: 70
     env:
       DEPLOY_MODE: ${{ github.event.inputs.mode || 'smart' }}
+      # Scope the transport workaround to this job; do not mutate the runner's
+      # global Git settings.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
       WAREHOUSE_CLUSTER_PREFLIGHT: basic
       WAREHOUSE_PRIMARY_TRANSPORT: local
       WAREHOUSE_PRIMARY_MANAGER_SUDO: "0"

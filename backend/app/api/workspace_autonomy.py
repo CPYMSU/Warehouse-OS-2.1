@@ -51,6 +51,10 @@ from app.services.workspace_deployments import (
     register_workspace_source,
     workspace_source_upload_target,
 )
+from app.services.workspace_retention import (
+    apply_workspace_retention,
+    plan_workspace_retention,
+)
 
 router = APIRouter(tags=["workspace-autonomy"])
 _bearer = HTTPBearer(auto_error=False)
@@ -181,6 +185,42 @@ def workspace_quota_resize(
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
 ) -> dict[str, object]:
     return resize_capacity(credential, payload)
+
+
+@router.get("/api/workspaces/v1/retention/plan")
+def workspace_retention_plan(
+    keep_recent_deployments: int = 2,
+    keep_recent_sources: int = 5,
+    min_age_hours: int = 24,
+    include_sources: bool = True,
+    include_expired_uploads: bool = True,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Preview exact protected and reclaimable workspace objects without mutation."""
+
+    return plan_workspace_retention(
+        credential,
+        settings,
+        {
+            "keep_recent_deployments": keep_recent_deployments,
+            "keep_recent_sources": keep_recent_sources,
+            "min_age_hours": min_age_hours,
+            "include_sources": include_sources,
+            "include_expired_uploads": include_expired_uploads,
+        },
+    )
+
+
+@router.post("/api/workspaces/v1/retention/apply")
+def workspace_retention_apply(
+    payload: dict[str, object] = Body(default={}),
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Apply only a freshly recomputed plan with its exact confirmed digest."""
+
+    return apply_workspace_retention(credential, settings, payload)
 
 
 @router.put("/api/workspaces/v1/data/{collection}/{record_key}")
