@@ -236,6 +236,63 @@ def _allow_test_receipt(module, monkeypatch, receipt: dict[str, object]) -> None
     monkeypatch.setattr(module, "EXPECTED_REJECTION_MAP_SHA256", matrix["rejection_map_sha256"])
 
 
+def _diagnostic_authorization(module) -> dict[str, object]:
+    return {
+        "schema": module.DIAGNOSTIC_AUTHORIZATION_SCHEMA,
+        "version": module.DIAGNOSTIC_BUNDLE_VERSION,
+        "payload_root_sha256": module.DIAGNOSTIC_PAYLOAD_ROOT_SHA256,
+        "bundle_contract_sha256": module.DIAGNOSTIC_BUNDLE_CONTRACT_SHA256,
+        "target_key": module.DIAGNOSTIC_TARGET_KEY,
+        "execution_mode": module.DIAGNOSTIC_EXECUTION_MODE,
+        "synthetic_replay_allowed": True,
+        "controlled_pdf_allowed": False,
+        "warehouse_native_x86_allowed": True,
+        "ocr_allowed": False,
+        "runtime_parser_registration_allowed": False,
+    }
+
+
+def _diagnostic_receipt(module, monkeypatch) -> dict[str, object]:
+    families = (
+        "pdf_failure_family_security_or_resource",
+        "pdf_failure_family_container_or_stream",
+        "pdf_failure_family_text_semantics",
+        "pdf_failure_family_locator_proof",
+        "pdf_failure_family_coverage_or_native_crosscheck",
+        "pdf_failure_family_unresolved",
+    )
+    documents = []
+    for index in range(1, 25):
+        documents.append(
+            {
+                "document_id": f"syn-pdf-{index:03d}",
+                "replay_count": 2,
+                "deterministic": True,
+                "outcome": "rejected",
+                "failure_family": families[(index - 1) // 4],
+                "candidate_output_suppressed": True,
+            }
+        )
+    receipt: dict[str, object] = {
+        "schema": module.DIAGNOSTIC_RECEIPT_SCHEMA,
+        "version": module.DIAGNOSTIC_BUNDLE_VERSION,
+        "checkpoint": "M3-A2-4d-3-synthetic-pdf-sanitized-failure-family-poc",
+        "gate_status": "passed",
+        "documents": documents,
+        "aggregate": {
+            "document_count": 24,
+            "deterministic_count": 24,
+            "success_count": 0,
+            "rejection_count": 24,
+            "unresolved_count": 4,
+            "privacy_gate_passed": True,
+        },
+    }
+    receipt["receipt_sha256"] = module._canonical_sha256(receipt)
+    monkeypatch.setattr(module, "DIAGNOSTIC_EXPECTED_RECEIPT_SHA256", receipt["receipt_sha256"])
+    return receipt
+
+
 def test_manager_exposes_only_the_exact_bounded_command() -> None:
     source = MANAGER.read_text(encoding="utf-8")
     assert '[[ "$#" -eq 3 ]]' in source
@@ -281,15 +338,150 @@ def test_archive_identity_is_exactly_allowlisted(tmp_path: Path, monkeypatch) ->
     archive = incoming / f"pdf-native-replay-{digest[:16]}.zip"
     archive.write_bytes(content)
     monkeypatch.setattr(module, "INCOMING_ROOT", incoming)
-    monkeypatch.setattr(module, "EXPECTED_ARCHIVE_BYTES", len(content))
-    monkeypatch.setattr(module, "EXPECTED_ARCHIVE_SHA256", digest)
+    monkeypatch.setattr(module, "PRODUCT_ARCHIVE_BYTES", len(content))
+    monkeypatch.setattr(module, "PRODUCT_ARCHIVE_SHA256", digest)
 
-    module._verify_archive(archive, digest)
+    assert module._verify_archive(archive, digest) == module.PRODUCT_PROFILE
 
-    monkeypatch.setattr(module, "EXPECTED_ARCHIVE_SHA256", "0" * 64)
+    monkeypatch.setattr(module, "PRODUCT_ARCHIVE_SHA256", "0" * 64)
+    monkeypatch.setattr(module, "DIAGNOSTIC_ARCHIVE_BYTES", len(content))
+    monkeypatch.setattr(module, "DIAGNOSTIC_ARCHIVE_SHA256", digest)
+    assert module._verify_archive(archive, digest) == module.DIAGNOSTIC_PROFILE
+
+    monkeypatch.setattr(module, "DIAGNOSTIC_ARCHIVE_SHA256", "0" * 64)
     with pytest.raises(module.ReplayFailure) as captured:
         module._verify_archive(archive, digest)
     assert captured.value.code == "archive_identity_not_allowlisted"
+
+
+def test_diagnostic_profile_is_one_exact_dependency_free_bundle() -> None:
+    module = _load_action()
+    assert module.DIAGNOSTIC_ARCHIVE_BYTES == 41_323
+    assert (
+        module.DIAGNOSTIC_ARCHIVE_SHA256
+        == "cb0a1f107e5a16865bf0d0eae751a2db21ea4dc309820f50eb1150c4f3c53223"
+    )
+    assert len(module.DIAGNOSTIC_ARCHIVE_FILES) == 34
+    assert module.DIAGNOSTIC_ENTRYPOINT in module.DIAGNOSTIC_ARCHIVE_FILES
+    assert not any(name.startswith("wheels/") for name in module.DIAGNOSTIC_ARCHIVE_FILES)
+    assert "frozen-diagnostic-contract.json" in module.DIAGNOSTIC_ARCHIVE_FILES
+
+
+def test_diagnostic_authorization_is_external_exact_and_target_bound(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_action()
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    monkeypatch.setattr(module, "INCOMING_ROOT", incoming)
+    digest = module.DIAGNOSTIC_ARCHIVE_SHA256
+    path = incoming / f"pdf-native-replay-{digest[:16]}.authorization.json"
+    authorization = _diagnostic_authorization(module)
+    raw = json.dumps(authorization, sort_keys=True).encode()
+    path.write_bytes(raw)
+
+    assert module._verify_diagnostic_authorization(path) == hashlib.sha256(raw).hexdigest()
+
+    authorization["controlled_pdf_allowed"] = True
+    path.write_text(json.dumps(authorization, sort_keys=True), encoding="utf-8")
+    with pytest.raises(module.ReplayFailure) as captured:
+        module._verify_diagnostic_authorization(path)
+    assert captured.value.code == "external_authorization_invalid"
+
+
+def test_diagnostic_replay_container_is_dependency_free_and_isolated(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_action()
+    bundle = tmp_path / "bundle"
+    output = tmp_path / "output"
+    bundle.mkdir()
+    output.mkdir()
+    authorization = tmp_path / "authorization.json"
+    authorization.write_text(
+        json.dumps(_diagnostic_authorization(module), sort_keys=True), encoding="utf-8"
+    )
+    authorization_sha256 = hashlib.sha256(authorization.read_bytes()).hexdigest()
+    receipt = _diagnostic_receipt(module, monkeypatch)
+    (bundle / "expected-sanitized-receipt.json").write_text(
+        json.dumps(receipt, sort_keys=True), encoding="utf-8"
+    )
+    attestation_body = {
+        "schema": module.DIAGNOSTIC_ATTESTATION_SCHEMA,
+        "version": module.DIAGNOSTIC_BUNDLE_VERSION,
+        "target_key": module.DIAGNOSTIC_TARGET_KEY,
+        "python_implementation": "cpython",
+        "python_version": "3.12",
+        "system": "Linux",
+        "machine": "x86_64",
+        "execution_mode": module.DIAGNOSTIC_EXECUTION_MODE,
+        "payload_root_sha256": module.DIAGNOSTIC_PAYLOAD_ROOT_SHA256,
+        "bundle_contract_sha256": module.DIAGNOSTIC_BUNDLE_CONTRACT_SHA256,
+        "fixture_manifest_sha256": module.DIAGNOSTIC_FIXTURE_MANIFEST_SHA256,
+        "sanitized_receipt_sha256": receipt["receipt_sha256"],
+        "authorization_receipt_sha256": authorization_sha256,
+        "fixture_count": 24,
+        "observation_count": 48,
+        "fully_synthetic_only": True,
+        "business_data": False,
+        "controlled_corpus_used": False,
+        "pdf_bytes_used_for_classification": False,
+        "raw_exception_recovery": False,
+        "ocr_invoked": False,
+        "runtime_parser_registered": False,
+        "external_isolation_attestation_required": True,
+    }
+    attestation = {
+        **attestation_body,
+        "attestation_sha256": module._canonical_sha256(attestation_body),
+    }
+    calls: list[list[str]] = []
+
+    def fake_docker(arguments, **_kwargs):
+        calls.append(arguments)
+        (output / "sanitized-receipt.json").write_text(
+            json.dumps(receipt, sort_keys=True), encoding="utf-8"
+        )
+        (output / "target-attestation.json").write_text(
+            json.dumps(attestation, sort_keys=True), encoding="utf-8"
+        )
+        return json.dumps(
+            {
+                "target_key": module.DIAGNOSTIC_TARGET_KEY,
+                "fixture_count": 24,
+                "observation_count": 48,
+                "sanitized_receipt_sha256": receipt["receipt_sha256"],
+                "attestation_sha256": attestation["attestation_sha256"],
+                "controlled_corpus_used": False,
+            },
+            sort_keys=True,
+        ).encode()
+
+    monkeypatch.setattr(module, "_run_docker", fake_docker)
+    result = module._run_diagnostic_replay(
+        bundle=bundle,
+        authorization=authorization,
+        authorization_sha256=authorization_sha256,
+        output=output,
+        image_id=f"sha256:{'b' * 64}",
+        container_name="warehouse-pdf-native-replay-test",
+    )
+
+    assert result == {
+        "sanitized_receipt": receipt,
+        "target_attestation": attestation,
+    }
+    assert len(calls) == 1
+    arguments = calls[0]
+    assert arguments[arguments.index("--network") + 1] == "none"
+    assert "--read-only" in arguments
+    assert arguments[arguments.index("--cap-drop") + 1] == "ALL"
+    assert "no-new-privileges:true" in arguments
+    assert "--env-file" not in arguments
+    assert "pip" not in arguments
+    assert "/bundle/frozen-diagnostic-contract.json" not in arguments
+    assert arguments[arguments.index("--target-key") + 1] == module.DIAGNOSTIC_TARGET_KEY
+    assert arguments[arguments.index("--authorization-receipt") + 1] == ("/authorization.json")
 
 
 def test_bundle_validation_is_exact_and_fails_closed(tmp_path: Path, monkeypatch) -> None:
@@ -451,7 +643,7 @@ def test_execute_cleans_archive_and_work_before_emitting_receipt(
     monkeypatch.setattr(module, "INCOMING_ROOT", incoming)
     monkeypatch.setattr(module, "WORK_ROOT", work_root)
     monkeypatch.setattr(module, "_verify_host", lambda: None)
-    monkeypatch.setattr(module, "_verify_archive", lambda *_args: None)
+    monkeypatch.setattr(module, "_verify_archive", lambda *_args: module.PRODUCT_PROFILE)
     snapshot = module.ApiSnapshot(
         slot="blue",
         container="warehouse-os-api-blue",
@@ -485,6 +677,100 @@ def test_execute_cleans_archive_and_work_before_emitting_receipt(
     assert observed == module._canonical_sha256(receipt)
 
 
+def test_execute_diagnostic_claims_external_authorization_and_skips_install(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_action()
+    incoming = tmp_path / "incoming"
+    work_root = tmp_path / "work"
+    incoming.mkdir()
+    content = b"diagnostic-bundle"
+    digest = hashlib.sha256(content).hexdigest()
+    archive = incoming / f"pdf-native-replay-{digest[:16]}.zip"
+    archive.write_bytes(content)
+    authorization = incoming / f"pdf-native-replay-{digest[:16]}.authorization.json"
+    authorization.write_text(
+        json.dumps(_diagnostic_authorization(module), sort_keys=True), encoding="utf-8"
+    )
+    authorization_sha256 = hashlib.sha256(authorization.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(module, "INCOMING_ROOT", incoming)
+    monkeypatch.setattr(module, "WORK_ROOT", work_root)
+    monkeypatch.setattr(module, "_verify_host", lambda: None)
+    monkeypatch.setattr(module, "_verify_archive", lambda *_args: module.DIAGNOSTIC_PROFILE)
+    monkeypatch.setattr(
+        module,
+        "_extract_bundle",
+        lambda _archive, bundle, _files: bundle.mkdir(),
+    )
+    monkeypatch.setattr(
+        module,
+        "_verify_bundle",
+        lambda _bundle, profile: profile == module.DIAGNOSTIC_PROFILE or None,
+    )
+    snapshot = module.ApiSnapshot(
+        slot="blue",
+        container="warehouse-os-api-blue",
+        container_id="a" * 64,
+        restart_count=0,
+        image_id=f"sha256:{'b' * 64}",
+    )
+    monkeypatch.setattr(module, "_api_snapshot", lambda: snapshot)
+    monkeypatch.setattr(module, "_remove_container", lambda _name: None)
+    monkeypatch.setattr(
+        module,
+        "_install_dependency",
+        lambda **_kwargs: pytest.fail("diagnostic profile must not install dependencies"),
+    )
+    target_replay = {
+        "sanitized_receipt": {"receipt_sha256": "c" * 64},
+        "target_attestation": {"attestation_sha256": "d" * 64},
+    }
+    monkeypatch.setattr(module, "_run_diagnostic_replay", lambda **_kwargs: target_replay)
+    monkeypatch.setattr(module.os, "chown", lambda *_args: None)
+
+    receipt = module.execute(archive, digest)
+
+    assert not archive.exists()
+    assert not authorization.exists()
+    assert not any(work_root.iterdir())
+    assert receipt["replay_profile"] == module.DIAGNOSTIC_PROFILE
+    assert receipt["external_authorization_receipt_sha256"] == authorization_sha256
+    assert receipt["target_replay"] == target_replay
+    assert receipt["cleanup"] == {
+        "archive_removed": True,
+        "authorization_receipt_removed": True,
+        "work_directory_removed": True,
+    }
+    observed = receipt.pop("receipt_sha256")
+    assert observed == module._canonical_sha256(receipt)
+
+
+def test_execute_diagnostic_fails_closed_and_cleans_invalid_authorization(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_action()
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    content = b"diagnostic-bundle"
+    digest = hashlib.sha256(content).hexdigest()
+    archive = incoming / f"pdf-native-replay-{digest[:16]}.zip"
+    archive.write_bytes(content)
+    authorization = incoming / f"pdf-native-replay-{digest[:16]}.authorization.json"
+    authorization.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(module, "INCOMING_ROOT", incoming)
+    monkeypatch.setattr(module, "WORK_ROOT", tmp_path / "work")
+    monkeypatch.setattr(module, "_verify_host", lambda: None)
+    monkeypatch.setattr(module, "_verify_archive", lambda *_args: module.DIAGNOSTIC_PROFILE)
+    monkeypatch.setattr(module, "_remove_container", lambda _name: None)
+
+    with pytest.raises(module.ReplayFailure) as captured:
+        module.execute(archive, digest)
+    assert captured.value.code == "external_authorization_invalid"
+    assert not archive.exists()
+    assert not authorization.exists()
+
+
 def test_failure_still_removes_verified_archive_and_work(tmp_path: Path, monkeypatch) -> None:
     module = _load_action()
     incoming = tmp_path / "incoming"
@@ -500,7 +786,7 @@ def test_failure_still_removes_verified_archive_and_work(tmp_path: Path, monkeyp
     monkeypatch.setattr(module, "INCOMING_ROOT", incoming)
     monkeypatch.setattr(module, "WORK_ROOT", work_root)
     monkeypatch.setattr(module, "_verify_host", lambda: None)
-    monkeypatch.setattr(module, "_verify_archive", lambda *_args: None)
+    monkeypatch.setattr(module, "_verify_archive", lambda *_args: module.PRODUCT_PROFILE)
     monkeypatch.setattr(
         module,
         "_api_snapshot",
