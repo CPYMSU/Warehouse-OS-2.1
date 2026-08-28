@@ -29,7 +29,10 @@ returns `409 retention_plan_changed` if any pointer or candidate changed.
 - A retired Runtime directory is removed only below the exact
   `tenants/<tenant>/workspaces/<workspace>/releases/<deployment>` boundary.
 - A managed container name must match the Runtime Controller namespace before
-  it can be removed.
+  it can be removed. The API has no Docker socket: it records `retiring`, the
+  privileged Runtime Controller removes deployment-bound containers and writes
+  an acknowledgement, and only a subsequent digest-bound apply removes the
+  Runtime directory.
 - A Source object is removed only when its tenant, SHA-256, and
   content-addressed key agree and no other live artifact references it.
 - Source and Deployment database rows remain. Deployment events, custody

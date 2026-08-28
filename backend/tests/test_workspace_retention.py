@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.services.object_storage import LocalContentAddressedObjectStore
 from app.services.workspace_retention import (
     RetentionPolicy,
+    _containers_retired,
     _deployment_container_names,
     _public_plan,
     _release_path,
@@ -132,3 +133,18 @@ def test_runtime_container_filter_is_bound_to_candidate_deployment() -> None:
         deployment_id,
         [own_name, other_name, "unmanaged-container", None],
     ) == [own_name]
+
+
+def test_runtime_directory_waits_for_controller_container_acknowledgement() -> None:
+    assert _containers_retired({"retention": {"state": "retry_required"}}) is False
+    assert (
+        _containers_retired(
+            {
+                "retention": {
+                    "state": "retry_required",
+                    "containers_retired_at": "2026-08-28T12:00:00+00:00",
+                }
+            }
+        )
+        is True
+    )

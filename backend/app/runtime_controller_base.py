@@ -492,6 +492,7 @@ class RuntimeController:
         self._last_runtime_drift_reconcile = 0.0
         self._last_runtime_lifecycle_reconcile = 0.0
         self._last_runtime_orphan_reconcile = 0.0
+        self._last_retention_container_reconcile = 0.0
 
     def reconcile_repositories(self) -> int:
         if time.monotonic() - self._last_repository_reconcile < 60:
@@ -2287,6 +2288,128 @@ class RuntimeController:
                     names.update(self._runtime_container_names(result))
         return names
 
+    def reconcile_retention_runtime_containers(self) -> int:
+        """Acknowledge container retirement for digest-bound storage cleanup.
+
+        The API deliberately has no Docker socket. It marks historical
+        deployments as retiring; this privileged controller removes only the
+        deployment-bound managed containers and records an acknowledgement in
+        the existing retention ledger. A later retention apply may then remove
+        the Runtime directory.
+        """
+
+        if time.monotonic() - self._last_retention_container_reconcile < 1:
+            return 0
+        self._last_retention_container_reconcile = time.monotonic()
+        candidates: list[tuple[UUID, UUID, dict[str, object]]] = []
+        for tenant_id in self._tenants():
+            with tenant_session(tenant_id) as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT id,result
+                        FROM digital_asset.deployments
+                        WHERE result->'retention'->>'state' IN ('retiring','retry_required')
+                          AND COALESCE(result->'retention'->>'containers_retired_at','')=''
+                          AND jsonb_typeof(result->'container_names')='array'
+                          AND jsonb_array_length(result->'container_names') > 0
+                        ORDER BY created_at,id
+                        LIMIT :limit
+                        """
+                    ),
+                    {"limit": max(0, 128 - len(candidates))},
+                ).mappings()
+                candidates.extend(
+                    (tenant_id, UUID(str(row["id"])), dict(row["result"]))
+                    for row in rows
+                    if isinstance(row.get("result"), dict)
+                )
+            if len(candidates) >= 128:
+                break
+        if not candidates:
+            return 0
+
+        engine = DockerEngine(self.settings.runtime_docker_socket)
+        completed = 0
+        try:
+            for tenant_id, deployment_id, result in candidates:
+                names = self._runtime_container_names(result)
+                if not names:
+                    continue
+                try:
+                    for name in names:
+                        engine.remove(name)
+                except Exception as exc:
+                    message = (str(exc).strip() or exc.__class__.__name__)[:500]
+                    with tenant_session(tenant_id) as session:
+                        current = session.execute(
+                            text(
+                                "SELECT result FROM digital_asset.deployments "
+                                "WHERE id=:id FOR UPDATE"
+                            ),
+                            {"id": deployment_id},
+                        ).scalar_one()
+                        payload = dict(current) if isinstance(current, dict) else {}
+                        retention = (
+                            dict(payload.get("retention"))
+                            if isinstance(payload.get("retention"), dict)
+                            else {}
+                        )
+                        retention["container_cleanup_error"] = message
+                        retention["container_cleanup_worker"] = self.worker_id
+                        payload["retention"] = retention
+                        session.execute(
+                            text(
+                                "UPDATE digital_asset.deployments "
+                                "SET result=CAST(:result AS jsonb) WHERE id=:id"
+                            ),
+                            {"id": deployment_id, "result": json.dumps(payload)},
+                        )
+                    continue
+
+                with tenant_session(tenant_id) as session:
+                    current = session.execute(
+                        text(
+                            "SELECT result FROM digital_asset.deployments "
+                            "WHERE id=:id FOR UPDATE"
+                        ),
+                        {"id": deployment_id},
+                    ).scalar_one()
+                    payload = dict(current) if isinstance(current, dict) else {}
+                    retention = (
+                        dict(payload.get("retention"))
+                        if isinstance(payload.get("retention"), dict)
+                        else {}
+                    )
+                    if retention.get("state") not in {"retiring", "retry_required"}:
+                        continue
+                    retention.pop("container_cleanup_error", None)
+                    retention.update(
+                        {
+                            "containers_retired_at": datetime.now(UTC).isoformat(),
+                            "container_cleanup_worker": self.worker_id,
+                        }
+                    )
+                    payload["retention"] = retention
+                    session.execute(
+                        text(
+                            "UPDATE digital_asset.deployments "
+                            "SET result=CAST(:result AS jsonb) WHERE id=:id"
+                        ),
+                        {"id": deployment_id, "result": json.dumps(payload)},
+                    )
+                    _event(
+                        session,
+                        deployment_id,
+                        tenant_id,
+                        "retention_containers_retired",
+                        {"container_names": names, "worker": self.worker_id},
+                    )
+                completed += 1
+        finally:
+            engine.close()
+        return completed
+
     def reconcile_orphan_runtime_containers(self) -> int:
         """Stop stale managed runtimes without removing rollback artifacts."""
 
@@ -2545,6 +2668,7 @@ class RuntimeController:
                 self.observe_capacity()
                 self.reconcile_runtime_lifecycle()
                 self.reconcile_runtime_drift()
+                self.reconcile_retention_runtime_containers()
                 self.reconcile_orphan_runtime_containers()
                 self.reconcile_scaling()
                 self.reconcile_repositories()
