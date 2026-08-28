@@ -30,6 +30,7 @@ from app.services.object_storage import object_store_for_provider
 from app.services.source_packages import inspect_source_archive
 from app.services.source_uploads import (
     SOURCE_UPLOAD_CHUNK_BYTES,
+    cancel_source_upload,
     complete_source_upload,
     create_source_upload,
     put_source_upload_part,
@@ -345,6 +346,17 @@ def autonomous_source_upload_status(
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
 ) -> dict[str, object]:
     return source_upload_status(credential, upload_id)
+
+
+@router.post("/api/workspaces/v1/source-uploads/{upload_id}/cancel")
+def autonomous_source_upload_cancel(
+    upload_id: UUID,
+    credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Cancel an unfinished session and retire its private staging data."""
+
+    return cancel_source_upload(credential, upload_id, settings=settings)
 
 
 @router.post("/api/workspaces/v1/sources/upload", status_code=status.HTTP_201_CREATED)

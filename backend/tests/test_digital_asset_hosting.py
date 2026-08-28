@@ -931,7 +931,24 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
             },
         )
         assert large_reservation.status_code == 201, large_reservation.text
-        assert large_reservation.json()["expected_size_bytes"] == above_legacy_limit
+        assert large_reservation.json()["size_bytes"] == above_legacy_limit
+        assert large_reservation.json()["chunk_size_bytes"] == 1024 * 1024
+        cancelled = client.post(
+            "/api/workspaces/v1/source-uploads/"
+            f"{large_reservation.json()['upload_id']}/cancel",
+            headers=headers,
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "cancelled"
+        assert cancelled.json()["received_bytes"] == 0
+        assert cancelled.json()["result"]["staging_cleaned_at"]
+        cancel_replay = client.post(
+            "/api/workspaces/v1/source-uploads/"
+            f"{large_reservation.json()['upload_id']}/cancel",
+            headers=headers,
+        )
+        assert cancel_replay.status_code == 200, cancel_replay.text
+        assert cancel_replay.json()["idempotent_replay"] is True
         host_limit = client.post(
             "/api/workspaces/v1/source-uploads",
             headers={**headers, "Idempotency-Key": "resumable-source-host-limit"},
@@ -974,9 +991,10 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
         assert upload_created.status_code == 201, upload_created.text
         upload_id = upload_created.json()["upload_id"]
         assert upload_created.json()["status"] == "created"
-        assert upload_created.json()["part_count"] == 2
         chunk_size = upload_created.json()["chunk_size_bytes"]
-        for part_no in range(2):
+        part_count = (len(resumable_package) + chunk_size - 1) // chunk_size
+        assert upload_created.json()["part_count"] == part_count
+        for part_no in range(part_count):
             part_content = resumable_package[part_no * chunk_size : (part_no + 1) * chunk_size]
             part = client.put(
                 f"/api/workspaces/v1/source-uploads/{upload_id}/parts/{part_no}",
@@ -1012,7 +1030,7 @@ def test_workspace_key_source_and_deployment_contract(tmp_path, monkeypatch) -> 
             },
         )
         assert init_replay.status_code == 201
-        assert init_replay.json()["received_parts"] == [0, 1]
+        assert init_replay.json()["received_parts"] == list(range(part_count))
         completed_upload = client.post(
             f"/api/workspaces/v1/source-uploads/{upload_id}/complete",
             headers=headers,
