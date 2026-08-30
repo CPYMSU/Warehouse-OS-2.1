@@ -1,8 +1,19 @@
 # syntax=docker/dockerfile:1.7
 
+FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS pdf-native-replay-runtime
+
 FROM postgres:18.4-bookworm AS postgresql-client
 
 FROM python:3.13-slim-bookworm
+
+# This immutable anchor forces candidate preparation to acquire the exact
+# dependency-free CPython image owned by pdf-native-replay. The replay action
+# later resolves that independent image with --pull=never; it does not execute
+# this copy or reuse the API interpreter.
+COPY --from=pdf-native-replay-runtime /usr/local/bin/python3.12 /opt/warehouse/runtime-anchors/pdf-native-replay/python3.12
+LABEL org.bonfirework.pdf-native-runtime.owner="pdf-native-replay" \
+      org.bonfirework.pdf-native-runtime.python="3.12.14" \
+      org.bonfirework.pdf-native-runtime.index-digest="sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

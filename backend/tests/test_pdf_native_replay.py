@@ -13,6 +13,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION = REPO_ROOT / "ops" / "server" / "warehouse-pdf-native-replay.py"
 MANAGER = REPO_ROOT / "ops" / "server" / "warehouse-deploy"
+RUNTIME_DOCKERFILE = REPO_ROOT / "backend" / "Dockerfile"
 
 
 def _load_action():
@@ -302,6 +303,70 @@ def test_manager_exposes_only_the_exact_bounded_command() -> None:
     assert 'WAREHOUSE_PDF_NATIVE_EFFECTIVE_NODE_ROLE="${role}"' in source
     assert '"${action}" "${archive}" "${digest}"' in source
     assert "warehouse-pdf-native-replay.py" in source
+
+
+def test_candidate_build_anchors_a_contract_owned_pinned_python_runtime() -> None:
+    dockerfile = RUNTIME_DOCKERFILE.read_text(encoding="utf-8")
+
+    digest = (
+        "0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+    )
+    assert f"python:3.12.14-slim-bookworm@sha256:{digest}" in dockerfile
+    assert "AS pdf-native-replay-runtime" in dockerfile
+    assert "COPY --from=pdf-native-replay-runtime /usr/local/bin/python3.12" in dockerfile
+    assert 'org.bonfirework.pdf-native-runtime.owner="pdf-native-replay"' in dockerfile
+    assert digest in dockerfile
+
+
+def test_diagnostic_runtime_is_contract_owned_and_resolves_to_image_id(monkeypatch) -> None:
+    module = _load_action()
+    api_image_id = f"sha256:{'b' * 64}"
+    image_id = f"sha256:{'d' * 64}"
+    calls: list[list[str]] = []
+
+    def fake_docker_text(arguments: list[str]) -> str:
+        calls.append(arguments)
+        return json.dumps(
+            {
+                "Id": image_id,
+                "Os": "linux",
+                "Architecture": "amd64",
+                "Config": {"Env": [f"PYTHON_VERSION={module.DIAGNOSTIC_RUNTIME_PATCH}"]},
+            }
+        )
+
+    monkeypatch.setattr(module, "_docker_text", fake_docker_text)
+
+    assert module._diagnostic_runtime_image_id(api_image_id) == image_id
+    assert len(calls) == 1
+    assert calls[0][:3] == ["image", "inspect", "--format"]
+    assert calls[0][3] == "{{json .}}"
+    assert calls[0][-1] == module.DIAGNOSTIC_RUNTIME_IMAGE
+
+
+@pytest.mark.parametrize("reuse_api,python_patch", [(True, "3.12.14"), (False, "3.13.0")])
+def test_diagnostic_runtime_rejects_api_or_wrong_python_owner(
+    reuse_api: bool, python_patch: str, monkeypatch
+) -> None:
+    module = _load_action()
+    api_image_id = f"sha256:{'b' * 64}"
+    runtime_image_id = api_image_id if reuse_api else f"sha256:{'d' * 64}"
+    monkeypatch.setattr(
+        module,
+        "_docker_text",
+        lambda _arguments: json.dumps(
+            {
+                "Id": runtime_image_id,
+                "Os": "linux",
+                "Architecture": "amd64",
+                "Config": {"Env": [f"PYTHON_VERSION={python_patch}"]},
+            }
+        ),
+    )
+
+    with pytest.raises(module.ReplayFailure) as captured:
+        module._diagnostic_runtime_image_id(api_image_id)
+    assert captured.value.code == "diagnostic_runtime_invalid"
 
 
 def test_host_requires_native_x86_and_normalized_manager_role(monkeypatch) -> None:
@@ -716,6 +781,12 @@ def test_execute_diagnostic_claims_external_authorization_and_skips_install(
         image_id=f"sha256:{'b' * 64}",
     )
     monkeypatch.setattr(module, "_api_snapshot", lambda: snapshot)
+    diagnostic_runtime_image_id = f"sha256:{'e' * 64}"
+    monkeypatch.setattr(
+        module,
+        "_diagnostic_runtime_image_id",
+        lambda _api_image_id: diagnostic_runtime_image_id,
+    )
     monkeypatch.setattr(module, "_remove_container", lambda _name: None)
     monkeypatch.setattr(
         module,
@@ -737,6 +808,16 @@ def test_execute_diagnostic_claims_external_authorization_and_skips_install(
     assert receipt["replay_profile"] == module.DIAGNOSTIC_PROFILE
     assert receipt["external_authorization_receipt_sha256"] == authorization_sha256
     assert receipt["target_replay"] == target_replay
+    assert receipt["runtime_boundary"] == {
+        "owner": module.DIAGNOSTIC_RUNTIME_ROLE,
+        "image_ref": module.DIAGNOSTIC_RUNTIME_IMAGE,
+        "image_id": diagnostic_runtime_image_id,
+        "api_image_reused": False,
+        "python_implementation": "cpython",
+        "python_major_minor": "3.12",
+        "python_patch": "3.12.14",
+        "base_index_sha256": module.DIAGNOSTIC_RUNTIME_BASE_INDEX_SHA256,
+    }
     assert receipt["cleanup"] == {
         "archive_removed": True,
         "authorization_receipt_removed": True,

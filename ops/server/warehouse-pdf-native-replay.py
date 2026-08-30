@@ -2,9 +2,10 @@
 """Run the frozen synthetic PDF replay on the native standby host.
 
 This is deliberately not a general job runner.  It accepts one exact replay
-bundle shape, uses the active API image only as an immutable Python base, and
-starts separate containers with no network, production mounts, or inherited
-environment.
+bundle shape and starts separate containers with no network, production
+mounts, or inherited environment.  The diagnostic profile uses a contract-
+owned, digest-pinned CPython 3.12 image; it never borrows the production API
+runtime.
 """
 
 from __future__ import annotations
@@ -146,6 +147,17 @@ DIAGNOSTIC_ATTESTATION_SCHEMA = (
 DIAGNOSTIC_RECEIPT_SCHEMA = "tidi.pdf-sanitized-failure-family-receipt.v1"
 DIAGNOSTIC_TARGET_KEY = "warehouse-linux-x86_64-native"
 DIAGNOSTIC_EXECUTION_MODE = "warehouse_native_isolated"
+DIAGNOSTIC_RUNTIME_IMAGE = (
+    "python:3.12.14-slim-bookworm@"
+    "sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+)
+DIAGNOSTIC_RUNTIME_ROLE = "pdf-native-replay"
+DIAGNOSTIC_RUNTIME_IMPLEMENTATION = "cpython"
+DIAGNOSTIC_RUNTIME_MAJOR_MINOR = "3.12"
+DIAGNOSTIC_RUNTIME_PATCH = "3.12.14"
+DIAGNOSTIC_RUNTIME_BASE_INDEX_SHA256 = (
+    "sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+)
 DIAGNOSTIC_AUTHORIZATION_FIELDS = {
     "schema",
     "version",
@@ -1004,6 +1016,36 @@ def _api_snapshot() -> ApiSnapshot:
     )
 
 
+def _diagnostic_runtime_image_id(api_image_id: str) -> str:
+    """Resolve the digest-pinned CPython owner without pulling at replay time."""
+    try:
+        raw = _docker_text(
+            ["image", "inspect", "--format", "{{json .}}", DIAGNOSTIC_RUNTIME_IMAGE]
+        )
+    except ReplayFailure as error:
+        raise ReplayFailure("diagnostic_runtime_unavailable") from error
+    try:
+        metadata = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ReplayFailure("diagnostic_runtime_invalid") from error
+    if not isinstance(metadata, dict):
+        raise ReplayFailure("diagnostic_runtime_invalid")
+    image_id = metadata.get("Id")
+    configuration = metadata.get("Config")
+    environment = configuration.get("Env") if isinstance(configuration, dict) else None
+    if (
+        not isinstance(image_id, str)
+        or not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id)
+        or image_id == api_image_id
+        or metadata.get("Os") != "linux"
+        or metadata.get("Architecture") != "amd64"
+        or not isinstance(environment, list)
+        or f"PYTHON_VERSION={DIAGNOSTIC_RUNTIME_PATCH}" not in environment
+    ):
+        raise ReplayFailure("diagnostic_runtime_invalid")
+    return image_id
+
+
 def _container_base(name: str, image_id: str) -> list[str]:
     return [
         "run",
@@ -1425,6 +1467,7 @@ def execute(archive: Path, digest: str) -> dict[str, Any]:
     profile: str | None = None
     authorization_path: Path | None = None
     authorization_sha256: str | None = None
+    diagnostic_runtime_image_id: str | None = None
     api_unchanged = False
     restart_unchanged = False
     archive_cleanup_allowed = False
@@ -1485,6 +1528,7 @@ def execute(archive: Path, digest: str) -> dict[str, Any]:
             and claimed_authorization is not None
             and authorization_sha256 is not None
         ):
+            diagnostic_runtime_image_id = _diagnostic_runtime_image_id(before.image_id)
             output = work / "output"
             output.mkdir(mode=0o750)
             os.chown(output, 65532, 65532)
@@ -1493,7 +1537,7 @@ def execute(archive: Path, digest: str) -> dict[str, Any]:
                 authorization=claimed_authorization,
                 authorization_sha256=authorization_sha256,
                 output=output,
-                image_id=before.image_id,
+                image_id=diagnostic_runtime_image_id,
                 container_name=replay_container,
             )
         else:
@@ -1550,10 +1594,20 @@ def execute(archive: Path, digest: str) -> dict[str, Any]:
         },
     }
     if profile == DIAGNOSTIC_PROFILE:
-        if authorization_sha256 is None:
+        if authorization_sha256 is None or diagnostic_runtime_image_id is None:
             raise ReplayFailure("external_authorization_invalid")
         receipt["replay_profile"] = DIAGNOSTIC_PROFILE
         receipt["external_authorization_receipt_sha256"] = authorization_sha256
+        receipt["runtime_boundary"] = {
+            "owner": DIAGNOSTIC_RUNTIME_ROLE,
+            "image_ref": DIAGNOSTIC_RUNTIME_IMAGE,
+            "image_id": diagnostic_runtime_image_id,
+            "api_image_reused": False,
+            "python_implementation": DIAGNOSTIC_RUNTIME_IMPLEMENTATION,
+            "python_major_minor": DIAGNOSTIC_RUNTIME_MAJOR_MINOR,
+            "python_patch": DIAGNOSTIC_RUNTIME_PATCH,
+            "base_index_sha256": DIAGNOSTIC_RUNTIME_BASE_INDEX_SHA256,
+        }
         receipt["cleanup"] = {
             "archive_removed": cleanup_archive,
             "authorization_receipt_removed": cleanup_authorization,
