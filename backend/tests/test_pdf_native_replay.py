@@ -308,9 +308,7 @@ def test_manager_exposes_only_the_exact_bounded_command() -> None:
 def test_candidate_build_anchors_a_contract_owned_pinned_python_runtime() -> None:
     dockerfile = RUNTIME_DOCKERFILE.read_text(encoding="utf-8")
 
-    digest = (
-        "0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
-    )
+    digest = "0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
     assert f"python:3.12.14-slim-bookworm@sha256:{digest}" in dockerfile
     assert "AS pdf-native-replay-runtime" in dockerfile
     assert "COPY --from=pdf-native-replay-runtime /usr/local/bin/python3.12" in dockerfile
