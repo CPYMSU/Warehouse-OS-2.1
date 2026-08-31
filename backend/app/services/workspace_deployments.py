@@ -24,6 +24,7 @@ from app.services.database_release import (
     observe_database_release_gate,
     workspace_database_policy,
 )
+from app.services.deployment_acceptance import ensure_candidate_runtime_running
 from app.services.digital_asset_hosting import (
     HDD_POOL_KEY,
     LOCAL_PROVIDER_KEYS,
@@ -2231,26 +2232,20 @@ def _verify_public_deployment_route(
     raise RuntimeError(f"Public Runtime route verification failed: {last}")
 
 
-def activate_workspace_deployment(
+def prepare_workspace_deployment_for_activation(
     credential: WorkspaceCredential,
     deployment_id: DeploymentReference,
-) -> dict[str, object]:
-    """Switch traffic, verify the exact revision, and restore the former route on failure."""
+    settings: Settings | None = None,
+) -> UUID:
+    """Wake a healthy service candidate before any public route can change."""
 
     credential.require("deploy:write")
     with tenant_session(credential.tenant_id) as session:
-        previous_active_deployment_id = session.execute(
-            text(
-                "SELECT active_deployment_id FROM digital_asset.workspaces "
-                "WHERE id=:workspace_id FOR UPDATE"
-            ),
-            {"workspace_id": credential.workspace_id},
-        ).scalar_one()
         deployment = (
             session.execute(
                 text(
                     """
-                SELECT * FROM digital_asset.deployments
+                SELECT id,result FROM digital_asset.deployments
                 WHERE workspace_id=:workspace_id
                   AND (
                     CAST(id AS text)=:deployment_reference
@@ -2267,6 +2262,70 @@ def activate_workspace_deployment(
             .mappings()
             .one_or_none()
         )
+    if deployment is None:
+        raise HTTPException(status_code=409, detail="Only a healthy deployment can be activated")
+    result = deployment.get("result") if isinstance(deployment.get("result"), dict) else {}
+    if str(result.get("execution_mode") or "service") == "job":
+        raise HTTPException(status_code=409, detail="A one-shot job cannot receive traffic")
+    resolved_id = UUID(str(deployment["id"]))
+    if str(result.get("runtime_kind") or "") != "static":
+        ensure_candidate_runtime_running(
+            credential,
+            resolved_id,
+            settings or get_settings(),
+        )
+    return resolved_id
+
+
+def activate_workspace_deployment(
+    credential: WorkspaceCredential,
+    deployment_id: DeploymentReference,
+    *,
+    settings: Settings | None = None,
+) -> dict[str, object]:
+    """Switch traffic, verify the exact revision, and restore the former route on failure."""
+
+    resolved_id = prepare_workspace_deployment_for_activation(
+        credential,
+        deployment_id,
+        settings,
+    )
+    return _activate_prepared_workspace_deployment(credential, resolved_id)
+
+
+def _activate_prepared_workspace_deployment(
+    credential: WorkspaceCredential,
+    deployment_id: UUID,
+) -> dict[str, object]:
+    """Route only a candidate that already passed the wake health gate."""
+
+    credential.require("deploy:write")
+    resolved_id = UUID(str(deployment_id))
+    with tenant_session(credential.tenant_id) as session:
+        previous_active_deployment_id = session.execute(
+            text(
+                "SELECT active_deployment_id FROM digital_asset.workspaces "
+                "WHERE id=:workspace_id FOR UPDATE"
+            ),
+            {"workspace_id": credential.workspace_id},
+        ).scalar_one()
+        deployment = (
+            session.execute(
+                text(
+                    """
+                SELECT * FROM digital_asset.deployments
+                WHERE workspace_id=:workspace_id AND id=:deployment_id
+                  AND status='ready' AND health='healthy'
+                """
+                ),
+                {
+                    "deployment_id": resolved_id,
+                    "workspace_id": credential.workspace_id,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
         if deployment is None:
             raise HTTPException(
                 status_code=409, detail="Only a healthy deployment can be activated"
@@ -2276,6 +2335,21 @@ def activate_workspace_deployment(
         )
         if str(deployment_result.get("execution_mode") or "service") == "job":
             raise HTTPException(status_code=409, detail="A one-shot job cannot receive traffic")
+        if (
+            str(deployment_result.get("runtime_kind") or "") != "static"
+            and str(deployment.get("runtime_state") or "") != "running"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "candidate_runtime_not_running",
+                    "message": "Candidate Runtime must pass its wake health gate before routing",
+                    "deployment_id": str(deployment["id"]),
+                    "runtime_state": deployment.get("runtime_state"),
+                    "route_changed": False,
+                    "retryable": True,
+                },
+            )
         requested_config = deployment.get("requested_config")
         requested_config = requested_config if isinstance(requested_config, dict) else {}
         compatibility_contract = requested_config.get("compatibility_contract")
@@ -2313,7 +2387,6 @@ def activate_workspace_deployment(
                     "database_release": _json_safe(database_release),
                 },
             )
-        resolved_id = UUID(str(deployment["id"]))
         session.execute(
             text(
                 """

@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
+import pytest
+from fastapi import HTTPException
+
 from app.api.workspace_v1_compat import router as workspace_router
 from app.database_migration_controller import _contains_row_mutation
 from app.downloads import dam
@@ -226,6 +229,66 @@ def test_public_release_requires_explicit_activation() -> None:
     assert release["next_action"] == "activate_release"
     assert "lease_owner" not in release
     assert "request_payload" not in release
+
+
+def test_release_wake_failure_remains_awaiting_activation(monkeypatch) -> None:
+    release_id = UUID("00000000-0000-0000-0000-000000000212")
+    candidate_id = UUID("00000000-0000-0000-0000-000000000213")
+    transitions: list[tuple[str, str, str]] = []
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id):
+        yield object()
+
+    def fail_preflight(*_args, **_kwargs) -> None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "candidate_runtime_wake_timeout",
+                "route_changed": False,
+                "retryable": True,
+            },
+        )
+
+    def record_transition(
+        _credential,
+        _release_id,
+        expected_state,
+        state,
+        *,
+        event_type,
+        **_kwargs,
+    ) -> bool:
+        transitions.append((expected_state, state, event_type))
+        return True
+
+    monkeypatch.setattr(workspace_releases, "tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        workspace_releases,
+        "_release_row",
+        lambda *_args, **_kwargs: {
+            "id": release_id,
+            "state": "awaiting_activation",
+            "candidate_deployment_id": candidate_id,
+        },
+    )
+    monkeypatch.setattr(
+        workspace_releases,
+        "prepare_workspace_deployment_for_activation",
+        fail_preflight,
+    )
+    monkeypatch.setattr(workspace_releases, "_transition", record_transition)
+
+    with pytest.raises(HTTPException) as raised:
+        workspace_releases.activate_workspace_release(
+            _credential("deploy:write"),
+            release_id,
+        )
+
+    assert raised.value.detail["reason"] == "candidate_runtime_wake_timeout"
+    assert transitions == [
+        ("awaiting_activation", "awaiting_activation", "activation_preflight_failed")
+    ]
 
 
 def test_release_api_and_cli_expose_the_high_level_workflow() -> None:

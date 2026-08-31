@@ -212,7 +212,7 @@ def test_candidate_acceptance_requests_runtime_wake_before_private_probe(
 
     monkeypatch.setattr(deployment_acceptance, "tenant_session", fake_tenant_session)
 
-    deployment_acceptance._ensure_candidate_runtime_running(
+    deployment_acceptance.ensure_candidate_runtime_running(
         _credential(),
         deployment_id,
         Settings(runtime_wake_timeout_seconds=1),
@@ -444,7 +444,10 @@ class _ActivationSession:
         parameters = parameters or {}
         if "SELECT active_deployment_id FROM digital_asset.workspaces" in sql:
             return _ActivationResult(scalar=self.state["active"])
-        if "SELECT * FROM digital_asset.deployments" in sql:
+        if (
+            "SELECT * FROM digital_asset.deployments" in sql
+            or "SELECT id,result FROM digital_asset.deployments" in sql
+        ):
             return _ActivationResult(mapping=self.deployment)
         if "UPDATE digital_asset.workspaces" in sql:
             if "CAST(:previous AS uuid)" in sql:
@@ -522,6 +525,151 @@ def test_activation_marks_route_verified_only_after_exact_probe(
     assert state["active"] == candidate
     assert result["active"] is True
     assert result["deployment"]["result"]["public_route_verified"] is True
+
+
+def test_runtime_activation_wakes_before_route_pointer_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, deployment, previous, candidate = _activation_fixture()
+    deployment["runtime_state"] = "suspended"
+    deployment["result"] = {"runtime_kind": "container", "health_path": "/"}
+    session = _ActivationSession(state, deployment)
+    order: list[str] = []
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id: UUID):
+        yield session
+
+    def wake_runtime(*_args, **_kwargs) -> None:
+        assert state["active"] == previous
+        order.append("wake_healthy")
+        deployment["runtime_state"] = "running"
+
+    monkeypatch.setattr(workspace_deployments, "tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        workspace_deployments,
+        "ensure_candidate_runtime_running",
+        wake_runtime,
+    )
+    monkeypatch.setattr(
+        workspace_deployments,
+        "observe_database_release_gate",
+        lambda *_args, **_kwargs: {"required": False, "ready": True},
+    )
+    monkeypatch.setattr(
+        workspace_deployments,
+        "mark_pages_deployment_active",
+        lambda *_args, **_kwargs: order.append("route_pointer"),
+    )
+    monkeypatch.setattr(
+        workspace_deployments,
+        "_verify_public_deployment_route",
+        lambda *_args, **_kwargs: {"status": 200, "deployment_id": str(candidate)},
+    )
+    monkeypatch.setattr(workspace_deployments, "_deployment_public", lambda value: value)
+
+    workspace_deployments.activate_workspace_deployment(
+        _credential(),
+        candidate,
+        settings=Settings(runtime_wake_timeout_seconds=1),
+    )
+
+    assert order[:2] == ["wake_healthy", "route_pointer"]
+    assert state["active"] == candidate
+
+
+def test_runtime_activation_wake_failure_preserves_previous_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, deployment, previous, candidate = _activation_fixture()
+    deployment["runtime_state"] = "suspended"
+    deployment["result"] = {"runtime_kind": "container", "health_path": "/"}
+    session = _ActivationSession(state, deployment)
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id: UUID):
+        yield session
+
+    def fail_wake(*_args, **_kwargs) -> None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "candidate_runtime_wake_timeout",
+                "route_changed": False,
+                "retryable": True,
+            },
+        )
+
+    monkeypatch.setattr(workspace_deployments, "tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        workspace_deployments,
+        "ensure_candidate_runtime_running",
+        fail_wake,
+    )
+    monkeypatch.setattr(
+        workspace_deployments,
+        "mark_pages_deployment_active",
+        lambda *_args, **_kwargs: pytest.fail("route pointer must not change"),
+    )
+    monkeypatch.setattr(
+        workspace_deployments,
+        "_verify_public_deployment_route",
+        lambda *_args, **_kwargs: pytest.fail("public route must not be probed"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        workspace_deployments.activate_workspace_deployment(
+            _credential(),
+            candidate,
+            settings=Settings(runtime_wake_timeout_seconds=1),
+        )
+
+    assert raised.value.detail["reason"] == "candidate_runtime_wake_timeout"
+    assert state["active"] == previous
+    assert not any("UPDATE digital_asset.workspaces" in sql for sql in session.statements)
+
+
+def test_runtime_activation_rechecks_running_state_under_route_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, deployment, previous, candidate = _activation_fixture()
+    deployment["runtime_state"] = "waking"
+    deployment["result"] = {"runtime_kind": "container", "health_path": "/"}
+    session = _ActivationSession(state, deployment)
+
+    @contextmanager
+    def fake_tenant_session(_tenant_id: UUID):
+        yield session
+
+    monkeypatch.setattr(workspace_deployments, "tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        workspace_deployments,
+        "ensure_candidate_runtime_running",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        workspace_deployments,
+        "mark_pages_deployment_active",
+        lambda *_args, **_kwargs: pytest.fail("route pointer must not change"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        workspace_deployments.activate_workspace_deployment(
+            _credential(),
+            candidate,
+            settings=Settings(runtime_wake_timeout_seconds=1),
+        )
+
+    assert raised.value.detail == {
+        "reason": "candidate_runtime_not_running",
+        "message": "Candidate Runtime must pass its wake health gate before routing",
+        "deployment_id": str(candidate),
+        "runtime_state": "waking",
+        "route_changed": False,
+        "retryable": True,
+    }
+    assert state["active"] == previous
+    assert not any("UPDATE digital_asset.workspaces" in sql for sql in session.statements)
 
 
 def test_activation_restores_previous_pointer_when_public_probe_fails(

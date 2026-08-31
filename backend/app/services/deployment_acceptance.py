@@ -27,17 +27,17 @@ _INTERNAL_URL = re.compile(r"^http://[a-zA-Z0-9_.-]+:[0-9]{1,5}$")
 _MAX_RESPONSE_BYTES = 1024 * 1024
 
 
-def _ensure_candidate_runtime_running(
+def ensure_candidate_runtime_running(
     credential: WorkspaceCredential,
     deployment_id: UUID,
     settings: Settings,
 ) -> None:
     """Wake a staged Runtime and wait for its controller health gate.
 
-    Acceptance can happen immediately after a build or after scale-to-zero has
-    suspended the candidate.  Always requesting an idempotent wake also repairs
-    the legacy state where an orphan reconciliation stopped the container while
-    the database still said ``running``.
+    Candidate validation can happen immediately after a build or after
+    scale-to-zero has suspended the Runtime. Always requesting an idempotent
+    wake also repairs the legacy state where an orphan reconciliation stopped
+    the container while the database still said ``running``.
     """
 
     with tenant_session(credential.tenant_id) as session:
@@ -65,8 +65,9 @@ def _ensure_candidate_runtime_running(
             status_code=409,
             detail={
                 "reason": "candidate_runtime_wake_failed",
-                "message": "Only a healthy service Runtime can be woken for acceptance",
+                "message": "Only a healthy service Runtime can be woken for validation",
                 "deployment_id": str(deployment_id),
+                "route_changed": False,
                 "retryable": False,
             },
         )
@@ -108,6 +109,7 @@ def _ensure_candidate_runtime_running(
                     "message": observed_error or "Candidate Runtime failed its wake health gate",
                     "deployment_id": str(deployment_id),
                     "runtime_state": observed_state,
+                    "route_changed": False,
                     "retryable": True,
                 },
             )
@@ -116,10 +118,11 @@ def _ensure_candidate_runtime_running(
         status_code=409,
         detail={
             "reason": "candidate_runtime_wake_timeout",
-            "message": "Candidate Runtime did not become healthy before acceptance timed out",
+            "message": "Candidate Runtime did not become healthy before validation timed out",
             "deployment_id": str(deployment_id),
             "runtime_state": observed_state,
             "runtime_wake_error": observed_error or None,
+            "route_changed": False,
             "retryable": True,
         },
     )
@@ -517,7 +520,7 @@ def accept_workspace_deployment(
         if not _INTERNAL_URL.fullmatch(internal_url):
             raise HTTPException(status_code=409, detail="Candidate internal URL is unavailable")
         if ensure_runtime:
-            _ensure_candidate_runtime_running(credential, candidate_id, settings)
+            ensure_candidate_runtime_running(credential, candidate_id, settings)
         http_evidence, http_failures = _http_acceptance(internal_url, probes)
         candidate_transport = "private_runtime_network"
     database_evidence, database_failures = _database_acceptance(

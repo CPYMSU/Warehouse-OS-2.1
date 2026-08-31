@@ -111,6 +111,12 @@ including `duration_seconds`. `ops/deploy history` therefore shows whether a
 specific change class is getting slower instead of hiding all work behind one
 total timeout.
 
+Workspace service candidates use the same fail-closed ordering after an idle
+period: request a Runtime wake, wait for the Runtime Controller health gate,
+recheck `runtime_state=running` under the activation lock, and only then change
+the public route pointer. A wake failure leaves the former route untouched and
+keeps a high-level Release in `awaiting_activation` so the operator can retry.
+
 ## GitHub Actions deployment
 
 Pull requests run syntax, generated-frontend and deployment-planner checks with

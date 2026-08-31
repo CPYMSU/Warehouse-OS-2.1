@@ -20,6 +20,7 @@ from app.db.session import system_session, tenant_session
 from app.services.deployment_acceptance import accept_workspace_deployment
 from app.services.digital_asset_hosting import WorkspaceCredential, _json_safe, _workspace_row
 from app.services.workspace_deployments import (
+    _activate_prepared_workspace_deployment,
     _hosting_manifest,
     _manifest_runtime_intent,
     _require_manifest_database_policy,
@@ -30,6 +31,7 @@ from app.services.workspace_deployments import (
     cancel_workspace_deployment,
     configure_workspace_runtime,
     observe_workspace_deployment,
+    prepare_workspace_deployment_for_activation,
     request_workspace_deployment,
     resolve_declared_workspace_job,
 )
@@ -880,6 +882,7 @@ def resume_workspace_release(
 def activate_workspace_release(
     credential: WorkspaceCredential,
     release_ref: ReleaseReference | str,
+    settings: Settings | None = None,
 ) -> dict[str, object]:
     credential.require("deploy:write")
     with tenant_session(credential.tenant_id) as session:
@@ -892,13 +895,33 @@ def activate_workspace_release(
             detail=f"Release cannot be activated from {row['state']}",
         )
     release_id = UUID(str(row["id"]))
+    candidate_id = UUID(str(row["candidate_deployment_id"]))
+    try:
+        prepare_workspace_deployment_for_activation(
+            credential,
+            candidate_id,
+            settings,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        _transition(
+            credential,
+            release_id,
+            "awaiting_activation",
+            "awaiting_activation",
+            event_type="activation_preflight_failed",
+            payload=detail,
+            values={"last_error": detail},
+        )
+        raise
     if not _transition(
         credential,
         release_id,
         "awaiting_activation",
         "activating",
         event_type="activation_started",
-        payload={"deployment_id": str(row["candidate_deployment_id"])},
+        payload={"deployment_id": str(candidate_id)},
+        values={"last_error": {}},
     ):
         return observe_workspace_release(credential, release_ref)
     if not _transition(
@@ -907,22 +930,31 @@ def activate_workspace_release(
         "activating",
         "public_verifying",
         event_type="public_route_verification_started",
-        payload={"deployment_id": str(row["candidate_deployment_id"])},
+        payload={"deployment_id": str(candidate_id)},
     ):
         return observe_workspace_release(credential, release_ref)
     try:
-        activated = activate_workspace_deployment(
-            credential, UUID(str(row["candidate_deployment_id"]))
-        )
+        activated = _activate_prepared_workspace_deployment(credential, candidate_id)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        route_unchanged = detail.get("route_changed") is False
         rolled_back = bool(detail.get("previous_deployment_restored"))
         _transition(
             credential,
             release_id,
             "public_verifying",
-            "rolled_back" if rolled_back else "failed",
-            event_type="activation_rolled_back" if rolled_back else "activation_failed",
+            "awaiting_activation"
+            if route_unchanged
+            else "rolled_back"
+            if rolled_back
+            else "failed",
+            event_type=(
+                "activation_preflight_invalidated"
+                if route_unchanged
+                else "activation_rolled_back"
+                if rolled_back
+                else "activation_failed"
+            ),
             payload=detail,
             values={"last_error": detail},
         )
@@ -933,7 +965,7 @@ def activate_workspace_release(
         "public_verifying",
         "verified",
         event_type="public_route_verified",
-        payload={"deployment_id": str(row["candidate_deployment_id"])},
+        payload={"deployment_id": str(candidate_id)},
         values={"evidence": {**dict(row.get("evidence") or {}), "activation": activated}},
     )
     return observe_workspace_release(credential, release_ref)

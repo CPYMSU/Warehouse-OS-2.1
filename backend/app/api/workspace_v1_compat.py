@@ -361,8 +361,9 @@ def customer_release_resume(
 def customer_release_activate(
     release_id: str,
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
-    return activate_workspace_release(credential, release_id)
+    return activate_workspace_release(credential, release_id, settings)
 
 
 @router.post("/api/workspaces/v1/releases/{release_id}/cancel")
