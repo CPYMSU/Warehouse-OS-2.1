@@ -14,6 +14,7 @@ python_bin="$(command -v python3)"
 install_files() {
   mkdir -p "${libexec}" "${logs}" "${cache}" "$(dirname "${plist}")"
   install -m 0755 ops/macos/smart-digital-asset-deploy.py "${libexec}/smart-digital-asset-deploy.py"
+  install -m 0755 ops/macos/run-smart-digital-asset-deploy "${libexec}/run-smart-digital-asset-deploy"
   install -m 0755 ops/macos/publish-digital-assets.py "${libexec}/publish-digital-assets.py"
   install -m 0755 ops/macos/publish-digital-assets-from-registry.py "${libexec}/publish-digital-assets-from-registry.py"
 }
@@ -28,10 +29,7 @@ write_plist() {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${python_bin}</string>
-    <string>${libexec}/smart-digital-asset-deploy.py</string>
-    <string>--interval-seconds</string>
-    <string>3</string>
+    <string>${libexec}/run-smart-digital-asset-deploy</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
