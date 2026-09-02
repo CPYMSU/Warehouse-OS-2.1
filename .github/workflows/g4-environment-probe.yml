@@ -1,0 +1,128 @@
+name: G4 environment probe
+
+on:
+  push:
+    branches:
+      - g4-remote-probe
+    paths:
+      - 'g4_remote/environment_probe.trigger.json'
+      - '.github/workflows/g4-environment-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 5
+    env:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
+    steps:
+      - name: Probe G4 runtime availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          REPORT="${RUNNER_TEMP}/g4_environment_probe_report.json"
+          python3 - <<'PY'
+          import json, os, platform, shutil, subprocess
+          from pathlib import Path
+
+          required_commit = "9ef989dfd27619c40518fce87c50a108dcafdb06"
+          target_name = "G4_ContractV2_H3_7_R1_TargetedCorrection"
+          home = Path.home()
+
+          exact_candidates = [
+              Path("/Users/alex.zxc/Desktop/辦公學習/02_學習/01_論文/从固定工作流到可组合能力/02_实验平台") / target_name,
+              home / "Desktop/辦公學習/02_學習/01_論文/从固定工作流到可组合能力/02_实验平台" / target_name,
+          ]
+
+          def run(cmd, cwd=None):
+              p = subprocess.run(cmd, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              return {"returncode": p.returncode, "output": p.stdout.strip()[:12000]}
+
+          found = None
+          for p in exact_candidates:
+              if p.is_dir():
+                  found = p
+                  break
+
+          if found is None:
+              skip = {".git", "node_modules", ".venv", "venv", "Library", ".Trash"}
+              for root in [home / "Desktop", home / "Documents", home / "Downloads"]:
+                  if not root.is_dir():
+                      continue
+                  base_depth = len(root.parts)
+                  for current, dirs, files in os.walk(root):
+                      cur = Path(current)
+                      depth = len(cur.parts) - base_depth
+                      dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
+                      if depth > 9:
+                          dirs[:] = []
+                          continue
+                      if cur.name == target_name:
+                          found = cur
+                          dirs[:] = []
+                          break
+                  if found is not None:
+                      break
+
+          report = {
+              "probe_id": "g4-env-probe-20260902-01",
+              "read_only": True,
+              "runner": {
+                  "user": os.environ.get("USER") or os.environ.get("LOGNAME"),
+                  "home": str(home),
+                  "hostname": platform.node(),
+                  "machine": platform.machine(),
+                  "macos": platform.mac_ver()[0],
+                  "python": platform.python_version(),
+                  "git_path": shutil.which("git"),
+                  "python_path": shutil.which("python3"),
+              },
+              "required_runtime": {
+                  "directory_name": target_name,
+                  "required_commit": required_commit,
+                  "found": found is not None,
+                  "path": str(found) if found else None,
+              },
+              "checks": {}
+          }
+
+          report["checks"]["git_version"] = run(["git", "--version"]) if shutil.which("git") else None
+          report["checks"]["python_version"] = run(["python3", "--version"]) if shutil.which("python3") else None
+
+          if found:
+              report["checks"]["is_git_worktree"] = run(["git", "rev-parse", "--is-inside-work-tree"], cwd=found)
+              report["checks"]["head"] = run(["git", "rev-parse", "HEAD"], cwd=found)
+              report["checks"]["required_commit_exists"] = run(["git", "cat-file", "-e", required_commit + "^{commit}"], cwd=found)
+              report["checks"]["worktree_dirty_count"] = len(run(["git", "status", "--porcelain"], cwd=found)["output"].splitlines())
+              report["checks"]["g4_execution_dir_exists"] = (found / "g4_execution").is_dir()
+              report["checks"]["h37_repro_file_exists"] = (found / "g4_execution/H3_7_R1_history_free_reproducibility.json").is_file()
+              report["checks"]["pytest_available"] = run(["python3", "-m", "pytest", "--version"], cwd=found)
+
+          ok = bool(
+              found
+              and report["checks"].get("required_commit_exists", {}).get("returncode") == 0
+              and report["checks"].get("g4_execution_dir_exists") is True
+              and report["checks"].get("h37_repro_file_exists") is True
+          )
+          report["ready_for_g4_remote_execution_probe"] = ok
+
+          Path(os.environ["RUNNER_TEMP"]).mkdir(parents=True, exist_ok=True)
+          Path(os.environ["RUNNER_TEMP"]).joinpath("g4_environment_probe_report.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload probe report
+        uses: actions/upload-artifact@v4
+        with:
+          name: g4-environment-probe-report
+          path: ${{ runner.temp }}/g4_environment_probe_report.json
+          if-no-files-found: error
+          retention-days: 7
