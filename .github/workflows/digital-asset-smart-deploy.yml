@@ -1,0 +1,49 @@
+name: Digital asset smart deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/digital-asset-smart-deploy.yml"
+      - "ops/macos/smart-digital-asset-deploy.py"
+      - "ops/macos/install-smart-digital-asset-deploy"
+      - "ops/macos/publish-digital-assets.py"
+      - "ops/macos/publish-digital-assets-from-registry.py"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Smart deploy control operation
+        required: true
+        default: status
+        type: choice
+        options: [status, install, scan, force-all, uninstall]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warehouse-digital-asset-smart-control
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 10
+    env:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
+        with:
+          fetch-depth: 1
+      - name: Install or control low-latency smart deploy watcher
+        env:
+          OPERATION: ${{ github.event_name == 'push' && 'install' || inputs.operation }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          ops/macos/install-smart-digital-asset-deploy "${OPERATION}"
