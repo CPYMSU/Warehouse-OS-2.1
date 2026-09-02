@@ -9,6 +9,7 @@ HTTPS API with the workspace's own ``wak_`` credential.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -17,11 +18,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+ACTIVE_UPLOAD_RE = re.compile(r'"upload_id"\s*:\s*"([0-9a-fA-F-]{36})"')
 RUNTIME_TYPES = frozenset(
     {"auto", "static", "web", "api", "worker", "agent", "container", "compose"}
 )
@@ -70,7 +73,7 @@ def _load_links(raw: str) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         payload = payload.get("links")
     if not isinstance(payload, list):
-        raise RuntimeError("WAREHOUSE_ASSET_LINKS_JSON must be a list or {\"links\": [...]}")
+        raise RuntimeError("WAREHOUSE_ASSET_LINKS_JSON must be a list or {\"links\": [...]}\")")
 
     links: list[dict[str, Any]] = []
     for index, item in enumerate(payload):
@@ -140,6 +143,35 @@ def _workspace_environment(base_url: str, workspace_key: str) -> dict[str, str]:
     }
 
 
+def _workspace_request(
+    env: dict[str, str],
+    method: str,
+    path: str,
+    *,
+    payload: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    base_url = str(env.get("WAREHOUSE_BASE_URL") or "").rstrip("/")
+    workspace_key = str(env.get("WAREHOUSE_WORKSPACE_KEY") or "")
+    if not base_url or not workspace_key.startswith("wak_"):
+        raise RuntimeError("workspace API environment is incomplete")
+    body = None
+    headers = {
+        "Authorization": "Bearer " + workspace_key,
+        "Accept": "application/json",
+        "User-Agent": "Warehouse-MacRunner-DigitalAssetPublisher/1.1",
+    }
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    request = urllib.request.Request(base_url + path, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return _json_output(response.read().decode("utf-8"), source=f"{method} {path}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        raise RuntimeError(f"workspace API {method} {path} returned HTTP {exc.code}: {raw[-1200:]}") from exc
+
+
 def _download_cli(base_url: str, target: Path) -> None:
     request = urllib.request.Request(
         base_url.rstrip("/") + "/api/digital-assets/cli",
@@ -180,6 +212,90 @@ def _find_source_for_version(
     return None
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _build_deterministic_archive(
+    checkout: Path,
+    *,
+    treeish: str,
+    version_no: str,
+) -> Path:
+    archive = checkout.parent / f"{version_no}.stable.tar.gz"
+    raw_tar = checkout.parent / f"{version_no}.stable.tar"
+    temporary = checkout.parent / f"{version_no}.stable.tar.gz.tmp"
+    _run(
+        ["git", "archive", "--format=tar", f"--output={raw_tar}", treeish],
+        cwd=checkout,
+        timeout=300,
+    )
+    try:
+        with raw_tar.open("rb") as source, temporary.open("wb") as target:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as compressed:
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    compressed.write(chunk)
+        temporary.replace(archive)
+    finally:
+        raw_tar.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
+    return archive
+
+
+def _recover_conflicting_source_upload(
+    env: dict[str, str],
+    *,
+    error: RuntimeError,
+    archive: Path,
+    version_no: str,
+) -> bool:
+    message = str(error)
+    if "source_version_upload_already_active" not in message:
+        return False
+    match = ACTIVE_UPLOAD_RE.search(message)
+    if match is None:
+        return False
+    upload_id = match.group(1)
+    observed = _workspace_request(
+        env,
+        "GET",
+        f"/api/workspaces/v1/source-uploads/{upload_id}",
+    )
+    if str(observed.get("version_no") or "") != version_no:
+        return False
+    status = str(observed.get("status") or "")
+    if status not in {"created", "uploading"}:
+        return False
+    local_size = archive.stat().st_size
+    local_sha256 = _file_sha256(archive)
+    remote_size = int(observed.get("size_bytes") or 0)
+    remote_sha256 = str(observed.get("sha256") or "")
+    if remote_size == local_size and remote_sha256 == local_sha256:
+        return False
+    print(
+        f"cancelling stale source upload {upload_id} for {version_no}: "
+        f"remote={remote_size}/{remote_sha256[:12]} local={local_size}/{local_sha256[:12]}",
+        flush=True,
+    )
+    _workspace_request(
+        env,
+        "POST",
+        f"/api/workspaces/v1/source-uploads/{upload_id}/cancel",
+        payload={},
+    )
+    return True
+
+
 def _push_source(
     python: str,
     cli: Path,
@@ -190,7 +306,6 @@ def _push_source(
     source_path: str,
     version_no: str,
 ) -> str:
-    archive = checkout.parent / f"{version_no}.tar.gz"
     treeish = commit
     if source_path:
         source_root = (checkout / source_path).resolve()
@@ -201,10 +316,10 @@ def _push_source(
         if not source_root.is_dir():
             raise RuntimeError(f"source_path does not exist: {source_path!r}")
         treeish = f"{commit}:{source_path}"
-    _run(
-        ["git", "archive", "--format=tar.gz", f"--output={archive}", treeish],
-        cwd=checkout,
-        timeout=300,
+    archive = _build_deterministic_archive(
+        checkout,
+        treeish=treeish,
+        version_no=version_no,
     )
     argv = [
         python,
@@ -217,7 +332,18 @@ def _push_source(
     ]
     if component:
         argv.extend(["--component", component])
-    data = _json_output(_run(argv, env=env, timeout=1200), source="source push")
+    try:
+        raw = _run(argv, env=env, timeout=1200)
+    except RuntimeError as exc:
+        if not _recover_conflicting_source_upload(
+            env,
+            error=exc,
+            archive=archive,
+            version_no=version_no,
+        ):
+            raise
+        raw = _run(argv, env=env, timeout=1200)
+    data = _json_output(raw, source="source push")
     source = data.get("source") if isinstance(data.get("source"), dict) else {}
     reference = _source_id(source)
     if not reference:
