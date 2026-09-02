@@ -14,17 +14,23 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Verify Registry key, Smart Deploy state, and live MK7
+      - name: Final verify Smart Deploy state and live MK7 after SSH wrapper fix
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          key="/Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2"
-          state="/Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json"
-          out="/Users/peiyuan/Server/bonfirework/logs/digital-asset-smart-deploy.log"
-          err="/Users/peiyuan/Server/bonfirework/logs/digital-asset-smart-deploy.error.log"
-          test -f "$key"
-          test "$(stat -f '%Lp' "$key")" = "600"
+          root="/Users/peiyuan/Server/bonfirework"
+          key="${root}/secrets/registry-readonly-ed25519-v2"
+          state="${root}/cache/digital-asset-smart-deploy/state.json"
+          out="${root}/logs/digital-asset-smart-deploy.log"
+          err="${root}/logs/digital-asset-smart-deploy.error.log"
+          smart_path="${root}/libexec/digital-asset-smart-deploy:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+          echo '=== launchd ==='
+          launchctl print "gui/$(id -u)/org.bonfirework.digital-asset-smart-deploy" | sed -n '1,95p'
+          echo '=== private ssh wrapper ==='
+          PATH="$smart_path" command -v ssh
+          sed -n '1,5p' "${root}/libexec/digital-asset-smart-deploy/ssh"
 
           echo '=== Registry auth over SSH 443 ==='
           export GIT_TERMINAL_PROMPT=0
@@ -38,9 +44,9 @@ jobs:
             echo 'state file not created yet'
           fi
           echo '=== stdout ==='
-          tail -n 100 "$out" 2>/dev/null || true
+          tail -n 120 "$out" 2>/dev/null || true
           echo '=== stderr ==='
-          tail -n 100 "$err" 2>/dev/null || true
+          tail -n 120 "$err" 2>/dev/null || true
 
           echo '=== public MK7 ==='
           ok=0
