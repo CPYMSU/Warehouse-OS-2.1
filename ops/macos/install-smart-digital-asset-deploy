@@ -44,6 +44,19 @@ SSHCONFIG
   chmod 600 "${smart_home}/.ssh/config"
 }
 
+repair_registry_cache() {
+  local checkout="${cache}/registry"
+  if [ -e "${checkout}" ] && [ ! -d "${checkout}/.git" ]; then
+    echo "Removing incomplete Smart Deploy Registry cache: ${checkout}"
+    rm -rf "${checkout}"
+    return
+  fi
+  if [ -d "${checkout}/.git" ] && find "${checkout}/.git" -name '*.lock' -print -quit | grep -q .; then
+    echo "Removing Smart Deploy Registry cache with stale Git lock files: ${checkout}"
+    rm -rf "${checkout}"
+  fi
+}
+
 write_plist() {
   cat > "${plist}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -97,11 +110,12 @@ PLIST
 
 install_service() {
   test -x "${python_bin}"
+  launchctl bootout "${domain}" "${plist}" >/dev/null 2>&1 || true
   install_files
   prepare_ssh_transport
   prepare_ssh_home
+  repair_registry_cache
   write_plist
-  launchctl bootout "${domain}" "${plist}" >/dev/null 2>&1 || true
   launchctl bootstrap "${domain}" "${plist}"
   launchctl kickstart -k "${domain}/${label}"
   launchctl print "${domain}/${label}" | sed -n '1,90p'
