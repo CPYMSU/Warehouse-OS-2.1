@@ -14,60 +14,39 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Inspect Smart Deploy process tree and publication state
+      - name: Inspect active source upload and local archive identity
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           root="/Users/peiyuan/Server/bonfirework"
           cache="${root}/cache/digital-asset-smart-deploy"
-          checkout="${cache}/registry"
-          state="${cache}/state.json"
-          out="${root}/logs/digital-asset-smart-deploy.log"
-          err="${root}/logs/digital-asset-smart-deploy.error.log"
+          keys="${root}/secrets/digital-asset-workspace-keys.json"
+          upload_id="93bab659-4a0e-4b79-a966-5f4c5ac1edea"
 
-          echo '=== process tree ==='
-          ps -ax -o ppid=,pid=,state=,etime=,command= | grep -E 'smart-digital-asset-deploy|run-smart-digital-asset-deploy|dam.py|publish-digital-assets|git |ssh |curl ' | grep -v grep || true
-          echo '=== watcher sockets ==='
-          watcher_pid="$(pgrep -f 'smart-digital-asset-deploy.py --interval-seconds 3' | head -n 1 || true)"
-          echo "watcher_pid=${watcher_pid}"
-          if [ -n "$watcher_pid" ]; then
-            lsof -nP -a -p "$watcher_pid" -i 2>/dev/null || true
-          fi
-
-          echo '=== Registry cache ==='
-          if [ -d "${checkout}/.git" ]; then
-            git -C "$checkout" rev-parse HEAD
-            echo "lock_files=$(find "${checkout}/.git" -name '*.lock' | wc -l | tr -d ' ')"
-          else
-            echo 'Registry checkout not ready yet'
-          fi
-
-          echo '=== Smart Deploy state ==='
-          if [ -f "$state" ]; then
-            cat "$state"
-          else
-            echo 'state file not created yet'
-          fi
-          echo '=== recent stdout ==='
-          tail -n 60 "$out" 2>/dev/null || true
-          echo '=== recent stderr ==='
-          tail -n 60 "$err" 2>/dev/null || true
-
-          echo '=== public MK7 ==='
-          ok=0
-          for url in \
-            'https://mk7-workspace.bonfirework.org/' \
-            'https://bonfirework.org/assets/bonfire/mk7-workspace/'
-          do
-            body="$(mktemp)"
-            code="$(curl -L -sS --connect-timeout 5 --max-time 20 -o "$body" -w '%{http_code}' "$url" || true)"
-            count="$(grep -c '人民电力为人民' "$body" || true)"
-            echo "$url HTTP=$code bytes=$(wc -c < "$body" | tr -d ' ') slogan=$count"
-            if [ "$count" -gt 0 ]; then
-              echo "LIVE_SLOGAN_FOUND=$url"
-              ok=1
-            fi
-            rm -f "$body"
+          echo '=== local archives ==='
+          find "$cache" -maxdepth 1 -type f -name '*.tar.gz' -print | while read -r archive; do
+            printf '%s bytes=' "$archive"
+            stat -f '%z' "$archive"
+            shasum -a 256 "$archive"
           done
-          test "$ok" -eq 1
+
+          echo '=== active upload status ==='
+          python3 - <<'PY'
+          import json, urllib.request
+          from pathlib import Path
+          root = Path('/Users/peiyuan/Server/bonfirework')
+          keys = json.loads((root / 'secrets/digital-asset-workspace-keys.json').read_text())
+          key = str(keys['mk7'])
+          upload_id = '93bab659-4a0e-4b79-a966-5f4c5ac1edea'
+          req = urllib.request.Request(
+              f'https://bonfirework.org/api/workspaces/v1/source-uploads/{upload_id}',
+              headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json', 'User-Agent': 'Warehouse-Smart-Deploy-Probe/1.0'},
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              payload = json.loads(resp.read().decode())
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          PY
+
+          echo '=== recent Smart Deploy stderr ==='
+          tail -n 20 "${root}/logs/digital-asset-smart-deploy.error.log" 2>/dev/null || true
