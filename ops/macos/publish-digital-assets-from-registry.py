@@ -32,7 +32,7 @@ DEFAULT_WORKSPACE_KEYS_FILE = Path(
     "/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
 )
 DEFAULT_REGISTRY_SSH_KEY = Path(
-    "/Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519"
+    "/Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2"
 )
 
 
@@ -118,13 +118,19 @@ def _git_environment(token: str, ssh_key: Path | None) -> dict[str, str]:
     elif ssh_key is not None:
         env["GIT_SSH_COMMAND"] = " ".join(
             [
-                "ssh",
+                "/usr/bin/ssh",
                 "-i",
                 shlex.quote(str(ssh_key)),
+                "-o",
+                "Hostname=ssh.github.com",
+                "-p",
+                "443",
                 "-o",
                 "BatchMode=yes",
                 "-o",
                 "IdentitiesOnly=yes",
+                "-o",
+                "ConnectTimeout=8",
                 "-o",
                 "StrictHostKeyChecking=accept-new",
             ]
