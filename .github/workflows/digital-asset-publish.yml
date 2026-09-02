@@ -1,8 +1,11 @@
 name: Digital asset publish
 
 on:
+  # Low-latency publication is handled by the Mac-local smart watcher.  Keep
+  # this workflow as an hourly reconciliation fallback instead of burning a
+  # full Registry clone/publish attempt every five minutes.
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       repository:
