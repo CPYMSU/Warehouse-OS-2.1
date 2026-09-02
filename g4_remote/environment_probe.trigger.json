@@ -1,0 +1,9 @@
+{
+  "schema": "g4.remote-probe.trigger.v1",
+  "probe_id": "g4-env-probe-20260902-01",
+  "mode": "read_only_environment_probe",
+  "required_runtime_directory": "G4_ContractV2_H3_7_R1_TargetedCorrection",
+  "required_source_commit": "9ef989dfd27619c40518fce87c50a108dcafdb06",
+  "formal_model_calls_allowed": 0,
+  "host_mutation_allowed": false
+}
