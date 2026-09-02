@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Inspect active publisher transport and live state
+      - name: Final verify depth-2 Smart Deploy and live MK7
         shell: bash
         run: |
           set -euo pipefail
@@ -23,6 +23,10 @@ jobs:
           state="${root}/cache/digital-asset-smart-deploy/state.json"
           out="${root}/logs/digital-asset-smart-deploy.log"
           err="${root}/logs/digital-asset-smart-deploy.error.log"
+          runtime="${root}/libexec/digital-asset-smart-deploy/smart-digital-asset-deploy.py"
+
+          echo '=== installed fetch depth ==='
+          grep -n 'DEFAULT_FETCH_DEPTH' "$runtime"
 
           echo '=== active processes ==='
           ps -ax -o pid=,etime=,command= | grep -E 'smart-digital-asset-deploy|publish-digital-assets|git (ls-remote|clone|fetch)|ssh .*github' | grep -v grep || true
@@ -34,9 +38,9 @@ jobs:
             echo 'state file not created yet'
           fi
           echo '=== recent stdout ==='
-          tail -n 40 "$out" 2>/dev/null || true
+          tail -n 80 "$out" 2>/dev/null || true
           echo '=== recent stderr ==='
-          tail -n 40 "$err" 2>/dev/null || true
+          tail -n 80 "$err" 2>/dev/null || true
 
           echo '=== public MK7 ==='
           ok=0
