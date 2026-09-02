@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Verify post-repair Smart Deploy state and live MK7
+      - name: Inspect Smart Deploy process tree and publication state
         shell: bash
         run: |
           set -euo pipefail
@@ -25,17 +25,19 @@ jobs:
           state="${cache}/state.json"
           out="${root}/logs/digital-asset-smart-deploy.log"
           err="${root}/logs/digital-asset-smart-deploy.error.log"
-          runtime="${root}/libexec/digital-asset-smart-deploy/smart-digital-asset-deploy.py"
 
-          echo '=== installed runtime ==='
-          grep -n 'DEFAULT_FETCH_DEPTH' "$runtime"
-          echo '=== active processes ==='
-          ps -ax -o pid=,etime=,command= | grep -E 'smart-digital-asset-deploy|publish-digital-assets|git (ls-remote|clone|fetch)|ssh .*github' | grep -v grep || true
+          echo '=== process tree ==='
+          ps -ax -o ppid=,pid=,state=,etime=,command= | grep -E 'smart-digital-asset-deploy|run-smart-digital-asset-deploy|dam.py|publish-digital-assets|git |ssh |curl ' | grep -v grep || true
+          echo '=== watcher sockets ==='
+          watcher_pid="$(pgrep -f 'smart-digital-asset-deploy.py --interval-seconds 3' | head -n 1 || true)"
+          echo "watcher_pid=${watcher_pid}"
+          if [ -n "$watcher_pid" ]; then
+            lsof -nP -a -p "$watcher_pid" -i 2>/dev/null || true
+          fi
 
           echo '=== Registry cache ==='
           if [ -d "${checkout}/.git" ]; then
             git -C "$checkout" rev-parse HEAD
-            git -C "$checkout" log -1 --oneline
             echo "lock_files=$(find "${checkout}/.git" -name '*.lock' | wc -l | tr -d ' ')"
           else
             echo 'Registry checkout not ready yet'
@@ -48,9 +50,9 @@ jobs:
             echo 'state file not created yet'
           fi
           echo '=== recent stdout ==='
-          tail -n 100 "$out" 2>/dev/null || true
+          tail -n 60 "$out" 2>/dev/null || true
           echo '=== recent stderr ==='
-          tail -n 100 "$err" 2>/dev/null || true
+          tail -n 60 "$err" 2>/dev/null || true
 
           echo '=== public MK7 ==='
           ok=0
