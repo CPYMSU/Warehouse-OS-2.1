@@ -73,7 +73,7 @@ def _load_links(raw: str) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         payload = payload.get("links")
     if not isinstance(payload, list):
-        raise RuntimeError("WAREHOUSE_ASSET_LINKS_JSON must be a list or {\"links\": [...]}\")")
+        raise RuntimeError("WAREHOUSE_ASSET_LINKS_JSON must be a list or {\"links\": [...]}")
 
     links: list[dict[str, Any]] = []
     for index, item in enumerate(payload):
