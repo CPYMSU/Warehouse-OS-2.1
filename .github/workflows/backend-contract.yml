@@ -47,6 +47,7 @@ jobs:
             ops/cluster/set-vultr-reverse-subscriptions \
             ops/macos/audit-runtime-storage \
             ops/macos/install-smart-digital-asset-deploy \
+            ops/macos/run-smart-digital-asset-deploy \
             ops/macos/warehouse-deploy-macos \
             ops/macos/warehouse-deploy-ssh-gate \
             ops/server/warehouse-deploy \
