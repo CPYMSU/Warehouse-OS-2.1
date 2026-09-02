@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/digital-asset-smart-deploy.yml"
       - "ops/macos/smart-digital-asset-deploy.py"
+      - "ops/macos/run-smart-digital-asset-deploy"
       - "ops/macos/install-smart-digital-asset-deploy"
       - "ops/macos/publish-digital-assets.py"
       - "ops/macos/publish-digital-assets-from-registry.py"
