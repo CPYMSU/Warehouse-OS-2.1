@@ -37,7 +37,8 @@ jobs:
             python3 -m compileall -q backend/app backend/alembic/versions \
               ops/macos/warehouse-clash-route-optimizer \
               ops/macos/publish-digital-assets.py \
-              ops/macos/publish-digital-assets-from-registry.py
+              ops/macos/publish-digital-assets-from-registry.py \
+              ops/macos/smart-digital-asset-deploy.py
           bash -n \
             ops/deploy \
             ops/fast-deploy \
@@ -45,6 +46,8 @@ jobs:
             ops/cluster/rolling-deploy \
             ops/cluster/set-vultr-reverse-subscriptions \
             ops/macos/audit-runtime-storage \
+            ops/macos/install-smart-digital-asset-deploy \
+            ops/macos/run-smart-digital-asset-deploy \
             ops/macos/warehouse-deploy-macos \
             ops/macos/warehouse-deploy-ssh-gate \
             ops/server/warehouse-deploy \

@@ -1,0 +1,33 @@
+#!/bin/bash
+set -uo pipefail
+
+root="/Users/peiyuan/Server/bonfirework"
+cache="${WAREHOUSE_ASSET_SMART_CACHE_ROOT:-${root}/cache/digital-asset-smart-deploy}"
+script="${root}/libexec/digital-asset-smart-deploy/smart-digital-asset-deploy.py"
+python_bin="$(command -v python3)"
+
+cleanup_archives() {
+  mkdir -p "${cache}"
+  while true; do
+    # Source archives are immutable transfer scratch files.  Keep a generous
+    # grace period so cleanup can never race an in-flight upload.
+    find "${cache}" -maxdepth 1 -type f -name '*.tar.gz' -mmin +10 -delete 2>/dev/null || true
+    sleep 300
+  done
+}
+
+cleanup_archives &
+cleaner_pid=$!
+watcher_pid=""
+
+shutdown() {
+  if [ -n "${watcher_pid}" ]; then
+    kill "${watcher_pid}" >/dev/null 2>&1 || true
+  fi
+  kill "${cleaner_pid}" >/dev/null 2>&1 || true
+}
+trap shutdown EXIT INT TERM
+
+"${python_bin}" "${script}" --interval-seconds 3 &
+watcher_pid=$!
+wait "${watcher_pid}"

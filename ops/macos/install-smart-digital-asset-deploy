@@ -1,0 +1,125 @@
+#!/bin/bash
+set -euo pipefail
+
+action="${1:-install}"
+root="/Users/peiyuan/Server/bonfirework"
+libexec="${root}/libexec/digital-asset-smart-deploy"
+logs="${root}/logs"
+cache="${root}/cache/digital-asset-smart-deploy"
+plist="${HOME}/Library/LaunchAgents/org.bonfirework.digital-asset-smart-deploy.plist"
+label="org.bonfirework.digital-asset-smart-deploy"
+domain="gui/$(id -u)"
+python_bin="$(command -v python3)"
+
+install_files() {
+  mkdir -p "${libexec}" "${logs}" "${cache}" "$(dirname "${plist}")"
+  install -m 0755 ops/macos/smart-digital-asset-deploy.py "${libexec}/smart-digital-asset-deploy.py"
+  install -m 0755 ops/macos/run-smart-digital-asset-deploy "${libexec}/run-smart-digital-asset-deploy"
+  install -m 0755 ops/macos/publish-digital-assets.py "${libexec}/publish-digital-assets.py"
+  install -m 0755 ops/macos/publish-digital-assets-from-registry.py "${libexec}/publish-digital-assets-from-registry.py"
+}
+
+write_plist() {
+  cat > "${plist}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${libexec}/run-smart-digital-asset-deploy</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>WAREHOUSE_BASE_URL</key>
+    <string>https://bonfirework.org</string>
+    <key>WAREHOUSE_ASSET_REGISTRY_REPOSITORY</key>
+    <string>CPYMSU/registry</string>
+    <key>WAREHOUSE_ASSET_REGISTRY_REF</key>
+    <string>main</string>
+    <key>WAREHOUSE_ASSET_REGISTRY_PATH</key>
+    <string>registry.json</string>
+    <key>WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE</key>
+    <string>${root}/secrets/digital-asset-workspace-keys.json</string>
+    <key>WAREHOUSE_ASSET_REGISTRY_SSH_KEY</key>
+    <string>${root}/secrets/registry-readonly-ed25519</string>
+    <key>WAREHOUSE_ASSET_SMART_CACHE_ROOT</key>
+    <string>${cache}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>${logs}/digital-asset-smart-deploy.log</string>
+  <key>StandardErrorPath</key>
+  <string>${logs}/digital-asset-smart-deploy.error.log</string>
+</dict>
+</plist>
+PLIST
+  plutil -lint "${plist}" >/dev/null
+}
+
+install_service() {
+  test -x "${python_bin}"
+  install_files
+  write_plist
+  launchctl bootout "${domain}" "${plist}" >/dev/null 2>&1 || true
+  launchctl bootstrap "${domain}" "${plist}"
+  launchctl kickstart -k "${domain}/${label}"
+  launchctl print "${domain}/${label}" | sed -n '1,80p'
+}
+
+uninstall_service() {
+  launchctl bootout "${domain}" "${plist}" >/dev/null 2>&1 || true
+  rm -f "${plist}"
+  echo "removed ${label}"
+}
+
+status_service() {
+  launchctl print "${domain}/${label}" | sed -n '1,120p'
+  echo "--- stdout ---"
+  tail -n 40 "${logs}/digital-asset-smart-deploy.log" 2>/dev/null || true
+  echo "--- stderr ---"
+  tail -n 40 "${logs}/digital-asset-smart-deploy.error.log" 2>/dev/null || true
+}
+
+scan_once() {
+  install_files
+  "${python_bin}" "${libexec}/smart-digital-asset-deploy.py" --once
+}
+
+force_all() {
+  install_files
+  "${python_bin}" "${libexec}/smart-digital-asset-deploy.py" --once --force-all
+}
+
+case "${action}" in
+  install)
+    install_service
+    ;;
+  uninstall)
+    uninstall_service
+    ;;
+  status)
+    status_service
+    ;;
+  scan)
+    scan_once
+    ;;
+  force-all)
+    force_all
+    ;;
+  *)
+    echo "usage: $0 {install|uninstall|status|scan|force-all}" >&2
+    exit 64
+    ;;
+esac
