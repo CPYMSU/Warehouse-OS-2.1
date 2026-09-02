@@ -14,34 +14,22 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Identify Registry deploy-key binding over SSH 443
+      - name: Provision a dedicated Registry read-only public key
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          key="/Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519"
-          test -f "$key"
-          test "$(stat -f '%Lp' "$key")" = "600"
-
-          echo '=== local key fingerprint ==='
-          ssh-keygen -y -f "$key" | ssh-keygen -lf - -E sha256
-
-          echo '=== GitHub authenticated identity over 443 ==='
-          set +e
-          identity="$(ssh -T -i "$key" -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new git@github.com 2>&1)"
-          rc=$?
-          set -e
-          echo "ssh_rc=$rc"
-          echo "$identity"
-
-          echo '=== Registry read test over 443 ==='
-          export GIT_TERMINAL_PROMPT=0
-          export GIT_SSH_COMMAND="ssh -i ${key} -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
-          set +e
-          git ls-remote 'git@github.com:CPYMSU/registry.git' 'refs/heads/main'
-          registry_rc=$?
-          set -e
-          echo "registry_rc=$registry_rc"
-
-          echo '=== current Smart Deploy stderr ==='
-          tail -n 20 /Users/peiyuan/Server/bonfirework/logs/digital-asset-smart-deploy.error.log 2>/dev/null || true
+          secrets="/Users/peiyuan/Server/bonfirework/secrets"
+          key="${secrets}/registry-readonly-ed25519-v2"
+          mkdir -p "$secrets"
+          chmod 700 "$secrets"
+          umask 077
+          if [ ! -f "$key" ]; then
+            ssh-keygen -q -t ed25519 -N '' -C 'warehouse-registry-readonly-v2' -f "$key"
+          fi
+          chmod 600 "$key"
+          chmod 644 "${key}.pub"
+          echo '=== REGISTRY_PUBLIC_KEY ==='
+          cat "${key}.pub"
+          echo '=== REGISTRY_PUBLIC_KEY_FINGERPRINT ==='
+          ssh-keygen -lf "${key}.pub" -E sha256
