@@ -11,6 +11,7 @@ plist="${HOME}/Library/LaunchAgents/org.bonfirework.digital-asset-smart-deploy.p
 label="org.bonfirework.digital-asset-smart-deploy"
 domain="gui/$(id -u)"
 python_bin="$(command -v python3)"
+smart_path="${libexec}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 install_files() {
   mkdir -p "${libexec}" "${logs}" "${cache}" "$(dirname "${plist}")"
@@ -18,6 +19,14 @@ install_files() {
   install -m 0755 ops/macos/run-smart-digital-asset-deploy "${libexec}/run-smart-digital-asset-deploy"
   install -m 0755 ops/macos/publish-digital-assets.py "${libexec}/publish-digital-assets.py"
   install -m 0755 ops/macos/publish-digital-assets-from-registry.py "${libexec}/publish-digital-assets-from-registry.py"
+}
+
+prepare_ssh_transport() {
+  cat > "${libexec}/ssh" <<'SSHWRAPPER'
+#!/bin/bash
+exec /usr/bin/ssh -o Hostname=ssh.github.com -p 443 "$@"
+SSHWRAPPER
+  chmod 0755 "${libexec}/ssh"
 }
 
 prepare_ssh_home() {
@@ -52,7 +61,7 @@ write_plist() {
     <key>HOME</key>
     <string>${smart_home}</string>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>${smart_path}</string>
     <key>WAREHOUSE_BASE_URL</key>
     <string>https://bonfirework.org</string>
     <key>WAREHOUSE_ASSET_REGISTRY_REPOSITORY</key>
@@ -89,6 +98,7 @@ PLIST
 install_service() {
   test -x "${python_bin}"
   install_files
+  prepare_ssh_transport
   prepare_ssh_home
   write_plist
   launchctl bootout "${domain}" "${plist}" >/dev/null 2>&1 || true
@@ -113,12 +123,14 @@ status_service() {
 
 scan_once() {
   install_files
-  "${python_bin}" "${libexec}/smart-digital-asset-deploy.py" --once
+  prepare_ssh_transport
+  PATH="${smart_path}" "${python_bin}" "${libexec}/smart-digital-asset-deploy.py" --once
 }
 
 force_all() {
   install_files
-  "${python_bin}" "${libexec}/smart-digital-asset-deploy.py" --once --force-all
+  prepare_ssh_transport
+  PATH="${smart_path}" "${python_bin}" "${libexec}/smart-digital-asset-deploy.py" --once --force-all
 }
 
 case "${action}" in
