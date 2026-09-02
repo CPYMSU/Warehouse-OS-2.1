@@ -23,6 +23,7 @@ DEFAULT_STATE_PATH = DEFAULT_CACHE_ROOT / "state.json"
 DEFAULT_LOCK_PATH = DEFAULT_CACHE_ROOT / "watch.lock"
 DEFAULT_INTERVAL_SECONDS = 3.0
 DEFAULT_RETRY_SECONDS = 15.0
+DEFAULT_FETCH_DEPTH = 2
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -111,7 +112,7 @@ def _ensure_checkout(
     if not (checkout / ".git").is_dir():
         publisher._run(
             [
-                "git", "clone", "--depth", "50", "--branch", ref,
+                "git", "clone", "--depth", str(DEFAULT_FETCH_DEPTH), "--branch", ref,
                 "--single-branch", "--no-tags", url, str(checkout),
             ],
             env=env,
@@ -120,7 +121,10 @@ def _ensure_checkout(
     else:
         publisher._run(["git", "remote", "set-url", "origin", url], cwd=checkout, timeout=30)
         publisher._run(
-            ["git", "fetch", "--depth", "50", "--no-tags", "origin", ref],
+            [
+                "git", "fetch", "--depth", str(DEFAULT_FETCH_DEPTH),
+                "--no-tags", "origin", ref,
+            ],
             cwd=checkout,
             env=env,
             timeout=120,
