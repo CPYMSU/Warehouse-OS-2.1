@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Verify Registry SSH over 443 and live MK7
+      - name: Identify Registry deploy-key binding over SSH 443
         shell: bash
         run: |
           set -euo pipefail
@@ -23,21 +23,25 @@ jobs:
           test -f "$key"
           test "$(stat -f '%Lp' "$key")" = "600"
 
-          echo '=== GitHub SSH over 443 ==='
+          echo '=== local key fingerprint ==='
+          ssh-keygen -y -f "$key" | ssh-keygen -lf - -E sha256
+
+          echo '=== GitHub authenticated identity over 443 ==='
+          set +e
+          identity="$(ssh -T -i "$key" -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new git@github.com 2>&1)"
+          rc=$?
+          set -e
+          echo "ssh_rc=$rc"
+          echo "$identity"
+
+          echo '=== Registry read test over 443 ==='
           export GIT_TERMINAL_PROMPT=0
           export GIT_SSH_COMMAND="ssh -i ${key} -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
+          set +e
           git ls-remote 'git@github.com:CPYMSU/registry.git' 'refs/heads/main'
+          registry_rc=$?
+          set -e
+          echo "registry_rc=$registry_rc"
 
-          echo '=== current Smart Deploy log ==='
-          tail -n 30 /Users/peiyuan/Server/bonfirework/logs/digital-asset-smart-deploy.error.log 2>/dev/null || true
-
-          echo '=== public MK7 ==='
-          for url in \
-            'https://mk7-workspace.bonfirework.org/' \
-            'https://bonfirework.org/assets/bonfire/mk7-workspace/'
-          do
-            body="$(mktemp)"
-            code="$(curl -L -sS --connect-timeout 5 --max-time 20 -o "$body" -w '%{http_code}' "$url" || true)"
-            echo "$url HTTP=$code bytes=$(wc -c < "$body" | tr -d ' ') slogan=$(grep -c '人民电力为人民' "$body" || true)"
-            rm -f "$body"
-          done
+          echo '=== current Smart Deploy stderr ==='
+          tail -n 20 /Users/peiyuan/Server/bonfirework/logs/digital-asset-smart-deploy.error.log 2>/dev/null || true
