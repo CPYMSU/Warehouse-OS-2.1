@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Final verify Smart Deploy state and live MK7 after SSH wrapper fix
+      - name: Final verify after publisher-core SSH 443 fix
         shell: bash
         run: |
           set -euo pipefail
