@@ -1,0 +1,61 @@
+name: Smart deploy live probe
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/smart-deploy-live-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 5
+    steps:
+      - name: Read smart deploy state and verify live MK7
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          label="org.bonfirework.digital-asset-smart-deploy"
+          state="/Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json"
+          out="/Users/peiyuan/Server/bonfirework/logs/digital-asset-smart-deploy.log"
+          err="/Users/peiyuan/Server/bonfirework/logs/digital-asset-smart-deploy.error.log"
+
+          echo '=== launchd ==='
+          launchctl print "gui/$(id -u)/${label}" | sed -n '1,90p'
+          echo '=== state ==='
+          if [ -f "$state" ]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('/Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json')
+          data = json.loads(p.read_text())
+          print(json.dumps(data, ensure_ascii=False, indent=2))
+          PY
+          else
+            echo 'state file not created yet'
+          fi
+          echo '=== stdout ==='
+          tail -n 100 "$out" 2>/dev/null || true
+          echo '=== stderr ==='
+          tail -n 100 "$err" 2>/dev/null || true
+
+          echo '=== public MK7 ==='
+          ok=0
+          for url in \
+            'https://mk7-workspace.bonfirework.org/' \
+            'https://bonfirework.org/assets/bonfire/mk7-workspace/'
+          do
+            body="$(mktemp)"
+            code="$(curl -L -sS --connect-timeout 5 --max-time 20 -o "$body" -w '%{http_code}' "$url" || true)"
+            echo "$url HTTP=$code bytes=$(wc -c < "$body" | tr -d ' ')"
+            if grep -q '人民电力为人民' "$body"; then
+              echo "LIVE_SLOGAN_FOUND=$url"
+              ok=1
+            fi
+            rm -f "$body"
+          done
+          test "$ok" -eq 1
