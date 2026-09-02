@@ -14,28 +14,18 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 5
     steps:
-      - name: Final verify after publisher-core SSH 443 fix
+      - name: Inspect active publisher transport and live state
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           root="/Users/peiyuan/Server/bonfirework"
-          key="${root}/secrets/registry-readonly-ed25519-v2"
           state="${root}/cache/digital-asset-smart-deploy/state.json"
           out="${root}/logs/digital-asset-smart-deploy.log"
           err="${root}/logs/digital-asset-smart-deploy.error.log"
-          smart_path="${root}/libexec/digital-asset-smart-deploy:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-          echo '=== launchd ==='
-          launchctl print "gui/$(id -u)/org.bonfirework.digital-asset-smart-deploy" | sed -n '1,95p'
-          echo '=== private ssh wrapper ==='
-          PATH="$smart_path" command -v ssh
-          sed -n '1,5p' "${root}/libexec/digital-asset-smart-deploy/ssh"
-
-          echo '=== Registry auth over SSH 443 ==='
-          export GIT_TERMINAL_PROMPT=0
-          export GIT_SSH_COMMAND="ssh -i ${key} -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
-          git ls-remote 'git@github.com:CPYMSU/registry.git' 'refs/heads/main'
+          echo '=== active processes ==='
+          ps -ax -o pid=,etime=,command= | grep -E 'smart-digital-asset-deploy|publish-digital-assets|git (ls-remote|clone|fetch)|ssh .*github' | grep -v grep || true
 
           echo '=== Smart Deploy state ==='
           if [ -f "$state" ]; then
@@ -43,10 +33,10 @@ jobs:
           else
             echo 'state file not created yet'
           fi
-          echo '=== stdout ==='
-          tail -n 120 "$out" 2>/dev/null || true
-          echo '=== stderr ==='
-          tail -n 120 "$err" 2>/dev/null || true
+          echo '=== recent stdout ==='
+          tail -n 40 "$out" 2>/dev/null || true
+          echo '=== recent stderr ==='
+          tail -n 40 "$err" 2>/dev/null || true
 
           echo '=== public MK7 ==='
           ok=0
