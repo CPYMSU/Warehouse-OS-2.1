@@ -1,0 +1,39 @@
+name: MK7 real publish verification
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/mk7-real-publish-verify.yml
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 70
+    env:
+      WAREHOUSE_BASE_URL: https://bonfirework.org
+      WAREHOUSE_ASSET_REGISTRY_REPOSITORY: CPYMSU/registry
+      WAREHOUSE_ASSET_REGISTRY_REF: main
+      WAREHOUSE_ASSET_REGISTRY_PATH: registry.json
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
+      WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify Registry access and publish MK7
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          key="${WAREHOUSE_ASSET_REGISTRY_SSH_KEY}"
+          test -f "$key"
+          test "$(stat -f '%Lp' "$key")" = "600"
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_SSH_COMMAND="ssh -i ${key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git ls-remote "git@github.com:${WAREHOUSE_ASSET_REGISTRY_REPOSITORY}.git" "refs/heads/${WAREHOUSE_ASSET_REGISTRY_REF}" >/dev/null
+          echo 'REGISTRY_DEPLOY_KEY_AUTHORIZED=true'
+          python3 ops/macos/publish-digital-assets-from-registry.py --repository CPYMSU/registry
