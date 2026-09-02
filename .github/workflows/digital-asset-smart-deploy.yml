@@ -47,4 +47,4 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          ops/macos/install-smart-digital-asset-deploy "${OPERATION}"
+          bash ops/macos/install-smart-digital-asset-deploy "${OPERATION}"
