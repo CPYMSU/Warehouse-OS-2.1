@@ -6,6 +6,7 @@ root="/Users/peiyuan/Server/bonfirework"
 libexec="${root}/libexec/digital-asset-smart-deploy"
 logs="${root}/logs"
 cache="${root}/cache/digital-asset-smart-deploy"
+smart_home="${root}/runtime/digital-asset-smart-deploy-home"
 plist="${HOME}/Library/LaunchAgents/org.bonfirework.digital-asset-smart-deploy.plist"
 label="org.bonfirework.digital-asset-smart-deploy"
 domain="gui/$(id -u)"
@@ -17,6 +18,21 @@ install_files() {
   install -m 0755 ops/macos/run-smart-digital-asset-deploy "${libexec}/run-smart-digital-asset-deploy"
   install -m 0755 ops/macos/publish-digital-assets.py "${libexec}/publish-digital-assets.py"
   install -m 0755 ops/macos/publish-digital-assets-from-registry.py "${libexec}/publish-digital-assets-from-registry.py"
+}
+
+prepare_ssh_home() {
+  mkdir -p "${smart_home}/.ssh"
+  chmod 700 "${smart_home}" "${smart_home}/.ssh"
+  cat > "${smart_home}/.ssh/config" <<'SSHCONFIG'
+Host github.com
+  HostName ssh.github.com
+  Port 443
+  User git
+  BatchMode yes
+  IdentitiesOnly yes
+  ConnectTimeout 8
+SSHCONFIG
+  chmod 600 "${smart_home}/.ssh/config"
 }
 
 write_plist() {
@@ -33,6 +49,8 @@ write_plist() {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key>
+    <string>${smart_home}</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>WAREHOUSE_BASE_URL</key>
@@ -46,7 +64,7 @@ write_plist() {
     <key>WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE</key>
     <string>${root}/secrets/digital-asset-workspace-keys.json</string>
     <key>WAREHOUSE_ASSET_REGISTRY_SSH_KEY</key>
-    <string>${root}/secrets/registry-readonly-ed25519</string>
+    <string>${root}/secrets/registry-readonly-ed25519-v2</string>
     <key>WAREHOUSE_ASSET_SMART_CACHE_ROOT</key>
     <string>${cache}</string>
   </dict>
@@ -71,11 +89,12 @@ PLIST
 install_service() {
   test -x "${python_bin}"
   install_files
+  prepare_ssh_home
   write_plist
   launchctl bootout "${domain}" "${plist}" >/dev/null 2>&1 || true
   launchctl bootstrap "${domain}" "${plist}"
   launchctl kickstart -k "${domain}/${label}"
-  launchctl print "${domain}/${label}" | sed -n '1,80p'
+  launchctl print "${domain}/${label}" | sed -n '1,90p'
 }
 
 uninstall_service() {

@@ -32,7 +32,7 @@ jobs:
       WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
       WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
       WAREHOUSE_ASSET_GITHUB_TOKEN: ${{ secrets.WAREHOUSE_ASSET_GITHUB_TOKEN }}
-      WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519
+      WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2
       WAREHOUSE_ASSET_REPOSITORY: ${{ inputs.repository }}
     steps:
       - uses: actions/checkout@v4
@@ -64,10 +64,10 @@ jobs:
           fi
 
           export GIT_TERMINAL_PROMPT=0
-          export GIT_SSH_COMMAND="ssh -i ${key} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          export GIT_SSH_COMMAND="ssh -i ${key} -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
           if git ls-remote "git@github.com:${WAREHOUSE_ASSET_REGISTRY_REPOSITORY}.git" "refs/heads/${WAREHOUSE_ASSET_REGISTRY_REF}" >/dev/null 2>&1; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
-            echo 'Registry auth: runner-local read-only deploy key'
+            echo 'Registry auth: runner-local read-only deploy key over SSH 443'
           else
             echo 'ready=false' >> "$GITHUB_OUTPUT"
             echo 'Registry deploy key is present locally but not authorized by GitHub yet; skipping.'
