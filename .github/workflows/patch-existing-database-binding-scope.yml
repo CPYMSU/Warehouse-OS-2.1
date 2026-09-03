@@ -1,4 +1,5 @@
 name: Patch existing database binding scope
+# Production rollout trigger for backend scope fix 62399bd3 (2026-09-03).
 
 on:
   push:
