@@ -60,54 +60,42 @@ jobs:
           if component_count != 1:
               raise SystemExit(f"content release component call match count={component_count}")
 
-          marker = '''    checkout, commit = checkout_source(
-              cache_root=cache_root,
-              repository=args.repository,
-              ref=args.ref,
-              ssh_key=args.registry_ssh_key.expanduser(),
-          )
+          checkout_marker = "    checkout, commit = checkout_source("
+          checkout_index = text.find(checkout_marker)
+          if checkout_index < 0:
+              raise SystemExit("checkout call was not found")
+          insertion_index = text.find("    version_no = (", checkout_index)
+          if insertion_index < 0:
+              raise SystemExit("version calculation after checkout was not found")
+          validation_block = '''    source_root = checkout / source_path
+              validator = source_root / "tools/validate_course_photo_policy.py"
+              global_policy = source_root / "data/policies/course_media_policy.json"
+              manifests = sorted((source_root / "site/learn").glob("*/photo_provenance.json"))
+              if not validator.is_file() or not global_policy.is_file() or not manifests:
+                  raise RuntimeError("MK7 course photo-policy release gate is incomplete")
+              for manifest in manifests:
+                  run(
+                      [
+                          sys.executable or "python3",
+                          str(validator),
+                          str(manifest.parent),
+                          "--global-policy",
+                          str(global_policy),
+                      ],
+                      cwd=checkout,
+                      timeout=180,
+                  )
+                  print(
+                      json.dumps(
+                          {"photo_policy_gate": "passed", "course": manifest.parent.name},
+                          ensure_ascii=False,
+                          sort_keys=True,
+                      ),
+                      flush=True,
+                  )
 
-          version_no = (
-          '''
-          replacement = '''    checkout, commit = checkout_source(
-              cache_root=cache_root,
-              repository=args.repository,
-              ref=args.ref,
-              ssh_key=args.registry_ssh_key.expanduser(),
-          )
-
-          source_root = checkout / source_path
-          validator = source_root / "tools/validate_course_photo_policy.py"
-          global_policy = source_root / "data/policies/course_media_policy.json"
-          manifests = sorted((source_root / "site/learn").glob("*/photo_provenance.json"))
-          if not validator.is_file() or not global_policy.is_file() or not manifests:
-              raise RuntimeError("MK7 course photo-policy release gate is incomplete")
-          for manifest in manifests:
-              run(
-                  [
-                      sys.executable or "python3",
-                      str(validator),
-                      str(manifest.parent),
-                      "--global-policy",
-                      str(global_policy),
-                  ],
-                  cwd=checkout,
-                  timeout=180,
-              )
-              print(
-                  json.dumps(
-                      {"photo_policy_gate": "passed", "course": manifest.parent.name},
-                      ensure_ascii=False,
-                      sort_keys=True,
-                  ),
-                  flush=True,
-              )
-
-          version_no = (
-          '''
-          if marker not in text:
-              raise SystemExit("checkout validation insertion point was not found")
-          text = text.replace(marker, replacement, 1)
+              '''
+          text = text[:insertion_index] + validation_block + text[insertion_index:]
           path.write_text(text, encoding="utf-8")
           PY
           grep -n 'component="api"' ops/macos/publish-content-only-mk7.py
