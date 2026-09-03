@@ -1,5 +1,5 @@
 name: Digital asset smart deploy
-# Trigger refresh for MK7 Registry release 7c22881 (2026-09-03).
+# Final activation verification for MK7 Registry release f764893 (2026-09-03).
 
 on:
   push:
@@ -44,7 +44,7 @@ jobs:
           fetch-depth: 1
       - name: Install or control low-latency smart deploy watcher
         env:
-          OPERATION: ${{ github.event_name == 'push' && 'install' || inputs.operation }}
+          OPERATION: ${{ github.event_name == 'push' && 'status' || inputs.operation }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
