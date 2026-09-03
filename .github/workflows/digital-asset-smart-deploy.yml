@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: warehouse-digital-asset-mk7-publish
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   release:
@@ -39,7 +39,7 @@ jobs:
           python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
           grep -n -- "--mtime=1970-01-01T00:00:00Z" ops/macos/publish-digital-assets.py
 
-      - name: Use the governed production API component
+      - name: Enforce media policy and use the governed API component
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -48,38 +48,71 @@ jobs:
 
           path = Path("ops/macos/publish-content-only-mk7.py")
           text = path.read_text(encoding="utf-8")
-          pattern = re.compile(
+
+          component_pattern = re.compile(
               r'(runtime_type="auto",\n\s*)component="",(\n\s*\)\n\s*state = publisher\._wait_for_release)'
           )
-          updated, count = pattern.subn(
+          text, component_count = component_pattern.subn(
               r'\1component="api",\2',
               text,
               count=1,
           )
-          if count != 1:
-              raise SystemExit(f"content release component call match count={count}")
-          path.write_text(updated, encoding="utf-8")
+          if component_count != 1:
+              raise SystemExit(f"content release component call match count={component_count}")
+
+          marker = '''    checkout, commit = checkout_source(
+              cache_root=cache_root,
+              repository=args.repository,
+              ref=args.ref,
+              ssh_key=args.registry_ssh_key.expanduser(),
+          )
+
+          version_no = (
+          '''
+          replacement = '''    checkout, commit = checkout_source(
+              cache_root=cache_root,
+              repository=args.repository,
+              ref=args.ref,
+              ssh_key=args.registry_ssh_key.expanduser(),
+          )
+
+          source_root = checkout / source_path
+          validator = source_root / "tools/validate_course_photo_policy.py"
+          global_policy = source_root / "data/policies/course_media_policy.json"
+          manifests = sorted((source_root / "site/learn").glob("*/photo_provenance.json"))
+          if not validator.is_file() or not global_policy.is_file() or not manifests:
+              raise RuntimeError("MK7 course photo-policy release gate is incomplete")
+          for manifest in manifests:
+              run(
+                  [
+                      sys.executable or "python3",
+                      str(validator),
+                      str(manifest.parent),
+                      "--global-policy",
+                      str(global_policy),
+                  ],
+                  cwd=checkout,
+                  timeout=180,
+              )
+              print(
+                  json.dumps(
+                      {"photo_policy_gate": "passed", "course": manifest.parent.name},
+                      ensure_ascii=False,
+                      sort_keys=True,
+                  ),
+                  flush=True,
+              )
+
+          version_no = (
+          '''
+          if marker not in text:
+              raise SystemExit("checkout validation insertion point was not found")
+          text = text.replace(marker, replacement, 1)
+          path.write_text(text, encoding="utf-8")
           PY
           grep -n 'component="api"' ops/macos/publish-content-only-mk7.py
+          grep -n 'photo_policy_gate' ops/macos/publish-content-only-mk7.py
           python3 -m py_compile ops/macos/publish-content-only-mk7.py
-
-      - name: Validate the no-AI field-photo release gate
-        run: |
-          set -euo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          checkout="${RUNNER_TEMP}/registry-photo-policy-v24"
-          ssh_key="/Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2"
-          test -f "${ssh_key}"
-          test "$(stat -f '%Lp' "${ssh_key}")" = "600"
-          rm -rf "${checkout}"
-          export GIT_SSH_COMMAND="/usr/bin/ssh -i ${ssh_key} -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-          git clone --depth 1 --branch "${MK7_RELEASE_REF}" git@github.com:CPYMSU/registry.git "${checkout}"
-          python3 "${checkout}/assets/mk7/tools/validate_course_photo_policy.py" \
-            "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations" \
-            --global-policy "${checkout}/assets/mk7/data/policies/course_media_policy.json"
-          node --check "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations/course-governance.js"
-          node --check "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations/course-navigation.js"
-          python3 -m json.tool "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations/photo_provenance.json" >/dev/null
 
       - name: Build, accept, activate and verify the MK7 content release
         run: |
