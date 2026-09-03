@@ -46,23 +46,25 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           path = Path("ops/macos/publish-content-only-mk7.py")
           text = path.read_text(encoding="utf-8")
-          old = '''        runtime_type="auto",
-              component="",
+          pattern = re.compile(
+              r'(runtime_type="auto",\n\s*)component="",(\n\s*\)\n\s*state = publisher\._wait_for_release)'
           )
-          state = publisher._wait_for_release'''
-          new = '''        runtime_type="auto",
-              component="api-content-v231",
+          updated, count = pattern.subn(
+              r'\1component="api-content-v231",\2',
+              text,
+              count=1,
           )
-          state = publisher._wait_for_release'''
-          if old not in text:
-              raise SystemExit("content release component call was not found")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          if count != 1:
+              raise SystemExit(f"content release component call match count={count}")
+          path.write_text(updated, encoding="utf-8")
           PY
           grep -n "api-content-v231" ops/macos/publish-content-only-mk7.py
+          python3 -m py_compile ops/macos/publish-content-only-mk7.py
 
       - name: Build, accept, activate and verify the MK7 content release
         run: |
