@@ -1,25 +1,11 @@
-name: Digital asset smart deploy
+name: Digital asset controlled MK7 V2.4 release
 
 on:
   push:
     branches: [main]
     paths:
       - ".github/workflows/digital-asset-smart-deploy.yml"
-      - "ops/macos/smart-digital-asset-deploy.py"
-      - "ops/macos/run-smart-digital-asset-deploy"
-      - "ops/macos/install-smart-digital-asset-deploy"
-      - "ops/macos/publish-digital-assets.py"
-      - "ops/macos/publish-digital-assets-from-registry.py"
-      - "ops/macos/normalize-digital-asset-archive.py"
-      - "ops/macos/prepare-resilient-digital-asset-cli.py"
   workflow_dispatch:
-    inputs:
-      operation:
-        description: Smart deploy control operation
-        required: true
-        default: status
-        type: choice
-        options: [status, install, scan, force-all, uninstall]
 
 permissions:
   contents: read
@@ -29,13 +15,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  control:
+  release:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 10
+    timeout-minutes: 180
     env:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: http.version
       GIT_CONFIG_VALUE_0: HTTP/1.1
+      WAREHOUSE_BASE_URL: https://bonfirework.org
+      WAREHOUSE_ASSET_SMART_CACHE_ROOT: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy
+      MK7_RELEASE_REF: chatgpt/mk7-course-photo-nav-v240-release
     steps:
       - uses: actions/checkout@v4
         env:
@@ -43,10 +32,113 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:7897
         with:
           fetch-depth: 1
-      - name: Install or control low-latency smart deploy watcher
-        env:
-          OPERATION: ${{ github.event_name == 'push' && 'status' || inputs.operation }}
+
+      - name: Normalize subdirectory source archive timestamps
+        run: |
+          set -euo pipefail
+          python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
+          grep -n -- "--mtime=1970-01-01T00:00:00Z" ops/macos/publish-digital-assets.py
+
+      - name: Use the governed production API component
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("ops/macos/publish-content-only-mk7.py")
+          text = path.read_text(encoding="utf-8")
+          pattern = re.compile(
+              r'(runtime_type="auto",\n\s*)component="",(\n\s*\)\n\s*state = publisher\._wait_for_release)'
+          )
+          updated, count = pattern.subn(
+              r'\1component="api",\2',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f"content release component call match count={count}")
+          path.write_text(updated, encoding="utf-8")
+          PY
+          grep -n 'component="api"' ops/macos/publish-content-only-mk7.py
+          python3 -m py_compile ops/macos/publish-content-only-mk7.py
+
+      - name: Validate the no-AI field-photo release gate
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          bash ops/macos/install-smart-digital-asset-deploy "${OPERATION}"
+          checkout="${RUNNER_TEMP}/registry-photo-policy-v24"
+          ssh_key="/Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2"
+          test -f "${ssh_key}"
+          test "$(stat -f '%Lp' "${ssh_key}")" = "600"
+          rm -rf "${checkout}"
+          export GIT_SSH_COMMAND="/usr/bin/ssh -i ${ssh_key} -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 --branch "${MK7_RELEASE_REF}" git@github.com:CPYMSU/registry.git "${checkout}"
+          python3 "${checkout}/assets/mk7/tools/validate_course_photo_policy.py" \
+            "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations" \
+            --global-policy "${checkout}/assets/mk7/data/policies/course_media_policy.json"
+          node --check "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations/course-governance.js"
+          node --check "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations/course-navigation.js"
+          python3 -m json.tool "${checkout}/assets/mk7/site/learn/500kv-spacer-habitual-violations/photo_provenance.json" >/dev/null
+
+      - name: Build, accept, activate and verify the MK7 content release
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          workspace_keys="/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
+          test -f "${workspace_keys}"
+          test "$(stat -f '%Lp' "${workspace_keys}")" = "600"
+
+          restore_watcher() {
+            python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py || true
+            bash ops/macos/install-smart-digital-asset-deploy install || true
+          }
+          trap restore_watcher EXIT
+
+          bash ops/macos/install-smart-digital-asset-deploy uninstall
+          sleep 3
+          python3 ops/macos/publish-content-only-mk7.py \
+            --ref "${MK7_RELEASE_REF}" \
+            --workspace-alias mk7 \
+            --workspace-keys "${workspace_keys}" \
+            --timeout-seconds 7200
+
+      - name: Verify activated policy and navigation resources
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import urllib.request
+
+          base = "https://mk7-workspace.bonfirework.org/learn/500kv-spacer-habitual-violations/"
+          def read(name):
+              request = urllib.request.Request(
+                  base + name,
+                  headers={"Cache-Control": "no-cache", "User-Agent": "MK7-V2.4-Verification/1.0"},
+              )
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  assert response.status == 200, (name, response.status)
+                  return response.read().decode("utf-8", "replace")
+
+          loader = read("course.js")
+          governance = read("course-governance.js")
+          navigation = read("course-navigation.js")
+          styles = read("course-enhancements.css")
+          manifest = json.loads(read("photo_provenance.json"))
+          assert "course-governance.js?v=2" in loader
+          assert "course-navigation.js?v=2" in loader
+          assert "ai_generated_field_photos_allowed" in governance
+          assert "course-nav-backdrop" in styles
+          assert "navProgressBar" in navigation
+          assert manifest["policy"]["ai_generated_field_photos_allowed"] is False
+          assert manifest["policy"]["unknown_origin_field_photos_allowed"] is False
+          assert all(item["ai_generated"] is False for item in manifest["assets"])
+          assert all(item["verified_for_course"] is True for item in manifest["assets"])
+          print(json.dumps({
+              "ok": True,
+              "public_course": base,
+              "photo_policy": "verified",
+              "registered_photo_assets": len(manifest["assets"]),
+              "chapter_navigation": "verified"
+          }, ensure_ascii=False, sort_keys=True))
+          PY
