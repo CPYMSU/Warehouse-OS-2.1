@@ -1,0 +1,102 @@
+name: Probe MK7 single-to-double V1.2 release
+
+on:
+  push:
+    branches:
+      - chatgpt/publish-single-double-habitual-v12
+    paths:
+      - .github/workflows/probe-single-double-v12.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WAREHOUSE_BASE_URL: ${{ vars.WAREHOUSE_BASE_URL || 'https://bonfirework.org' }}
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
+      TARGET_VERSION: 8501d78ede0faf088dba863c173a676d484a0e89-d7b23e647054
+      TARGET_URL: https://mk7-workspace.bonfirework.org/learn/500kv-insulator-single-to-double-habitual-violations/
+    steps:
+      - name: Read source, release, deployment and public page state
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          base = os.environ['WAREHOUSE_BASE_URL'].rstrip('/')
+          keys = json.loads(os.environ['WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON'])
+          key = str(keys.get('mk7') or '')
+          if not key.startswith('wak_'):
+              raise SystemExit('mk7 workspace key is unavailable')
+          target = os.environ['TARGET_VERSION']
+
+          def get_json(path):
+              request = urllib.request.Request(
+                  base + path,
+                  headers={
+                      'Authorization': 'Bearer ' + key,
+                      'Accept': 'application/json',
+                      'User-Agent': 'Warehouse-MK7-Release-Probe/1.0',
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.loads(response.read().decode('utf-8'))
+
+          sources = (get_json('/api/workspaces/v1/sources').get('sources') or [])
+          releases = (get_json('/api/workspaces/v1/releases').get('releases') or [])
+          deployments = (get_json('/api/workspaces/v1/deployments').get('deployments') or [])
+          matching_sources = [s for s in sources if str(s.get('version_no') or '') == target]
+          source_ids = {
+              str(s.get('uuid') or s.get('source_version_id') or s.get('id') or '')
+              for s in matching_sources
+          }
+          matching_releases = [
+              r for r in releases
+              if str(r.get('source_version_id') or r.get('source_id') or '') in source_ids
+              or target in json.dumps(r, ensure_ascii=False, default=str)
+          ]
+          relevant_deployments = [
+              d for d in deployments
+              if any(
+                  token and token in json.dumps(d, ensure_ascii=False, default=str)
+                  for token in source_ids
+              )
+              or target in json.dumps(d, ensure_ascii=False, default=str)
+          ]
+
+          page_state = {'ok': False}
+          try:
+              request = urllib.request.Request(
+                  os.environ['TARGET_URL'] + '?probe=' + target,
+                  headers={'User-Agent': 'Mozilla/5.0'},
+              )
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  text = response.read().decode('utf-8', 'replace')
+                  page_state = {
+                      'ok': response.status == 200,
+                      'status': response.status,
+                      'bytes': len(text.encode('utf-8')),
+                      'six_gates': '六道安全门槛' in text,
+                      'condition_marker': '条件未成立' in text,
+                      'catalog_42': '42项' in text,
+                      'real_photos': '真实现场照片' in text,
+                  }
+          except Exception as exc:
+              page_state = {'ok': False, 'error': repr(exc)}
+
+          payload = {
+              'target_version': target,
+              'matching_sources': matching_sources,
+              'matching_releases': matching_releases,
+              'relevant_deployments': relevant_deployments,
+              'public_page': page_state,
+          }
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          PY
