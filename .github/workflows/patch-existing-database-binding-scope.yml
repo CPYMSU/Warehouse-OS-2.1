@@ -31,79 +31,80 @@ jobs:
 
           path = Path("backend/app/services/workspace_deployments.py")
           text = path.read_text(encoding="utf-8")
+          marker = "reuses_existing_database_binding"
 
-          old_runtime = '''        runtime_intent = {
-              **(component.get("config") if isinstance(component.get("config"), dict) else {}),
-              **manifest_defaults,
-              **{key: value for key, value in payload.items() if value not in (None, "")},
-          }
-          '''
-          new_runtime = '''        component_config = (
-              component.get("config") if isinstance(component.get("config"), dict) else {}
-          )
-          runtime_intent = {
-              **component_config,
-              **manifest_defaults,
-              **{key: value for key, value in payload.items() if value not in (None, "")},
-          }
-          '''
-          if old_runtime not in text:
-              raise SystemExit("runtime_intent signature was not found")
-          text = text.replace(old_runtime, new_runtime, 1)
+          if marker not in text:
+              lines = text.splitlines()
 
-          old_alias = '''        database_url_env = str(runtime_intent.get("database_url_env") or "").strip()
-          if database_url_env:
-              credential.require("database:admin")
-              if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
-                  raise HTTPException(
-                      status_code=422,
-                      detail="database_url_env must be a safe env name",
-                  )
-          '''
-          new_alias = '''        existing_database_url_env = str(
-              component_config.get("database_url_env") or ""
-          ).strip()
-          database_url_env = str(runtime_intent.get("database_url_env") or "").strip()
-          if database_url_env and not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
-              raise HTTPException(
-                  status_code=422,
-                  detail="database_url_env must be a safe env name",
+              runtime_start = next(
+                  i for i, line in enumerate(lines)
+                  if line.strip() == "runtime_intent = {"
+                  and i + 1 < len(lines)
+                  and "component.get(\"config\")" in lines[i + 1]
               )
-          '''
-          if old_alias not in text:
-              raise SystemExit("database_url_env scope signature was not found")
-          text = text.replace(old_alias, new_alias, 1)
-
-          old_gate = '''        if execution_mode != "job" and database_access == "migration":
-              raise HTTPException(
-                  status_code=422,
-                  detail="Migration database access is restricted to one-shot jobs",
+              runtime_end = next(
+                  i for i in range(runtime_start + 1, len(lines))
+                  if lines[i].strip() == "}"
               )
-          lifecycle_job = runtime_intent.get("lifecycle_job")
-          '''
-          new_gate = '''        if execution_mode != "job" and database_access == "migration":
-              raise HTTPException(
-                  status_code=422,
-                  detail="Migration database access is restricted to one-shot jobs",
-              )
-          existing_database_access = str(
-              component_config.get("database_access")
-              or ("runtime" if existing_database_url_env else "none")
-          ).strip().lower()
-          reuses_existing_database_binding = bool(
-              database_url_env
-              and database_url_env == existing_database_url_env
-              and database_access == existing_database_access
-          )
-          if database_url_env and not reuses_existing_database_binding:
-              credential.require("database:admin")
-          lifecycle_job = runtime_intent.get("lifecycle_job")
-          '''
-          if old_gate not in text:
-              raise SystemExit("database access gate signature was not found")
-          text = text.replace(old_gate, new_gate, 1)
+              indent = lines[runtime_start][:-len(lines[runtime_start].lstrip())]
+              lines[runtime_start:runtime_end + 1] = [
+                  indent + "component_config = (",
+                  indent + "    component.get(\"config\") if isinstance(component.get(\"config\"), dict) else {}",
+                  indent + ")",
+                  indent + "runtime_intent = {",
+                  indent + "    **component_config,",
+                  indent + "    **manifest_defaults,",
+                  indent + "    **{key: value for key, value in payload.items() if value not in (None, \"\")},",
+                  indent + "}",
+              ]
 
-          path.write_text(text, encoding="utf-8")
+              alias_start = next(
+                  i for i, line in enumerate(lines)
+                  if line.strip() == "database_url_env = str(runtime_intent.get(\"database_url_env\") or \"\").strip()"
+              )
+              alias_end = next(
+                  i for i in range(alias_start + 1, len(lines))
+                  if lines[i].strip() == "database_access = str("
+              )
+              indent = lines[alias_start][:-len(lines[alias_start].lstrip())]
+              lines[alias_start:alias_end] = [
+                  indent + "existing_database_url_env = str(",
+                  indent + "    component_config.get(\"database_url_env\") or \"\"",
+                  indent + ").strip()",
+                  indent + "database_url_env = str(runtime_intent.get(\"database_url_env\") or \"\").strip()",
+                  indent + "if database_url_env and not re.fullmatch(r\"[A-Z][A-Z0-9_]{0,79}\", database_url_env):",
+                  indent + "    raise HTTPException(",
+                  indent + "        status_code=422,",
+                  indent + "        detail=\"database_url_env must be a safe env name\",",
+                  indent + "    )",
+              ]
+
+              lifecycle_index = next(
+                  i for i, line in enumerate(lines)
+                  if line.strip() == "lifecycle_job = runtime_intent.get(\"lifecycle_job\")"
+              )
+              indent = lines[lifecycle_index][:-len(lines[lifecycle_index].lstrip())]
+              scope_gate = [
+                  indent + "existing_database_access = str(",
+                  indent + "    component_config.get(\"database_access\")",
+                  indent + "    or (\"runtime\" if existing_database_url_env else \"none\")",
+                  indent + ").strip().lower()",
+                  indent + "reuses_existing_database_binding = bool(",
+                  indent + "    database_url_env",
+                  indent + "    and database_url_env == existing_database_url_env",
+                  indent + "    and database_access == existing_database_access",
+                  indent + ")",
+                  indent + "if database_url_env and not reuses_existing_database_binding:",
+                  indent + "    credential.require(\"database:admin\")",
+              ]
+              lines[lifecycle_index:lifecycle_index] = scope_gate
+              path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          updated = path.read_text(encoding="utf-8")
+          if marker not in updated:
+              raise SystemExit("scope correction marker was not installed")
+          if updated.count('credential.require("database:admin")') != 1:
+              raise SystemExit("unexpected database:admin gate count")
           PY
 
           python3 -m py_compile backend/app/services/workspace_deployments.py
