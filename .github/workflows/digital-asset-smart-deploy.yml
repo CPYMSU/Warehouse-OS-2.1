@@ -1,5 +1,5 @@
 name: Digital asset controlled MK7 release
-# Publish Registry commit b610acf5b8262a6e75590d5925926caddb6f26b6 as a fresh immutable source version.
+# One guarded content-only release for the reviewed MK7 spacer safety course.
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
       - ".github/workflows/digital-asset-smart-deploy.yml"
       - "ops/macos/normalize-digital-asset-archive.py"
       - "ops/macos/prepare-resilient-digital-asset-cli.py"
-      - "ops/macos/select-admin-workspace-key.py"
+      - "ops/macos/publish-content-only-mk7.py"
   workflow_dispatch:
 
 permissions:
@@ -27,14 +27,7 @@ jobs:
       GIT_CONFIG_KEY_0: http.version
       GIT_CONFIG_VALUE_0: HTTP/1.1
       WAREHOUSE_BASE_URL: https://bonfirework.org
-      WAREHOUSE_ASSET_REGISTRY_REPOSITORY: CPYMSU/registry
-      WAREHOUSE_ASSET_REGISTRY_REF: main
-      WAREHOUSE_ASSET_REGISTRY_PATH: registry.json
-      WAREHOUSE_ASSET_LOCAL_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
-      WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
-      WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2
       WAREHOUSE_ASSET_SMART_CACHE_ROOT: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy
-      WAREHOUSE_ASSET_SMART_STATE_PATH: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json
     steps:
       - uses: actions/checkout@v4
         env:
@@ -49,40 +42,10 @@ jobs:
           python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
           grep -n -- "--mtime=1970-01-01T00:00:00Z" ops/macos/publish-digital-assets.py
 
-      - name: Select a same-workspace release credential
-        run: |
-          set -euo pipefail
-          candidates="${RUNNER_TEMP}/mk7-workspace-key-candidates.json"
-          admin_keys="${RUNNER_TEMP}/mk7-admin-workspace-key.json"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          local_path = Path(os.environ["WAREHOUSE_ASSET_LOCAL_KEYS_FILE"])
-          candidates = json.loads(local_path.read_text(encoding="utf-8"))
-          actions_raw = (os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON") or "").strip()
-          if actions_raw:
-              actions = json.loads(actions_raw)
-              for alias, key in actions.items():
-                  candidates[f"actions--{alias}"] = key
-          target = Path(os.environ["RUNNER_TEMP"]) / "mk7-workspace-key-candidates.json"
-          target.write_text(json.dumps(candidates), encoding="utf-8")
-          target.chmod(0o600)
-          print(json.dumps({"candidate_alias_count": len(candidates), "actions_secret_configured": bool(actions_raw)}))
-          PY
-          python3 ops/macos/select-admin-workspace-key.py \
-            --source "${candidates}" \
-            --target-alias mk7 \
-            --output "${admin_keys}"
-          echo "WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE=${admin_keys}" >> "${GITHUB_ENV}"
-          echo "WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON=" >> "${GITHUB_ENV}"
-
-      - name: Publish and activate MK7 through one controlled channel
+      - name: Build, accept, activate and verify the MK7 content release
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          cache_cli="${WAREHOUSE_ASSET_SMART_CACHE_ROOT}/dam.py"
           restore_watcher() {
             python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py || true
             bash ops/macos/install-smart-digital-asset-deploy install || true
@@ -91,15 +54,6 @@ jobs:
 
           bash ops/macos/install-smart-digital-asset-deploy uninstall
           sleep 3
-
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            echo "controlled MK7 publish attempt ${attempt}"
-            python3 ops/macos/prepare-resilient-digital-asset-cli.py "${cache_cli}"
-            if bash ops/macos/install-smart-digital-asset-deploy force-all; then
-              echo "controlled MK7 publish and activation completed"
-              exit 0
-            fi
-            sleep $(( attempt < 4 ? attempt * 15 : 60 ))
-          done
-          echo "controlled MK7 publish exhausted retries" >&2
-          exit 1
+          python3 ops/macos/publish-content-only-mk7.py \
+            --ref chatgpt/mk7-content-v231 \
+            --timeout-seconds 7200
