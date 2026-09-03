@@ -42,6 +42,28 @@ jobs:
           python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
           grep -n -- "--mtime=1970-01-01T00:00:00Z" ops/macos/publish-digital-assets.py
 
+      - name: Isolate the content candidate from inherited database aliases
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("ops/macos/publish-content-only-mk7.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''        runtime_type="auto",
+              component="",
+          )
+          state = publisher._wait_for_release'''
+          new = '''        runtime_type="auto",
+              component="api-content-v231",
+          )
+          state = publisher._wait_for_release'''
+          if old not in text:
+              raise SystemExit("content release component call was not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+          grep -n "api-content-v231" ops/macos/publish-content-only-mk7.py
+
       - name: Build, accept, activate and verify the MK7 content release
         run: |
           set -euo pipefail
