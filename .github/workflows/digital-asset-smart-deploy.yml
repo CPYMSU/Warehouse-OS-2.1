@@ -9,7 +9,6 @@ on:
       - "ops/macos/normalize-digital-asset-archive.py"
       - "ops/macos/prepare-resilient-digital-asset-cli.py"
       - "ops/macos/publish-content-only-mk7.py"
-      - "ops/macos/select-admin-workspace-key.py"
   workflow_dispatch:
 
 permissions:
@@ -71,32 +70,20 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
-          release_dir="${RUNNER_TEMP}/mk7-content-release"
-          selected_keys="${release_dir}/workspace-keys.json"
-          source_keys="/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
-          install -d -m 0700 "${release_dir}"
+          workspace_keys="/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
+          test -f "${workspace_keys}"
+          test "$(stat -f '%Lp' "${workspace_keys}")" = "600"
 
           restore_watcher() {
             python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py || true
             bash ops/macos/install-smart-digital-asset-deploy install || true
           }
-          cleanup() {
-            rm -f "${selected_keys}"
-            restore_watcher
-          }
-          trap cleanup EXIT
-
-          python3 ops/macos/select-admin-workspace-key.py \
-            --source "${source_keys}" \
-            --target-alias mk7 \
-            --output "${selected_keys}" \
-            --base-url "${WAREHOUSE_BASE_URL}"
+          trap restore_watcher EXIT
 
           bash ops/macos/install-smart-digital-asset-deploy uninstall
           sleep 3
           python3 ops/macos/publish-content-only-mk7.py \
             --ref chatgpt/mk7-content-v231 \
             --workspace-alias mk7 \
-            --workspace-keys "${selected_keys}" \
+            --workspace-keys "${workspace_keys}" \
             --timeout-seconds 7200
