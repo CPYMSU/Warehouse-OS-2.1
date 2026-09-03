@@ -8,6 +8,7 @@ on:
       - ".github/workflows/digital-asset-smart-deploy.yml"
       - "ops/macos/normalize-digital-asset-archive.py"
       - "ops/macos/prepare-resilient-digital-asset-cli.py"
+      - "ops/macos/select-admin-workspace-key.py"
   workflow_dispatch:
 
 permissions:
@@ -29,7 +30,7 @@ jobs:
       WAREHOUSE_ASSET_REGISTRY_REPOSITORY: CPYMSU/registry
       WAREHOUSE_ASSET_REGISTRY_REF: main
       WAREHOUSE_ASSET_REGISTRY_PATH: registry.json
-      WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
+      WAREHOUSE_ASSET_LOCAL_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
       WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2
       WAREHOUSE_ASSET_SMART_CACHE_ROOT: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy
       WAREHOUSE_ASSET_SMART_STATE_PATH: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json
@@ -46,6 +47,16 @@ jobs:
           set -euo pipefail
           python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
           grep -n -- "--mtime=1970-01-01T00:00:00Z" ops/macos/publish-digital-assets.py
+
+      - name: Select a same-workspace release credential
+        run: |
+          set -euo pipefail
+          admin_keys="${RUNNER_TEMP}/mk7-admin-workspace-key.json"
+          python3 ops/macos/select-admin-workspace-key.py \
+            --source "${WAREHOUSE_ASSET_LOCAL_KEYS_FILE}" \
+            --target-alias mk7 \
+            --output "${admin_keys}"
+          echo "WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE=${admin_keys}" >> "${GITHUB_ENV}"
 
       - name: Publish and activate MK7 through one controlled channel
         run: |
