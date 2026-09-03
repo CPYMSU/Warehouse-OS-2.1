@@ -1,51 +1,85 @@
-name: Digital asset smart deploy
-# Final activation verification pass 2 for MK7 Registry release f764893 (2026-09-03).
+name: Digital asset controlled MK7 release
 
 on:
   push:
     branches: [main]
     paths:
       - ".github/workflows/digital-asset-smart-deploy.yml"
-      - "ops/macos/smart-digital-asset-deploy.py"
-      - "ops/macos/run-smart-digital-asset-deploy"
-      - "ops/macos/install-smart-digital-asset-deploy"
-      - "ops/macos/publish-digital-assets.py"
-      - "ops/macos/publish-digital-assets-from-registry.py"
   workflow_dispatch:
-    inputs:
-      operation:
-        description: Smart deploy control operation
-        required: true
-        default: status
-        type: choice
-        options: [status, install, scan, force-all, uninstall]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: warehouse-digital-asset-smart-control
   cancel-in-progress: false
 
 jobs:
-  control:
+  release:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 10
+    timeout-minutes: 130
     env:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: http.version
       GIT_CONFIG_VALUE_0: HTTP/1.1
+      WAREHOUSE_BASE_URL: https://bonfirework.org
+      WAREHOUSE_ASSET_REGISTRY_REPOSITORY: CPYMSU/registry
+      WAREHOUSE_ASSET_REGISTRY_REF: main
+      WAREHOUSE_ASSET_REGISTRY_PATH: registry.json
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
+      WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2
+      WAREHOUSE_ASSET_SMART_CACHE_ROOT: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy
+      WAREHOUSE_ASSET_SMART_STATE_PATH: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json
     steps:
       - uses: actions/checkout@v4
         env:
           HTTPS_PROXY: http://127.0.0.1:7897
           HTTP_PROXY: http://127.0.0.1:7897
         with:
-          fetch-depth: 1
-      - name: Install or control low-latency smart deploy watcher
-        env:
-          OPERATION: ${{ github.event_name == 'push' && 'status' || inputs.operation }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Make subdirectory source archives byte-stable
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("ops/macos/publish-digital-assets.py")
+          text = path.read_text(encoding="utf-8")
+          old = '["git", "archive", "--format=tar", f"--output={raw_tar}", treeish],'
+          new = '["git", "archive", "--format=tar", "--mtime=@0", f"--output={raw_tar}", treeish],'
+          if old in text:
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          elif "--mtime=@0" not in text:
+              raise SystemExit("git archive call was not found")
+          PY
+          if ! git diff --quiet -- ops/macos/publish-digital-assets.py; then
+            git config user.name "warehouse-release-bot"
+            git config user.email "warehouse-release-bot@users.noreply.github.com"
+            git add ops/macos/publish-digital-assets.py
+            git commit -m "fix: normalize digital-asset archive timestamps"
+            git push origin HEAD:main
+          fi
+          grep -n -- "--mtime=@0" ops/macos/publish-digital-assets.py
+
+      - name: Publish MK7 through one controlled channel
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          bash ops/macos/install-smart-digital-asset-deploy "${OPERATION}"
+          restore_watcher() {
+            bash ops/macos/install-smart-digital-asset-deploy install || true
+          }
+          trap restore_watcher EXIT
+          bash ops/macos/install-smart-digital-asset-deploy uninstall
+          sleep 3
+          for attempt in 1 2 3 4; do
+            echo "controlled publish attempt ${attempt}"
+            if bash ops/macos/install-smart-digital-asset-deploy force-all; then
+              echo "controlled MK7 publish completed"
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "controlled MK7 publish exhausted retries" >&2
+          exit 1
