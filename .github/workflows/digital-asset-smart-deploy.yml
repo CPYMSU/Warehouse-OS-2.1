@@ -1,30 +1,41 @@
-name: Digital asset controlled MK7 V2.4 release
+name: Digital asset smart deploy
 
 on:
   push:
     branches: [main]
     paths:
       - ".github/workflows/digital-asset-smart-deploy.yml"
+      - "ops/macos/smart-digital-asset-deploy.py"
+      - "ops/macos/run-smart-digital-asset-deploy"
+      - "ops/macos/install-smart-digital-asset-deploy"
+      - "ops/macos/publish-digital-assets.py"
+      - "ops/macos/publish-digital-assets-from-registry.py"
+      - "ops/macos/normalize-digital-asset-archive.py"
+      - "ops/macos/prepare-resilient-digital-asset-cli.py"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Smart deploy control operation
+        required: true
+        default: status
+        type: choice
+        options: [status, install, scan, force-all, uninstall]
 
 permissions:
   contents: read
 
 concurrency:
   group: warehouse-digital-asset-mk7-publish
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  release:
+  control:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 180
+    timeout-minutes: 10
     env:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: http.version
       GIT_CONFIG_VALUE_0: HTTP/1.1
-      WAREHOUSE_BASE_URL: https://bonfirework.org
-      WAREHOUSE_ASSET_SMART_CACHE_ROOT: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy
-      MK7_RELEASE_REF: chatgpt/mk7-course-photo-nav-v240-release
     steps:
       - uses: actions/checkout@v4
         env:
@@ -32,134 +43,10 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:7897
         with:
           fetch-depth: 1
-
-      - name: Normalize subdirectory source archive timestamps
-        run: |
-          set -euo pipefail
-          python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
-          grep -n -- "--mtime=1970-01-01T00:00:00Z" ops/macos/publish-digital-assets.py
-
-      - name: Enforce media policy and use the governed API component
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          path = Path("ops/macos/publish-content-only-mk7.py")
-          text = path.read_text(encoding="utf-8")
-
-          component_pattern = re.compile(
-              r'(runtime_type="auto",\n\s*)component="",(\n\s*\)\n\s*state = publisher\._wait_for_release)'
-          )
-          text, component_count = component_pattern.subn(
-              r'\1component="api",\2',
-              text,
-              count=1,
-          )
-          if component_count != 1:
-              raise SystemExit(f"content release component call match count={component_count}")
-
-          checkout_marker = "    checkout, commit = checkout_source("
-          checkout_index = text.find(checkout_marker)
-          if checkout_index < 0:
-              raise SystemExit("checkout call was not found")
-          insertion_index = text.find("    version_no = (", checkout_index)
-          if insertion_index < 0:
-              raise SystemExit("version calculation after checkout was not found")
-          validation_block = '''    source_root = checkout / source_path
-              validator = source_root / "tools/validate_course_photo_policy.py"
-              global_policy = source_root / "data/policies/course_media_policy.json"
-              manifests = sorted((source_root / "site/learn").glob("*/photo_provenance.json"))
-              if not validator.is_file() or not global_policy.is_file() or not manifests:
-                  raise RuntimeError("MK7 course photo-policy release gate is incomplete")
-              for manifest in manifests:
-                  run(
-                      [
-                          sys.executable or "python3",
-                          str(validator),
-                          str(manifest.parent),
-                          "--global-policy",
-                          str(global_policy),
-                      ],
-                      cwd=checkout,
-                      timeout=180,
-                  )
-                  print(
-                      json.dumps(
-                          {"photo_policy_gate": "passed", "course": manifest.parent.name},
-                          ensure_ascii=False,
-                          sort_keys=True,
-                      ),
-                      flush=True,
-                  )
-
-              '''
-          text = text[:insertion_index] + validation_block + text[insertion_index:]
-          path.write_text(text, encoding="utf-8")
-          PY
-          grep -n 'component="api"' ops/macos/publish-content-only-mk7.py
-          grep -n 'photo_policy_gate' ops/macos/publish-content-only-mk7.py
-          python3 -m py_compile ops/macos/publish-content-only-mk7.py
-
-      - name: Build, accept, activate and verify the MK7 content release
+      - name: Install or control low-latency smart deploy watcher
+        env:
+          OPERATION: ${{ github.event_name == 'push' && 'status' || inputs.operation }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          workspace_keys="/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
-          test -f "${workspace_keys}"
-          test "$(stat -f '%Lp' "${workspace_keys}")" = "600"
-
-          restore_watcher() {
-            python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py || true
-            bash ops/macos/install-smart-digital-asset-deploy install || true
-          }
-          trap restore_watcher EXIT
-
-          bash ops/macos/install-smart-digital-asset-deploy uninstall
-          sleep 3
-          python3 ops/macos/publish-content-only-mk7.py \
-            --ref "${MK7_RELEASE_REF}" \
-            --workspace-alias mk7 \
-            --workspace-keys "${workspace_keys}" \
-            --timeout-seconds 7200
-
-      - name: Verify activated policy and navigation resources
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import urllib.request
-
-          base = "https://mk7-workspace.bonfirework.org/learn/500kv-spacer-habitual-violations/"
-          def read(name):
-              request = urllib.request.Request(
-                  base + name,
-                  headers={"Cache-Control": "no-cache", "User-Agent": "MK7-V2.4-Verification/1.0"},
-              )
-              with urllib.request.urlopen(request, timeout=90) as response:
-                  assert response.status == 200, (name, response.status)
-                  return response.read().decode("utf-8", "replace")
-
-          loader = read("course.js")
-          governance = read("course-governance.js")
-          navigation = read("course-navigation.js")
-          styles = read("course-enhancements.css")
-          manifest = json.loads(read("photo_provenance.json"))
-          assert "course-governance.js?v=2" in loader
-          assert "course-navigation.js?v=2" in loader
-          assert "ai_generated_field_photos_allowed" in governance
-          assert "course-nav-backdrop" in styles
-          assert "navProgressBar" in navigation
-          assert manifest["policy"]["ai_generated_field_photos_allowed"] is False
-          assert manifest["policy"]["unknown_origin_field_photos_allowed"] is False
-          assert all(item["ai_generated"] is False for item in manifest["assets"])
-          assert all(item["verified_for_course"] is True for item in manifest["assets"])
-          print(json.dumps({
-              "ok": True,
-              "public_course": base,
-              "photo_policy": "verified",
-              "registered_photo_assets": len(manifest["assets"]),
-              "chapter_navigation": "verified"
-          }, ensure_ascii=False, sort_keys=True))
-          PY
+          bash ops/macos/install-smart-digital-asset-deploy "${OPERATION}"
