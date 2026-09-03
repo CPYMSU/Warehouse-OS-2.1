@@ -103,8 +103,10 @@ jobs:
           updated = path.read_text(encoding="utf-8")
           if marker not in updated:
               raise SystemExit("scope correction marker was not installed")
-          if updated.count('credential.require("database:admin")') != 1:
-              raise SystemExit("unexpected database:admin gate count")
+          if 'if database_url_env:\n            credential.require("database:admin")' in updated:
+              raise SystemExit("legacy unconditional database:admin gate remains")
+          if 'if database_url_env and not reuses_existing_database_binding:\n            credential.require("database:admin")' not in updated:
+              raise SystemExit("guarded database:admin gate was not installed")
           PY
 
           python3 -m py_compile backend/app/services/workspace_deployments.py
