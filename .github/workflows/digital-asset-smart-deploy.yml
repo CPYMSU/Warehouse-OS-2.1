@@ -1,5 +1,5 @@
 name: Digital asset smart deploy
-# Final activation verification for MK7 Registry release f764893 (2026-09-03).
+# Final activation verification pass 2 for MK7 Registry release f764893 (2026-09-03).
 
 on:
   push:
