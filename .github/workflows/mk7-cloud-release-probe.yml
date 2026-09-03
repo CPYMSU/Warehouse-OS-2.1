@@ -1,0 +1,72 @@
+name: MK7 cloud release probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mk7-cloud-release-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WAREHOUSE_BASE_URL: https://bonfirework.org
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
+    steps:
+      - name: Probe remote MK7 workspace without disclosing credentials
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          raw = os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON") or ""
+          if not raw.strip():
+              raise SystemExit("workspace_keys_secret=missing")
+          keys = json.loads(raw)
+          key = str(keys.get("mk7") or "").strip()
+          if not key.startswith("wak_"):
+              raise SystemExit("mk7_workspace_key=missing")
+          base = os.environ["WAREHOUSE_BASE_URL"].rstrip("/")
+
+          def get(path):
+              request = urllib.request.Request(
+                  base + path,
+                  headers={
+                      "Authorization": "Bearer " + key,
+                      "Accept": "application/json",
+                      "User-Agent": "MK7-Cloud-Release-Probe/1.0",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  return int(response.status), json.loads(response.read().decode("utf-8"))
+
+          status, info = get("/api/workspaces/v1/info")
+          workspace = info.get("workspace") if isinstance(info.get("workspace"), dict) else {}
+          credential = info.get("credential") if isinstance(info.get("credential"), dict) else {}
+          scopes = info.get("scopes") or credential.get("scopes") or []
+          _, sources = get("/api/workspaces/v1/sources")
+          _, releases = get("/api/workspaces/v1/releases")
+          _, deployments = get("/api/workspaces/v1/deployments")
+          source_rows = sources.get("sources") or []
+          release_rows = releases.get("releases") or []
+          deployment_rows = deployments.get("deployments") or []
+          print(json.dumps({
+              "ok": True,
+              "workspace_key": workspace.get("workspace_key") or info.get("workspace_key"),
+              "scopes": sorted(str(item) for item in scopes),
+              "source_count": len(source_rows),
+              "latest_sources": source_rows[:3],
+              "release_count": len(release_rows),
+              "latest_releases": release_rows[:3],
+              "deployment_count": len(deployment_rows),
+              "latest_deployments": deployment_rows[:3],
+          }, ensure_ascii=False, indent=2, default=str))
+          PY
