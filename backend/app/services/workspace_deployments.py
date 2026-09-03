@@ -1552,8 +1552,11 @@ def request_workspace_deployment(
             ),
             {"profile_key": profile_key},
         ).scalar_one()
+        component_config = (
+            component.get("config") if isinstance(component.get("config"), dict) else {}
+        )
         runtime_intent = {
-            **(component.get("config") if isinstance(component.get("config"), dict) else {}),
+            **component_config,
             **manifest_defaults,
             **{key: value for key, value in payload.items() if value not in (None, "")},
         }
@@ -1569,14 +1572,15 @@ def request_workspace_deployment(
         )
         if bool(declared_deployment.get("require_acceptance_before_activation")):
             activate_requested = False
+        existing_database_url_env = str(
+            component_config.get("database_url_env") or ""
+        ).strip()
         database_url_env = str(runtime_intent.get("database_url_env") or "").strip()
-        if database_url_env:
-            credential.require("database:admin")
-            if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
-                raise HTTPException(
-                    status_code=422,
-                    detail="database_url_env must be a safe env name",
-                )
+        if database_url_env and not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
+            raise HTTPException(
+                status_code=422,
+                detail="database_url_env must be a safe env name",
+            )
         database_access = str(
             runtime_intent.get("database_access")
             or (
@@ -1597,6 +1601,17 @@ def request_workspace_deployment(
                 status_code=422,
                 detail="Migration database access is restricted to one-shot jobs",
             )
+        existing_database_access = str(
+            component_config.get("database_access")
+            or ("runtime" if existing_database_url_env else "none")
+        ).strip().lower()
+        reuses_existing_database_binding = bool(
+            database_url_env
+            and database_url_env == existing_database_url_env
+            and database_access == existing_database_access
+        )
+        if database_url_env and not reuses_existing_database_binding:
+            credential.require("database:admin")
         lifecycle_job = runtime_intent.get("lifecycle_job")
         if lifecycle_job is not None:
             lifecycle_job = lifecycle_job if isinstance(lifecycle_job, dict) else {}
