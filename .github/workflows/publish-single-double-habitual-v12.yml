@@ -1,0 +1,91 @@
+name: Publish MK7 single-to-double habitual violations V1.2
+
+on:
+  push:
+    branches:
+      - chatgpt/publish-single-double-habitual-v12
+    paths:
+      - .github/workflows/publish-single-double-habitual-v12.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warehouse-digital-asset-mk7-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 150
+    env:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
+      TARGET_REGISTRY_COMMIT: 8501d78ede0faf088dba863c173a676d484a0e89
+      TARGET_URL: https://mk7-workspace.bonfirework.org/learn/500kv-insulator-single-to-double-habitual-violations/
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
+        with:
+          fetch-depth: 1
+
+      - name: Stop watcher and publish the latest Registry commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          restore_watcher() {
+            bash ops/macos/install-smart-digital-asset-deploy install || true
+          }
+          trap restore_watcher EXIT
+          bash ops/macos/install-smart-digital-asset-deploy uninstall
+          sleep 3
+
+          echo "Selective scan for Registry ${TARGET_REGISTRY_COMMIT}"
+          if ! bash ops/macos/install-smart-digital-asset-deploy scan; then
+            echo "Selective scan failed; retrying with force-all" >&2
+            bash ops/macos/install-smart-digital-asset-deploy force-all
+          fi
+
+          page="${RUNNER_TEMP}/single-double-v12.html"
+          verify_page() {
+            curl -L --fail --silent --show-error --max-time 60 \
+              -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/151 Safari/537.36' \
+              "${TARGET_URL}?release=${TARGET_REGISTRY_COMMIT}" -o "${page}" || return 1
+            grep -q '六道安全门槛' "${page}" || return 1
+            grep -q '条件未成立' "${page}" || return 1
+            grep -q '42项' "${page}" || return 1
+            grep -q '真实现场照片' "${page}" || return 1
+          }
+
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if verify_page; then
+              echo "PUBLIC_PAGE_VERIFIED attempt=${attempt}"
+              shasum -a 256 "${page}"
+              wc -c "${page}"
+              exit 0
+            fi
+            echo "Public page not ready yet: attempt ${attempt}/10"
+            sleep 15
+          done
+
+          echo "Public page was not visible after selective scan; forcing a fresh MK7 release"
+          bash ops/macos/install-smart-digital-asset-deploy force-all
+
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if verify_page; then
+              echo "PUBLIC_PAGE_VERIFIED_AFTER_FORCE attempt=${attempt}"
+              shasum -a 256 "${page}"
+              wc -c "${page}"
+              exit 0
+            fi
+            echo "Public page not ready after force-all: attempt ${attempt}/12"
+            sleep 15
+          done
+
+          echo "MK7 course release could not be verified publicly" >&2
+          exit 1
