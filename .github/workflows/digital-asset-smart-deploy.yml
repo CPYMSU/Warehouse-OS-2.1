@@ -31,6 +31,7 @@ jobs:
       WAREHOUSE_ASSET_REGISTRY_REF: main
       WAREHOUSE_ASSET_REGISTRY_PATH: registry.json
       WAREHOUSE_ASSET_LOCAL_KEYS_FILE: /Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
+      WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
       WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2
       WAREHOUSE_ASSET_SMART_CACHE_ROOT: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy
       WAREHOUSE_ASSET_SMART_STATE_PATH: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json
@@ -51,12 +52,31 @@ jobs:
       - name: Select a same-workspace release credential
         run: |
           set -euo pipefail
+          candidates="${RUNNER_TEMP}/mk7-workspace-key-candidates.json"
           admin_keys="${RUNNER_TEMP}/mk7-admin-workspace-key.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          local_path = Path(os.environ["WAREHOUSE_ASSET_LOCAL_KEYS_FILE"])
+          candidates = json.loads(local_path.read_text(encoding="utf-8"))
+          actions_raw = (os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON") or "").strip()
+          if actions_raw:
+              actions = json.loads(actions_raw)
+              for alias, key in actions.items():
+                  candidates[f"actions--{alias}"] = key
+          target = Path(os.environ["RUNNER_TEMP"]) / "mk7-workspace-key-candidates.json"
+          target.write_text(json.dumps(candidates), encoding="utf-8")
+          target.chmod(0o600)
+          print(json.dumps({"candidate_alias_count": len(candidates), "actions_secret_configured": bool(actions_raw)}))
+          PY
           python3 ops/macos/select-admin-workspace-key.py \
-            --source "${WAREHOUSE_ASSET_LOCAL_KEYS_FILE}" \
+            --source "${candidates}" \
             --target-alias mk7 \
             --output "${admin_keys}"
           echo "WAREHOUSE_ASSET_WORKSPACE_KEYS_FILE=${admin_keys}" >> "${GITHUB_ENV}"
+          echo "WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON=" >> "${GITHUB_ENV}"
 
       - name: Publish and activate MK7 through one controlled channel
         run: |
