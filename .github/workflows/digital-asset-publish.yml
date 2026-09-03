@@ -1,9 +1,6 @@
 name: Digital asset publish
 
 on:
-  # Low-latency publication is handled by the Mac-local smart watcher.  Keep
-  # this workflow as an hourly reconciliation fallback instead of burning a
-  # full Registry clone/publish attempt every five minutes.
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
@@ -17,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: warehouse-digital-asset-publish
+  group: warehouse-digital-asset-mk7-publish
   cancel-in-progress: false
 
 jobs:
@@ -34,10 +31,16 @@ jobs:
       WAREHOUSE_ASSET_GITHUB_TOKEN: ${{ secrets.WAREHOUSE_ASSET_GITHUB_TOKEN }}
       WAREHOUSE_ASSET_REGISTRY_SSH_KEY: /Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2
       WAREHOUSE_ASSET_REPOSITORY: ${{ inputs.repository }}
+      WAREHOUSE_ASSET_SMART_CACHE_ROOT: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy
+      WAREHOUSE_ASSET_SMART_STATE_PATH: /Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/state.json
     steps:
       - uses: actions/checkout@v4
+        env:
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
         with:
           fetch-depth: 1
+
       - name: Check least-privilege Registry credentials
         id: registry_auth
         shell: bash
@@ -72,9 +75,32 @@ jobs:
             echo 'ready=false' >> "$GITHUB_OUTPUT"
             echo 'Registry deploy key is present locally but not authorized by GitHub yet; skipping.'
           fi
-      - name: Publish governed digital-asset releases
+
+      - name: Publish governed digital-asset releases through one channel
         if: steps.registry_auth.outputs.ready == 'true'
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          python3 ops/macos/publish-digital-assets-from-registry.py
+          cache_cli="${WAREHOUSE_ASSET_SMART_CACHE_ROOT}/dam.py"
+          restore_watcher() {
+            python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py || true
+            bash ops/macos/install-smart-digital-asset-deploy install || true
+          }
+          trap restore_watcher EXIT
+
+          python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
+          grep -n -- "--mtime=1970-01-01T00:00:00Z" ops/macos/publish-digital-assets.py
+          bash ops/macos/install-smart-digital-asset-deploy uninstall
+          sleep 3
+
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            echo "governed publish attempt ${attempt}"
+            python3 ops/macos/prepare-resilient-digital-asset-cli.py "${cache_cli}"
+            if bash ops/macos/install-smart-digital-asset-deploy force-all; then
+              echo "governed digital-asset publish completed"
+              exit 0
+            fi
+            sleep $(( attempt < 4 ? attempt * 15 : 60 ))
+          done
+          echo "governed digital-asset publish exhausted retries" >&2
+          exit 1
