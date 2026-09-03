@@ -1,0 +1,131 @@
+name: Patch existing database binding scope
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/patch-existing-database-binding-scope.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: warehouse-existing-database-binding-scope-patch
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Allow deploy keys to reuse an unchanged managed database binding
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("backend/app/services/workspace_deployments.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_runtime = '''        runtime_intent = {
+              **(component.get("config") if isinstance(component.get("config"), dict) else {}),
+              **manifest_defaults,
+              **{key: value for key, value in payload.items() if value not in (None, "")},
+          }
+          '''
+          new_runtime = '''        component_config = (
+              component.get("config") if isinstance(component.get("config"), dict) else {}
+          )
+          runtime_intent = {
+              **component_config,
+              **manifest_defaults,
+              **{key: value for key, value in payload.items() if value not in (None, "")},
+          }
+          '''
+          if old_runtime not in text:
+              raise SystemExit("runtime_intent signature was not found")
+          text = text.replace(old_runtime, new_runtime, 1)
+
+          old_alias = '''        database_url_env = str(runtime_intent.get("database_url_env") or "").strip()
+          if database_url_env:
+              credential.require("database:admin")
+              if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
+                  raise HTTPException(
+                      status_code=422,
+                      detail="database_url_env must be a safe env name",
+                  )
+          '''
+          new_alias = '''        existing_database_url_env = str(
+              component_config.get("database_url_env") or ""
+          ).strip()
+          database_url_env = str(runtime_intent.get("database_url_env") or "").strip()
+          if database_url_env and not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", database_url_env):
+              raise HTTPException(
+                  status_code=422,
+                  detail="database_url_env must be a safe env name",
+              )
+          '''
+          if old_alias not in text:
+              raise SystemExit("database_url_env scope signature was not found")
+          text = text.replace(old_alias, new_alias, 1)
+
+          old_gate = '''        if execution_mode != "job" and database_access == "migration":
+              raise HTTPException(
+                  status_code=422,
+                  detail="Migration database access is restricted to one-shot jobs",
+              )
+          lifecycle_job = runtime_intent.get("lifecycle_job")
+          '''
+          new_gate = '''        if execution_mode != "job" and database_access == "migration":
+              raise HTTPException(
+                  status_code=422,
+                  detail="Migration database access is restricted to one-shot jobs",
+              )
+          existing_database_access = str(
+              component_config.get("database_access")
+              or ("runtime" if existing_database_url_env else "none")
+          ).strip().lower()
+          reuses_existing_database_binding = bool(
+              database_url_env
+              and database_url_env == existing_database_url_env
+              and database_access == existing_database_access
+          )
+          if database_url_env and not reuses_existing_database_binding:
+              credential.require("database:admin")
+          lifecycle_job = runtime_intent.get("lifecycle_job")
+          '''
+          if old_gate not in text:
+              raise SystemExit("database access gate signature was not found")
+          text = text.replace(old_gate, new_gate, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 -m py_compile backend/app/services/workspace_deployments.py
+          grep -n "reuses_existing_database_binding" backend/app/services/workspace_deployments.py
+
+      - name: Commit the audited scope correction
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- backend/app/services/workspace_deployments.py; then
+            echo "scope correction already present"
+            exit 0
+          fi
+          git config user.name "warehouse-release-bot"
+          git config user.email "warehouse-release-bot@users.noreply.github.com"
+          git add backend/app/services/workspace_deployments.py
+          git commit -m "fix: allow unchanged managed database bindings during deploy"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "unable to push audited scope correction" >&2
+          exit 1
