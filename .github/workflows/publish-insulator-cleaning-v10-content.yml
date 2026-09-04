@@ -53,7 +53,7 @@ jobs:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: http.version
       GIT_CONFIG_VALUE_0: HTTP/1.1
-      WAREHOUSE_BASE_URL: https://bonfirework.org
+      WAREHOUSE_BASE_URL: http://127.0.0.1:8080
       RELEASE_REF: chatgpt/mk7-insulator-cleaning-v10-release
       EXPECTED_SOURCE_COMMIT: db5041ed05454c717afb8c29c07a3f9075d9011c
       COURSE_URL: https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/
@@ -66,6 +66,13 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:7897
         with:
           fetch-depth: 1
+
+      - name: Confirm direct local Warehouse API access
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --connect-timeout 5 --max-time 15 "${WAREHOUSE_BASE_URL}/health" >/dev/null
+          echo "WAREHOUSE_LOCAL_API_READY=1"
 
       - name: Prepare deterministic content-only publisher for this course
         shell: bash
@@ -137,7 +144,7 @@ jobs:
                 break
               fi
             fi
-            delay=$((120 + attempt * 30))
+            delay=$((60 + attempt * 20))
             echo "attempt ${attempt} did not reach verified state; waiting ${delay}s before retry"
             sleep "${delay}"
           done
