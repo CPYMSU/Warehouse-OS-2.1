@@ -1,0 +1,163 @@
+name: Publish MK7 insulator-cleaning V1.0 content-only release
+
+on:
+  push:
+    branches:
+      - chatgpt/publish-insulator-cleaning-v10-content
+    paths:
+      - .github/workflows/publish-insulator-cleaning-v10-content.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: warehouse-mk7-insulator-cleaning-v10-content-release
+  cancel-in-progress: true
+
+jobs:
+  cancel-stale-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Force-cancel the stalled selective scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=33836389953
+          status="$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", "unknown"))')"
+          echo "selective scan status=${status}"
+          if [ "${status}" != "completed" ]; then
+            curl -fsSL -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel"
+          fi
+          sleep 12
+
+  publish:
+    needs: cancel-stale-scan
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 150
+    env:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
+      WAREHOUSE_BASE_URL: https://bonfirework.org
+      RELEASE_REF: chatgpt/mk7-insulator-cleaning-v10-release
+      EXPECTED_SOURCE_COMMIT: db5041ed05454c717afb8c29c07a3f9075d9011c
+      COURSE_URL: https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/
+      CATALOG_URL: https://mk7-workspace.bonfirework.org/data/frontend_catalog.internal.json
+      IMAGE_URL: https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/assets/photos/01_longfeng_500kv_insulator_cleaning.jpg
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
+        with:
+          fetch-depth: 1
+
+      - name: Prepare deterministic content-only publisher for this course
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("ops/macos/publish-content-only-mk7.py")
+          text = path.read_text(encoding="utf-8")
+          text, marker_count = re.subn(
+              r'^COURSE_MARKERS\s*=.*$',
+              'COURSE_MARKERS = ("清扫不是", "六道安全门槛", "清—检—记", "36项")',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          old_candidates = '''    candidates = [
+              "https://mk7-workspace.bonfirework.org/learn/500kv-spacer-habitual-violations/",
+              "https://bonfirework.org/assets/bonfire/mk7-workspace/learn/500kv-spacer-habitual-violations/",
+          ]'''
+          new_candidates = '''    candidates = [
+              "https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/",
+              "https://bonfirework.org/assets/bonfire/mk7-workspace/learn/500kv-insulator-cleaning-habitual-violations/",
+          ]'''
+          candidate_count = text.count(old_candidates)
+          text = text.replace(old_candidates, new_candidates, 1)
+          text, component_count = re.subn(
+              r'(runtime_type="auto",\n\s*)component="",',
+              r'\1component="api",',
+              text,
+              count=1,
+          )
+          if marker_count != 1 or candidate_count != 1 or component_count != 1:
+              raise SystemExit(
+                  f"publisher patch mismatch markers={marker_count} candidates={candidate_count} component={component_count}"
+              )
+          path.write_text(text, encoding="utf-8")
+          PY
+          python3 -m py_compile ops/macos/publish-content-only-mk7.py
+          grep -n 'COURSE_MARKERS\|500kv-insulator-cleaning-habitual-violations\|component="api"' ops/macos/publish-content-only-mk7.py
+
+      - name: Create candidate, accept, activate and verify the content-only release
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          workspace_keys="/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json"
+          test -f "${workspace_keys}"
+          test "$(stat -f '%Lp' "${workspace_keys}")" = "600"
+          restore_watcher() {
+            python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py || true
+            bash ops/macos/install-smart-digital-asset-deploy install || true
+          }
+          trap restore_watcher EXIT
+          bash ops/macos/install-smart-digital-asset-deploy uninstall
+          sleep 3
+          python3 ops/macos/publish-content-only-mk7.py \
+            --ref "${RELEASE_REF}" \
+            --workspace-alias mk7 \
+            --workspace-keys "${workspace_keys}" \
+            --timeout-seconds 7200 | tee "${RUNNER_TEMP}/mk7-insulator-cleaning-v10-release.log"
+          grep -Fq '"release_state": "verified"' "${RUNNER_TEMP}/mk7-insulator-cleaning-v10-release.log"
+          grep -Fq "${EXPECTED_SOURCE_COMMIT}" "${RUNNER_TEMP}/mk7-insulator-cleaning-v10-release.log"
+
+      - name: Independently verify catalog, course and local photograph
+        shell: bash
+        run: |
+          set -euo pipefail
+          verified=0
+          for attempt in $(seq 1 60); do
+            bust="${EXPECTED_SOURCE_COMMIT}-${GITHUB_RUN_ID}-${attempt}"
+            html="$(curl -fsSL --connect-timeout 12 --max-time 50 "${COURSE_URL}?v=${bust}" || true)"
+            catalog="$(curl -fsSL --connect-timeout 12 --max-time 50 "${CATALOG_URL}?v=${bust}" || true)"
+            image_code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 12 --max-time 50 "${IMAGE_URL}?v=${bust}" || true)"
+            if printf '%s' "${html}" | grep -Fq '清扫不是' \
+              && printf '%s' "${html}" | grep -Fq '六道安全门槛' \
+              && printf '%s' "${html}" | grep -Fq '清—检—记' \
+              && printf '%s' "${html}" | grep -Fq '36项' \
+              && printf '%s' "${catalog}" | grep -Fq '500kv-insulator-cleaning-habitual-violations' \
+              && [ "${image_code}" = "200" ]; then
+              verified=1
+              break
+            fi
+            echo "independent verification ${attempt} pending (image=${image_code})"
+            sleep 10
+          done
+          test "${verified}" = "1"
+          echo "MK7_INSULATOR_CLEANING_CONTENT_RELEASE_VERIFIED=1"
+          echo "SOURCE_COMMIT=${EXPECTED_SOURCE_COMMIT}"
+          echo "COURSE_URL=${COURSE_URL}"
+          echo "CATALOG_URL=${CATALOG_URL}"
+          echo "IMAGE_URL=${IMAGE_URL}"
