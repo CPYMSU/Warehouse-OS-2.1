@@ -85,16 +85,14 @@ jobs:
               count=1,
               flags=re.MULTILINE,
           )
-          old_candidates = '''    candidates = [
-              "https://mk7-workspace.bonfirework.org/learn/500kv-spacer-habitual-violations/",
-              "https://bonfirework.org/assets/bonfire/mk7-workspace/learn/500kv-spacer-habitual-violations/",
-          ]'''
-          new_candidates = '''    candidates = [
+          candidate_pattern = re.compile(
+              r'(def verify_public_course\(\) -> dict\[str, str\]:\n\s+candidates = \[)\n.*?(\n\s+\])',
+              re.MULTILINE | re.DOTALL,
+          )
+          candidate_replacement = '''\1
               "https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/",
-              "https://bonfirework.org/assets/bonfire/mk7-workspace/learn/500kv-insulator-cleaning-habitual-violations/",
-          ]'''
-          candidate_count = text.count(old_candidates)
-          text = text.replace(old_candidates, new_candidates, 1)
+              "https://bonfirework.org/assets/bonfire/mk7-workspace/learn/500kv-insulator-cleaning-habitual-violations/",\2'''
+          text, candidate_count = candidate_pattern.subn(candidate_replacement, text, count=1)
           text, component_count = re.subn(
               r'(runtime_type="auto",\n\s*)component="",',
               r'\1component="api",',
