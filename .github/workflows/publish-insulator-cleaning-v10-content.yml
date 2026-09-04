@@ -85,23 +85,19 @@ jobs:
               count=1,
               flags=re.MULTILINE,
           )
-          candidate_pattern = re.compile(
-              r'(def verify_public_course\(\) -> dict\[str, str\]:\n\s+candidates = \[)\n.*?(\n\s+\])',
-              re.MULTILINE | re.DOTALL,
-          )
-          candidate_replacement = '''\1
-              "https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/",
-              "https://bonfirework.org/assets/bonfire/mk7-workspace/learn/500kv-insulator-cleaning-habitual-violations/",\2'''
-          text, candidate_count = candidate_pattern.subn(candidate_replacement, text, count=1)
+          old_slug = "500kv-spacer-habitual-violations"
+          new_slug = "500kv-insulator-cleaning-habitual-violations"
+          candidate_count = text.count(old_slug)
+          text = text.replace(old_slug, new_slug)
           text, component_count = re.subn(
               r'(runtime_type="auto",\n\s*)component="",',
               r'\1component="api",',
               text,
               count=1,
           )
-          if marker_count != 1 or candidate_count != 1 or component_count != 1:
+          if marker_count != 1 or candidate_count < 2 or component_count != 1:
               raise SystemExit(
-                  f"publisher patch mismatch markers={marker_count} candidates={candidate_count} component={component_count}"
+                  f"publisher patch mismatch markers={marker_count} course_urls={candidate_count} component={component_count}"
               )
           path.write_text(text, encoding="utf-8")
           PY
