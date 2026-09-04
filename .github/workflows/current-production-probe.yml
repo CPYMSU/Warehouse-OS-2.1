@@ -1,4 +1,4 @@
-name: MK7 insulator-cleaning release state probe
+name: Warehouse local endpoint diagnostics
 
 on:
   push:
@@ -12,85 +12,39 @@ permissions:
   contents: read
 
 jobs:
-  probe:
-    runs-on: ubuntu-latest
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 10
-    env:
-      WAREHOUSE_BASE_URL: https://bonfirework.org
-      WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON: ${{ secrets.WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON }}
-      TARGET_VERSION: db5041ed05454c717afb8c29c07a3f9075d9011c-d7b23e647054
     steps:
-      - name: Read Warehouse source, release, deployment and public state
+      - uses: actions/checkout@v4
+        env:
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
+        with:
+          fetch-depth: 1
+
+      - name: Inspect production containers and listening endpoints
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.error
-          import urllib.request
-
-          base = os.environ["WAREHOUSE_BASE_URL"].rstrip("/")
-          target = os.environ["TARGET_VERSION"]
-          keys_raw = os.environ.get("WAREHOUSE_ASSET_WORKSPACE_KEYS_JSON", "")
-          keys = json.loads(keys_raw) if keys_raw.strip() else {}
-          key = str(keys.get("mk7") or "")
-          print(json.dumps({"target_version": target, "workspace_key_available": key.startswith("wak_")}, ensure_ascii=False))
-          if not key.startswith("wak_"):
-              raise SystemExit("mk7 workspace key unavailable")
-
-          def get(path):
-              request = urllib.request.Request(
-                  base + path,
-                  headers={
-                      "Authorization": "Bearer " + key,
-                      "Accept": "application/json",
-                      "User-Agent": "Warehouse-MK7-Insulator-Cleaning-Probe/1.0",
-                  },
-              )
-              with urllib.request.urlopen(request, timeout=60) as response:
-                  return json.loads(response.read().decode("utf-8"))
-
-          sources = (get("/api/workspaces/v1/sources").get("sources") or [])
-          releases = (get("/api/workspaces/v1/releases").get("releases") or [])
-          deployments = (get("/api/workspaces/v1/deployments").get("deployments") or [])
-          matching_sources = [s for s in sources if str(s.get("version_no") or "") == target]
-          source_ids = {
-              str(s.get("uuid") or s.get("source_version_id") or s.get("id") or "")
-              for s in matching_sources
-          }
-          matching_releases = [
-              r for r in releases
-              if str(r.get("source_version_id") or r.get("source_id") or "") in source_ids
-              or target in json.dumps(r, ensure_ascii=False, default=str)
-          ]
-          release_ids = {
-              str(r.get("uuid") or r.get("release_id") or r.get("id") or "")
-              for r in matching_releases
-          }
-          matching_deployments = [
-              d for d in deployments
-              if str(d.get("release_id") or "") in release_ids
-              or target in json.dumps(d, ensure_ascii=False, default=str)
-          ]
-          print(json.dumps({
-              "matching_sources": matching_sources,
-              "matching_releases": matching_releases,
-              "matching_deployments": matching_deployments,
-          }, ensure_ascii=False, indent=2, default=str))
-          PY
-
-          course='https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/'
-          catalog='https://mk7-workspace.bonfirework.org/data/frontend_catalog.internal.json'
-          image='https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/assets/photos/01_longfeng_500kv_insulator_cleaning.jpg'
-          code="$(curl -sS -o /tmp/course.html -w '%{http_code}' --connect-timeout 15 --max-time 60 "$course" || true)"
-          catalog_code="$(curl -sS -o /tmp/catalog.json -w '%{http_code}' --connect-timeout 15 --max-time 60 "$catalog" || true)"
-          image_code="$(curl -sS -o /tmp/photo.jpg -w '%{http_code}' --connect-timeout 15 --max-time 60 "$image" || true)"
-          echo "COURSE_HTTP=$code"
-          echo "CATALOG_HTTP=$catalog_code"
-          echo "IMAGE_HTTP=$image_code"
-          grep -Fq '清扫不是' /tmp/course.html 2>/dev/null && echo 'MARKER_CLEAN=1' || echo 'MARKER_CLEAN=0'
-          grep -Fq '六道安全门槛' /tmp/course.html 2>/dev/null && echo 'MARKER_GATES=1' || echo 'MARKER_GATES=0'
-          grep -Fq '清—检—记' /tmp/course.html 2>/dev/null && echo 'MARKER_CYCLE=1' || echo 'MARKER_CYCLE=0'
-          grep -Fq '36项' /tmp/course.html 2>/dev/null && echo 'MARKER_36=1' || echo 'MARKER_36=0'
-          grep -Fq '500kv-insulator-cleaning-habitual-violations' /tmp/catalog.json 2>/dev/null && echo 'CATALOG_ENTRY=1' || echo 'CATALOG_ENTRY=0'
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          echo '=== docker compose ps ==='
+          if [ -f /Users/peiyuan/Server/bonfirework/secrets/production.env ]; then
+            docker compose --env-file /Users/peiyuan/Server/bonfirework/secrets/production.env -f compose.production.yaml ps || true
+          else
+            docker compose -f compose.production.yaml ps || true
+          fi
+          echo '=== docker ps ports ==='
+          docker ps --format '{{.Names}}|{{.Ports}}|{{.Status}}' || true
+          echo '=== listening TCP ports ==='
+          lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E ':(80|443|8000|8080|8081|8082|8083|18080|3000|5432|7897)\b' || true
+          echo '=== endpoint probes ==='
+          for url in \
+            http://127.0.0.1:8080/health \
+            http://127.0.0.1:8000/health \
+            http://127.0.0.1:18080/health \
+            http://localhost:8080/health \
+            https://bonfirework.org/health; do
+            code="$(curl -k -sS -o /tmp/probe.out -w '%{http_code}' --connect-timeout 4 --max-time 12 "$url" || true)"
+            echo "$url -> $code"
+          done
