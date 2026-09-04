@@ -1,0 +1,113 @@
+name: Publish MK7 insulator-cleaning habitual-violations V1.0
+
+on:
+  push:
+    branches:
+      - chatgpt/publish-insulator-cleaning-v10
+    paths:
+      - .github/workflows/publish-insulator-cleaning-v10.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-stale-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Force-cancel the stalled MK7 release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=33834989702
+          status="$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", "unknown"))')"
+          echo "stale run status=${status}"
+          if [ "${status}" != "completed" ]; then
+            curl -fsSL -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel"
+          fi
+          sleep 12
+
+  publish:
+    needs: cancel-stale-release
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 130
+    env:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
+      TARGET_REGISTRY_COMMIT: 7a053f37442a78ffb8597f1175ce6961480a301b
+      COURSE_URL: https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/
+      CATALOG_URL: https://mk7-workspace.bonfirework.org/data/frontend_catalog.internal.json
+      IMAGE_URL: https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/assets/photos/01_longfeng_500kv_insulator_cleaning.jpg
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
+        with:
+          fetch-depth: 1
+
+      - name: Selectively publish latest Registry content
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          restore_watcher() {
+            bash ops/macos/install-smart-digital-asset-deploy install || true
+          }
+          trap restore_watcher EXIT
+          bash ops/macos/install-smart-digital-asset-deploy uninstall
+          sleep 3
+          python3 - <<'PY'
+          import subprocess
+          command = ["bash", "ops/macos/install-smart-digital-asset-deploy", "scan"]
+          try:
+              result = subprocess.run(command, timeout=5400, check=False)
+          except subprocess.TimeoutExpired:
+              raise SystemExit("selective MK7 scan exceeded 90 minutes")
+          if result.returncode != 0:
+              raise SystemExit(result.returncode)
+          PY
+
+      - name: Verify source, catalog, course and local photograph
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          success=0
+          for attempt in $(seq 1 90); do
+            bust="${TARGET_REGISTRY_COMMIT}-${GITHUB_RUN_ID}-${attempt}"
+            html="$(curl -fsSL --connect-timeout 12 --max-time 50 "${COURSE_URL}?v=${bust}" || true)"
+            catalog="$(curl -fsSL --connect-timeout 12 --max-time 50 "${CATALOG_URL}?v=${bust}" || true)"
+            image_code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 12 --max-time 50 "${IMAGE_URL}?v=${bust}" || true)"
+            if printf '%s' "${html}" | grep -Fq '清扫不是' \
+              && printf '%s' "${html}" | grep -Fq '六道安全门槛' \
+              && printf '%s' "${html}" | grep -Fq '清—检—记' \
+              && printf '%s' "${html}" | grep -Fq '36项' \
+              && printf '%s' "${catalog}" | grep -Fq '500kv-insulator-cleaning-habitual-violations' \
+              && [ "${image_code}" = "200" ]; then
+              success=1
+              break
+            fi
+            echo "verification attempt ${attempt} pending (image=${image_code})"
+            sleep 10
+          done
+          test "${success}" = "1"
+          echo "MK7_INSULATOR_CLEANING_V10_VERIFIED=1"
+          echo "TARGET_REGISTRY_COMMIT=${TARGET_REGISTRY_COMMIT}"
+          echo "COURSE_URL=${COURSE_URL}"
+          echo "CATALOG_URL=${CATALOG_URL}"
+          echo "IMAGE_URL=${IMAGE_URL}"
