@@ -1,24 +1,36 @@
-name: Digital asset controlled MK7 release
-# One guarded release for MK7 insulator-cleaning habitual-violations course V1.0 (2026-09-04).
+name: Digital asset smart deploy
+# Normal low-latency Registry watcher control workflow restored after MK7 insulator-cleaning V1.0 release (2026-09-04).
 
 on:
   push:
     branches: [main]
     paths:
       - ".github/workflows/digital-asset-smart-deploy.yml"
+      - "ops/macos/smart-digital-asset-deploy.py"
+      - "ops/macos/run-smart-digital-asset-deploy"
+      - "ops/macos/install-smart-digital-asset-deploy"
+      - "ops/macos/publish-digital-assets.py"
+      - "ops/macos/publish-digital-assets-from-registry.py"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Smart deploy control operation
+        required: true
+        default: status
+        type: choice
+        options: [status, install, scan, force-all, uninstall]
 
 permissions:
   contents: read
 
 concurrency:
-  group: warehouse-digital-asset-mk7-publish
+  group: warehouse-digital-asset-smart-control
   cancel-in-progress: false
 
 jobs:
-  release:
+  control:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 130
+    timeout-minutes: 10
     env:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: http.version
@@ -30,54 +42,10 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:7897
         with:
           fetch-depth: 1
-
-      - name: Publish and activate latest MK7 Registry source
-        shell: bash
+      - name: Install or control low-latency smart deploy watcher
+        env:
+          OPERATION: ${{ github.event_name == 'push' && 'status' || inputs.operation }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          restore_watcher() {
-            bash ops/macos/install-smart-digital-asset-deploy install || true
-          }
-          trap restore_watcher EXIT
-          bash ops/macos/install-smart-digital-asset-deploy uninstall
-          sleep 3
-          published=0
-          for attempt in 1 2 3 4; do
-            echo "MK7 controlled publish attempt ${attempt}"
-            if bash ops/macos/install-smart-digital-asset-deploy force-all; then
-              published=1
-              break
-            fi
-            sleep $((attempt * 15))
-          done
-          test "${published}" = "1"
-
-      - name: Verify the activated public course
-        shell: bash
-        run: |
-          set -euo pipefail
-          course_url="https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/"
-          catalog_url="https://mk7-workspace.bonfirework.org/data/frontend_catalog.internal.json"
-          image_url="https://mk7-workspace.bonfirework.org/learn/500kv-insulator-cleaning-habitual-violations/assets/photos/01_longfeng_500kv_insulator_cleaning.jpg"
-          ok=0
-          for attempt in $(seq 1 60); do
-            echo "public verification attempt ${attempt}"
-            html="$(curl -fsSL --connect-timeout 10 --max-time 40 "${course_url}" || true)"
-            catalog="$(curl -fsSL --connect-timeout 10 --max-time 40 "${catalog_url}" || true)"
-            if printf '%s' "${html}" | grep -Fq '清扫不是' \
-              && printf '%s' "${html}" | grep -Fq '六道安全门槛' \
-              && printf '%s' "${html}" | grep -Fq '清—检—记' \
-              && printf '%s' "${html}" | grep -Fq '36项' \
-              && printf '%s' "${catalog}" | grep -Fq '500kv-insulator-cleaning-habitual-violations' \
-              && curl -fsI --connect-timeout 10 --max-time 40 "${image_url}" >/dev/null; then
-              ok=1
-              break
-            fi
-            sleep 10
-          done
-          test "${ok}" = "1"
-          echo "MK7_INSULATOR_CLEANING_COURSE_VERIFIED=1"
-          echo "COURSE_URL=${course_url}"
-          echo "CATALOG_URL=${catalog_url}"
-          echo "IMAGE_URL=${image_url}"
+          bash ops/macos/install-smart-digital-asset-deploy "${OPERATION}"
