@@ -1,4 +1,4 @@
-name: Warehouse local endpoint diagnostics
+name: Warehouse tunnel origin diagnostics
 
 on:
   push:
@@ -16,35 +16,20 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        env:
-          HTTPS_PROXY: http://127.0.0.1:7897
-          HTTP_PROXY: http://127.0.0.1:7897
-        with:
-          fetch-depth: 1
-
-      - name: Inspect production containers and listening endpoints
+      - name: Inspect cloudflared origin without exposing credentials
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          echo '=== docker compose ps ==='
-          if [ -f /Users/peiyuan/Server/bonfirework/secrets/production.env ]; then
-            docker compose --env-file /Users/peiyuan/Server/bonfirework/secrets/production.env -f compose.production.yaml ps || true
-          else
-            docker compose -f compose.production.yaml ps || true
-          fi
-          echo '=== docker ps ports ==='
-          docker ps --format '{{.Names}}|{{.Ports}}|{{.Status}}' || true
-          echo '=== listening TCP ports ==='
-          lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E ':(80|443|8000|8080|8081|8082|8083|18080|3000|5432|7897)\b' || true
-          echo '=== endpoint probes ==='
-          for url in \
-            http://127.0.0.1:8080/health \
-            http://127.0.0.1:8000/health \
-            http://127.0.0.1:18080/health \
-            http://localhost:8080/health \
-            https://bonfirework.org/health; do
-            code="$(curl -k -sS -o /tmp/probe.out -w '%{http_code}' --connect-timeout 4 --max-time 12 "$url" || true)"
-            echo "$url -> $code"
-          done
+          echo '=== cloudflared command (redacted) ==='
+          docker inspect warehouse-cloudflared --format '{{json .Config.Cmd}}' \
+            | sed -E 's/(token[^" ]*[=:]?)[^" ]+/\1REDACTED/Ig; s/(eyJ[A-Za-z0-9._-]{20,})/REDACTED/g' || true
+          echo '=== cloudflared mounts ==='
+          docker inspect warehouse-cloudflared --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' || true
+          echo '=== cloudflared recent origin errors ==='
+          docker logs --tail 120 warehouse-cloudflared 2>&1 \
+            | sed -E 's/(token[^ ]*[=:]?)[^ ]+/\1REDACTED/Ig; s/(eyJ[A-Za-z0-9._-]{20,})/REDACTED/g' \
+            | grep -Ei 'origin|service|connect|error|http_status|url' \
+            | tail -80 || true
+          echo '=== docker networks ==='
+          docker inspect warehouse-cloudflared --format '{{range $k,$v := .NetworkSettings.Networks}}{{println $k $v.IPAddress}}{{end}}' || true
