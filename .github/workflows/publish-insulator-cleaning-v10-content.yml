@@ -21,27 +21,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Force-cancel the stalled selective scan
+      - name: Ensure older selective scans are stopped
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          run_id=33836389953
-          status="$(curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", "unknown"))')"
-          echo "selective scan status=${status}"
-          if [ "${status}" != "completed" ]; then
-            curl -fsSL -X POST \
+          for run_id in 33834989702 33836389953; do
+            status="$(curl -fsSL \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel"
-          fi
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", "unknown"))')"
+            echo "run ${run_id} status=${status}"
+            if [ "${status}" != "completed" ]; then
+              curl -fsSL -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel"
+            fi
+          done
           sleep 12
 
   publish:
@@ -119,13 +120,28 @@ jobs:
           trap restore_watcher EXIT
           bash ops/macos/install-smart-digital-asset-deploy uninstall
           sleep 3
-          python3 ops/macos/publish-content-only-mk7.py \
-            --ref "${RELEASE_REF}" \
-            --workspace-alias mk7 \
-            --workspace-keys "${workspace_keys}" \
-            --timeout-seconds 7200 | tee "${RUNNER_TEMP}/mk7-insulator-cleaning-v10-release.log"
-          grep -Fq '"release_state": "verified"' "${RUNNER_TEMP}/mk7-insulator-cleaning-v10-release.log"
-          grep -Fq "${EXPECTED_SOURCE_COMMIT}" "${RUNNER_TEMP}/mk7-insulator-cleaning-v10-release.log"
+
+          success=0
+          release_log="${RUNNER_TEMP}/mk7-insulator-cleaning-v10-release.log"
+          for attempt in 1 2 3 4 5; do
+            echo "content-only release attempt ${attempt}"
+            rm -f "${release_log}"
+            if python3 ops/macos/publish-content-only-mk7.py \
+              --ref "${RELEASE_REF}" \
+              --workspace-alias mk7 \
+              --workspace-keys "${workspace_keys}" \
+              --timeout-seconds 7200 | tee "${release_log}"; then
+              if grep -Fq '"release_state": "verified"' "${release_log}" \
+                && grep -Fq "${EXPECTED_SOURCE_COMMIT}" "${release_log}"; then
+                success=1
+                break
+              fi
+            fi
+            delay=$((120 + attempt * 30))
+            echo "attempt ${attempt} did not reach verified state; waiting ${delay}s before retry"
+            sleep "${delay}"
+          done
+          test "${success}" = "1"
 
       - name: Independently verify catalog, course and local photograph
         shell: bash
