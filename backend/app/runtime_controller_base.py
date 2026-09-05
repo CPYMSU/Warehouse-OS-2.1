@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 from app.core.config import Settings, get_settings
 from app.db.session import system_session, tenant_session
+from app.runtime_heartbeat import RuntimeHeartbeat
 from app.services.database_release import (
     observe_database_release_gate,
     workspace_database_policy,
@@ -2661,28 +2662,32 @@ class RuntimeController:
         return True
 
     def run_forever(self) -> None:
-        marker = Path("/tmp/runtime-controller-ready")
-        while True:
-            marker.write_text(f"{self.worker_id} {datetime.now(UTC).isoformat()}", encoding="utf-8")
-            try:
-                self.observe_capacity()
-                self.reconcile_runtime_lifecycle()
-                self.reconcile_runtime_drift()
-                self.reconcile_retention_runtime_containers()
-                self.reconcile_orphan_runtime_containers()
-                self.reconcile_scaling()
-                self.reconcile_repositories()
-                worked = self.run_once()
-                self.heartbeat(claimed=worked, successful=True)
-                if not worked:
-                    time.sleep(max(0.25, self.settings.runtime_controller_poll_seconds))
-            except Exception as exc:
-                traceback.print_exc()
+        with RuntimeHeartbeat(self.settings, self.worker_id) as liveness:
+            while True:
                 try:
-                    self.heartbeat(status="degraded", error=str(exc))
-                except Exception:
+                    for phase in (
+                        self.observe_capacity,
+                        self.reconcile_runtime_lifecycle,
+                        self.reconcile_runtime_drift,
+                        self.reconcile_retention_runtime_containers,
+                        self.reconcile_orphan_runtime_containers,
+                        self.reconcile_scaling,
+                        self.reconcile_repositories,
+                    ):
+                        phase()
+                        liveness.progress()
+                    worked = self.run_once()
+                    liveness.progress()
+                    self.heartbeat(claimed=worked, successful=True)
+                    if not worked:
+                        time.sleep(max(0.25, self.settings.runtime_controller_poll_seconds))
+                except Exception as exc:
                     traceback.print_exc()
-                time.sleep(max(1.0, self.settings.runtime_controller_poll_seconds))
+                    try:
+                        self.heartbeat(status="degraded", error=str(exc))
+                    except Exception:
+                        traceback.print_exc()
+                    time.sleep(max(1.0, self.settings.runtime_controller_poll_seconds))
 
 
 def main() -> None:
