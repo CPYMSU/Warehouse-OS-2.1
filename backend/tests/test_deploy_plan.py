@@ -244,6 +244,8 @@ def test_github_automation_is_basic_and_has_no_full_suite() -> None:
     assert "hosting-smoke-matrix" not in automatic
     assert sorted(path.name for path in workflows.glob("*.yml")) == [
         "backend-contract.yml",
+        "digital-asset-publish.yml",
+        "digital-asset-smart-deploy.yml",
         "production-deploy.yml",
     ]
 
