@@ -24,8 +24,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        env:
+          HTTPS_PROXY: http://127.0.0.1:7897
+          HTTP_PROXY: http://127.0.0.1:7897
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: http.version
+          GIT_CONFIG_VALUE_0: HTTP/1.1
         with:
           persist-credentials: false
+          sparse-checkout: ops/mk5-source-sync
+          fetch-depth: 1
       - name: Bind authorized existing MK5 credential
         if: inputs.operation == 'bind'
         env:
