@@ -1,4 +1,5 @@
 name: MK5 source sync
+run-name: MK5 source ${{ inputs.operation }} ${{ inputs.manifest_sha }}
 on:
   workflow_dispatch:
     inputs:
