@@ -33,6 +33,7 @@ from source_transport import PREFIX, SourceAPI, _read, upload_source
 SCHEMA = "tidi.source-git-delivery.v1"
 WORKSPACE_UUID = "db3d612c-a53f-4ac8-8412-62ff8199a7ff"
 PART_BYTES = 16 * 1024 * 1024
+MAX_INFO_BYTES = 8 * 1024 * 1024
 
 
 def workspace_info(key):
@@ -40,9 +41,9 @@ def workspace_info(key):
     try:
         connection.request("GET", PREFIX + "/info", headers={"Authorization": "Bearer " + key})
         response = connection.getresponse()
-        raw = response.read(1024 * 1024 + 1)
+        raw = response.read(MAX_INFO_BYTES + 1)
         require(response.status == 200, "workspace_read_failed_http_" + str(response.status))
-        require(len(raw) <= 1024 * 1024, "workspace_read_size_limit")
+        require(len(raw) <= MAX_INFO_BYTES, "workspace_read_size_limit")
         value = json.loads(raw)["workspace"]
         require(value["uuid"] == WORKSPACE_UUID, "workspace_identity_mismatch")
         return value
@@ -64,7 +65,6 @@ def host_key():
         len(matches) == 1 and isinstance(matches[0], str) and matches[0].startswith("wak_"),
         "mk5_host_key_binding_missing",
     )
-    workspace_info(matches[0])
     return matches[0]
 
 
