@@ -5,7 +5,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [probe, verify, upload]
+        options: [probe, bind, verify, upload]
         default: probe
       delivery_commit:
         type: string
@@ -26,10 +26,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Bind authorized existing MK5 credential
+        if: inputs.operation == 'bind'
+        env:
+          MK5_BINDING_KEY: ${{ secrets.MK5_SOURCE_BIND_ONCE }}
+        run: python3 ops/mk5-source-sync/source_bind_once.py
       - name: Verify MK5 host binding
         run: python3 ops/mk5-source-sync/source_git_receiver.py probe
       - name: Fetch only the immutable MK5 delivery
-        if: inputs.operation != 'probe'
+        if: inputs.operation == 'verify' || inputs.operation == 'upload'
         env:
           DELIVERY_COMMIT: ${{ inputs.delivery_commit }}
           MANIFEST_SHA: ${{ inputs.manifest_sha }}
@@ -50,7 +55,7 @@ jobs:
           test "$(git -C "$delivery_dir" ls-tree --name-only HEAD | sort | tr '\n' ' ')" = 'delivery.json objects '
           echo "MK5_DELIVERY_DIR=$delivery_dir" >> "$GITHUB_ENV"
       - name: Verify or register Source only
-        if: inputs.operation != 'probe'
+        if: inputs.operation == 'verify' || inputs.operation == 'upload'
         env:
           OPERATION: ${{ inputs.operation }}
           MANIFEST_SHA: ${{ inputs.manifest_sha }}
