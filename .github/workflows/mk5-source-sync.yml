@@ -1,0 +1,56 @@
+name: MK5 source sync
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [probe, verify, upload]
+        default: probe
+      delivery_commit:
+        type: string
+        required: false
+      manifest_sha:
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: mk5-source-sync
+  cancel-in-progress: false
+jobs:
+  source:
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify MK5 host binding
+        run: python3 ops/mk5-source-sync/source_git_receiver.py probe
+      - name: Fetch only the immutable MK5 delivery
+        if: inputs.operation != 'probe'
+        env:
+          DELIVERY_COMMIT: ${{ inputs.delivery_commit }}
+          MANIFEST_SHA: ${{ inputs.manifest_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$DELIVERY_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$MANIFEST_SHA" =~ ^[a-f0-9]{64}$ ]]
+          delivery_dir="$(mktemp -d "$RUNNER_TEMP/mk5-delivery.XXXXXX")"
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_SSH_COMMAND="ssh -i $HOME/Server/bonfirework/secrets/registry-readonly-ed25519-v2 -o Hostname=ssh.github.com -p 443 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes"
+          git -C "$delivery_dir" init --quiet
+          git -C "$delivery_dir" remote add origin git@github.com:CPYMSU/registry.git
+          git -C "$delivery_dir" fetch --quiet --depth=1 origin "$DELIVERY_COMMIT"
+          test "$(git -C "$delivery_dir" rev-parse FETCH_HEAD)" = "$DELIVERY_COMMIT"
+          git -C "$delivery_dir" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$delivery_dir" ls-tree --name-only HEAD | sort | tr '\n' ' ')" = 'delivery.json objects '
+          echo "MK5_DELIVERY_DIR=$delivery_dir" >> "$GITHUB_ENV"
+      - name: Verify or register Source only
+        if: inputs.operation != 'probe'
+        env:
+          OPERATION: ${{ inputs.operation }}
+          MANIFEST_SHA: ${{ inputs.manifest_sha }}
+        run: python3 ops/mk5-source-sync/source_git_receiver.py "$OPERATION" --delivery "$MK5_DELIVERY_DIR" --manifest-sha "$MANIFEST_SHA"
