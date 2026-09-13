@@ -41,7 +41,8 @@ def workspace_info(key):
         connection.request("GET", PREFIX + "/info", headers={"Authorization": "Bearer " + key})
         response = connection.getresponse()
         raw = response.read(1024 * 1024 + 1)
-        require(response.status == 200 and len(raw) <= 1024 * 1024, "workspace_read_failed")
+        require(response.status == 200, "workspace_read_failed_http_" + str(response.status))
+        require(len(raw) <= 1024 * 1024, "workspace_read_size_limit")
         value = json.loads(raw)["workspace"]
         require(value["uuid"] == WORKSPACE_UUID, "workspace_identity_mismatch")
         return value
