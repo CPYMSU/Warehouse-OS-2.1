@@ -1,0 +1,95 @@
+name: MK7 rescue image diagnostics
+on:
+  push:
+    branches: [chatgpt/repair-mk7-rescue-images]
+    paths: [.github/workflows/mk7-rescue-image-repair.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mk7-rescue-image-repair
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 12
+    steps:
+      - name: Read live rescue pages, image responses and deployment metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          python3 - <<'PY'
+          import concurrent.futures, hashlib, json, os, re, subprocess
+          import urllib.request, urllib.error
+          from pathlib import Path
+          BASE='https://bonfirework.org'
+          SITE='https://mk7-workspace.bonfirework.org/'
+          PREFIX='https://bonfirework.org/assets/bonfire/mk7-workspace/'
+          ROOT=Path(os.environ['RUNNER_TEMP'])/'mk7-rescue-diagnostics'
+          ROOT.mkdir(exist_ok=True)
+          def get(url,key=None):
+              headers={'User-Agent':'MK7-Rescue-Image-Diagnostics/1.0','Cache-Control':'no-cache'}
+              if key: headers['Authorization']='Bearer '+key
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=35) as r:
+                      b=r.read();return {'status':r.status,'type':r.headers.get('Content-Type',''),'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()},b
+              except urllib.error.HTTPError as e:return {'status':e.code,'type':e.headers.get('Content-Type','')},b''
+              except Exception as e:return {'error':type(e).__name__+': '+str(e)[:180]},b''
+          report={'pages':[],'assets':[],'workspace':{}}
+          pages=['learn/first-aid-cpr/','learn/transmission-rope-rescue/','learn/transmission-rope-rescue/units/high-angle-rescue-practice/','learn/transmission-rope-rescue/units/equipment-and-personal-skills/']
+          for p in pages:
+              result,b=get(SITE+p);result['path']=p
+              if b:
+                  text=b.decode('utf-8',errors='replace')
+                  result['image_refs']=re.findall(r'<img[^>]+src=[\"\']([^\"\']+)',text)
+                  result['title']=re.findall(r'<title>(.*?)</title>',text)
+                  d=ROOT/p;d.mkdir(parents=True,exist_ok=True);(d/'index.html').write_bytes(b)
+              report['pages'].append(result)
+          cache=Path('/Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/registry')
+          cmd=subprocess.run(['git','-C',str(cache),'show','7a053da74ab3d81b4df8c85baa8fa59c831fbfb8:assets/mk7/SOURCE_ASSET_MANIFEST.json'],capture_output=True,text=True)
+          if cmd.returncode==0:
+              manifest=json.loads(cmd.stdout)
+              assets=[a for a in manifest['assets'] if '/first-aid-cpr/' in a['path'] or '/transmission-rope-rescue/' in a['path']]
+              report['manifest_asset_count']=len(assets)
+              (ROOT/'expected-assets.json').write_text(json.dumps(assets,ensure_ascii=False,indent=2))
+              def probe(a):
+                  rel=a['path'].removeprefix('site/')
+                  result,b=get(SITE+rel)
+                  result.update(path=rel,expected_sha256=a['sha256'],expected_bytes=a['size_bytes'])
+                  result['matches_manifest']=result.get('sha256')==a['sha256']
+                  if not result['matches_manifest']:
+                      alt,_=get(PREFIX+rel);result['stable_route']=alt
+                  return result
+              report['assets']=list(concurrent.futures.ThreadPoolExecutor(max_workers=5).map(probe,assets))
+          else:report['manifest_error']='expected Registry commit not present in runner cache'
+          keys_path=Path('/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json')
+          key=str(json.loads(keys_path.read_text()).get('mk7') or '') if keys_path.is_file() else ''
+          if key:
+              for endpoint,field in [('sources','sources'),('releases','releases'),('deployments','deployments')]:
+                  meta,b=get(BASE+'/api/workspaces/v1/'+endpoint,key)
+                  entries=[]
+                  if b:
+                      payload=json.loads(b);report['workspace'][endpoint+'_keys']=list(payload)
+                      for x in (payload.get(field) or [])[:6]:
+                          y={k:x[k] for k in ['id','uuid','version_no','source_version_id','release_id','status','state','component_name','created_at','updated_at','public_url','url','is_active','active','runtime_type'] if k in x}
+                          y['available_fields']=list(x)
+                          for name in ['config','requested_config','runtime_config']:
+                              cfg=x.get(name)
+                              if isinstance(cfg,dict):
+                                  y[name+'_keys']=list(cfg)
+                                  start=str(cfg.get('start_command') or '')
+                                  y[name+'_static_asset_configured']='MK7_STATIC_ASSET_ROOT=' in start
+                          entries.append(y)
+                  report['workspace'][endpoint]={'response':meta,'entries':entries}
+          report['local_mk7_containers']=subprocess.run(['docker','ps','--format','{{.Names}}'],capture_output=True,text=True).stdout.splitlines()
+          report['local_mk7_containers']=[n for n in report['local_mk7_containers'] if 'mk7' in n.lower()]
+          (ROOT/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print(json.dumps(report,ensure_ascii=False,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mk7-rescue-image-diagnostics
+          path: ${{ runner.temp }}/mk7-rescue-diagnostics
+          retention-days: 7
