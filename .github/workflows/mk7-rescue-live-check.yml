@@ -1,0 +1,30 @@
+name: Check live rescue media delivery
+on:
+  push:
+    branches: [chatgpt/repair-mk7-rescue-images]
+    paths: [.github/workflows/mk7-rescue-live-check.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read public course and original image without credentials
+        run: |
+          python3 -u - <<'PY'
+          import concurrent.futures,hashlib,json,urllib.request
+          prefix='learn/transmission-rope-rescue/units/high-angle-rescue-practice/'
+          bases=['https://mk7-workspace.bonfirework.org/','https://bonfirework.org/assets/bonfire/mk7-workspace/']
+          paths=[prefix,prefix+'assets/approved/petzl-haul-ttr.svg?v=cc8aea230d583f40']
+          def check(url):
+              try:
+                  req=urllib.request.Request(url,headers={'User-Agent':'MK7-Public-Repair-Check/1.0','Cache-Control':'no-cache','Sec-Fetch-Dest':'image' if '.svg' in url else 'document','Sec-Fetch-Site':'same-origin'})
+                  with urllib.request.urlopen(req,timeout=30) as r:
+                      data=r.read()
+                      return {'url':url,'status':r.status,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'delivery':r.headers.get('X-Warehouse-Pages-Delivery'),'release':r.headers.get('X-Warehouse-Release'),'content_type':r.headers.get('Content-Type'),'versioned_images':b'?v=cc8aea230d583f40' in data,'versioned_lesson_data':b'lesson-data.json?v=6801ce1d773e5097' in data}
+              except Exception as e:return {'url':url,'error':str(e)[:300]}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              for row in pool.map(check,[b+p for b in bases for p in paths]):print(json.dumps(row),flush=True)
+          PY
