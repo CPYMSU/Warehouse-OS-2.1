@@ -2,7 +2,8 @@ name: Publish verified MK7 rescue media repair
 on:
   push:
     branches: [chatgpt/repair-mk7-rescue-images]
-    paths: [.github/workflows/mk7-rescue-media-publish.yml]
+    paths:
+      - .github/workflows/mk7-rescue-media-publish.yml
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,14 +13,10 @@ concurrency:
 jobs:
   publish:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
-    timeout-minutes: 75
+    timeout-minutes: 50
     env:
-      WAREHOUSE_BASE_URL: https://bonfirework.org
-      EXPECTED_SOURCE: f9ad48fc918666b7bb88de481a5ae29a77a203fe
-      RELEASE_REF: chatgpt/mk7-rescue-media-repair-release
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: http.version
-      GIT_CONFIG_VALUE_0: HTTP/1.1
+      PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+      PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v4
         env:
@@ -27,118 +24,101 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:7897
         with:
           fetch-depth: 1
-      - name: Prepare narrowly scoped content publisher
+      - name: Fetch only the immutable MK7 source into an isolated partial checkout
+        run: python3 ops/macos/recover-rescue-media-release.py prepare
+      - name: Accept and activate the repaired source without altering runtime permissions
         shell: bash
         run: |
           set -euo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          python3 ops/macos/normalize-digital-asset-archive.py ops/macos/publish-digital-assets.py
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          path=Path('ops/macos/publish-content-only-mk7.py')
-          text=path.read_text(encoding='utf-8')
-          text,n=re.subn(r'^COURSE_MARKERS\s*=.*$', 'COURSE_MARKERS = ("高空应急救援与团队综合实操", "?v=cc8aea230d583f40", "lesson-data.json?v=6801ce1d773e5097")',text,count=1,flags=re.MULTILINE)
-          assert n==1
-          assert text.count('500kv-spacer-habitual-violations')==2
-          text=text.replace('500kv-spacer-habitual-violations','transmission-rope-rescue/units/high-angle-rescue-practice')
-          text,n=re.subn(r'(runtime_type="auto",\n\s*)component="",',r'\1component="api",',text,count=1)
-          assert n==1
-          marker='    version_no = ('
-          assert text.count(marker)==1
-          preflight='''    if commit != "f9ad48fc918666b7bb88de481a5ae29a77a203fe":
-                  raise RuntimeError("Frozen rescue release source changed")
-              run([sys.executable or "python3", str(checkout / source_path / "tools/restore_rescue_media.py")], timeout=120)
-          '''
-          # Dedent the embedded insertion while preserving the publish function's indentation.
-          import textwrap
-          insertion='    if commit != "f9ad48fc918666b7bb88de481a5ae29a77a203fe":\n        raise RuntimeError("Frozen rescue release source changed")\n    run([sys.executable or "python3", str(checkout / source_path / "tools/restore_rescue_media.py")], timeout=120)\n\n'
-          text=text.replace(marker,insertion+marker,1)
-          path.write_text(text,encoding='utf-8')
-          PY
-          python3 -m py_compile ops/macos/publish-content-only-mk7.py
-      - name: Create candidate, accept and activate the exact repaired source
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          evidence="${RUNNER_TEMP}/rescue-release-evidence"
-          mkdir -p "$evidence"
-          keys=/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json
-          test -f "$keys"
-          test "$(stat -f '%Lp' "$keys")" = 600
+          label="gui/$(id -u)/org.bonfirework.digital-asset-smart-deploy"
+          plist="$HOME/Library/LaunchAgents/org.bonfirework.digital-asset-smart-deploy.plist"
+          was_running=0
+          if launchctl print "$label" >/dev/null 2>&1; then
+            test -f "$plist"
+            was_running=1
+            launchctl bootout "$label"
+          fi
           restore_watcher() {
-            if bash ops/macos/install-smart-digital-asset-deploy install > "$evidence/watcher-restore.log" 2>&1; then
-              echo 'WATCHER_RESTORE_OK=1'
+            if [ "$was_running" = 1 ]; then
+              if launchctl bootstrap "gui/$(id -u)" "$plist"; then
+                echo WATCHER_RESTORE_OK=1
+              else
+                echo WATCHER_RESTORE_OK=0
+                return 1
+              fi
             else
-              echo 'WATCHER_RESTORE_OK=0'
+              echo WATCHER_STATE_PRESERVED=1
             fi
           }
           trap restore_watcher EXIT
-          bash ops/macos/install-smart-digital-asset-deploy uninstall
-          sleep 3
-          export RESCUE_EVIDENCE_DIR="$evidence"
-          python3 - <<'PY'
-          import argparse,importlib.util,json,os,time
-          from pathlib import Path
-          path=Path('ops/macos/publish-content-only-mk7.py').resolve()
-          spec=importlib.util.spec_from_file_location('rescue_publisher',path)
-          module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-          args=argparse.Namespace(repository='CPYMSU/registry',ref=os.environ['RELEASE_REF'],source_path='assets/mk7',workspace_alias='mk7',workspace_keys=Path('/Users/peiyuan/Server/bonfirework/secrets/digital-asset-workspace-keys.json'),registry_ssh_key=Path('/Users/peiyuan/Server/bonfirework/secrets/registry-readonly-ed25519-v2'),cache_root=Path('/Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy'),base_url=os.environ['WAREHOUSE_BASE_URL'],timeout_seconds=1800)
-          for attempt in range(2):
-              try:
-                  result=module.publish(args)
-                  assert result['commit']==os.environ['EXPECTED_SOURCE'] and result['release_state']=='verified'
-                  Path(os.environ['RESCUE_EVIDENCE_DIR'],'release.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
-                  break
-              except Exception as exc:
-                  print('RELEASE_ATTEMPT_FAILED',attempt+1,type(exc).__name__,str(exc)[-1400:],flush=True)
-                  if attempt==1:raise
-                  time.sleep(125)
-          PY
-      - name: Verify actual browser-style image requests and original hashes on both public routes
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          python3 - <<'PY'
-          import concurrent.futures,hashlib,json,os,subprocess,time,urllib.request,urllib.error
-          from pathlib import Path
-          evidence=Path(os.environ['RUNNER_TEMP'])/'rescue-release-evidence'
-          cache=Path('/Users/peiyuan/Server/bonfirework/cache/digital-asset-smart-deploy/registry')
-          blob=subprocess.check_output(['git','-C',str(cache),'show',os.environ['EXPECTED_SOURCE']+':assets/mk7/RESCUE_MEDIA_BUNDLE.json'],text=True)
-          bundle=json.loads(blob)
-          (evidence/'media-bundle.json').write_text(blob)
-          bases=['https://mk7-workspace.bonfirework.org/','https://bonfirework.org/assets/bonfire/mk7-workspace/']
-          def probe(task):
-              base,item=task
-              url=base+item['path'].removeprefix('site/')+'?v='+item['sha256'][:16]
-              result={'url':url,'path':item['path'],'expected_sha256':item['sha256']}
-              for attempt in range(3):
-                  try:
-                      req=urllib.request.Request(url,headers={'User-Agent':'MK7-Rescue-Release-Image-Gate/1.0','Sec-Fetch-Dest':'image','Sec-Fetch-Mode':'no-cors','Sec-Fetch-Site':'same-origin','Accept':'image/avif,image/webp,image/svg+xml,image/*,*/*;q=0.8','Cache-Control':'no-cache','Referer':base})
-                      with urllib.request.urlopen(req,timeout=40) as r:
-                          data=r.read();result.update(status=r.status,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),delivery=r.headers.get('X-Warehouse-Pages-Delivery'),release=r.headers.get('X-Warehouse-Release'),content_type=r.headers.get('Content-Type'))
-                      result['ok']=result['status']==200 and result['sha256']==item['sha256'] and result['bytes']==item['size_bytes']
-                      if result['ok']:return result
-                  except Exception as exc:result['error']=type(exc).__name__+': '+str(exc)[:180]
-                  time.sleep(3*(attempt+1))
-              result['ok']=False;return result
-          tasks=[(base,item) for base in bases for item in bundle['assets']]
-          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:results=list(pool.map(probe,tasks))
-          report={'ok':all(x['ok'] for x in results),'original_images':len(bundle['assets']),'route_checks':len(results),'matched':sum(x['ok'] for x in results),'images':results}
-          (evidence/'public-media-check.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
-          print(json.dumps({k:v for k,v in report.items() if k!='images'},ensure_ascii=False))
-          for row in results:
-              if not row['ok']:print(json.dumps(row,ensure_ascii=False))
-          assert report['ok'],'One or more actual image requests failed'
-          PY
+          python3 ops/macos/recover-rescue-media-release.py publish
+      - name: Check every original image hash on both public entry routes
+        run: python3 ops/macos/recover-rescue-media-release.py verify
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mk7-rescue-repaired-release
-          path: |
-            ${{ runner.temp }}/rescue-release-evidence/release.json
-            ${{ runner.temp }}/rescue-release-evidence/public-media-check.json
-            ${{ runner.temp }}/rescue-release-evidence/media-bundle.json
+          path: ${{ runner.temp }}/rescue-recovery-${{ github.run_id }}/evidence/*.json
+          retention-days: 14
+  browser:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mk7-rescue-repaired-release
+          path: evidence
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare isolated browser tests
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Verify desktop and mobile images, including hidden gallery images
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          out=Path('evidence');bundle=json.loads((out/'media-bundle.json').read_text())
+          units=sorted({a['path'].split('/assets/approved/')[0].removeprefix('site/')+'/' for a in bundle['assets']})
+          base='https://mk7-workspace.bonfirework.org/'
+          report={'unit_count':len(units),'cases':[],'decoded_images':[]}
+          with sync_playwright() as p:
+              browser=p.chromium.launch()
+              for mode,viewport in [('desktop',{'width':1440,'height':1000}),('mobile',{'width':390,'height':844})]:
+                  context=browser.new_context(viewport=viewport)
+                  for n,unit in enumerate(units):
+                      page=context.new_page();errors=[]
+                      page.on('pageerror',lambda error:errors.append(str(error)))
+                      response=page.goto(base+unit,wait_until='domcontentloaded',timeout=90000)
+                      page.wait_for_timeout(2500)
+                      page.evaluate('''async () => {for (const image of document.images) {image.loading='eager'; if(image.src) {try {await image.decode()}catch(e){}}}}''')
+                      missing=page.evaluate('''() => Array.from(document.images).filter(x=>x.getAttribute('src') && (!x.complete || x.naturalWidth===0)).map(x=>({src:x.currentSrc||x.src,alt:x.alt}))''')
+                      case={'mode':mode,'unit':unit,'status':response.status,'broken_images':missing,'script_errors':errors,'images':page.locator('img[src]').count()}
+                      page.screenshot(path=str(out/f'{mode}-{n+1}.png'),full_page=False)
+                      opener=page.locator('button[data-open-image]')
+                      if opener.count():
+                          opener.first.click();page.wait_for_timeout(500)
+                          case['enlarged_broken']=page.evaluate('''() => Array.from(document.querySelectorAll('dialog[open] img')).filter(x=>x.src&&(!x.complete||x.naturalWidth===0)).map(x=>x.src)''')
+                          page.screenshot(path=str(out/f'{mode}-{n+1}-enlarged.png'),full_page=False)
+                          page.keyboard.press('Escape')
+                      report['cases'].append(case);page.close()
+                  context.close()
+              context=browser.new_context();page=context.new_page();page.goto(base+units[-1],wait_until='domcontentloaded',timeout=90000)
+              refs=[base+a['path'].removeprefix('site/')+'?v='+a['sha256'][:16] for a in bundle['assets']]
+              report['decoded_images']=page.evaluate('''async urls => {const result=[];for(let start=0;start<urls.length;start+=4){result.push(...await Promise.all(urls.slice(start,start+4).map(src=>new Promise(resolve=>{const image=new Image();const timer=setTimeout(()=>resolve({src,ok:false,error:'timeout'}),30000);image.onload=()=>{clearTimeout(timer);resolve({src,ok:image.naturalWidth>0,width:image.naturalWidth,height:image.naturalHeight})};image.onerror=()=>{clearTimeout(timer);resolve({src,ok:false,error:'decode failure'})};image.src=src}))))}return result}''',refs)
+              browser.close()
+          report['ok']=all(c['status']==200 and not c['broken_images'] and not c['script_errors'] and not c.get('enlarged_broken') for c in report['cases']) and all(i['ok'] for i in report['decoded_images'])
+          (out/'browser-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print(json.dumps({'ok':report['ok'],'course_units':len(units),'desktop_mobile_cases':len(report['cases']),'decoded_images':sum(i['ok'] for i in report['decoded_images'])}))
+          assert report['ok'],'Rescue course browser image check failed'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mk7-rescue-browser-verification
+          path: evidence
           retention-days: 14
