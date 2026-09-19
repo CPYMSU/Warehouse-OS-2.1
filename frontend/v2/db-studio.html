@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>DB Studio · Warehouse OS 2.1</title>
+<link rel="stylesheet" href="db-studio.css">
+<script defer src="db-studio.js"></script>
+</head>
+<body>
+<header class="masthead"><a href="./">WAREHOUSE OS 2.1 ↗</a><span>DB / DATABASE</span><strong>VIEW DESIGNER · 首版预览</strong></header>
+<main>
+<section class="intro"><div><p class="eyebrow">DATA → VIEW → DETAIL</p><h1>DB Studio<span>数据库视图设计器</span></h1><p>同一份数据，多种阅读方式。样式调整不修改业务记录。</p></div><div class="read-only">READ ONLY<br><b>数据只读 · 样式可编辑</b></div></section>
+<section class="sourcebar" aria-label="数据源">
+<label>数据来源<select id="source"><option value="local">本地 JSON（不上传）</option><option value="profile">我的资料 · API 投影</option><option value="tasks">我的任务 · API 投影</option></select></label>
+<button id="load" type="button">载入数据</button><button id="paste" type="button">粘贴 JSON</button><label class="file-button">导入 JSON<input id="data-file" type="file" accept=".json,application/json"></label>
+<span id="identity">本地模式不需要登录</span><a href="./">返回系统 / 登录 ↗</a>
+</section>
+<p id="message" role="status" aria-live="polite">请选择已有数据，或导入 JSON。这里不会生成示例业务数据。</p>
+<section class="workbench">
+<aside class="designer"><div class="panel-head"><h2>01 / 视图设计</h2><button id="reset" type="button">重置</button></div>
+<label class="stack">展示形式<select id="view"><option value="table">表格</option><option value="cards">卡片</option><option value="json">JSON 树</option><option value="schema">字段结构</option></select></label>
+<label class="stack">排版密度 <output id="density-value">50</output><input id="density" type="range" min="0" max="100" value="50"><span class="ends"><span>宽松</span><span>紧凑</span></span></label>
+<label class="stack">信息层级<select id="detail"><option value="1">摘要 · 最多 3 个选中字段</option><option value="2" selected>标准 · 最多 8 个选中字段</option><option value="3">详细 · 全部选中字段</option></select></label>
+<p class="hint">密度改变间距，不缩小字体；信息层级决定字段数量。每条记录都可展开查看完整返回字段。</p>
+<div class="panel-head"><h2>字段与样式</h2><span id="field-count">0</span></div>
+<p class="hint">↑ ↓ 调整顺序；显示名不改变原字段名。</p><div id="fields"></div>
+</aside>
+<section class="preview"><div class="previewbar"><div><p class="eyebrow">02 / LIVE PREVIEW</p><h2 id="source-title">尚未载入数据</h2></div><div id="stats" class="stats">0 条 · 0 字段</div></div>
+<div class="filterbar"><label>当前已载入数据搜索<input id="search" type="search" placeholder="搜索字段值…" maxlength="200"></label><label>每页<select id="page-size"><option>25</option><option selected>50</option><option>100</option></select></label></div>
+<div id="canvas" tabindex="0" aria-label="数据预览"><div class="empty">导入或载入数据后，在左侧设计视图。<br>支持 JSON 数组、单个对象，以及 tasks / rows / items 包装。</div></div>
+<div class="pager"><button id="previous" type="button">上一页</button><span id="page-info">0 / 0</span><button id="next" type="button">下一页</button></div>
+<p class="hint">本首版只分页显示已载入的数据，不把 API 的一页误报为全库总量。类型为样本推断，不等于数据库 DDL。</p>
+</section>
+<aside class="presets"><h2>03 / 保存设计</h2><p class="hint">命名视图仅保存在当前页面内存。下载的设计文件只含样式，不含记录、登录凭证或数据库连接。</p>
+<label class="stack">视图名称<input id="preset-name" maxlength="80" placeholder="例如：紧凑审核视图"></label><button id="save" type="button">保存为命名视图</button>
+<label class="stack">切换命名视图<select id="presets"><option value="">选择已保存设计</option></select></label>
+<button id="export" type="button">下载样式 JSON</button><label class="file-button">导入样式 JSON<input id="style-file" type="file" accept=".json,application/json"></label>
+<div class="boundary"><b>本版边界</b><p>支持本地 JSON、本人资料与本人任务。工作区表目录、跨设备保存、关系图及主导航接入尚未完成。</p><p>调整样式不会获得额外字段权限。业务 API 返回的是授权投影，不是物理数据库全表。</p></div>
+</aside>
+</section>
+</main>
+<dialog id="record-dialog"><div class="panel-head"><h2>记录详情 · 完整返回字段</h2><button data-close="record-dialog" type="button">关闭</button></div><div id="record-content"></div></dialog>
+<dialog id="paste-dialog"><div class="panel-head"><h2>粘贴 JSON</h2><button data-close="paste-dialog" type="button">关闭</button></div><p class="hint">仅在浏览器内解析；最多 2 MiB、5000 条、200 个顶层字段。</p><textarea id="json-input" rows="14" aria-label="JSON 数据" spellcheck="false"></textarea><p id="paste-error" role="alert"></p><button id="apply-json" type="button">使用这份数据</button></dialog>
+</body>
+</html>
