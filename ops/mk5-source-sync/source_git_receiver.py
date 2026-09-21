@@ -82,11 +82,21 @@ def register_source(api, output, target, checkpoint):
         # status. Never guess that status means success or create another upload.
         if str(exc) != 'upload_terminal_or_unknown_state':
             raise
-        existing = verified_source(_read(api, PREFIX + '/sources')['sources'], target)
-        if existing is None:
-            raise
-        diagnostic('upload_receipt_recovered_by_exact_verified_source')
-        return existing
+        # Registration can become visible shortly after the upload terminal
+        # response. Five readbacks only; never repeat PUT/POST here.
+        for attempt in range(1, 6):
+            rows = _read(api, PREFIX + '/sources')['sources']
+            matches = [v for v in rows if v.get('artifact_sha256') == target['sha256']]
+            require(len(matches) <= 1, 'ambiguous_source_digest')
+            if matches:
+                require(matches[0].get('size_bytes') == target['size_bytes'], 'existing_source_not_verified')
+                if matches[0].get('state') == 'verified':
+                    diagnostic('upload_receipt_recovered_by_exact_verified_source', attempt=attempt)
+                    return matches[0]
+            diagnostic('upload_receipt_waiting_for_verified_source', attempt=attempt)
+            if attempt < 5:
+                time.sleep(2)
+        raise
     existing = verified_source(_read(api, PREFIX + '/sources')['sources'], target)
     require(existing is not None, 'source_readback_missing')
     return existing
