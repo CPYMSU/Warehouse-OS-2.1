@@ -12,6 +12,8 @@ import json
 import os
 import re
 import stat
+import sys
+import time
 from pathlib import Path
 
 from source_delta import (
@@ -34,21 +36,60 @@ SCHEMA = "tidi.source-git-delivery.v1"
 WORKSPACE_UUID = "db3d612c-a53f-4ac8-8412-62ff8199a7ff"
 PART_BYTES = 16 * 1024 * 1024
 MAX_INFO_BYTES = 8 * 1024 * 1024
+INFO_TIMEOUT_SECONDS = 90
+INFO_MAX_ATTEMPTS = 3
+
+
+def diagnostic(phase, **values):
+    # No credentials, response bodies, paths or business content in diagnostics.
+    # stderr keeps the direct transport's single-JSON stdout contract intact.
+    print(json.dumps(dict(phase=phase, **values)), file=sys.stderr, flush=True)
 
 
 def workspace_info(key):
-    connection = http.client.HTTPConnection("127.0.0.1", 8081, timeout=15)
+    for attempt in range(1, INFO_MAX_ATTEMPTS + 1):
+        connection = http.client.HTTPConnection("127.0.0.1", 8081, timeout=INFO_TIMEOUT_SECONDS)
+        started = time.monotonic()
+        try:
+            connection.request("GET", PREFIX + "/info", headers={"Authorization": "Bearer " + key})
+            response = connection.getresponse()
+            if response.status in (408, 429, 500, 502, 503, 504, 520):
+                if attempt == INFO_MAX_ATTEMPTS:
+                    raise TransferError("workspace_read_retry_exhausted")
+                diagnostic('workspace_read_retry', attempt=attempt, status=response.status)
+            else:
+                require(response.status == 200, "workspace_read_failed_http_" + str(response.status))
+                raw = response.read(MAX_INFO_BYTES + 1)
+                require(len(raw) <= MAX_INFO_BYTES, "workspace_read_size_limit")
+                value = json.loads(raw)["workspace"]
+                require(value["uuid"] == WORKSPACE_UUID, "workspace_identity_mismatch")
+                diagnostic('workspace_read_verified', attempt=attempt, seconds=round(time.monotonic()-started,2))
+                return value
+        except (OSError, http.client.HTTPException):
+            if attempt == INFO_MAX_ATTEMPTS:
+                raise TransferError("workspace_read_transport_exhausted") from None
+            diagnostic('workspace_read_retry', attempt=attempt, reason='transport')
+        finally:
+            connection.close()
+        time.sleep(attempt)
+
+
+def register_source(api, output, target, checkpoint):
     try:
-        connection.request("GET", PREFIX + "/info", headers={"Authorization": "Bearer " + key})
-        response = connection.getresponse()
-        raw = response.read(MAX_INFO_BYTES + 1)
-        require(response.status == 200, "workspace_read_failed_http_" + str(response.status))
-        require(len(raw) <= MAX_INFO_BYTES, "workspace_read_size_limit")
-        value = json.loads(raw)["workspace"]
-        require(value["uuid"] == WORKSPACE_UUID, "workspace_identity_mismatch")
-        return value
-    finally:
-        connection.close()
+        upload_source(api, output, target, checkpoint, budget_seconds=1200)
+    except TransferError as exc:
+        # Some server versions finish registration under a different upload
+        # status. Never guess that status means success or create another upload.
+        if str(exc) != 'upload_terminal_or_unknown_state':
+            raise
+        existing = verified_source(_read(api, PREFIX + '/sources')['sources'], target)
+        if existing is None:
+            raise
+        diagnostic('upload_receipt_recovered_by_exact_verified_source')
+        return existing
+    existing = verified_source(_read(api, PREFIX + '/sources')['sources'], target)
+    require(existing is not None, 'source_readback_missing')
+    return existing
 
 
 def host_key():
@@ -225,9 +266,7 @@ def run(action, delivery=None, manifest_sha=None):
         # Verification exercises Git download + reconstruction even for an existing target.
         output = None if existing and action == "upload" else reconstruct(delivery, plan, work, key)
         if action == "upload" and not existing:
-            upload_source(api, output, plan["target"], work / "upload.json", budget_seconds=1200)
-            existing = verified_source(_read(api, PREFIX + "/sources")["sources"], plan["target"])
-            require(existing is not None, "source_readback_missing")
+            existing = register_source(api, output, plan['target'], work / 'upload.json')
         final = workspace_info(key)
         require(
             initial.get("active_deployment_id") == final.get("active_deployment_id"),
