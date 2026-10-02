@@ -13,7 +13,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, warehouse-production]
     timeout-minutes: 30
     env:
-      MK5_APP_SOURCE_COMMIT: 98caccb93edd4746db50dc930c0d3c7806e58e0e
+      MK5_APP_SOURCE_COMMIT: 75f4a3ffad8bd04c5c8f6d64efe0826bc8e59416
       MK5_APP_OPERATION: inventory
       OPENBLAS_NUM_THREADS: '1'
       OMP_NUM_THREADS: '1'
