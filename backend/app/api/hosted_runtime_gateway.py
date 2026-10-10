@@ -386,7 +386,9 @@ def _pages_shell_response(
     return HTMLResponse(
         document,
         headers={
-            "Cache-Control": "no-store",
+            # This shell intentionally permits no scripts. Prevent edge services
+            # from injecting analytics that would violate its restrictive CSP.
+            "Cache-Control": "no-store, no-transform",
             "Content-Security-Policy": (
                 "default-src 'none'; "
                 "style-src 'unsafe-inline'; "
