@@ -15,6 +15,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     status,
@@ -195,6 +196,8 @@ def workspace_retention_plan(
     min_age_hours: int = 24,
     include_sources: bool = True,
     include_expired_uploads: bool = True,
+    include_python_environments: bool = False,
+    deployment_ids: Annotated[list[str] | None, Query(max_length=200)] = None,
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
@@ -209,6 +212,8 @@ def workspace_retention_plan(
             "min_age_hours": min_age_hours,
             "include_sources": include_sources,
             "include_expired_uploads": include_expired_uploads,
+            "include_python_environments": include_python_environments,
+            "deployment_ids": deployment_ids,
         },
     )
 
