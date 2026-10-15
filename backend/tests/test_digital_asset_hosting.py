@@ -323,6 +323,8 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
                 "keep_recent_deployments": 2,
                 "keep_recent_sources": 5,
                 "min_age_hours": 0,
+                "include_sources": True,
+                "include_expired_uploads": True,
             },
         )
         assert plan_response.status_code == 200, plan_response.text
@@ -350,6 +352,8 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
                 "keep_recent_deployments": 2,
                 "keep_recent_sources": 6,
                 "min_age_hours": 0,
+                "include_sources": True,
+                "include_expired_uploads": True,
                 "confirm_plan_digest": plan["plan_digest"],
             },
         )
@@ -378,10 +382,31 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
 
         class FakeDockerEngine:
             def __init__(self, _socket) -> None:
-                pass
+                self.item = {
+                    "id": "a" * 64,
+                    "name": "warehouse-runtime-" + deployments[0]["uuid"].replace("-", "")[:20],
+                    "labels": {
+                        "org.bonfirework.managed": "runtime-controller",
+                        "org.bonfirework.deployment": deployments[0]["uuid"],
+                        "org.bonfirework.workspace": workspace_id,
+                    },
+                }
+
+            def retention_container_inventory(self):
+                if self.item is None:
+                    return []
+                return [{"id": self.item["id"], "names": [self.item["name"]],
+                         "labels": self.item["labels"]}]
+
+            def retention_container(self, reference):
+                if self.item and reference in (self.item["id"], self.item["name"]):
+                    return dict(self.item)
+                return None
 
             def remove(self, name: str) -> None:
+                assert self.item is not None and name == self.item["id"]
                 removed.append(name)
+                self.item = None
 
             def close(self) -> None:
                 pass
@@ -390,9 +415,7 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
         controller = RuntimeController(settings)
         monkeypatch.setattr(controller, "_tenants", lambda: [actor.tenant_id])
         assert controller.reconcile_retention_runtime_containers() == 1
-        assert removed == [
-            "warehouse-runtime-" + deployments[0]["uuid"].replace("-", "")[:20]
-        ]
+        assert removed == ["a" * 64]
 
         retry_plan = client.get(
             "/api/workspaces/v1/retention/plan",
@@ -401,6 +424,8 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
                 "keep_recent_deployments": 2,
                 "keep_recent_sources": 5,
                 "min_age_hours": 0,
+                "include_sources": True,
+                "include_expired_uploads": True,
             },
         ).json()
         assert retry_plan["expired_uploads"] == []
@@ -444,6 +469,8 @@ def test_workspace_retention_plan_digest_and_apply_preserve_recent_rollback_chai
                 "keep_recent_deployments": 2,
                 "keep_recent_sources": 5,
                 "min_age_hours": 0,
+                "include_sources": True,
+                "include_expired_uploads": True,
             },
         ).json()
         assert replanned["deployment_candidates"] == []

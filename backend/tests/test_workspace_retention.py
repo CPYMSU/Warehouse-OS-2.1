@@ -25,6 +25,8 @@ def test_retention_policy_has_bounded_rollback_and_source_floors() -> None:
         "min_age_hours": 24,
         "include_sources": True,
         "include_expired_uploads": True,
+        "include_python_environments": False,
+        "deployment_ids": None,
     }
     assert RetentionPolicy.from_payload({"min_age_hours": 0}).min_age_hours == 0
     with pytest.raises(HTTPException) as deployment_floor:
@@ -73,14 +75,11 @@ def test_content_addressed_retirement_requires_exact_tenant_digest_key(
             sha256="b" * 64,
         )
     assert target.is_file()
-    assert (
-        store.retire_content_addressed_object(
-            tenant_id=tenant_id,
-            object_key=object_key,
-            sha256=digest,
-        )
-        == len(b"immutable")
-    )
+    assert store.retire_content_addressed_object(
+        tenant_id=tenant_id,
+        object_key=object_key,
+        sha256=digest,
+    ) == len(b"immutable")
     assert not target.exists()
     assert (
         store.retire_content_addressed_object(
@@ -146,5 +145,5 @@ def test_runtime_directory_waits_for_controller_container_acknowledgement() -> N
                 }
             }
         )
-        is True
+        is False
     )

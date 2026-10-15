@@ -138,6 +138,22 @@ dm workspace resize --id <資產> --workspace customer-operations --target-mb 10
 
 `delta-mb` 與 `target-mb` 必須二選一。建議同時提交目前工作區的 `expected-revision`；版本不一致時服務端返回 HTTP 409，避免併發操作覆蓋。配額只能增加，不能藉此縮減；每次變更都寫入審計。
 
+工作區主 Key 另有正式自助 API，無需另行取得公司登入 Session：
+
+- `GET /api/workspaces/v1/autonomy`：核對主 Key 權限、工作區 UUID、目前容量及 revision。
+- `POST /api/workspaces/v1/quota`：以 `{"target_mb":3072,"expected_revision":7}` 指定精確總容量（revision 請使用即時值）。自助 API 支援多個 512 MiB 單位；操作方仍須遵守使用者授權的增量。目標值在工作區行鎖內處理，不因用量同步增長而多擴一級。同目標重試不重複擴容，其餘過期 revision 返回 409。
+- 以上 API 使用 `Authorization: Bearer <主 Key>`；從受保護檔案於程式記憶體中載入，不把明文放入命令列、日誌或版本庫。`dm workspace resize` 是上面的資產管理入口，不能假定所有自助 API 已有對應 CLI 子命令。
+
+### 3.3.1 舊發布的預覽與受管理回收
+
+先用 `GET /api/workspaces/v1/retention/plan` 預覽，再向 `POST /api/workspaces/v1/retention/apply` 提交同一組策略及 `confirm_plan_digest`。執行需要工作區主 Key 的 `deploy:write`、`infra:write` 權限；預覽需要相應讀取權限。
+
+僅回收已核准的舊發布時，GET 可重複傳入 `deployment_ids=<UUID>` 作為精確白名單，並明確設定 `include_sources=false&include_expired_uploads=false`。POST 使用同名 JSON 陣列；空陣列表示不選任何發布，省略則依保留策略選取所有符合條件的發布。白名單不能繞過活動版本、回退版本、Pages 靜態前端、待發布引用、Job 和 pinned 保護。
+
+回收分為控制器核對並移除舊容器、API 清理發布目錄兩個階段。收到 `runtime_controller_cleanup_pending` 時，待控制器完成後重新預覽，核對候選清單，再使用新摘要執行。舊摘要或候選引用變化會被拒絕。容器清理回執綁定本次 run、摘要及容器集合；不得以手工刪除容器或主機檔案代替正式操作。
+
+`include_python_environments=true` 目前僅提供依賴環境保留檢查，不執行共享 Python 環境刪除。缺乏完整引用證據的環境保持保留，不計為已回收空間。完成後重新讀取 `/api/workspaces/v1/usage` 並核對活動發布與公開入口；回收預估值不能作為實際釋放量。
+
 核心代碼建立時預設 HDD；使用者明確指定時可用 SSD。在尚未存在任何源碼版本或 `code` 工件的空工作區，可以原地改變代碼儲存綁定：
 
 ```text

@@ -200,6 +200,53 @@ class DockerEngine:
             self._raise_engine_error(response, "container inspection")
         return True
 
+    def retention_container(self, reference: str) -> dict[str, object] | None:
+        """Read only identity metadata; never expose a container's environment."""
+
+        response = self.client.get(f"{self.api_prefix}/containers/{reference}/json")
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            self._raise_engine_error(response, "retention inspection")
+        payload = response.json()
+        config = payload.get("Config") or {}
+        labels = config.get("Labels") or {}
+        if not isinstance(labels, dict):
+            raise RuntimeError("retention_container_labels_invalid")
+        return {
+            "id": str(payload.get("Id") or ""),
+            "name": str(payload.get("Name") or "").removeprefix("/"),
+            "labels": labels,
+        }
+
+    def retention_container_inventory(self) -> list[dict[str, object]]:
+        """Include stopped containers and malformed names in ownership checks."""
+
+        response = self.client.get(
+            f"{self.api_prefix}/containers/json",
+            params={"all": "true"},
+        )
+        if response.status_code != 200:
+            self._raise_engine_error(response, "retention inventory")
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("retention_container_inventory_invalid")
+        inventory: list[dict[str, object]] = []
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("Labels") or {}, dict):
+                raise RuntimeError("retention_container_inventory_invalid")
+            names = item.get("Names")
+            if not isinstance(names, list):
+                raise RuntimeError("retention_container_inventory_invalid")
+            inventory.append(
+                {
+                    "id": str(item.get("Id") or ""),
+                    "names": [str(name).removeprefix("/") for name in names],
+                    "labels": item.get("Labels") or {},
+                }
+            )
+        return inventory
+
     def managed_runtime_containers(self) -> list[dict[str, object]]:
         response = self.client.get(
             f"{self.api_prefix}/containers/json",
@@ -2289,42 +2336,165 @@ class RuntimeController:
                     names.update(self._runtime_container_names(result))
         return names
 
-    def reconcile_retention_runtime_containers(self) -> int:
-        """Acknowledge container retirement for digest-bound storage cleanup.
+    @staticmethod
+    def _retention_names(deployment_id: UUID, result: dict[str, object]) -> list[str]:
+        raw = result.get("container_names", [])
+        if not isinstance(raw, list):
+            raise RuntimeError("retention_container_names_invalid")
+        prefix = "warehouse-runtime-"
+        pattern = re.escape(prefix) + (
+            f"(?:{deployment_id.hex[:20]}(?:-r[0-9]+)?"
+            f"|{deployment_id.hex[:16]}(?:-[a-zA-Z0-9_.-]+)?)"
+        )
+        if any(
+            not isinstance(name, str)
+            or not re.fullmatch(pattern, name)
+            for name in raw
+        ) or len(set(raw)) != len(raw):
+            raise RuntimeError("retention_container_names_invalid")
+        return sorted(raw)
 
-        The API deliberately has no Docker socket. It marks historical
-        deployments as retiring; this privileged controller removes only the
-        deployment-bound managed containers and records an acknowledgement in
-        the existing retention ledger. A later retention apply may then remove
-        the Runtime directory.
+    @staticmethod
+    def _retention_names_digest(names: list[str]) -> str:
+        return hashlib.sha256(
+            json.dumps(names, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _retention_is_protected(
+        session: object, tenant_id: UUID, workspace_id: UUID, deployment_id: UUID,
+    ) -> bool:
+        # The workspace and deployment rows are already locked, in that order.
+        # Activation/repair cannot race the following Docker operations.
+        return bool(session.execute(
+            text(
+                """
+                SELECT
+                  EXISTS (SELECT 1 FROM digital_asset.workspaces
+                          WHERE id=:workspace_id AND active_deployment_id=:id)
+                  OR EXISTS (
+                    SELECT 1 FROM digital_asset.workspaces AS w
+                    JOIN digital_asset.deployments AS active ON active.id=w.active_deployment_id
+                    WHERE w.id=:workspace_id
+                      AND active.result->>'previous_active_deployment_id'=CAST(:id AS text)
+                  )
+                  OR EXISTS (SELECT 1 FROM platform.pages_routes
+                             WHERE workspace_id=:workspace_id AND (
+                               active_deployment_id=:id
+                               OR config #>> '{static_frontend,deployment_id}'=CAST(:id AS text)
+                               OR config #>> '{static_frontend,runtime_rel_path}'=:release_path
+                               OR config #>> '{static_frontend,runtime_rel_path}'
+                                  LIKE :release_prefix
+                             ))
+                  OR EXISTS (
+                    SELECT 1 FROM digital_asset.release_sessions
+                    WHERE workspace_id=:workspace_id
+                      AND state NOT IN ('verified','failed','rolled_back','cancelled','blocked')
+                      AND (candidate_deployment_id=:id OR current_job_deployment_id=:id
+                           OR previous_deployment_id=:id)
+                  )
+                """
+            ),
+            {
+                "workspace_id": workspace_id, "id": deployment_id,
+                "release_path": (
+                    f"tenants/{tenant_id}/workspaces/{workspace_id}/releases/{deployment_id}"
+                ),
+                "release_prefix": (
+                    f"tenants/{tenant_id}/workspaces/{workspace_id}/releases/{deployment_id}/%"
+                ),
+            },
+        ).scalar_one())
+
+    @staticmethod
+    def _verify_retention_inventory(
+        engine: DockerEngine, workspace_id: UUID, deployment_id: UUID,
+        names: list[str], *, require_absent: bool = False,
+    ) -> None:
+        expected = set(names)
+        for item in engine.retention_container_inventory():
+            labels = item["labels"]
+            if labels.get("org.bonfirework.deployment") != str(deployment_id):
+                continue
+            owned_names = item["names"]
+            if (
+                labels.get("org.bonfirework.managed") != "runtime-controller"
+                or labels.get("org.bonfirework.workspace") != str(workspace_id)
+                or not owned_names
+                or not set(owned_names).issubset(expected)
+            ):
+                raise RuntimeError("retention_container_ownership_mismatch")
+            if require_absent:
+                raise RuntimeError("retention_container_still_present")
+
+    def _remove_retention_containers(
+        self, engine: DockerEngine, workspace_id: UUID,
+        deployment_id: UUID, names: list[str],
+    ) -> None:
+        self._verify_retention_inventory(engine, workspace_id, deployment_id, names)
+        identities: list[tuple[str, str]] = []
+        # Validate the entire set before removing any member. In particular, an
+        # unrelated container name in old metadata must never be partially acted on.
+        for name in names:
+            metadata = engine.retention_container(name)
+            if metadata is None:
+                continue
+            labels = metadata["labels"]
+            container_id = str(metadata["id"])
+            if (
+                metadata["name"] != name
+                or not re.fullmatch(r"[a-f0-9]{64}", container_id)
+                or labels.get("org.bonfirework.managed") != "runtime-controller"
+                or labels.get("org.bonfirework.workspace") != str(workspace_id)
+                or labels.get("org.bonfirework.deployment") != str(deployment_id)
+            ):
+                raise RuntimeError("retention_container_ownership_mismatch")
+            identities.append((name, container_id))
+        for name, container_id in identities:
+            # A name can be reused; deletion by immutable Docker ID cannot delete
+            # a newly-created container that took over the inspected name.
+            engine.remove(container_id)
+            if engine.retention_container(container_id) is not None:
+                raise RuntimeError("retention_container_still_present")
+        for name in names:
+            if engine.retention_container(name) is not None:
+                raise RuntimeError("retention_container_still_present")
+        self._verify_retention_inventory(
+            engine, workspace_id, deployment_id, names, require_absent=True,
+        )
+
+    def reconcile_retention_runtime_containers(self) -> int:
+        """Retire verified service containers under the workspace/deployment locks.
+
+        Acknowledgements bind the current operation and complete metadata name
+        set. Even an empty set requires a Docker inventory check. Crashes and
+        partial removals are retryable because missing immutable IDs are safe.
         """
 
         if time.monotonic() - self._last_retention_container_reconcile < 1:
             return 0
         self._last_retention_container_reconcile = time.monotonic()
-        candidates: list[tuple[UUID, UUID, dict[str, object]]] = []
+        candidates: list[tuple[UUID, dict[str, object]]] = []
         for tenant_id in self._tenants():
             with tenant_session(tenant_id) as session:
                 rows = session.execute(
                     text(
                         """
-                        SELECT id,result
+                        SELECT id,workspace_id,result
                         FROM digital_asset.deployments
                         WHERE result->'retention'->>'state' IN ('retiring','retry_required')
-                          AND COALESCE(result->'retention'->>'containers_retired_at','')=''
-                          AND jsonb_typeof(result->'container_names')='array'
-                          AND jsonb_array_length(result->'container_names') > 0
-                        ORDER BY created_at,id
+                          AND status IN ('failed','rolled_back','cancelled')
+                          AND COALESCE(requested_config->>'execution_mode','service')='service'
+                          AND COALESCE(result->>'execution_mode','service')='service'
+                        ORDER BY
+                          COALESCE(result->'retention'->>'containers_retired_at','') != '',
+                          created_at,id
                         LIMIT :limit
                         """
                     ),
                     {"limit": max(0, 128 - len(candidates))},
                 ).mappings()
-                candidates.extend(
-                    (tenant_id, UUID(str(row["id"])), dict(row["result"]))
-                    for row in rows
-                    if isinstance(row.get("result"), dict)
-                )
+                candidates.extend((tenant_id, dict(row)) for row in rows)
             if len(candidates) >= 128:
                 break
         if not candidates:
@@ -2333,80 +2503,102 @@ class RuntimeController:
         engine = DockerEngine(self.settings.runtime_docker_socket)
         completed = 0
         try:
-            for tenant_id, deployment_id, result in candidates:
-                names = self._runtime_container_names(result)
-                if not names:
-                    continue
-                try:
-                    for name in names:
-                        engine.remove(name)
-                except Exception as exc:
-                    message = (str(exc).strip() or exc.__class__.__name__)[:500]
-                    with tenant_session(tenant_id) as session:
-                        current = session.execute(
-                            text(
-                                "SELECT result FROM digital_asset.deployments "
-                                "WHERE id=:id FOR UPDATE"
-                            ),
-                            {"id": deployment_id},
-                        ).scalar_one()
-                        payload = dict(current) if isinstance(current, dict) else {}
-                        retention = (
-                            dict(payload.get("retention"))
-                            if isinstance(payload.get("retention"), dict)
-                            else {}
-                        )
-                        retention["container_cleanup_error"] = message
-                        retention["container_cleanup_worker"] = self.worker_id
-                        payload["retention"] = retention
-                        session.execute(
-                            text(
-                                "UPDATE digital_asset.deployments "
-                                "SET result=CAST(:result AS jsonb) WHERE id=:id"
-                            ),
-                            {"id": deployment_id, "result": json.dumps(payload)},
-                        )
-                    continue
-
+            for tenant_id, candidate in candidates:
+                deployment_id = UUID(str(candidate["id"]))
+                workspace_id = UUID(str(candidate["workspace_id"]))
+                selected = candidate.get("result") or {}
+                selected_retention = selected.get("retention") or {}
                 with tenant_session(tenant_id) as session:
-                    current = session.execute(
-                        text(
-                            "SELECT result FROM digital_asset.deployments "
-                            "WHERE id=:id FOR UPDATE"
-                        ),
-                        {"id": deployment_id},
-                    ).scalar_one()
-                    payload = dict(current) if isinstance(current, dict) else {}
-                    retention = (
-                        dict(payload.get("retention"))
-                        if isinstance(payload.get("retention"), dict)
-                        else {}
-                    )
-                    if retention.get("state") not in {"retiring", "retry_required"}:
+                    workspace = session.execute(
+                        text("SELECT id FROM digital_asset.workspaces "
+                             "WHERE id=:id FOR UPDATE"),
+                        {"id": workspace_id},
+                    ).scalar_one_or_none()
+                    if workspace is None:
                         continue
-                    retention.pop("container_cleanup_error", None)
-                    retention.update(
-                        {
+                    current = session.execute(
+                        text("SELECT status,requested_config,result "
+                             "FROM digital_asset.deployments "
+                             "WHERE id=:id AND workspace_id=:workspace_id FOR UPDATE"),
+                        {"id": deployment_id, "workspace_id": workspace_id},
+                    ).mappings().one_or_none()
+                    if current is None:
+                        continue
+                    payload = dict(current.get("result") or {})
+                    requested = current.get("requested_config") or {}
+                    retention = dict(payload.get("retention") or {})
+                    if (
+                        retention.get("state") not in {"retiring", "retry_required"}
+                        or not retention.get("run_id") or not retention.get("plan_digest")
+                        or retention.get("run_id") != selected_retention.get("run_id")
+                        or retention.get("plan_digest") != selected_retention.get("plan_digest")
+                        or payload.get("container_names") != selected.get("container_names")
+                    ):
+                        continue
+                    if (
+                        current["status"] not in {"failed", "rolled_back", "cancelled"}
+                        or str(requested.get("execution_mode") or "service") != "service"
+                        or str(payload.get("execution_mode") or "service") != "service"
+                        or bool((requested.get("retention") or {}).get("pinned"))
+                        or bool(retention.get("pinned"))
+                        or self._retention_is_protected(
+                            session, tenant_id, workspace_id, deployment_id,
+                        )
+                    ):
+                        continue
+                    try:
+                        names = self._retention_names(deployment_id, payload)
+                        names_digest = self._retention_names_digest(names)
+                        if (
+                            retention.get("containers_retired_at")
+                            and retention.get("containers_retired_run_id") == retention["run_id"]
+                            and retention.get("containers_retired_plan_digest")
+                            == retention["plan_digest"]
+                            and retention.get("containers_retired_names_digest") == names_digest
+                        ):
+                            continue
+                        self._remove_retention_containers(
+                            engine, workspace_id, deployment_id, names,
+                        )
+                    except Exception as exc:
+                        # Docker errors can include arbitrary upstream text. Store
+                        # only fixed local categories, never raw inspection output.
+                        error = str(exc)
+                        if error not in {
+                            "retention_container_names_invalid",
+                            "retention_container_ownership_mismatch",
+                            "retention_container_still_present",
+                        }:
+                            error = "retention_container_cleanup_failed"
+                        for key in (
+                            "containers_retired_at", "containers_retired_run_id",
+                            "containers_retired_plan_digest", "containers_retired_names_digest",
+                        ):
+                            retention.pop(key, None)
+                        retention["container_cleanup_error"] = error
+                        retention["container_cleanup_worker"] = self.worker_id
+                    else:
+                        retention.pop("container_cleanup_error", None)
+                        retention.update({
                             "containers_retired_at": datetime.now(UTC).isoformat(),
+                            "containers_retired_run_id": retention["run_id"],
+                            "containers_retired_plan_digest": retention["plan_digest"],
+                            "containers_retired_names_digest": names_digest,
                             "container_cleanup_worker": self.worker_id,
-                        }
-                    )
+                        })
+                        _event(
+                            session, deployment_id, tenant_id, "retention_containers_retired",
+                            {"container_names": names, "run_id": retention["run_id"],
+                             "plan_digest": retention["plan_digest"],
+                             "names_digest": names_digest, "worker": self.worker_id},
+                        )
+                        completed += 1
                     payload["retention"] = retention
                     session.execute(
-                        text(
-                            "UPDATE digital_asset.deployments "
-                            "SET result=CAST(:result AS jsonb) WHERE id=:id"
-                        ),
+                        text("UPDATE digital_asset.deployments "
+                             "SET result=CAST(:result AS jsonb) WHERE id=:id"),
                         {"id": deployment_id, "result": json.dumps(payload)},
                     )
-                    _event(
-                        session,
-                        deployment_id,
-                        tenant_id,
-                        "retention_containers_retired",
-                        {"container_names": names, "worker": self.worker_id},
-                    )
-                completed += 1
         finally:
             engine.close()
         return completed

@@ -31,9 +31,7 @@ from app.services.digital_asset_hosting import (
 )
 from app.services.object_storage import object_store_for_provider
 
-_TERMINAL_DEPLOYMENT_STATES = frozenset(
-    {"ready", "failed", "rolled_back", "cancelled"}
-)
+_TERMINAL_DEPLOYMENT_STATES = frozenset({"ready", "failed", "rolled_back", "cancelled"})
 _SAFE_CONTAINER_NAME = re.compile(r"^warehouse-runtime-[A-Za-z0-9_.-]+$")
 
 
@@ -44,6 +42,8 @@ class RetentionPolicy:
     min_age_hours: int = 24
     include_sources: bool = True
     include_expired_uploads: bool = True
+    include_python_environments: bool = False
+    deployment_ids: tuple[str, ...] | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, object] | None) -> RetentionPolicy:
@@ -61,12 +61,33 @@ class RetentionPolicy:
                 )
             return observed
 
+        def boolean(name: str, default: bool = False) -> bool:
+            observed = value.get(name, default)
+            if not isinstance(observed, bool):
+                raise HTTPException(status_code=422, detail=f"{name} must be a boolean")
+            return observed
+
+        selected = value.get("deployment_ids")
+        if selected is not None:
+            if not isinstance(selected, list) or len(selected) > 200:
+                raise HTTPException(status_code=422, detail="deployment_ids must be a UUID array")
+            try:
+                selected = tuple(
+                    sorted({str(UUID(item)) for item in selected if isinstance(item, str)})
+                )
+                if len(selected) != len(value["deployment_ids"]):
+                    raise ValueError("Duplicate or non-string deployment ID")
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise HTTPException(status_code=422, detail="Invalid deployment_ids") from exc
+
         return cls(
             keep_recent_deployments=bounded("keep_recent_deployments", 2, 2, 20),
             keep_recent_sources=bounded("keep_recent_sources", 5, 2, 100),
             min_age_hours=bounded("min_age_hours", 24, 0, 8760),
-            include_sources=bool(value.get("include_sources", True)),
-            include_expired_uploads=bool(value.get("include_expired_uploads", True)),
+            include_sources=boolean("include_sources", True),
+            include_expired_uploads=boolean("include_expired_uploads", True),
+            include_python_environments=boolean("include_python_environments"),
+            deployment_ids=selected,
         )
 
     def public(self) -> dict[str, object]:
@@ -76,6 +97,10 @@ class RetentionPolicy:
             "min_age_hours": self.min_age_hours,
             "include_sources": self.include_sources,
             "include_expired_uploads": self.include_expired_uploads,
+            "include_python_environments": self.include_python_environments,
+            "deployment_ids": list(self.deployment_ids)
+            if self.deployment_ids is not None
+            else None,
         }
 
 
@@ -128,8 +153,43 @@ def _deployment_container_names(
     ]
 
 
+def _container_names_digest(names: list[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(sorted(names), separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _containers_retired(result: object) -> bool:
-    return bool(_retention(result).get("containers_retired_at"))
+    payload = result if isinstance(result, dict) else {}
+    retention = _retention(payload)
+    names = payload.get("container_names", [])
+    if not isinstance(names, list) or any(not isinstance(x, str) for x in names):
+        return False
+    if len(names) != len(set(names)):
+        return False
+    return bool(
+        retention.get("containers_retired_at")
+        and retention.get("run_id")
+        and retention.get("plan_digest")
+        and retention.get("containers_retired_run_id") == retention.get("run_id")
+        and retention.get("containers_retired_plan_digest") == retention.get("plan_digest")
+        and retention.get("containers_retired_names_digest") == _container_names_digest(names)
+    )
+
+
+def _workspace_path(settings: Settings, tenant_id: UUID, workspace_id: UUID, *parts: str) -> Path:
+    # Inspect lexical ancestors before resolve: resolving first hides symlinks.
+    root = settings.hosted_runtime_data_root.absolute()
+    target = root / "tenants" / str(tenant_id) / "workspaces" / str(workspace_id)
+    for part in parts:
+        if not part or part in {".", ".."} or Path(part).name != part:
+            raise RuntimeError("Unsafe Runtime retention component")
+        target /= part
+    for ancestor in [*reversed(target.parents), target]:
+        if ancestor.is_symlink():
+            raise RuntimeError("Symlinked Runtime retention ancestor")
+    target.relative_to(root)
+    return target
 
 
 def _release_path(
@@ -139,21 +199,7 @@ def _release_path(
     workspace_id: UUID,
     deployment_id: UUID,
 ) -> Path:
-    root = settings.hosted_runtime_data_root.resolve()
-    releases = (
-        root
-        / "tenants"
-        / str(tenant_id)
-        / "workspaces"
-        / str(workspace_id)
-        / "releases"
-    ).resolve()
-    releases.relative_to(root)
-    target = (releases / str(deployment_id)).resolve()
-    target.relative_to(releases)
-    if target.parent != releases or target.name != str(deployment_id):
-        raise RuntimeError("Unsafe Runtime retention target")
-    return target
+    return _workspace_path(settings, tenant_id, workspace_id, "releases", str(deployment_id))
 
 
 def _deployment_rows(session: object, workspace_id: UUID) -> list[dict[str, object]]:
@@ -169,6 +215,63 @@ def _deployment_rows(session: object, workspace_id: UUID) -> list[dict[str, obje
         .mappings()
         .all()
     ]
+
+
+def _python_environment_review(
+    settings: Settings,
+    credential: WorkspaceCredential,
+    deployments: list[dict[str, object]],
+    enabled: bool,
+) -> dict[str, object]:
+    """Report dependencies, never infer exclusivity from incomplete metadata.
+
+    Directory/container retirement does not establish which retained or unknown
+    runtime can consume a shared venv. Until the controller supplies a complete
+    workspace reference attestation, every environment remains held.
+    """
+    if not enabled:
+        return {"enabled": False, "status": "disabled", "candidates": [], "held": []}
+    consumers: dict[str, list[str]] = {}
+    unknown: list[str] = []
+    for row in deployments:
+        result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        if _retention(result).get("state") == "retired":
+            continue
+        build = result.get("build") if isinstance(result.get("build"), dict) else {}
+        digest = str(build.get("build_digest") or "")
+        if re.fullmatch(r"[a-f0-9]{64}", digest):
+            consumers.setdefault(digest, []).append(str(row["id"]))
+        elif result.get("runtime_kind") not in {"static", "node"}:
+            unknown.append(str(row["id"]))
+    root = _workspace_path(
+        settings, credential.tenant_id, credential.workspace_id, "data", ".runtime", "python"
+    )
+    held = []
+    if root.exists():
+        for child in sorted(root.iterdir(), key=lambda item: item.name):
+            reasons = ["workspace_environment_reference_attestation_unavailable"]
+            if child.is_symlink():
+                reasons.append("symlinked_environment")
+            if child.name not in consumers:
+                reasons.append("unknown_environment_consumers")
+            if unknown:
+                reasons.append("deployment_environment_mapping_incomplete")
+            held.append(
+                {
+                    "environment_id": child.name,
+                    "known_consumers": sorted(consumers.get(child.name, [])),
+                    "reasons": reasons,
+                }
+            )
+    return {
+        "enabled": True,
+        "status": "held",
+        "candidates": [],
+        "held": held,
+        "unknown_deployment_ids": sorted(unknown),
+        "complete_reference_closure": False,
+        "reclaimed_bytes": 0,
+    }
 
 
 def _build_plan(
@@ -211,14 +314,26 @@ def _build_plan(
                 "previous_rollback",
             )
 
-    for value in session.execute(
+    for route in session.execute(
         text(
-            "SELECT active_deployment_id FROM platform.pages_routes "
-            "WHERE workspace_id=:workspace_id AND active_deployment_id IS NOT NULL"
+            "SELECT active_deployment_id,config FROM platform.pages_routes "
+            "WHERE workspace_id=:workspace_id"
         ),
         {"workspace_id": credential.workspace_id},
-    ).scalars():
-        protect_deployment(value, "pages_active")
+    ).mappings():
+        protect_deployment(route.get("active_deployment_id"), "pages_active")
+        config = route.get("config") if isinstance(route.get("config"), dict) else {}
+        frontend = config.get("static_frontend")
+        if isinstance(frontend, dict):
+            protect_deployment(frontend.get("deployment_id"), "pages_static_frontend")
+            relative = str(frontend.get("runtime_rel_path") or "")
+            prefix = (
+                f"tenants/{credential.tenant_id}/workspaces/{credential.workspace_id}/releases/"
+            )
+            if relative.startswith(prefix):
+                protect_deployment(
+                    relative[len(prefix) :].split("/", 1)[0], "pages_static_frontend_path"
+                )
 
     open_releases = [
         dict(row)
@@ -245,27 +360,31 @@ def _build_plan(
     for row in deployments:
         deployment_id = UUID(str(row["id"]))
         requested = (
-            row.get("requested_config")
-            if isinstance(row.get("requested_config"), dict)
-            else {}
+            row.get("requested_config") if isinstance(row.get("requested_config"), dict) else {}
         )
         result = row.get("result") if isinstance(row.get("result"), dict) else {}
         if str(row["status"]) not in _TERMINAL_DEPLOYMENT_STATES:
             protect_deployment(deployment_id, "in_progress")
         if _pinned(requested) or _pinned(result):
             protect_deployment(deployment_id, "pinned")
-        is_service = str(requested.get("execution_mode") or "service") != "job"
-        if (
-            is_service
-            and str(row["status"]) == "ready"
-            and str(row.get("health")) == "healthy"
-        ):
+        is_service = (
+            str(requested.get("execution_mode") or "service") != "job"
+            and str(result.get("execution_mode") or "service") != "job"
+        )
+        if not is_service:
+            protect_deployment(deployment_id, "job_evidence")
+        if str(row["status"]) == "failed":
+            protect_deployment(deployment_id, "failed_evidence")
+        if is_service and str(row["status"]) == "ready" and str(row.get("health")) == "healthy":
             component = str(row.get("component_id") or "workspace")
             count = recent_by_component.get(component, 0)
             if count < policy.keep_recent_deployments:
                 protect_deployment(deployment_id, "recent_service")
                 recent_by_component[component] = count + 1
 
+    if policy.deployment_ids is not None:
+        if any(UUID(value) not in by_id for value in policy.deployment_ids):
+            raise HTTPException(status_code=422, detail="Unknown workspace deployment_ids")
     deployment_candidates: list[dict[str, object]] = []
     for row in deployments:
         deployment_id = UUID(str(row["id"]))
@@ -273,6 +392,10 @@ def _build_plan(
         retention = _retention(result)
         recovery = str(retention.get("state") or "") in {"retiring", "retry_required"}
         if str(retention.get("state") or "") == "retired":
+            continue
+        if deployment_id in protected_deployments:
+            continue
+        if policy.deployment_ids is not None and str(deployment_id) not in policy.deployment_ids:
             continue
         if not recovery:
             if str(row["status"]) not in _TERMINAL_DEPLOYMENT_STATES:
@@ -302,13 +425,12 @@ def _build_plan(
                 "estimated_runtime_bytes": _tree_bytes(target),
                 "_container_names": container_names,
                 "_containers_retired": _containers_retired(result),
+                "_retention": retention,
                 "_path": str(target),
             }
         )
 
-    candidate_deployment_ids = {
-        UUID(str(item["id"])) for item in deployment_candidates
-    }
+    candidate_deployment_ids = {UUID(str(item["id"])) for item in deployment_candidates}
     protected_sources: dict[UUID, set[str]] = {}
 
     def protect_source(value: object, reason: str) -> None:
@@ -383,6 +505,8 @@ def _build_plan(
             recovery = str(retention.get("state") or "") in {"retiring", "retry_required"}
             if str(row["state"]) == "released" or retention.get("state") == "retired":
                 continue
+            if source_id in protected_sources:
+                continue
             if not recovery:
                 if str(row["state"]) != "verified":
                     continue
@@ -451,32 +575,27 @@ def _build_plan(
                 }
             )
 
+    environment_review = _python_environment_review(
+        settings,
+        credential,
+        deployments,
+        policy.include_python_environments,
+    )
     digest_payload = {
+        "python_environments": environment_review,
         "workspace_id": str(credential.workspace_id),
         "active_deployment_id": str(active_id) if active_id else None,
         "policy": policy.public(),
         "deployment_candidates": [
-            {
-                key: value
-                for key, value in item.items()
-                if not key.startswith("_")
-            }
+            {key: value for key, value in item.items() if not key.startswith("_")}
             for item in deployment_candidates
         ],
         "source_candidates": [
-            {
-                key: value
-                for key, value in item.items()
-                if not key.startswith("_")
-            }
+            {key: value for key, value in item.items() if not key.startswith("_")}
             for item in source_candidates
         ],
         "expired_uploads": [
-            {
-                key: value
-                for key, value in item.items()
-                if not key.startswith("_")
-            }
+            {key: value for key, value in item.items() if not key.startswith("_")}
             for item in expired_uploads
         ],
     }
@@ -492,6 +611,9 @@ def _build_plan(
                     "id": item["id"],
                     "container_names": item["_container_names"],
                     "containers_retired": item["_containers_retired"],
+                    "retention_state": item["_retention"].get("state"),
+                    "retention_run_id": item["_retention"].get("run_id"),
+                    "retention_plan_digest": item["_retention"].get("plan_digest"),
                 }
                 for item in deployment_candidates
             ],
@@ -551,12 +673,8 @@ def _build_plan(
             "runtime_bytes": sum(
                 int(item["estimated_runtime_bytes"]) for item in deployment_candidates
             ),
-            "source_logical_bytes": sum(
-                int(item["logical_bytes"]) for item in source_candidates
-            ),
-            "upload_staging_bytes": sum(
-                int(item["received_bytes"]) for item in expired_uploads
-            ),
+            "source_logical_bytes": sum(int(item["logical_bytes"]) for item in source_candidates),
+            "upload_staging_bytes": sum(int(item["received_bytes"]) for item in expired_uploads),
         },
     }
 
@@ -598,19 +716,37 @@ def _mark_retiring(
     now = datetime.now(UTC).isoformat()
     for item in plan["deployment_candidates"]:
         deployment_id = UUID(str(item["id"]))
-        row = session.execute(
-            text("SELECT status,health,result FROM digital_asset.deployments WHERE id=:id"),
-            {"id": deployment_id},
-        ).mappings().one()
+        row = (
+            session.execute(
+                text("SELECT status,health,result FROM digital_asset.deployments WHERE id=:id"),
+                {"id": deployment_id},
+            )
+            .mappings()
+            .one()
+        )
         result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
+        previous = _retention(result)
+        continuing = (
+            previous.get("state") in {"retiring", "retry_required"}
+            and previous.get("run_id")
+            and previous.get("plan_digest")
+        )
+        if not continuing:
+            previous = {
+                key: value
+                for key, value in previous.items()
+                if not key.startswith("containers_retired_")
+            }
         result["retention"] = {
-            **_retention(result),
+            **previous,
             "state": "retiring",
-            "run_id": str(run_id),
-            "plan_digest": plan["plan_digest"],
-            "previous_status": str(row["status"]),
-            "started_at": now,
+            "run_id": previous["run_id"] if continuing else str(run_id),
+            "plan_digest": previous["plan_digest"] if continuing else plan["plan_digest"],
+            "previous_status": previous.get("previous_status", str(row["status"])),
+            "started_at": previous.get("started_at", now) if continuing else now,
         }
+        item["_execution_run_id"] = result["retention"]["run_id"]
+        item["_execution_plan_digest"] = result["retention"]["plan_digest"]
         session.execute(
             text(
                 """
@@ -646,17 +782,19 @@ def _mark_retiring(
                 "id": deployment_id,
                 "tenant_id": credential.tenant_id,
                 "sequence": sequence,
-                "payload": json.dumps(
-                    {"run_id": str(run_id), "plan_digest": plan["plan_digest"]}
-                ),
+                "payload": json.dumps({"run_id": str(run_id), "plan_digest": plan["plan_digest"]}),
             },
         )
     for item in plan["source_candidates"]:
         artifact_id = UUID(str(item["artifact_id"]))
-        row = session.execute(
-            text("SELECT state,verification FROM digital_asset.artifacts WHERE id=:id"),
-            {"id": artifact_id},
-        ).mappings().one()
+        row = (
+            session.execute(
+                text("SELECT state,verification FROM digital_asset.artifacts WHERE id=:id"),
+                {"id": artifact_id},
+            )
+            .mappings()
+            .one()
+        )
         verification = (
             dict(row["verification"]) if isinstance(row.get("verification"), dict) else {}
         )
@@ -701,6 +839,19 @@ def _mark_retiring(
     )
 
 
+def _retention_error(exc: Exception) -> str:
+    allowed = {
+        "retention_target_now_protected_or_changed",
+        "retention_container_set_changed",
+        "retention_operation_changed",
+        "runtime_controller_cleanup_pending",
+        "Symlinked Runtime retention ancestor",
+        "Unsafe Runtime retention component",
+    }
+    message = str(exc)
+    return message if message in allowed else f"retention_operation_failed:{type(exc).__name__}"
+
+
 def apply_workspace_retention(
     credential: WorkspaceCredential,
     settings: Settings,
@@ -736,29 +887,73 @@ def apply_workspace_retention(
 
     for item in plan["deployment_candidates"]:
         deployment_id = str(item["id"])
-        names = [str(name) for name in item.get("_container_names", [])]
-        if names and not bool(item.get("_containers_retired")):
-            deployment_results[deployment_id] = {
-                "ok": False,
-                "error": "runtime_controller_cleanup_pending",
-                "reclaimed_bytes": 0,
-            }
-            continue
-        target = Path(str(item["_path"]))
         try:
-            if target.is_symlink():
-                raise RuntimeError("Refusing to remove a symlinked Runtime release")
-            reclaimed = _tree_bytes(target)
-            if target.exists():
-                shutil.rmtree(target, ignore_errors=False)
-            deployment_results[deployment_id] = {
-                "ok": True,
-                "reclaimed_bytes": reclaimed,
-            }
+            # The controller takes locks in this same order. Keep the workspace
+            # lock through the physical delete so new bindings cannot interleave.
+            with tenant_session(credential.tenant_id) as session:
+                workspace = _workspace_row(session, credential.workspace_id, lock=True)
+                locked = (
+                    session.execute(
+                        text(
+                            "SELECT result FROM digital_asset.deployments "
+                            "WHERE id=:id AND workspace_id=:workspace_id FOR UPDATE"
+                        ),
+                        {"id": UUID(deployment_id), "workspace_id": credential.workspace_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+                fresh = _build_plan(session, credential, settings, policy, workspace=workspace)
+                current = next(
+                    (
+                        entry
+                        for entry in fresh["deployment_candidates"]
+                        if entry["id"] == deployment_id
+                    ),
+                    None,
+                )
+                if current is None:
+                    raise RuntimeError("retention_target_now_protected_or_changed")
+                if current["_container_names"] != item["_container_names"]:
+                    raise RuntimeError("retention_container_set_changed")
+                if (
+                    current["_retention"].get("run_id") != item["_execution_run_id"]
+                    or current["_retention"].get("plan_digest") != item["_execution_plan_digest"]
+                ):
+                    raise RuntimeError("retention_operation_changed")
+                if not current["_containers_retired"]:
+                    raise RuntimeError("runtime_controller_cleanup_pending")
+                target = _release_path(
+                    settings,
+                    tenant_id=credential.tenant_id,
+                    workspace_id=credential.workspace_id,
+                    deployment_id=UUID(deployment_id),
+                )
+                reclaimed = _tree_bytes(target)
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=False)
+                # Persist this physical outcome before releasing the lifecycle
+                # locks. An interrupted aggregate response can be resumed without
+                # treating a removed directory as an unrecorded retirement.
+                runtime_result = dict(locked["result"] or {})
+                runtime_result["retention"] = {
+                    **_retention(runtime_result),
+                    "state": "retired",
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "reclaimed_bytes": reclaimed,
+                }
+                session.execute(
+                    text(
+                        "UPDATE digital_asset.deployments SET result=CAST(:result AS jsonb) "
+                        "WHERE id=:id"
+                    ),
+                    {"id": UUID(deployment_id), "result": json.dumps(runtime_result, default=str)},
+                )
+                deployment_results[deployment_id] = {"ok": True, "reclaimed_bytes": reclaimed}
         except Exception as exc:
             deployment_results[deployment_id] = {
                 "ok": False,
-                "error": str(exc)[:500],
+                "error": _retention_error(exc),
                 "reclaimed_bytes": 0,
             }
 
@@ -781,7 +976,7 @@ def apply_workspace_retention(
         except Exception as exc:
             source_results[artifact_id] = {
                 "ok": False,
-                "error": str(exc)[:500],
+                "error": _retention_error(exc),
                 "reclaimed_physical_bytes": 0,
                 "reclaimed_logical_bytes": 0,
             }
@@ -801,7 +996,7 @@ def apply_workspace_retention(
         except Exception as exc:
             upload_results[upload_id] = {
                 "ok": False,
-                "error": str(exc)[:500],
+                "error": _retention_error(exc),
                 "reclaimed_bytes": 0,
             }
 
@@ -815,13 +1010,34 @@ def apply_workspace_retention(
         for item in plan["deployment_candidates"]:
             deployment_id = str(item["id"])
             outcome = deployment_results[deployment_id]
-            row = session.execute(
-                text("SELECT result FROM digital_asset.deployments WHERE id=:id"),
-                {"id": UUID(deployment_id)},
-            ).mappings().one()
+            row = (
+                session.execute(
+                    text("SELECT result FROM digital_asset.deployments WHERE id=:id"),
+                    {"id": UUID(deployment_id)},
+                )
+                .mappings()
+                .one()
+            )
             result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
+            recorded = _retention(result)
+            if recorded.get("state") == "retired" and not outcome["ok"]:
+                # Another confirmed retry may finish the same operation first.
+                # Never regress its durable outcome or count its bytes twice.
+                outcome = {"ok": True, "reclaimed_bytes": 0}
+                deployment_results[deployment_id] = outcome
+                continue
+            elif (
+                recorded.get("run_id") != item["_execution_run_id"]
+                or recorded.get("plan_digest") != item["_execution_plan_digest"]
+            ):
+                deployment_results[deployment_id] = {
+                    "ok": False,
+                    "error": "retention_operation_changed",
+                    "reclaimed_bytes": 0,
+                }
+                continue
             result["retention"] = {
-                **_retention(result),
+                **recorded,
                 "state": "retired" if outcome["ok"] else "retry_required",
                 "finished_at": finished_at,
                 "reclaimed_bytes": int(outcome.get("reclaimed_bytes") or 0),
@@ -864,10 +1080,14 @@ def apply_workspace_retention(
         for item in plan["source_candidates"]:
             artifact_id = str(item["artifact_id"])
             outcome = source_results[artifact_id]
-            row = session.execute(
-                text("SELECT verification FROM digital_asset.artifacts WHERE id=:id"),
-                {"id": UUID(artifact_id)},
-            ).mappings().one()
+            row = (
+                session.execute(
+                    text("SELECT verification FROM digital_asset.artifacts WHERE id=:id"),
+                    {"id": UUID(artifact_id)},
+                )
+                .mappings()
+                .one()
+            )
             verification = (
                 dict(row["verification"]) if isinstance(row.get("verification"), dict) else {}
             )
@@ -875,9 +1095,7 @@ def apply_workspace_retention(
                 **_retention(verification),
                 "state": "retired" if outcome["ok"] else "retry_required",
                 "finished_at": finished_at,
-                "reclaimed_physical_bytes": int(
-                    outcome.get("reclaimed_physical_bytes") or 0
-                ),
+                "reclaimed_physical_bytes": int(outcome.get("reclaimed_physical_bytes") or 0),
                 **({"error": outcome["error"]} if not outcome["ok"] else {}),
             }
             session.execute(
@@ -914,10 +1132,14 @@ def apply_workspace_retention(
             outcome = upload_results[upload_id]
             if not outcome["ok"]:
                 continue
-            row = session.execute(
-                text("SELECT result FROM digital_asset.source_upload_jobs WHERE id=:id"),
-                {"id": UUID(upload_id)},
-            ).mappings().one()
+            row = (
+                session.execute(
+                    text("SELECT result FROM digital_asset.source_upload_jobs WHERE id=:id"),
+                    {"id": UUID(upload_id)},
+                )
+                .mappings()
+                .one()
+            )
             result = dict(row["result"]) if isinstance(row.get("result"), dict) else {}
             result["staging_cleaned_at"] = finished_at
             result["retention"] = {
@@ -969,22 +1191,21 @@ def apply_workspace_retention(
 
     return {
         "ok": not errors,
+        "python_environments": plan["python_environments"],
         "schema": "warehouse.workspace-retention-result.v1",
         "run_id": str(run_id),
         "plan_digest": plan["plan_digest"],
         "status": "complete" if not errors else "partial_retry_required",
         "reclaimed": {
+            "python_environment_bytes": 0,
             "runtime_bytes": sum(
-                int(value.get("reclaimed_bytes") or 0)
-                for value in deployment_results.values()
+                int(value.get("reclaimed_bytes") or 0) for value in deployment_results.values()
             ),
             "source_logical_bytes": sum(
-                int(value.get("reclaimed_logical_bytes") or 0)
-                for value in source_results.values()
+                int(value.get("reclaimed_logical_bytes") or 0) for value in source_results.values()
             ),
             "source_physical_bytes": sum(
-                int(value.get("reclaimed_physical_bytes") or 0)
-                for value in source_results.values()
+                int(value.get("reclaimed_physical_bytes") or 0) for value in source_results.values()
             ),
             "upload_staging_bytes": sum(
                 int(value.get("reclaimed_bytes") or 0) for value in upload_results.values()
