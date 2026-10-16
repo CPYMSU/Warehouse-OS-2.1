@@ -576,3 +576,21 @@ def test_rollback_window_floor_and_default_digest_compatibility():
 def test_old_malformed_previous_reference_remains_tolerated(scope):
     scope[3][0]["result"]["previous_active_deployment_id"]="legacy-invalid"
     assert str(scope[3][2]["id"]) in candidate_ids(plan(scope))
+
+
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_confirmed_policy_is_handed_to_controller_without_resetting_operation(scope, monkeypatch, opt_in):
+    credential, _, _, rows = scope
+    old = rows[2]
+    old["result"].update(acknowledged_result())
+    original = copy.deepcopy(old["result"]["retention"])
+    db = Database(rows)
+    monkeypatch.setattr(retention, "_audit", lambda *args, **kwargs: None)
+    value = dict(deployment_candidates=[{"id": str(old["id"])}], source_candidates=[],
+                 expired_uploads=[], plan_digest="b" * 64,
+                 policy={"retire_terminal_evidence": True} if opt_in else {})
+    retention._mark_retiring(db, credential, value, uuid4())
+    assert old["result"]["retention"].get("retire_terminal_evidence") is (True if opt_in else None)
+    assert old["result"]["retention"]["run_id"] == original["run_id"]
+    assert old["result"]["retention"]["plan_digest"] == original["plan_digest"]
+    assert retention._containers_retired(old["result"])

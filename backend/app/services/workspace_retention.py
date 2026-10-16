@@ -803,6 +803,10 @@ def _mark_retiring(
             "previous_status": previous.get("previous_status", str(row["status"])),
             "started_at": previous.get("started_at", now) if continuing else now,
         }
+        # Persist the explicit, validated policy for the controller's job guard.
+        # Default service retirement keeps its existing payload unchanged.
+        if plan["policy"].get("retire_terminal_evidence") is True:
+            result["retention"]["retire_terminal_evidence"] = True
         item["_execution_run_id"] = result["retention"]["run_id"]
         item["_execution_plan_digest"] = result["retention"]["plan_digest"]
         session.execute(
