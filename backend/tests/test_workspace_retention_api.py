@@ -42,3 +42,17 @@ def test_retention_query_preserves_explicit_deployment_selection(monkeypatch):
         params=[('deployment_ids', str(uuid4())) for _ in range(201)],
     ).status_code == 422
     assert len(observed) == count
+
+
+def test_retention_evidence_opt_in_is_explicit_and_default_off(monkeypatch):
+    app=FastAPI();app.include_router(api.router)
+    app.dependency_overrides[api.autonomous_workspace_credential]=lambda:object()
+    app.dependency_overrides[get_settings]=lambda:object()
+    observed=[]
+    monkeypatch.setattr(api,"plan_workspace_retention",lambda c,s,p:observed.append(p) or {"ok":True})
+    client=TestClient(app)
+    assert client.get('/api/workspaces/v1/retention/plan').status_code==200
+    assert observed[-1]['retire_terminal_evidence'] is False
+    assert client.get('/api/workspaces/v1/retention/plan',params={'min_age_hours':72,'retire_terminal_evidence':'true','rollback_max_age_hours':72}).status_code==200
+    assert observed[-1]['retire_terminal_evidence'] is True
+    assert observed[-1]['rollback_max_age_hours']==72

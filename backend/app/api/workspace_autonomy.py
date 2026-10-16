@@ -197,6 +197,8 @@ def workspace_retention_plan(
     include_sources: bool = True,
     include_expired_uploads: bool = True,
     include_python_environments: bool = False,
+    retire_terminal_evidence: bool = False,
+    rollback_max_age_hours: int | None = None,
     deployment_ids: Annotated[list[str] | None, Query(max_length=200)] = None,
     credential: WorkspaceCredential = Depends(autonomous_workspace_credential),
     settings: Settings = Depends(get_settings),
@@ -213,6 +215,8 @@ def workspace_retention_plan(
             "include_sources": include_sources,
             "include_expired_uploads": include_expired_uploads,
             "include_python_environments": include_python_environments,
+            "retire_terminal_evidence": retire_terminal_evidence,
+            "rollback_max_age_hours": rollback_max_age_hours,
             "deployment_ids": deployment_ids,
         },
     )
