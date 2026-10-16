@@ -44,6 +44,7 @@ class RetentionPolicy:
     include_expired_uploads: bool = True
     include_python_environments: bool = False
     retire_terminal_evidence: bool = False
+    rollback_max_age_hours: int | None = None
     deployment_ids: tuple[str, ...] | None = None
 
     @classmethod
@@ -89,6 +90,8 @@ class RetentionPolicy:
             include_expired_uploads=boolean("include_expired_uploads", True),
             include_python_environments=boolean("include_python_environments"),
             retire_terminal_evidence=boolean("retire_terminal_evidence"),
+            rollback_max_age_hours=(bounded("rollback_max_age_hours",72,72,8760)
+                                    if value.get("rollback_max_age_hours") is not None else None),
             deployment_ids=selected,
         )
         if policy.retire_terminal_evidence and policy.min_age_hours < 72:
@@ -105,6 +108,8 @@ class RetentionPolicy:
             "include_python_environments": self.include_python_environments,
             # Keep existing clients and plan digests exact when not opted in.
             **({"retire_terminal_evidence": True} if self.retire_terminal_evidence else {}),
+            **({"rollback_max_age_hours": self.rollback_max_age_hours}
+               if self.rollback_max_age_hours is not None else {}),
             "deployment_ids": list(self.deployment_ids)
             if self.deployment_ids is not None
             else None,
@@ -291,6 +296,8 @@ def _build_plan(
 ) -> dict[str, object]:
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=policy.min_age_hours)
+    rollback_cutoff = (now-timedelta(hours=policy.rollback_max_age_hours)
+                       if policy.rollback_max_age_hours is not None else None)
     workspace = workspace or _workspace_row(session, credential.workspace_id)
     asset_id = UUID(str(workspace["asset_id"]))
     active_id = (
@@ -316,10 +323,17 @@ def _build_plan(
     if active_id is not None:
         active_result = by_id.get(active_id, {}).get("result")
         if isinstance(active_result, dict):
-            protect_deployment(
-                active_result.get("previous_active_deployment_id"),
-                "previous_rollback",
-            )
+            previous = active_result.get("previous_active_deployment_id")
+            try:
+                previous_row = by_id.get(UUID(str(previous))) if previous else None
+            except (TypeError,ValueError,AttributeError):
+                previous_row = None
+            active_row = by_id.get(active_id, {})
+            can_expire = (rollback_cutoff is not None and previous_row is not None
+                          and active_row.get("status")=="ready" and active_row.get("health")=="healthy"
+                          and _older_than(previous_row.get("created_at"),rollback_cutoff))
+            if not can_expire:
+                protect_deployment(previous,"previous_rollback")
 
     for route in session.execute(
         text(
@@ -390,7 +404,7 @@ def _build_plan(
         if is_service and str(row["status"]) == "ready" and str(row.get("health")) == "healthy":
             component = str(row.get("component_id") or "workspace")
             count = recent_by_component.get(component, 0)
-            if count < policy.keep_recent_deployments:
+            if count < policy.keep_recent_deployments and (rollback_cutoff is None or not _older_than(row.get("created_at"),rollback_cutoff)):
                 protect_deployment(deployment_id, "recent_service")
                 recent_by_component[component] = count + 1
 
@@ -503,7 +517,7 @@ def _build_plan(
     recent = 0
     for row in sources:
         source_id = UUID(str(row["source_version_id"]))
-        if str(row["state"]) == "verified" and recent < policy.keep_recent_sources:
+        if str(row["state"]) == "verified" and recent < policy.keep_recent_sources and (rollback_cutoff is None or not _older_than(row.get("created_at"),rollback_cutoff)):
             protect_source(source_id, "recent_source")
             recent += 1
         if _pinned(row.get("verification")):
@@ -719,6 +733,38 @@ def plan_workspace_retention(
     return _public_plan(plan)
 
 
+def _expire_confirmed_previous_reference(session, credential, plan, run_id):
+    """Expire only the confirmed old rollback pointer under the workspace lock.
+
+    Current runtime, audit rows and pinned/routed/open references remain intact.
+    Clearing the pointer makes the controller's normal reference check accurate;
+    it does not add a way to bypass that check.
+    """
+    hours = plan["policy"].get("rollback_max_age_hours")
+    active_id = plan.get("active_deployment_id")
+    if hours is None or not active_id:
+        return
+    active = dict(session.execute(text(
+        "SELECT * FROM digital_asset.deployments WHERE id=:id AND workspace_id=:workspace_id FOR UPDATE"
+    ), {"id":UUID(active_id),"workspace_id":credential.workspace_id}).mappings().one())
+    result = dict(active.get("result") or {})
+    previous = str(result.get("previous_active_deployment_id") or "")
+    candidate = next((r for r in plan["deployment_candidates"] if r["id"]==previous),None)
+    if candidate is None:
+        return
+    if (active.get("status")!="ready" or active.get("health")!="healthy"
+        or not _older_than(datetime.fromisoformat(candidate["created_at"]),datetime.now(UTC)-timedelta(hours=hours))):
+        raise RuntimeError("rollback_reference_now_protected")
+    result.pop("previous_active_deployment_id")
+    result["expired_rollback_reference"]={"deployment_id":previous,"run_id":str(run_id),
+        "plan_digest":plan["plan_digest"],"expired_at":datetime.now(UTC).isoformat(),"max_age_hours":hours}
+    session.execute(text("UPDATE digital_asset.deployments SET result=CAST(:result AS jsonb) WHERE id=:id"),
+                    {"id":UUID(active_id),"result":json.dumps(result,default=str)})
+    _audit(session,None,"digital_asset.rollback_window_expired",
+           {"workspace_id":str(credential.workspace_id),"active_deployment_id":active_id,
+            **result["expired_rollback_reference"]},tenant_id=credential.tenant_id)
+
+
 def _mark_retiring(
     session: object,
     credential: WorkspaceCredential,
@@ -891,6 +937,7 @@ def apply_workspace_retention(
                     "current_plan": _public_plan(plan),
                 },
             )
+        _expire_confirmed_previous_reference(session, credential, plan, run_id)
         _mark_retiring(session, credential, plan, run_id)
 
     deployment_results: dict[str, dict[str, object]] = {}

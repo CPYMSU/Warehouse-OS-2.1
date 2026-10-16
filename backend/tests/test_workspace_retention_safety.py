@@ -530,3 +530,49 @@ def test_evidence_copy_opt_in_has_strict_boolean_and_three_day_floor():
     p=retention.RetentionPolicy.from_payload({"min_age_hours":72,"retire_terminal_evidence":True})
     assert p.public()["retire_terminal_evidence"] is True
     assert "retire_terminal_evidence" not in retention.RetentionPolicy().public()
+
+
+
+def test_explicit_rollback_window_expires_older_previous_only(scope,monkeypatch):
+    current,previous,old=scope[3]
+    previous["created_at"]=datetime.now(UTC)-timedelta(hours=100)
+    args={"min_age_hours":72,"rollback_max_age_hours":72}
+    value=plan(scope,payload=args)
+    assert str(previous["id"]) in candidate_ids(value)
+    assert str(current["id"]) not in candidate_ids(value)
+    db=Database(scope[3]);events=[]
+    monkeypatch.setattr(retention,"_audit",lambda *a,**k:events.append((a,k)))
+    retention._expire_confirmed_previous_reference(db,scope[0],value,uuid4())
+    assert "previous_active_deployment_id" not in current["result"]
+    assert current["result"]["expired_rollback_reference"]["deployment_id"]==str(previous["id"])
+    assert events and len(db.rows)==3
+
+
+def test_rollback_window_keeps_previous_if_current_unhealthy_or_recent(scope):
+    current,previous,_=scope[3]
+    args={"min_age_hours":72,"rollback_max_age_hours":72}
+    assert str(previous["id"]) not in candidate_ids(plan(scope,payload=args))
+    previous["created_at"]=datetime.now(UTC)-timedelta(hours=100)
+    current["health"]="unhealthy"
+    assert str(previous["id"]) not in candidate_ids(plan(scope,payload=args))
+
+
+def test_expiring_previous_respects_pins_and_open_release_refs(scope):
+    previous=scope[3][1];previous["created_at"]=datetime.now(UTC)-timedelta(hours=100)
+    args={"min_age_hours":72,"rollback_max_age_hours":72}
+    previous["result"]["retention"]={"pinned":True}
+    assert str(previous["id"]) not in candidate_ids(plan(scope,payload=args))
+    previous["result"].pop("retention")
+    assert str(previous["id"]) not in candidate_ids(plan(scope,payload=args,releases=[{"previous_deployment_id":previous["id"]}]))
+
+
+def test_rollback_window_floor_and_default_digest_compatibility():
+    assert "rollback_max_age_hours" not in retention.RetentionPolicy().public()
+    with pytest.raises(HTTPException):retention.RetentionPolicy.from_payload({"rollback_max_age_hours":71})
+    assert retention.RetentionPolicy.from_payload({"rollback_max_age_hours":72}).public()["rollback_max_age_hours"]==72
+
+
+
+def test_old_malformed_previous_reference_remains_tolerated(scope):
+    scope[3][0]["result"]["previous_active_deployment_id"]="legacy-invalid"
+    assert str(scope[3][2]["id"]) in candidate_ids(plan(scope))

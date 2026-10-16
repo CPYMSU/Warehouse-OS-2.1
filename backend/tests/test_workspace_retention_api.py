@@ -53,5 +53,6 @@ def test_retention_evidence_opt_in_is_explicit_and_default_off(monkeypatch):
     client=TestClient(app)
     assert client.get('/api/workspaces/v1/retention/plan').status_code==200
     assert observed[-1]['retire_terminal_evidence'] is False
-    assert client.get('/api/workspaces/v1/retention/plan',params={'min_age_hours':72,'retire_terminal_evidence':'true'}).status_code==200
+    assert client.get('/api/workspaces/v1/retention/plan',params={'min_age_hours':72,'retire_terminal_evidence':'true','rollback_max_age_hours':72}).status_code==200
     assert observed[-1]['retire_terminal_evidence'] is True
+    assert observed[-1]['rollback_max_age_hours']==72
