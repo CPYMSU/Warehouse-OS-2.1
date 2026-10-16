@@ -2463,6 +2463,16 @@ class RuntimeController:
             engine, workspace_id, deployment_id, names, require_absent=True,
         )
 
+    @staticmethod
+    def _retention_execution_allowed(requested: dict, payload: dict) -> bool:
+        modes = {str(row.get("execution_mode") or "service")
+                 for row in (requested, payload)}
+        if modes == {"service"}:
+            return True
+        return modes <= {"service", "job"} and (
+            (payload.get("retention") or {}).get("retire_terminal_evidence") is True
+        )
+
     def reconcile_retention_runtime_containers(self) -> int:
         """Retire verified service containers under the workspace/deployment locks.
 
@@ -2484,8 +2494,11 @@ class RuntimeController:
                         FROM digital_asset.deployments
                         WHERE result->'retention'->>'state' IN ('retiring','retry_required')
                           AND status IN ('failed','rolled_back','cancelled')
-                          AND COALESCE(requested_config->>'execution_mode','service')='service'
-                          AND COALESCE(result->>'execution_mode','service')='service'
+                          AND (
+                            (COALESCE(requested_config->>'execution_mode','service')='service'
+                             AND COALESCE(result->>'execution_mode','service')='service')
+                            OR result->'retention'->>'retire_terminal_evidence'='true'
+                          )
                         ORDER BY
                           COALESCE(result->'retention'->>'containers_retired_at','') != '',
                           created_at,id
@@ -2537,8 +2550,7 @@ class RuntimeController:
                         continue
                     if (
                         current["status"] not in {"failed", "rolled_back", "cancelled"}
-                        or str(requested.get("execution_mode") or "service") != "service"
-                        or str(payload.get("execution_mode") or "service") != "service"
+                        or not self._retention_execution_allowed(requested, payload)
                         or bool((requested.get("retention") or {}).get("pinned"))
                         or bool(retention.get("pinned"))
                         or self._retention_is_protected(

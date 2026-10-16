@@ -392,3 +392,54 @@ def test_docker_retention_inventory_does_not_hide_stopped_or_unknown_names():
     assert calls[0].url.params["all"] == "true"
     assert "filters" not in calls[0].url.params
     engine.close()
+
+
+@pytest.mark.parametrize("where", ["requested_config", "result", "both"])
+def test_explicit_expired_job_retirement_uses_same_locked_identity_checks(harness, where):
+    controller, store, engine = harness
+    for key in (("requested_config", "result") if where == "both" else (where,)):
+        store.row[key]["execution_mode"] = "job"
+    store.retention["retire_terminal_evidence"] = True
+    assert controller.reconcile_retention_runtime_containers() == 1
+    assert engine.removed == [f"{1:064x}"]
+    assert store.retention["containers_retired_run_id"] == "run-1"
+    selection = next(sql for sql in store.sql if "SELECT id,workspace_id,result" in sql)
+    assert "retire_terminal_evidence" in selection
+
+
+@pytest.mark.parametrize("flag", [False, None, "true", 1])
+def test_job_opt_in_requires_actual_boolean_true(harness, flag):
+    controller, store, engine = harness
+    store.row["result"]["execution_mode"] = "job"
+    store.retention["retire_terminal_evidence"] = flag
+    assert controller.reconcile_retention_runtime_containers() == 0
+    assert engine.removed == [] and store.writes == 0
+
+
+@pytest.mark.parametrize("status", ["ready", "queued", "building", "deploying"])
+def test_job_opt_in_never_retires_active_or_nonterminal_status(harness, status):
+    controller, store, engine = harness
+    store.row["result"]["execution_mode"] = "job"
+    store.row["status"] = status
+    store.retention["retire_terminal_evidence"] = True
+    assert controller.reconcile_retention_runtime_containers() == 0
+    assert engine.removed == []
+
+
+@pytest.mark.parametrize("protection", ["reference", "pinned"])
+def test_opted_in_job_does_not_bypass_current_references_or_pins(harness, protection):
+    controller, store, engine = harness
+    store.row["result"]["execution_mode"] = "job"
+    store.retention["retire_terminal_evidence"] = True
+    if protection == "reference":store.protected = True
+    else:store.retention["pinned"] = True
+    assert controller.reconcile_retention_runtime_containers() == 0
+    assert engine.removed == [] and store.writes == 0
+
+
+def test_unknown_execution_mode_remains_blocked_with_opt_in(harness):
+    controller, store, engine = harness
+    store.row["result"]["execution_mode"] = "unknown"
+    store.retention["retire_terminal_evidence"] = True
+    assert controller.reconcile_retention_runtime_containers() == 0
+    assert engine.removed == []
