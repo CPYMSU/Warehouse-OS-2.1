@@ -43,6 +43,7 @@ class RetentionPolicy:
     include_sources: bool = True
     include_expired_uploads: bool = True
     include_python_environments: bool = False
+    retire_terminal_evidence: bool = False
     deployment_ids: tuple[str, ...] | None = None
 
     @classmethod
@@ -80,15 +81,19 @@ class RetentionPolicy:
             except (ValueError, TypeError, AttributeError) as exc:
                 raise HTTPException(status_code=422, detail="Invalid deployment_ids") from exc
 
-        return cls(
+        policy = cls(
             keep_recent_deployments=bounded("keep_recent_deployments", 2, 2, 20),
             keep_recent_sources=bounded("keep_recent_sources", 5, 2, 100),
             min_age_hours=bounded("min_age_hours", 24, 0, 8760),
             include_sources=boolean("include_sources", True),
             include_expired_uploads=boolean("include_expired_uploads", True),
             include_python_environments=boolean("include_python_environments"),
+            retire_terminal_evidence=boolean("retire_terminal_evidence"),
             deployment_ids=selected,
         )
+        if policy.retire_terminal_evidence and policy.min_age_hours < 72:
+            raise HTTPException(status_code=422, detail="Evidence-copy retirement requires min_age_hours >= 72")
+        return policy
 
     def public(self) -> dict[str, object]:
         return {
@@ -98,6 +103,8 @@ class RetentionPolicy:
             "include_sources": self.include_sources,
             "include_expired_uploads": self.include_expired_uploads,
             "include_python_environments": self.include_python_environments,
+            # Keep existing clients and plan digests exact when not opted in.
+            **({"retire_terminal_evidence": True} if self.retire_terminal_evidence else {}),
             "deployment_ids": list(self.deployment_ids)
             if self.deployment_ids is not None
             else None,
@@ -371,9 +378,14 @@ def _build_plan(
             str(requested.get("execution_mode") or "service") != "job"
             and str(result.get("execution_mode") or "service") != "job"
         )
-        if not is_service:
+        expire_evidence_copy = (
+            policy.retire_terminal_evidence
+            and str(row["status"]) in _TERMINAL_DEPLOYMENT_STATES
+            and _older_than(row.get("created_at"), cutoff)
+        )
+        if not is_service and not expire_evidence_copy:
             protect_deployment(deployment_id, "job_evidence")
-        if str(row["status"]) == "failed":
+        if str(row["status"]) == "failed" and not expire_evidence_copy:
             protect_deployment(deployment_id, "failed_evidence")
         if is_service and str(row["status"]) == "ready" and str(row.get("health")) == "healthy":
             component = str(row.get("component_id") or "workspace")

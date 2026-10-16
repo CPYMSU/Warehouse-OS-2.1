@@ -491,3 +491,42 @@ def test_recovery_operation_identity_is_bound_to_plan_digest(scope):
     row["result"]["retention"]["run_id"] = "different"
     second = plan(scope)
     assert first["plan_digest"] != second["plan_digest"]
+
+
+@pytest.mark.parametrize("mode,status", [("job", "ready"), ("job", "failed"), ("service", "failed")])
+def test_opted_in_old_evidence_copies_can_retire_but_rows_survive(scope, mode, status):
+    old = deployment(age=73, mode=mode, status=status)
+    before = copy.deepcopy(old)
+    assert str(old["id"]) not in candidate_ids(plan(scope, extra=[old]))
+    result = plan(scope, extra=[old], payload={"min_age_hours":72,"retire_terminal_evidence":True})
+    assert str(old["id"]) in candidate_ids(result)
+    assert old == before
+
+
+@pytest.mark.parametrize("age", [1, 71.99])
+def test_opted_in_recent_evidence_stays_held(scope, age):
+    row = deployment(age=age, mode="job", status="failed")
+    assert str(row["id"]) not in candidate_ids(plan(scope,extra=[row],payload={"min_age_hours":72,"retire_terminal_evidence":True}))
+
+
+def test_opt_in_does_not_override_active_pages_open_release_pins_or_in_progress(scope):
+    current, previous, _ = scope[3]
+    pinned=deployment(age=200,mode="job",result={"retention":{"pinned":True}})
+    building=deployment(age=200,mode="job",status="building")
+    pending=deployment(age=200,mode="job")
+    static=deployment(age=200,mode="job")
+    value=plan(scope,extra=[pinned,building,pending,static],
+      pages=[{"active_deployment_id":static["id"],"config":{}}],
+      releases=[{"candidate_deployment_id":pending["id"]}],
+      payload={"min_age_hours":72,"retire_terminal_evidence":True})
+    assert not {str(x["id"]) for x in (current,previous,pinned,building,pending,static)} & candidate_ids(value)
+
+
+def test_evidence_copy_opt_in_has_strict_boolean_and_three_day_floor():
+    for value in ("true", 1, None):
+        with pytest.raises(HTTPException):retention.RetentionPolicy.from_payload({"retire_terminal_evidence":value})
+    with pytest.raises(HTTPException):
+        retention.RetentionPolicy.from_payload({"min_age_hours":71,"retire_terminal_evidence":True})
+    p=retention.RetentionPolicy.from_payload({"min_age_hours":72,"retire_terminal_evidence":True})
+    assert p.public()["retire_terminal_evidence"] is True
+    assert "retire_terminal_evidence" not in retention.RetentionPolicy().public()
