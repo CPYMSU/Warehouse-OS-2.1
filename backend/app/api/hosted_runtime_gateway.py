@@ -219,12 +219,42 @@ def _custom_not_found_file(root: Path) -> Path | None:
     return target if target.is_file() else None
 
 
+def _accepts_html(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    if not accept.strip():
+        return True
+    best_rank, best_quality = -1, 0.0
+    ranks = {"*/*": 0, "text/*": 1, "text/html": 2}
+    for item in accept.split(","):
+        media_type, *parameters = item.split(";")
+        rank = ranks.get(media_type.strip().lower(), -1)
+        if rank < 0:
+            continue
+        weights = [
+            part.partition("=")[2].strip()
+            for part in parameters
+            if part.partition("=")[0].strip().lower() == "q"
+        ]
+        weight = weights[0] if weights else "1"
+        valid_weight = len(weights) <= 1 and re.fullmatch(
+            r"(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)", weight
+        )
+        quality = float(weight) if valid_weight else 0.0
+        if rank > best_rank:
+            best_rank, best_quality = rank, quality
+        elif rank == best_rank:
+            best_quality = min(best_quality, quality)
+    return best_quality > 0
+
+
 def _missing_document_path(runtime_path: str, request: Request) -> bool:
     path = runtime_path.lstrip("/")
     if path == "api" or path.startswith("api/"):
         return False
     destination = request.headers.get("sec-fetch-dest", "").lower()
     if destination not in {"", "document", "frame", "iframe", "empty"}:
+        return False
+    if not _accepts_html(request):
         return False
     content_type = guess_type(path)[0]
     return content_type is None or content_type in {"text/html", "application/xhtml+xml"}

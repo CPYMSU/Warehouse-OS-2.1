@@ -9,7 +9,7 @@ import httpx
 import pytest
 from app.api import hosted_runtime_gateway as gateway
 from app.core.config import Settings
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -317,5 +317,111 @@ def test_custom_page_does_not_change_non_get_methods(static_site, monkeypatch):
     req = request("unknown", method="POST", headers={"accept": "text/html"})
     assert gateway._pages_static_response(route, "unknown", req, settings) is None
     response = render("compat", route, settings, "unknown", req, monkeypatch)
+    assert response.status_code == 200
+    assert b"SPA HOME" in response.body
+
+
+@pytest.mark.parametrize("surface", ["pages", "compat"])
+@pytest.mark.parametrize(
+    "accept",
+    [
+        "text/html;q=0,application/json",
+        " TEXT/HTML ; Q = 0 , application/json ",
+        "application/json, text/html ; q=0.000",
+        "text/html;q=invalid,application/json",
+        "text/html;q=nan,application/json",
+        "text/html;q=1.1,application/json",
+        "text/html;q=-0.1,application/json",
+        "text/html;q=.5,application/json",
+        "text/html;q=0.0001,application/json",
+        "text/html;q=,application/json",
+        'text/html;q="0.5",application/json',
+        "text/html;q=0.5;q=1,application/json",
+        "text/html;q=0,*/*;q=1",
+        "text/*;q=0,*/*;q=1",
+        "application/json",
+        "TEXT/HTML; Q=0.2, text/html; q=0",
+    ],
+)
+def test_accept_rejecting_html_keeps_non_html_404(static_site, surface, accept, monkeypatch):
+    _root, route, settings = static_site
+    monkeypatch.setattr(gateway, "pages_static_release", lambda *_a, **_kw: route)
+    active_route = {"kind": "proxy"} if surface == "pages" else route
+    monkeypatch.setattr(gateway, "active_workspace_runtime", lambda *_a, **_kw: active_route)
+
+    async def proxy_response(*_args):
+        return JSONResponse({"detail": "Runtime file not found"}, status_code=404)
+
+    monkeypatch.setattr(gateway, "_proxy_response", proxy_response)
+
+    async def endpoint(req: Request):
+        if surface == "pages":
+            req.state.pages_hostname_route = {"site_key": "test-site"}
+        return await gateway.runtime_response("acme", "test-site", "unknown.html", req, settings)
+
+    app = FastAPI()
+    app.add_api_route("/unknown.html", endpoint, methods=["GET", "HEAD"])
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://test.invalid"
+        ) as client:
+            return await client.get(
+                "/unknown.html", headers={"accept": accept, "sec-fetch-mode": "navigate"}
+            )
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert "CUSTOM NOT FOUND" not in response.text
+
+
+@pytest.mark.parametrize("surface", ["pages", "compat"])
+@pytest.mark.parametrize(
+    "accept",
+    [
+        "text/html",
+        "text/html;q=1",
+        "text/html;q=0.5",
+        " text/html ; q = 0.001 , application/json ",
+        "TEXT/HTML ; Q=1.000",
+        "application/json, Text/Html ; charset=UTF-8 ; q = 0.8",
+        "text/html;q=0.1,*/*;q=0",
+        "*/*;q=0.5",
+        "text/*;q=0.5",
+        "text/html; charset=utf-8",
+        None,
+    ],
+)
+def test_accept_positive_html_quality_keeps_custom_404(static_site, surface, accept, monkeypatch):
+    _root, route, settings = static_site
+    headers = {"sec-fetch-mode": "navigate"}
+    if accept is not None:
+        headers["accept"] = accept
+    response = render(
+        surface,
+        route,
+        settings,
+        "unknown.html",
+        request("unknown.html", headers=headers),
+        monkeypatch,
+    )
+    assert response.status_code == 404
+    assert b"CUSTOM NOT FOUND" in response.body
+    assert response.headers["content-type"].startswith("text/html")
+
+
+@pytest.mark.parametrize("surface", ["pages", "compat"])
+def test_no_custom_page_retains_legacy_qzero_spa_fallback(static_site, surface, monkeypatch):
+    root, route, settings = static_site
+    (root / "404.html").unlink()
+    response = render(
+        surface,
+        route,
+        settings,
+        "unknown",
+        request("unknown", headers={"accept": "text/html;q=0,application/json"}),
+        monkeypatch,
+    )
     assert response.status_code == 200
     assert b"SPA HOME" in response.body
