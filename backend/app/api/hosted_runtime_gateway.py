@@ -559,8 +559,13 @@ async def _proxy_response(
             },
         ) from last_error
     content_type = upstream.headers.get("content-type", "application/octet-stream")
-    content = _rewrite_text(upstream.content, content_type, prefix)
+    is_head = request.method == "HEAD"
+    content = b"" if is_head else _rewrite_text(upstream.content, content_type, prefix)
     response = Response(content=content, status_code=upstream.status_code)
+    if is_head and "content-length" in response.headers:
+        # The corresponding GET may be rewritten. Its length cannot be inferred
+        # from an empty upstream HEAD response, so omit optional length metadata.
+        del response.headers["content-length"]
     for key, value in upstream.headers.multi_items():
         lowered = key.lower()
         if lowered in _RESPONSE_EXCLUDED or lowered == "set-cookie":
