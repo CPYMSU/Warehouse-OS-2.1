@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODE="${1:-smart}"
 ACTIVATION_SLO_SECONDS="${WAREHOUSE_CLUSTER_ACTIVATION_SLO_SECONDS:-60}"
 PREFLIGHT="${WAREHOUSE_CLUSTER_PREFLIGHT:-full}"
+REQUIRE_ACTIVE_MANIFEST="${WAREHOUSE_REQUIRE_ACTIVE_MANIFEST:-0}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-cluster-deploy.XXXXXX")"
 
 fail() {
@@ -19,6 +20,13 @@ trap cleanup EXIT
 
 [[ "${MODE}" =~ ^(smart|quick|standard|full)$ ]] \
   || fail "mode must be smart, quick, standard or full"
+if [[ "${MODE}" == smart ]]; then
+  # A clean controller checkout says nothing about either live release.
+  # Both prepares must compare the candidate with the target's real manifest.
+  REQUIRE_ACTIVE_MANIFEST=1
+fi
+[[ "${REQUIRE_ACTIVE_MANIFEST}" =~ ^[01]$ ]] \
+  || fail "active manifest requirement must be 0 or 1"
 [[ "${ACTIVATION_SLO_SECONDS}" =~ ^[1-9][0-9]?$ ]] \
   || fail "activation SLO must be between 1 and 99 seconds"
 [[ -z "$(git -C "${ROOT}" status --porcelain=v1)" ]] \
@@ -94,6 +102,7 @@ run_node() {
     WAREHOUSE_DEPLOY_SCP_LEGACY="${scp_legacy}" \
     WAREHOUSE_DATABASE_MIGRATION_DEFER="${migration_defer}" \
     WAREHOUSE_DEPLOY_LOCAL_VALIDATION=basic \
+    WAREHOUSE_REQUIRE_ACTIVE_MANIFEST="${REQUIRE_ACTIVE_MANIFEST}" \
     WAREHOUSE_DEPLOY_RELEASE_ID_FILE="${release_file}" \
     WAREHOUSE_DEPLOY_PLAN_FILE="${plan_file}" \
     "${deploy_command[@]}"

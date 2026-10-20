@@ -61,6 +61,23 @@ platform later moves untrusted runtimes to a separate registrable domain, only
 the internal frame origin and exact database allowlists need to change; user
 entry URLs stay stable.
 
+## Custom not-found page
+
+A static root can opt into real navigation errors by including `404.html` in
+its immutable Source. When a requested document is absent, Pages serves that
+file with HTTP 404 and `Cache-Control: no-store`, without ETag or conditional
+304 responses. HEAD returns the same status and representation headers as GET,
+with no response body. The compatibility static route supports the same page
+and rewrites root-relative links for its URL prefix.
+
+Existing files keep their normal success and caching behavior. API paths
+(`/api` and `/api/...`), explicit asset fetches and known non-HTML file types
+do not receive the custom HTML page; their Runtime fallthrough or asset error
+behavior is retained. The error file must resolve inside the static root.
+Without `404.html`, existing single-page application index fallback behavior
+is unchanged. Use root-relative links in a standalone error document so it
+also renders correctly at missing nested URLs.
+
 ## Runtime memory policy
 
 Static releases are served directly from immutable files and never reserve a

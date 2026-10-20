@@ -207,6 +207,95 @@ def _navigation_request(request: Request) -> bool:
     )
 
 
+_STATIC_ASSET_DESTINATIONS = frozenset({"font", "image", "manifest", "script", "style"})
+
+
+def _custom_not_found_file(root: Path) -> Path | None:
+    target = (root / "404.html").resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Hosted file not found") from None
+    return target if target.is_file() else None
+
+
+def _accepts_html(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    if not accept.strip():
+        return True
+    best_rank, best_quality = -1, 0.0
+    ranks = {"*/*": 0, "text/*": 1, "text/html": 2}
+    for item in accept.split(","):
+        media_type, *parameters = item.split(";")
+        rank = ranks.get(media_type.strip().lower(), -1)
+        if rank < 0:
+            continue
+        weights = [
+            part.partition("=")[2].strip()
+            for part in parameters
+            if part.partition("=")[0].strip().lower() == "q"
+        ]
+        weight = weights[0] if weights else "1"
+        valid_weight = len(weights) <= 1 and re.fullmatch(
+            r"(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)", weight
+        )
+        quality = float(weight) if valid_weight else 0.0
+        if rank > best_rank:
+            best_rank, best_quality = rank, quality
+        elif rank == best_rank:
+            best_quality = min(best_quality, quality)
+    return best_quality > 0
+
+
+def _missing_document_path(runtime_path: str, request: Request) -> bool:
+    path = runtime_path.lstrip("/")
+    if path == "api" or path.startswith("api/"):
+        return False
+    destination = request.headers.get("sec-fetch-dest", "").lower()
+    if destination not in {"", "document", "frame", "iframe", "empty"}:
+        return False
+    if not _accepts_html(request):
+        return False
+    content_type = guess_type(path)[0]
+    return content_type is None or content_type in {"text/html", "application/xhtml+xml"}
+
+
+def _custom_not_found_response(
+    target: Path,
+    route: dict[str, object],
+    request: Request,
+    prefix: str,
+    *,
+    pages_delivery: bool = False,
+) -> Response:
+    content = _rewrite_text(
+        target.read_bytes(),
+        "text/html",
+        prefix,
+        device_runtime=(
+            route.get("device_runtime")
+            if pages_delivery and isinstance(route.get("device_runtime"), dict)
+            else None
+        ),
+        workspace_key=str(route.get("workspace_key") or ""),
+    )
+    headers = {
+        "Cache-Control": "no-store",
+        "Content-Length": str(len(content)),
+        "X-Warehouse-Release": str(route.get("release_digest") or route["deployment_id"]),
+        "X-Warehouse-Deployment": str(route["deployment_id"]),
+        "X-Content-Type-Options": "nosniff",
+    }
+    if pages_delivery:
+        headers["X-Warehouse-Pages-Delivery"] = "static-device-first"
+    return Response(
+        content=b"" if request.method == "HEAD" else content,
+        status_code=404,
+        media_type="text/html",
+        headers=headers,
+    )
+
+
 def _generic_device_page(route: dict[str, object]) -> Response:
     site_key = escape(str(route.get("site_key") or "Hosted application"))
     workspace_key = escape(str(route.get("workspace_key") or ""))
@@ -257,15 +346,16 @@ def _pages_static_response(
     if target.is_dir():
         target = target / "index.html"
     if not target.is_file() and _navigation_request(request):
-        target = root / "index.html"
+        not_found = _custom_not_found_file(root)
+        if not_found is not None:
+            if _missing_document_path(runtime_path, request):
+                return _custom_not_found_response(
+                    not_found, route, request, "", pages_delivery=True
+                )
+        else:
+            target = root / "index.html"
     if not target.is_file():
-        if request.headers.get("sec-fetch-dest", "").lower() in {
-            "font",
-            "image",
-            "manifest",
-            "script",
-            "style",
-        }:
+        if request.headers.get("sec-fetch-dest", "").lower() in _STATIC_ASSET_DESTINATIONS:
             raise HTTPException(status_code=404, detail="Pages asset not found")
         return None
     content_type = guess_type(str(target))[0] or "application/octet-stream"
@@ -560,8 +650,14 @@ async def runtime_response(
             raise HTTPException(status_code=404, detail="Hosted file not found") from None
         if target.is_dir():
             target = target / "index.html"
-        if not target.is_file() and not Path(runtime_path).suffix:
-            target = root / "index.html"
+        legacy_fallback = not Path(runtime_path).suffix
+        if not target.is_file() and (legacy_fallback or _navigation_request(request)):
+            not_found = _custom_not_found_file(root) if request.method in {"GET", "HEAD"} else None
+            if not_found is not None:
+                if _missing_document_path(runtime_path, request):
+                    return _custom_not_found_response(not_found, route, request, prefix)
+            elif legacy_fallback:
+                target = root / "index.html"
         if not target.is_file():
             raise HTTPException(status_code=404, detail="Hosted file not found")
         content_type = guess_type(str(target))[0] or "application/octet-stream"

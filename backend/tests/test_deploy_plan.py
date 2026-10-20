@@ -246,6 +246,7 @@ def test_github_automation_is_basic_and_has_no_full_suite() -> None:
         "backend-contract.yml",
         "digital-asset-publish.yml",
         "digital-asset-smart-deploy.yml",
+        "mk5-source-sync.yml",
         "production-deploy.yml",
     ]
 
