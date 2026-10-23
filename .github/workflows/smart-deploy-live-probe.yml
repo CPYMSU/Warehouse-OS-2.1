@@ -1,0 +1,52 @@
+name: Smart deploy live probe
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/smart-deploy-live-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, warehouse-production]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect active source upload and local archive identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          root="/Users/peiyuan/Server/bonfirework"
+          cache="${root}/cache/digital-asset-smart-deploy"
+          keys="${root}/secrets/digital-asset-workspace-keys.json"
+          upload_id="93bab659-4a0e-4b79-a966-5f4c5ac1edea"
+
+          echo '=== local archives ==='
+          find "$cache" -maxdepth 1 -type f -name '*.tar.gz' -print | while read -r archive; do
+            printf '%s bytes=' "$archive"
+            stat -f '%z' "$archive"
+            shasum -a 256 "$archive"
+          done
+
+          echo '=== active upload status ==='
+          python3 - <<'PY'
+          import json, urllib.request
+          from pathlib import Path
+          root = Path('/Users/peiyuan/Server/bonfirework')
+          keys = json.loads((root / 'secrets/digital-asset-workspace-keys.json').read_text())
+          key = str(keys['mk7'])
+          upload_id = '93bab659-4a0e-4b79-a966-5f4c5ac1edea'
+          req = urllib.request.Request(
+              f'https://bonfirework.org/api/workspaces/v1/source-uploads/{upload_id}',
+              headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json', 'User-Agent': 'Warehouse-Smart-Deploy-Probe/1.0'},
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              payload = json.loads(resp.read().decode())
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          PY
+
+          echo '=== recent Smart Deploy stderr ==='
+          tail -n 20 "${root}/logs/digital-asset-smart-deploy.error.log" 2>/dev/null || true
