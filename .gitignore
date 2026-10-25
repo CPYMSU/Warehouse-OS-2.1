@@ -1,0 +1,7 @@
+/backend/var/
+/backend/*.egg-info/
+/backend/build/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/

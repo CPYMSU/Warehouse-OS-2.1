@@ -61,6 +61,7 @@ const apiError = async response => {
 };
 const RESEARCH_TABS = [
   ["overview", "總覽"],
+  ["showcase", "研究展示"],
   ["guide", "論文導引"],
   ["projects", "課題庫"],
   ["refinement", "論文精修"],
@@ -1653,8 +1654,151 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   </div>;
 };
 
+const ResearchShowcase = () => {
+  const [catalog, setCatalog] = useState(null);
+  const [error, setError] = useState("");
+  const [group, setGroup] = useState("all");
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [content, setContent] = useState("");
+  const [pdf, setPdf] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const reader = useRef(null);
+  const frame = useRef(null);
+  const request = useRef(0);
+  const anchor = useRef("");
+  const pdfObject = useRef("");
+  const tenant = W2.tenant();
+  useEffect(() => {
+    let active = true;
+    request.current += 1;
+    setCatalog(null); setSelected(null); setContent(""); setPdf(""); setError(""); setExpanded(false);
+    researchRead("/api/research/showcase").then(data => {
+      if (active) setCatalog(data);
+    }).catch(reason => { if (active) setError(reason.message); });
+    return () => {
+      active = false;
+      request.current += 1;
+      if (pdfObject.current) URL.revokeObjectURL(pdfObject.current);
+    };
+  }, [tenant]);
+  useEffect(() => {
+    const escape = event => { if (event.key === "Escape") setExpanded(false); };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, []);
+  const open = async logicalPath => {
+    const [path, fragment = ""] = logicalPath.split("#");
+    if (!catalog || !Object.prototype.hasOwnProperty.call(catalog.files || {}, path)) return;
+    const serial = ++request.current;
+    const document = catalog.documents.find(item => item.path === path) || {
+      path, title: path === "index.html" ? "研究目錄" : path.split("/").pop(),
+      kind: path.endsWith(".pdf") ? "paper" : "page",
+    };
+    setSelected(document);
+    setLoading(true);
+    setError("");
+    setContent("");
+    setPdf("");
+    anchor.current = fragment;
+    if (pdfObject.current) { URL.revokeObjectURL(pdfObject.current); pdfObject.current = ""; }
+    try {
+      const response = await W2.fetch("/api/research/showcase/content/" + path.split("/").map(encodeURIComponent).join("/"), { cache: "no-store" });
+      if (!response.ok) throw await apiError(response);
+      if (path.endsWith(".pdf")) {
+        const blob = await response.blob();
+        if (serial !== request.current) return;
+        pdfObject.current = URL.createObjectURL(blob);
+        setPdf(pdfObject.current);
+      } else {
+        const html = await response.text();
+        if (serial !== request.current) return;
+        setContent(html);
+      }
+    } catch (reason) {
+      if (serial === request.current) setError(reason.message);
+    } finally {
+      if (serial === request.current) setLoading(false);
+    }
+    requestAnimationFrame(() => { if (reader.current) reader.current.scrollIntoView({ behavior: "smooth", block: "start" }); });
+  };
+  useEffect(() => {
+    const navigate = event => {
+      if (!frame.current || event.source !== frame.current.contentWindow) return;
+      if (event.data && event.data.type === "bonfire-research-navigate" && typeof event.data.path === "string") open(event.data.path);
+    };
+    window.addEventListener("message", navigate);
+    return () => window.removeEventListener("message", navigate);
+  }, [catalog]);
+  const close = () => {
+    request.current += 1;
+    setSelected(null); setExpanded(false); setContent(""); setPdf(""); setLoading(false);
+    if (pdfObject.current) { URL.revokeObjectURL(pdfObject.current); pdfObject.current = ""; }
+  };
+  const documents = (catalog && catalog.documents) || [];
+  const visible = documents.filter(item => (group === "all" || item.group === group) &&
+    (item.title + " " + item.description + " " + item.group).toLowerCase().includes(query.trim().toLowerCase()));
+  const papers = visible.filter(item => item.kind === "paper");
+  const pages = visible.filter(item => item.kind !== "paper");
+  const kindLabel = { paper: "PDF 論文", interactive: "互動模型", page: "研究頁面" };
+  if (!catalog && !error) return <div className="rv-atlas-state" role="status">正在載入研究展示…</div>;
+  return <div className="rv-atlas" data-testid="research-showcase">
+    <section className="rv-atlas-hero">
+      <div className="rv-atlas-intro"><span className="rv-atlas-eyebrow">THE RESEARCH ATLAS / 研究展示</span>
+        <h2>讓研究，<br/><em>可以讀懂。</em></h2>
+        <p>從一篇論文，到一張會動的圖。<br/>沿著問題、模型與證據，讀懂研究如何走到結論。</p>
+        <div className="rv-atlas-edition"><i/>{catalog && catalog.edition ? (catalog.edition_date || catalog.edition.slice(0, 10)) + " · 研究工作稿" : "研究資料庫"}</div>
+      </div>
+      <div className="rv-atlas-map" aria-hidden="true"><span>QUESTION → MODEL → EVIDENCE</span>
+        <svg viewBox="0 0 480 240" fill="none"><path d="M35 196H453M76 225V22" stroke="currentColor" strokeWidth="1.2"/>
+          <path d="M95 170L417 43M95 50L417 178" stroke="currentColor" strokeWidth="2"/>
+          <path d="M95 192C175 189 220 136 265 112S366 85 423 83" stroke="#e23625" strokeWidth="3"/>
+          <path d="M265 112V196M76 112H265" stroke="currentColor" strokeDasharray="4 5" opacity=".4"/>
+          <circle cx="265" cy="112" r="7" fill="#e23625" stroke="var(--paper)" strokeWidth="3"/>
+          <text x="88" y="26" fill="currentColor" fontSize="11">MODEL</text><text x="385" y="219" fill="currentColor" fontSize="11">EVIDENCE</text>
+        </svg><small>示意圖 · 從問題走向可檢查的解釋</small>
+        <div className="rv-atlas-stats"><div><b>{documents.filter(item => item.kind === "paper").length.toString().padStart(2, "0")}</b><span>論文與摘要</span></div>
+          <div><b>{documents.filter(item => item.kind !== "paper").length.toString().padStart(2, "0")}</b><span>研究與模型頁面</span></div>
+          <div><b>03</b><span>閱讀主題</span></div></div>
+      </div>
+    </section>
+    {error && <div className="rv-atlas-state" role="alert">{error}</div>}
+    {catalog && !catalog.available && <div className="rv-atlas-state">這個科研空間尚未加入研究展示資料。</div>}
+    {catalog && catalog.available && <>
+      <div className="rv-atlas-tools"><nav aria-label="研究主題">
+        {[{ id: "all", code: "ALL", title: "全部" }, ...catalog.groups].map(item => <button key={item.id} type="button" aria-pressed={group === item.id} className={group === item.id ? "active" : ""} onClick={() => setGroup(item.id)}><span>{item.code}</span>{item.title}</button>)}
+      </nav><label><span>搜尋研究</span><input type="search" placeholder="標題、模型或關鍵字…" value={query} onChange={event => setQuery(event.target.value)}/></label></div>
+      {papers.length > 0 && <section className="rv-atlas-section"><header><h3><small>01 / MANUSCRIPTS</small>讀論文</h3><span>全文與摘要 · PDF</span></header>
+        <div className="rv-atlas-papers">{papers.map((item, index) => <button type="button" key={item.path} onClick={() => open(item.path)} className={selected && selected.path === item.path ? "selected" : ""}>
+          <div className="rv-atlas-paper-mark"><span>{item.group.toUpperCase()}</span><b>{String(index + 1).padStart(2, "0")}</b><i>PDF ↗</i></div>
+          <div><h4>{item.title}</h4><p>{item.description}</p><small>{compact(item.bytes)}<span>閱讀全文 →</span></small></div>
+        </button>)}</div></section>}
+      {pages.length > 0 && <section className="rv-atlas-section"><header><h3><small>02 / IDEAS IN MOTION</small>走進模型與論證</h3><span>{pages.length} 個閱讀入口</span></header>
+        <div className="rv-atlas-pages">{pages.map((item, index) => <button type="button" key={item.path} onClick={() => open(item.path)} className={selected && selected.path === item.path ? "selected" : ""}>
+          <div className="rv-atlas-card-meta"><span>{item.group.toUpperCase()} / {String(index + 1).padStart(2, "0")}</span><b>{kindLabel[item.kind]}</b></div>
+          <h4>{item.title}</h4><p>{item.description}</p><footer><span>開始閱讀</span><b>↗</b></footer>
+        </button>)}</div></section>}
+      {!visible.length && <div className="rv-atlas-state" role="status">找不到符合的研究。試試其他關鍵字或切換主題。</div>}
+      <footer className="rv-atlas-footnote"><span>研究工作稿 · 版本以本次同步日期為準</span><button type="button" onClick={() => open("index.html")}>瀏覽完整目錄與歷史版本 ↗</button></footer>
+    </>}
+    {selected && <section ref={reader} className={"rv-atlas-reader" + (expanded ? " expanded" : "")} aria-label="研究閱讀區">
+      <header><div><span>{selected.kind === "paper" ? "MANUSCRIPT / PDF" : "RESEARCH READER"}</span><h3>{selected.title}</h3></div>
+        <div>{pdf && <a className="btn" href={pdf} download={selected.path.split("/").pop()}>下載 PDF</a>}
+          <button type="button" className="btn" onClick={() => setExpanded(value => !value)} aria-pressed={expanded}>{expanded ? "收合閱讀" : "展開閱讀"}</button>
+          <button type="button" className="btn" onClick={close}>關閉</button></div></header>
+      {loading && <div className="rv-atlas-state" role="status">正在開啟研究內容…</div>}
+      {!loading && content && <iframe ref={frame} key={selected.path} title={selected.title} srcDoc={content} sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" onLoad={() => {
+        if (anchor.current && frame.current) frame.current.contentWindow.postMessage({ type: "bonfire-research-anchor", anchor: anchor.current }, "*");
+      }}/>}
+      {!loading && pdf && <iframe title={selected.title} src={pdf}/>}
+    </section>}
+  </div>;
+};
+
 const Page = () => {
   const [section, setSection] = useState(() => {
+    if (location.hash.split("?")[1] && new URLSearchParams(location.hash.split("?")[1]).get("section") === "showcase") return "showcase";
     try {
       const saved = sessionStorage.getItem("w2_research_tab");
       const remembered = readResearchMemory().section;
@@ -1704,6 +1848,7 @@ const Page = () => {
   }), { files: 0, versions: 0, commits: 0, bytes: 0 }), [projects]);
   const sectionMeta = {
     overview: ["R01", "RESEARCH VAULT", "科研總覽", "研究不是文件堆積，而是一條可閱讀、可比較、可重現的證據鏈。"],
+    showcase: ["R10", "THE RESEARCH ATLAS", "研究展示", "把論文、互動模型與方法學習放在一起，從問題一路讀到解釋。"],
     guide: ["R02", "RESEARCH COMPASS", "論文導引", "把一個模糊想法推進為可提交論文：每一步都有產出、完成條件與下一個動作。"],
     projects: ["R03", "PROJECT LIBRARY", "課題庫", "每個課題都是獨立 Git 空間；文件、數據、代碼與提交保持同步。"],
     refinement: ["R04", "MANUSCRIPT REFINEMENT", "論文精修", "提取正文、圖像與表格，在瀏覽器本地精修內容；草稿即時同步，正式提交才生成新版本。"],
@@ -1715,6 +1860,7 @@ const Page = () => {
   }[section];
   const sectionCounts = {
     overview: projects.length,
+    showcase: "MK",
     guide: selectedProject ? "09" : "—",
     projects: totals.files,
     refinement: refinementFiles.length,
@@ -2255,7 +2401,10 @@ const Page = () => {
         </form>
       )}
 
+      {section === "showcase" && <ResearchShowcase/>}
+
       {section === "overview" && <>
+        <button type="button" className="rv-atlas-entry" onClick={() => selectSection("showcase")}><span>NEW / THE RESEARCH ATLAS</span><strong>研究展示</strong><p>MK73 博士論文 · MK77 期刊研究 · 互動模型與方法學習</p><b>走進研究 →</b></button>
         <section className="rv-poster-grid" aria-label="科研數據海報">
           <article className="rv-poster rv-poster-main">
             <span className="rv-poster-index">RESEARCH / 01—04</span>

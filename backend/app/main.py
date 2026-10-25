@@ -32,6 +32,7 @@ from app.api.intelligent_hosting import router as intelligent_hosting_router
 from app.api.intelligent_hosting_compat import router as intelligent_hosting_compat_router
 from app.api.lighthouse_federation import router as lighthouse_federation_router
 from app.api.research import router as research_router
+from app.api.research_showcase import router as research_showcase_router
 from app.api.router import router
 from app.api.shield import router as shield_router
 from app.api.task_collaboration import router as task_collaboration_router
@@ -198,6 +199,7 @@ app.include_router(digital_asset_router)
 app.include_router(intelligent_hosting_router)
 app.include_router(generic_data_router)
 app.include_router(research_router)
+app.include_router(research_showcase_router)
 app.include_router(task_collaboration_router)
 app.include_router(cluster_status_router)
 app.include_router(civilization_router)
