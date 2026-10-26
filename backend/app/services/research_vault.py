@@ -661,7 +661,10 @@ def _file_row(session: Session, project_id: UUID, file_ref: object) -> dict[str,
 
 
 def _public_project(row: dict[str, object]) -> dict[str, object]:
-    return _json_safe({**row, "metadata": row.get("metadata") or {}})
+    from app.services.research_disciplines import project_discipline
+
+    return _json_safe({**row, "metadata": row.get("metadata") or {},
+                       "discipline": project_discipline(row)})
 
 
 def _public_version(row: dict[str, object], *, include_preview: bool = True) -> dict[str, object]:
@@ -775,6 +778,8 @@ def _record_commit(
 
 
 def list_projects(actor: ActorContext) -> dict[str, object]:
+    from app.services.research_disciplines import discipline_catalogue
+
     _require_read(actor)
     with tenant_session(actor.tenant_id) as session:
         rows = (
@@ -803,6 +808,7 @@ def list_projects(actor: ActorContext) -> dict[str, object]:
         "source": "research_postgresql_git",
         "projects": projects,
         "total": len(projects),
+        "disciplines": discipline_catalogue(),
         "capabilities": {
             "inline_preview": True,
             "git_commits": True,
@@ -824,6 +830,17 @@ def create_project(
     project_status = str(payload.get("status") or "active")
     if project_status not in PROJECT_STATUSES:
         raise HTTPException(status_code=422, detail="Invalid research project status")
+    metadata = dict(payload["metadata"]) if isinstance(payload.get("metadata"), dict) else {}
+    if "discipline" in payload or "research_discipline" in metadata:
+        from app.services.research_disciplines import discipline_key
+
+        supplied = payload.get("discipline", metadata.get("research_discipline"))
+        if supplied is not None and not isinstance(supplied, str):
+            raise HTTPException(status_code=422, detail="discipline must be text or null")
+        selected = discipline_key(supplied)
+        if supplied and selected is None:
+            raise HTTPException(status_code=422, detail="Unknown research discipline")
+        metadata["research_discipline"] = selected
     project_id = uuid4()
     project_slug = _slug(payload.get("slug") or title)
     with tenant_session(actor.tenant_id) as session:
@@ -853,9 +870,7 @@ def create_project(
                     "summary": str(payload.get("summary") or "").strip() or None,
                     "research_area": str(payload.get("research_area") or "").strip() or None,
                     "status": project_status,
-                    "metadata": json.dumps(
-                        payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-                    ),
+                    "metadata": json.dumps(metadata, ensure_ascii=False),
                     "created_by": actor.user_id,
                 },
             )
@@ -873,6 +888,39 @@ def create_project(
             {"project_id": project_id, "slug": project_slug, "git_sha": git_sha},
         )
         project["head_git_sha"] = git_sha
+    return {"ok": True, "project": _public_project(project)}
+
+
+def set_project_discipline(
+    actor: ActorContext, project_ref: object, payload: dict[str, object]
+) -> dict[str, object]:
+    """Classify a project without changing its subject area or prior workflow notes."""
+    from app.services.research_disciplines import discipline_key, project_discipline
+
+    _require_write(actor)
+    if "discipline" not in payload:
+        raise HTTPException(status_code=422, detail="discipline is required")
+    supplied = payload["discipline"]
+    if supplied is not None and not isinstance(supplied, str):
+        raise HTTPException(status_code=422, detail="discipline must be text or null")
+    selected = discipline_key(supplied)
+    if supplied and selected is None:
+        raise HTTPException(status_code=422, detail="Unknown research discipline")
+    with tenant_session(actor.tenant_id) as session:
+        project = _project_row(session, project_ref, lock=True)
+        before = project_discipline(project)
+        if "expected_discipline" in payload and payload["expected_discipline"] != before:
+            raise HTTPException(status_code=409, detail="Project classification changed; reload before saving")
+        metadata = dict(project.get("metadata") or {})
+        metadata["research_discipline"] = selected
+        session.execute(
+            text("UPDATE research.projects SET metadata = CAST(:metadata AS jsonb) WHERE id = :id"),
+            {"metadata": json.dumps(metadata, ensure_ascii=False), "id": project["id"]},
+        )
+        _audit(session, actor, "research.project.classified", {
+            "project_id": project["id"], "before": before, "discipline": selected,
+        })
+        project["metadata"] = metadata
     return {"ok": True, "project": _public_project(project)}
 
 

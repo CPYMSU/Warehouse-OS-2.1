@@ -71,6 +71,7 @@ from app.services.research_vault import (
     project_detail,
     require_research_write,
     research_formats,
+    set_project_discipline,
     upload_contract,
 )
 from app.services.research_workflow import (
@@ -82,6 +83,7 @@ from app.services.research_workflow import (
     release_detail,
     run_reproduction_check,
     save_dmp,
+    save_discipline_stage,
     submit_review,
     update_run,
     workflow_detail,
@@ -184,6 +186,25 @@ def research_project_upload_contract(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, object]:
     return upload_contract(actor, project_ref, settings)
+
+
+@router.put("/api/research/projects/{project_ref}/discipline")
+def research_project_classify(
+    project_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    return set_project_discipline(actor, project_ref, payload)
+
+
+@router.put("/api/research/projects/{project_ref}/discipline-workflow/stages/{stage_key}")
+def research_discipline_stage_save(
+    project_ref: str,
+    stage_key: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    return save_discipline_stage(actor, project_ref, stage_key, payload)
 
 
 @router.get("/api/research/projects/{project_ref}/commits")

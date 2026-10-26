@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -14,6 +14,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.session import tenant_session
+from app.services.research_disciplines import (
+    discipline_template,
+    discipline_workflow,
+    project_discipline,
+)
 from app.services.research_vault import (
     _audit,
     _project_row,
@@ -271,6 +276,9 @@ def workflow_detail(actor: ActorContext, project_ref: object) -> dict[str, objec
         "dmp": current_dmp,
         **rows,
         "stats": stats,
+        "discipline_workflow": discipline_workflow(
+            project, current_dmp["content"] if current_dmp else None
+        ),
         "workflow": [
             "plan",
             "govern",
@@ -297,64 +305,93 @@ def save_dmp(
         raise HTTPException(status_code=422, detail="DMP content is required")
     with tenant_session(actor.tenant_id) as session:
         project = _project_row(session, project_ref, lock=True)
-        current = (
-            session.execute(
-                text(
-                    """
-                    SELECT * FROM research.dmp_revisions
-                    WHERE project_id = :project_id
-                    ORDER BY version DESC LIMIT 1 FOR UPDATE
-                    """
-                ),
-                {"project_id": project["id"]},
-            )
-            .mappings()
-            .one_or_none()
+        row = _save_dmp_revision(session, actor, project, content)
+    return {"ok": True, "dmp": _json_safe(row)}
+
+
+def _save_dmp_revision(
+    session: Session, actor: ActorContext, project: dict, content: dict
+) -> dict:
+    """Caller holds the project lock; merge every revision, including discipline notes."""
+    current = (
+        session.execute(
+            text("SELECT * FROM research.dmp_revisions WHERE project_id = :project_id "
+                 "ORDER BY version DESC LIMIT 1 FOR UPDATE"),
+            {"project_id": project["id"]},
+        ).mappings().one_or_none()
+    )
+    merged = dict(current["content"]) if current else {}
+    merged.update(content)
+    version = int(current["version"]) + 1 if current else 1
+    if current:
+        session.execute(
+            text("UPDATE research.dmp_revisions SET status = 'superseded' "
+                 "WHERE id = :id AND status <> 'superseded'"),
+            {"id": current["id"]},
         )
-        merged = dict(current["content"]) if current else {}
-        merged.update(content)
-        version = int(current["version"]) + 1 if current else 1
-        if current:
-            session.execute(
-                text(
-                    """
-                    UPDATE research.dmp_revisions SET status = 'superseded'
-                    WHERE id = :id AND status <> 'superseded'
-                    """
-                ),
-                {"id": current["id"]},
-            )
-        row = (
-            session.execute(
-                text(
-                    """
-                    INSERT INTO research.dmp_revisions(
-                      id, tenant_id, project_id, version, status, content, created_by
-                    ) VALUES (
-                      :id, :tenant_id, :project_id, :version, 'draft',
-                      CAST(:content AS jsonb), :created_by
-                    ) RETURNING *
-                    """
-                ),
-                {
-                    "id": uuid4(),
-                    "tenant_id": actor.tenant_id,
-                    "project_id": project["id"],
-                    "version": version,
-                    "content": _canonical(merged),
-                    "created_by": actor.user_id,
-                },
-            )
-            .mappings()
-            .one()
-        )
-        _audit(
-            session,
-            actor,
-            "research.dmp.versioned",
-            {"project_id": project["id"], "dmp_id": row["id"], "version": version},
-        )
-    return {"ok": True, "dmp": _json_safe(dict(row))}
+    row = session.execute(
+        text("INSERT INTO research.dmp_revisions("
+             "id, tenant_id, project_id, version, status, content, created_by) VALUES ("
+             ":id, :tenant_id, :project_id, :version, 'draft', CAST(:content AS jsonb), :created_by) RETURNING *"),
+        {"id": uuid4(), "tenant_id": actor.tenant_id, "project_id": project["id"],
+         "version": version, "content": _canonical(merged), "created_by": actor.user_id},
+    ).mappings().one()
+    _audit(session, actor, "research.dmp.versioned", {
+        "project_id": project["id"], "dmp_id": row["id"], "version": version,
+    })
+    return dict(row)
+
+
+def save_discipline_stage(
+    actor: ActorContext, project_ref: object, stage_key: str, payload: dict[str, object]
+) -> dict[str, object]:
+    """Store a discipline step as a new immutable DMP revision, with conflict detection."""
+    _require_write(actor)
+    supplied_discipline = payload.get("discipline")
+    template = discipline_template(supplied_discipline) if isinstance(supplied_discipline, str) else None
+    if not template or stage_key not in {item["key"] for item in template["stages"]}:
+        raise HTTPException(status_code=422, detail="Unknown discipline workflow stage")
+    stage_status = payload.get("status", "in_progress")
+    if not isinstance(stage_status, str) or stage_status not in {"planned", "in_progress", "completed"}:
+        raise HTTPException(status_code=422, detail="Invalid discipline stage status")
+    notes = payload.get("notes", "")
+    if not isinstance(notes, str) or len(notes) > 32000:
+        raise HTTPException(status_code=422, detail="Stage notes must be text of at most 32000 characters")
+    notes = notes.strip()
+    if stage_status == "completed" and not notes:
+        raise HTTPException(status_code=422, detail="Record the stage outcome before marking it complete")
+    revision = payload.get("expected_revision")
+    if type(revision) is not int or revision < 0:
+        raise HTTPException(status_code=422, detail="expected_revision must be a nonnegative integer")
+    with tenant_session(actor.tenant_id) as session:
+        project = _project_row(session, project_ref, lock=True)
+        if project_discipline(project) != supplied_discipline:
+            raise HTTPException(status_code=409, detail="Project discipline changed; reload before saving")
+        current = session.execute(
+            text("SELECT content FROM research.dmp_revisions WHERE project_id = :project_id "
+                 "ORDER BY version DESC LIMIT 1"), {"project_id": project["id"]},
+        ).mappings().one_or_none()
+        content = dict(current["content"]) if current else {}
+        before = discipline_workflow(project, content)["stages"].get(stage_key, {})
+        prior_revision = before.get("revision", 0)
+        prior_revision = prior_revision if type(prior_revision) is int else 0
+        if revision != prior_revision:
+            raise HTTPException(status_code=409, detail="This stage changed; reload before saving your draft")
+        workflows = content.get("discipline_workflows")
+        workflows = dict(workflows) if isinstance(workflows, dict) else {}
+        stages = workflows.get(supplied_discipline)
+        stages = dict(stages) if isinstance(stages, dict) else {}
+        stage = {"notes": notes, "status": stage_status, "revision": revision + 1,
+                 "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": str(actor.user_id)}
+        stages[stage_key] = stage
+        workflows[supplied_discipline] = stages
+        row = _save_dmp_revision(session, actor, project, {"discipline_workflows": workflows})
+        _audit(session, actor, "research.discipline.stage_updated", {
+            "project_id": project["id"], "discipline": supplied_discipline,
+            "stage": stage_key, "revision": stage["revision"], "status": stage_status,
+        })
+    return {"ok": True, "dmp": _json_safe(row),
+            "discipline_workflow": discipline_workflow(project, row["content"])}
 
 
 def create_protocol(

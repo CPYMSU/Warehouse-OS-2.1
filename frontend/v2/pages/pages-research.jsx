@@ -61,6 +61,7 @@ const apiError = async response => {
 };
 const RESEARCH_TABS = [
   ["overview", "總覽"],
+  ["disciplines", "專業與流程"],
   ["showcase", "研究展示"],
   ["guide", "論文導引"],
   ["projects", "課題庫"],
@@ -1904,6 +1905,8 @@ const Page = () => {
   });
   const [projectsMounted, setProjectsMounted] = useState(() => section === "projects");
   const [projects, setProjects] = useState([]);
+  const [disciplines, setDisciplines] = useState([]);
+  const [disciplineFilter, setDisciplineFilter] = useState("all");
   const [projectId, setProjectId] = useState("");
   const [detail, setDetail] = useState(null);
   const [workflow, setWorkflow] = useState(null);
@@ -1929,10 +1932,14 @@ const Page = () => {
   const [executionEntrypoint, setExecutionEntrypoint] = useState("");
   const fileInput = useRef(null);
   const detailRequestSerial = useRef(0);
+  const workflowRequestSerial = useRef(0);
+  const activeProjectId = useRef(projectId);
+  activeProjectId.current = projectId;
 
   const canWrite = W2.hasPermission("research.write");
   const canReview = W2.hasPermission("research.review");
   const selectedProject = projects.find(item => clean(item.id) === clean(projectId)) || null;
+  const visibleProjects = projects.filter(item => disciplineFilter === "all" || W2.researchDisciplineOf(item) === disciplineFilter);
   const selectedFile = detail && (detail.files || []).find(item => clean(item.id) === clean(fileId)) || null;
   const refinementFiles = ((detail && detail.files) || []).filter(item =>
     clean(item.logical_path).toLowerCase().endsWith(".docx"));
@@ -1944,6 +1951,7 @@ const Page = () => {
   }), { files: 0, versions: 0, commits: 0, bytes: 0 }), [projects]);
   const sectionMeta = {
     overview: ["R01", "RESEARCH VAULT", "科研總覽", "研究不是文件堆積，而是一條可閱讀、可比較、可重現的證據鏈。"],
+    disciplines: ["R11", "FOUR DISCIPLINES", "專業與流程", "用專業的方法推進問題，讓每一步思考、模型與案例都有可追溯的研究紀錄。"],
     showcase: ["R10", "THE RESEARCH ATLAS", "研究展示", "把論文、互動模型與方法學習放在一起，從問題一路讀到解釋。"],
     guide: ["R02", "RESEARCH COMPASS", "論文導引", "把一個模糊想法推進為可提交論文：每一步都有產出、完成條件與下一個動作。"],
     projects: ["R03", "PROJECT LIBRARY", "課題庫", "每個課題都是獨立 Git 空間；文件、數據、代碼與提交保持同步。"],
@@ -1956,6 +1964,7 @@ const Page = () => {
   }[section];
   const sectionCounts = {
     overview: projects.length,
+    disciplines: disciplines.length,
     showcase: "MK",
     guide: selectedProject ? "09" : "—",
     projects: totals.files,
@@ -1970,9 +1979,12 @@ const Page = () => {
     setSection(next);
     if (next === "projects") setProjectsMounted(true);
     try { sessionStorage.setItem("w2_research_tab", next); } catch (_error) {}
-    rememberResearchSelection({ projectId, fileId, tab, section: next });
+    rememberResearchSelection({ projectId: activeProjectId.current,
+      fileId: clean(activeProjectId.current) === clean(projectId) ? fileId : "", tab, section: next });
   };
   const selectProject = id => {
+    activeProjectId.current = id;
+    workflowRequestSerial.current += 1;
     setProjectId(id);
     setDetail(null);
     setWorkflow(null);
@@ -1982,10 +1994,20 @@ const Page = () => {
     setTab("review");
     rememberResearchSelection({ projectId: id, section });
   };
+  const filterDiscipline = key => {
+    setDisciplineFilter(key);
+    const matching = projects.filter(item => key === "all" || W2.researchDisciplineOf(item) === key);
+    if (!matching.some(item => clean(item.id) === projectId)) selectProject(clean((matching[0] || {}).id));
+  };
+  const openDiscipline = key => {
+    filterDiscipline(key);
+    selectSection("disciplines");
+  };
 
   const loadProjects = async preferred => {
     const data = await researchRead("/api/research/projects");
     const next = Array.isArray(data.projects) ? data.projects : [];
+    setDisciplines(Array.isArray(data.disciplines) ? data.disciplines : []);
     setProjects(next);
     setProjectId(current => {
       const available = candidate => next.some(item => clean(item.id) === clean(candidate));
@@ -2024,12 +2046,14 @@ const Page = () => {
     }
   };
   const loadWorkflow = async id => {
-    if (!id) { setWorkflow(null); return; }
+    const request = ++workflowRequestSerial.current;
+    if (!id) { setWorkflow(null); setWorkflowBusy(false); return; }
     setWorkflowBusy(true);
     try {
-      setWorkflow(await researchRead("/api/research/projects/" + encodeURIComponent(id) + "/workflow"));
+      const data = await researchRead("/api/research/projects/" + encodeURIComponent(id) + "/workflow");
+      if (request === workflowRequestSerial.current) setWorkflow(data);
     } finally {
-      setWorkflowBusy(false);
+      if (request === workflowRequestSerial.current) setWorkflowBusy(false);
     }
   };
   const loadExecution = async (id, executionId) => {
@@ -2107,20 +2131,48 @@ const Page = () => {
 
   const createProject = async event => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setCreating(true); setError("");
     try {
       const result = await W2.post("/api/research/projects", {
         title: clean(form.get("title")).trim(),
+        discipline: clean(form.get("discipline")),
         research_area: clean(form.get("research_area")).trim(),
         summary: clean(form.get("summary")).trim(),
       });
       const id = clean((result.project || {}).id);
       await loadProjects(id);
       setShowCreate(false);
-      event.currentTarget.reset();
+      formElement.reset();
     } catch (reason) { setError(clean(reason.message || reason)); }
     finally { setCreating(false); }
+  };
+  const classifyProject = async value => {
+    if (!selectedProject || !canWrite) return;
+    const id = selectedProject.id;
+    setMutating("discipline"); setError("");
+    try {
+      const result = await W2.json("/api/research/projects/" + encodeURIComponent(id) + "/discipline", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ discipline: value === "unclassified" ? null : value,
+          expected_discipline: selectedProject.discipline || null }),
+      });
+      setProjects(current => current.map(item => item.id === id ? { ...item, ...result.project } : item));
+      setDetail(current => current && current.project.id === id ? { ...current, project: result.project } : current);
+      if (clean(activeProjectId.current) === clean(id)) {
+        setDisciplineFilter(value);
+        await loadWorkflow(id);
+      }
+    } catch (reason) { setError(clean(reason.message || reason)); }
+    finally { setMutating(""); }
+  };
+  const saveDisciplineResult = result => {
+    const id = projectId;
+    setWorkflow(current => current && clean(current.project.id) === clean(id) ? {
+      ...current, dmp: result.dmp, discipline_workflow: result.discipline_workflow,
+      stats: { ...current.stats, dmp_version: result.dmp.version },
+    } : current);
   };
   const uploadFile = async event => {
     event.preventDefault();
@@ -2461,6 +2513,11 @@ const Page = () => {
     ["06", "DISCUSSION", "解釋機制、比較文獻、處理替代解釋與限制。"],
     ["07", "CONCLUSION", "直接回答研究問題，界定可推廣範圍與下一步。"],
   ];
+  const disciplineWorkspace = <W2.ResearchDisciplineWorkspace catalogue={disciplines} projects={visibleProjects}
+    project={selectedProject} filter={disciplineFilter} workflow={workflow} busy={workflowBusy}
+    canWrite={canWrite} onProject={selectProject} onClassify={classifyProject} classifying={mutating === "discipline"}
+    onSaved={saveDisciplineResult} onReload={() => loadWorkflow(projectId).catch(reason => setError(clean(reason.message || reason)))}
+    onNavigate={selectSection} onError={setError}/>;
 
   return (
     <div className="rv-page" data-testid="research-vault">
@@ -2475,6 +2532,9 @@ const Page = () => {
             setShowCreate(value => !value);
           }}>＋ 新建課題</button>}
         </div>}/>
+
+      <W2.ResearchDisciplineIndex catalogue={disciplines} projects={projects} filter={disciplineFilter}
+        onFilter={filterDiscipline} onOpen={openDiscipline} compact={section !== "overview" && section !== "disciplines"}/>
 
       <nav className="subnav rise rv-subnav" aria-label="科研子頁">
         {RESEARCH_TABS.map(([key, label], index) => (
@@ -2491,11 +2551,15 @@ const Page = () => {
       {showCreate && (
         <form className="rv-create" onSubmit={createProject}>
           <label><span>PROJECT TITLE</span><input name="title" required placeholder="例如：丙二酸反應動力學"/></label>
+          <label><span>科研專業</span><select name="discipline" required defaultValue={disciplines.some(item => item.key === disciplineFilter) ? disciplineFilter : ""}>
+            <option value="" disabled>選擇科研專業</option>{disciplines.map(item => <option key={item.key} value={item.key}>{item.title}</option>)}</select></label>
           <label><span>RESEARCH AREA</span><input name="research_area" placeholder="CHEMISTRY / COMPUTATION"/></label>
           <label className="wide"><span>ABSTRACT NOTE</span><input name="summary" placeholder="一句話界定課題問題與研究邊界"/></label>
           <button className="btn primary" disabled={creating}>{creating ? "CREATING…" : "建立 Git 課題"}</button>
         </form>
       )}
+
+      {section === "disciplines" && disciplineWorkspace}
 
       {section === "showcase" && <ResearchShowcase/>}
 
@@ -2564,22 +2628,26 @@ const Page = () => {
 
         <Band no="02" title="RECENT RESEARCH" sub="當前公司 · 不製造示例數據"
           right={<button className="btn sm" onClick={() => selectSection("projects")}>進入課題庫 →</button>}>
-          {busy ? <div className="rv-loading">INDEXING RESEARCH OBJECTS…</div> : projects.length ? (
+          {busy ? <div className="rv-loading">INDEXING RESEARCH OBJECTS…</div> : visibleProjects.length ? (
             <div className="rv-overview-projects">
-              {projects.slice(0, 6).map((project, index) => (
+              {visibleProjects.slice(0, 6).map((project, index) => (
                 <button key={project.id} onClick={() => { selectProject(clean(project.id)); selectSection("projects"); }}>
                   <em>{String(index + 1).padStart(2, "0")}</em>
-                  <div><strong>{project.title}</strong><small>{project.research_area || "GENERAL RESEARCH"}</small></div>
+                  <div><strong>{project.title}</strong><small>{(disciplines.find(item => item.key === W2.researchDisciplineOf(project)) || {}).title || "待分類"} · {project.research_area || "GENERAL RESEARCH"}</small></div>
                   <span>{project.file_count || 0}<small>OBJECTS</small></span>
                   <code>{shortSha(project.head_git_sha)}</code>
                 </button>
               ))}
             </div>
-          ) : <EmptyPanel title="科研索引尚未建立" copy="建立第一個課題後，總覽會只呈現真實的文件、版本與提交數據。"/>}
+          ) : <EmptyPanel title="此分類尚無課題" copy="可新建此專業的課題，或到「待分類」為既有課題選擇專業。"/>}
         </Band>
       </>}
 
       {section === "guide" && <>
+        {selectedProject && W2.researchDisciplineOf(selectedProject) !== "unclassified" &&
+          <button type="button" className="rv-atlas-entry" onClick={() => selectSection("disciplines")}>
+            <span>DISCIPLINE WORKFLOW / 專業研究路徑</span><strong>{(disciplines.find(item => item.key === W2.researchDisciplineOf(selectedProject)) || {}).title}</strong>
+            <p>繼續專業流程與版本化研究筆記；下方為通用論文提交檢查。</p><b>進入專業流程 →</b></button>}
         <section className="rv-guide-binding" data-testid="research-guide-paper-selector"
           aria-label="選擇論文">
           <div className="rv-guide-binding-index">
@@ -2589,10 +2657,10 @@ const Page = () => {
           </div>
           <label>
             <span>SELECT PAPER / 選擇論文</span>
-            <select value={projectId} disabled={!projects.length}
+            <select value={projectId} disabled={!visibleProjects.length}
               onChange={event => selectProject(clean(event.target.value))}>
-              {!projects.length && <option value="">尚無可選論文</option>}
-              {projects.map((project, index) => (
+              {!visibleProjects.length && <option value="">此分類尚無可選論文</option>}
+              {visibleProjects.map((project, index) => (
                 <option key={project.id} value={clean(project.id)}>
                   {String(index + 1).padStart(2, "0")} · {project.title}
                 </option>
@@ -2705,7 +2773,7 @@ const Page = () => {
         <section className="rv-library-poster" data-testid="research-library-poster" aria-label="課題庫海報">
           <article className="rv-library-title">
             <span>CATALOGUE / BONFIRE</span>
-            <strong>{String(projects.length).padStart(2, "0")}</strong>
+            <strong>{String(visibleProjects.length).padStart(2, "0")}</strong>
             <p>PROJECT<br/>LIBRARY</p>
             <small>研究課題不是文件夾<br/>而是持續生長的論證單位</small>
           </article>
@@ -2745,7 +2813,7 @@ const Page = () => {
         <Band no="01" title="RESEARCH INDEX" sub="課題 / 文件 / 閱讀器">
           {busy ? <div className="rv-loading block">INDEXING RESEARCH OBJECTS…</div> : (
             <div className={"rv-workbench rv-library-workbench " + (tab === "review" ? "reviewing" : "")}>
-              <ProjectRail projects={projects} projectId={projectId} onSelect={selectProject}/>
+              <ProjectRail projects={visibleProjects} projectId={projectId} onSelect={selectProject} emptyCopy="此分類尚無課題，可新建課題或為既有課題選擇專業。"/>
 
               <section className="rv-files">
                 <header>
@@ -2812,6 +2880,7 @@ const Page = () => {
       </div>}
 
       {section === "workflow" && <>
+        {selectedProject && W2.researchDisciplineOf(selectedProject) !== "unclassified" && disciplineWorkspace}
         <section className="rv-flow-poster" aria-label="研究生命週期">
           <header>
             <span>RESEARCH OPERATING MODEL / 01—09</span>
@@ -3211,7 +3280,7 @@ const Page = () => {
         </section>
         <Band no="01" title="REVISION LINEAGE" sub="選擇課題後閱讀不可變提交時間線">
           <div className="rv-lineage">
-            <ProjectRail projects={projects} projectId={projectId} onSelect={selectProject}
+            <ProjectRail projects={visibleProjects} projectId={projectId} onSelect={selectProject}
               emptyCopy="建立並提交科研文件後，這裡會生成版本譜系。"/>
             <div className="rv-lineage-main">
               <header>
