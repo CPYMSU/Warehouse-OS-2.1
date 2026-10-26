@@ -2142,6 +2142,7 @@ const Page = () => {
         summary: clean(form.get("summary")).trim(),
       });
       const id = clean((result.project || {}).id);
+      setDisciplineFilter(clean((result.project || {}).discipline || form.get("discipline")) || "all");
       await loadProjects(id);
       setShowCreate(false);
       formElement.reset();
