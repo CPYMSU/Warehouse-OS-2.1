@@ -454,6 +454,10 @@ W2.isBiuTemplate = isBiuTemplate;
 W2.CIVILIZATION_TEMPLATE_KEY = CIVILIZATION_TEMPLATE_KEY;
 W2.isCivilizationTemplate = isCivilizationTemplate;
 const WAREHOUSE_ROUTE_IDS = ["inventory", "inbound", "outbound", "shipments"];
+const ADMINISTRATIVE_ROUTE_IDS = new Set([
+  "dashboard", "warehouse", ...WAREHOUSE_ROUTE_IDS, "alerts", "stocktake",
+  "erp", "finance", "assets", "procurement", "legal", "gis", "reports",
+]);
 W2.NAV = NAV2;
 /* 管理面(ADMIN 紅組):終端也必須由 allowed_nav/terminal.use 授權;
    SHIELD 與公司僅 L11 平台超級管理員(後端 PLATFORM_OWNER_LEVEL=11,所有者自動合成)。 */
@@ -467,7 +471,7 @@ const NAV_ADMIN = [
 ];
 W2.NAV_ADMIN = NAV_ADMIN;
 const roleLevelOf = (user) => Math.max(0, ...(((user || {}).roles) || []).map(r => Number(r.level) || 0));
-const routeNow = () => (location.hash.replace(/^#\/?/, "") || "dashboard").split("?")[0];
+const routeNow = () => (location.hash.replace(/^#\/?/, "") || "research").split("?")[0];
 const RUNTIME_PREFS_CACHE = "warehouse_runtime_preferences:";
 const RUNTIME_FLAGS_CACHE = "warehouse_runtime_flags:";
 const SWISS_THEME_PRESETS = [
@@ -716,6 +720,29 @@ const navModelOf = (user, isOwner, navConfig, templateKey) => {
     main = routeMain.filter(n => !WAREHOUSE_ROUTE_IDS.includes(n.id));
     main.splice(firstIndex, 0, warehouseNav);
   }
+  const moduleItems = main;
+  // Group only already-authorized entries. Canonical routes remain in
+  // routeItems so existing links and business-action context keep their ACLs.
+  const researchProfile = !isBiuTemplate(templateKey) && !isCivilizationTemplate(templateKey);
+  const administrative = researchProfile ? main.filter(n => ADMINISTRATIVE_ROUTE_IDS.has(n.id))
+    .map(n => n.id === "dashboard" && !(overrides.dashboard && overrides.dashboard.label)
+      ? { ...n, label: "業務總覽" } : n) : [];
+  let administrativeNav = null;
+  if (researchProfile) {
+    const research = main.find(n => n.id === "research");
+    const tasks = main.find(n => n.id === "tasks");
+    const remaining = main.filter(n => n.id !== "research" && n.id !== "tasks" && !ADMINISTRATIVE_ROUTE_IDS.has(n.id));
+    if (administrative.length) administrativeNav = {
+      idx: "03", id: "administration", label: "行政工作",
+      activeRoutes: ["administration", ...administrative.flatMap(n => n.activeRoutes || [n.id])],
+    };
+    main = [
+      ...(research ? [{ ...research, idx: "01" }] : []),
+      ...(tasks ? [{ ...tasks, idx: "02" }] : []),
+      ...(administrativeNav ? [administrativeNav] : []),
+      ...remaining,
+    ];
+  }
   const admin = NAV_ADMIN.filter(n => n.need === "owner"
     ? !!isOwner
     : n.id === "terminal"
@@ -727,8 +754,10 @@ const navModelOf = (user, isOwner, navConfig, templateKey) => {
     main,
     admin: configuredAdmin,
     ordered: [...main, ...configuredAdmin],
-    routeItems: [...routeMain, ...configuredAdmin],
+    routeItems: [...routeMain, ...(administrativeNav ? [administrativeNav] : []), ...configuredAdmin],
     warehouseTabs,
+    administrative,
+    moduleItems,
   };
 };
 
@@ -790,7 +819,7 @@ const Login2 = ({ onDone, notice }) => {
   const switchMode = (next) => {
     if (next === mode) return;
     setMode(next); setErr(""); setP(""); setP2(""); setDone(null);
-    location.hash = next === "apply" ? "#/apply" : next === "join" ? "#/join" : "#/dashboard";
+    location.hash = next === "apply" ? "#/apply" : next === "join" ? "#/join" : "#/research";
   };
 
   $e(() => {
@@ -1020,8 +1049,8 @@ const Login2 = ({ onDone, notice }) => {
           <div className="row g10">
             <PlatformMark size={28}/>
             <div className="col g4">
-              <Label>BONFIRE PLATFORM</Label>
-              <span className="platform-byline">CONNECTED INTELLIGENCE</span>
+              <Label>BONFIRE RESEARCH</Label>
+              <span className="platform-byline">QUESTION · EVIDENCE · DISCOVERY</span>
             </div>
           </div>
           <Label dim>{dateMono}</Label>
@@ -2660,6 +2689,7 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
   const adminItems = navModel.admin;
   const biu = isBiuTemplate(industryTemplateKeyOfBoot(boot));
   const inWarehouse = route === "warehouse" || WAREHOUSE_ROUTE_IDS.includes(route);
+  const inAdministration = route === "administration" || navModel.administrative.some(n => (n.activeRoutes || [n.id]).includes(route));
   const [companyOpen, setCompanyOpen] = $s(false);
   const [applyOpen, setApplyOpen] = $s(false);
   const [joinOpen, setJoinOpen] = $s(false);
@@ -2691,7 +2721,7 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
     }).catch(() => {});
     return () => { alive = false; };
   }, [tenant, user && (user.global_user_id || user.id || user.username), profileRevision]);
-  const brand = (companies.find(c => c.slug === tenant) || {}).name || (biu ? "BIU" : t("倉儲管理"));
+  const brand = (companies.find(c => c.slug === tenant) || {}).name || (biu ? "BIU" : "Bonfire Research");
   const alerts = (boot.ALERTS || []).length;
   const d = new Date();
   const dateMono = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
@@ -2706,6 +2736,12 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
   );
   const accountAvatar = accountIdentity && accountIdentity.avatar;
   const accountName = accountIdentity && accountIdentity.display_name || user.display_name || user.username;
+  const pageContent = <>
+    {W2.WarehouseTabs && inWarehouse ? <W2.WarehouseTabs routes={navModel.warehouseTabs} route={route}/> : null}
+    {inWarehouse
+      ? <div role="tabpanel" id={"warehouse-panel-" + route} aria-labelledby={"warehouse-tab-" + route}>{children}</div>
+      : children}
+  </>;
 
   return (
     <div className={`col w2-shell route-${route}`} style={{ height: "100vh", minHeight: "100dvh" }}>
@@ -2713,13 +2749,13 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
         <div className="mast-top">
           <div className="mast-brand">
             <CompanyMark size={30} branding={branding}/>
-            <span className="wordmark">{biu ? "BIU · LEGAL ETHICS" : "WAREHOUSE OS 2.1"}</span>
+            <span className="wordmark">{biu ? "BIU · LEGAL ETHICS" : "BONFIRE RESEARCH"}</span>
             <span className="label dim" style={{ transform: "translateY(-1px)" }}>{brand}</span>
           </div>
           <div style={{ flex: 1 }}/>
           <span className="label dim">{dateMono}</span>
           <div className="mast-lang"><LangSeg compact/></div>
-          <button className="top-meta mast-actions" onClick={() => W2.openBusinessAction({ route })} title={t("業務操作")}>
+          <button className="top-meta mast-actions" onClick={() => W2.openBusinessAction({ route: route === "administration" ? "" : route })} title={t("業務操作")}>
             <Icon name="plus" size={13}/><span>{t("業務操作")}</span>
           </button>
           <div className="mast-company" style={{ position: "relative" }}>
@@ -2794,15 +2830,15 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
             )}
           </div>
         </div>
-        <nav className="mast-nav">
+        <nav className="mast-nav" aria-label={t("主要導航")}>
           {mainItems.map(n => (
-            <button key={n.id} className={"mnav" + ((n.activeRoutes || [n.id]).includes(route) ? " on" : "")} onClick={() => { location.hash = "#/" + n.id; }}>
+            <button key={n.id} data-nav={n.id} aria-current={(n.activeRoutes || [n.id]).includes(route) ? "page" : undefined} className={"mnav" + (n.id === "research" ? " mnav-research" : "") + ((n.activeRoutes || [n.id]).includes(route) ? " on" : "")} onClick={() => { location.hash = "#/" + n.id; }}>
               <span className="idx">{n.idx}</span>{t(n.label)}
               {n.id === "alerts" && alerts > 0 && <span className="n-badge num">{alerts}</span>}
             </button>
           ))}
           {!!adminItems.length && <span style={{ width: 1, alignSelf: "center", height: 18, background: "var(--rule)", margin: "0 8px" }}/>}
-          {!!adminItems.length && <span className="label" style={{ alignSelf: "center", color: "var(--red)", fontSize: 8.5, marginRight: 2 }}>ADMIN</span>}
+          {!!adminItems.length && <span className="label" style={{ alignSelf: "center", color: "var(--red)", fontSize: 8.5, marginRight: 2 }}>PLATFORM</span>}
           {adminItems.map(n => (
             <button key={n.id} className={"mnav" + (route === n.id ? " on" : "")} onClick={() => { location.hash = "#/" + n.id; }}>
               <span className="idx" style={{ color: "var(--red)" }}>{n.idx}</span>{n.label === "SHIELD" ? "SHIELD" : t(n.label)}
@@ -2823,12 +2859,9 @@ const Shell = ({ user, companies, tenant, onSwitchTenant, onRefreshCompanies, on
       )}
       <main className="main-scroll">
         <div className="page" key={route}>
-          {W2.WarehouseTabs && inWarehouse
-            ? <W2.WarehouseTabs routes={navModel.warehouseTabs} route={route}/>
-            : null}
-          {inWarehouse
-            ? <div role="tabpanel" id={"warehouse-panel-" + route} aria-labelledby={"warehouse-tab-" + route}>{children}</div>
-            : children}
+          {inAdministration && W2.AdministrativeFrame
+            ? <W2.AdministrativeFrame modules={navModel.administrative} route={route} researchAvailable={mainItems.some(n => n.id === "research")}>{pageContent}</W2.AdministrativeFrame>
+            : pageContent}
         </div>
       </main>
       {applyOpen && <ApplyCompanyPanel canApply={canApply} onClose={() => setApplyOpen(false)}/>} 
@@ -3409,7 +3442,7 @@ const App2 = () => {
   if (phase === "checking") return (
     <div className="col" style={{ height: "100vh", alignItems: "center", justifyContent: "center", gap: 16 }}>
       <PlatformMark size={54}/>
-      <Label>CONNECTING — WAREHOUSE OS 2.1</Label>
+      <Label>CONNECTING — BONFIRE RESEARCH</Label>
       <span className="platform-byline">BONFIRE WORKSHOP · PLATFORM SERVICE</span>
     </div>
   );
@@ -3447,7 +3480,8 @@ const App2 = () => {
       navModel={navModel} firstAllowed={firstAllowed} notice={notice} onDismissNotice={() => setNotice("")}>
       {Page
         ? <Page key={`${tenant || ""}:${actorKey}:${route}`} boot={boot} reload={() => check(false)} route={route} isOwner={isOwner} templateKey={activeTemplateKey}
-            navItems={navModel.main} warehouseTabs={navModel.warehouseTabs}/>
+            navItems={route === "dashboard" ? navModel.moduleItems : navModel.main} warehouseTabs={navModel.warehouseTabs}
+            administrativeItems={navModel.administrative} researchAvailable={navModel.main.some(n => n.id === "research")}/>
         : <AccessDenied redirecting={!!firstAllowed}/>}
     </Shell>
   );

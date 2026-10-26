@@ -129,8 +129,8 @@ def test_civilization_assets_are_in_the_production_manifest() -> None:
     assert 'pages/pages-civilization.jsx?v=20260808-civilization19' in index
     assert 'pages/civilization-postcard.js?v=20260808-share4' in index
     assert 'pages/pages-perms.jsx?v=20260815-approval-guard1' in index
-    assert 'app.jsx?v=20260808-civilization-app2' in index
-    assert 'dist/app.bundle.js?v=20260815-approval-guard1' in index
+    assert 'app.jsx?v=20261026-research-first1' in index
+    assert 'dist/app.bundle.js?v=20261026-research-first1' in index
     assert index.index("pages/pages-civilization-mobile.jsx") < index.index(
         "pages/pages-civilization.jsx"
     )
