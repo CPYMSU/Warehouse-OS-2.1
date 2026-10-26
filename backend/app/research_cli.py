@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_BASE_URL = "https://bonfirework.org"
 KEY_ENV = "WAREHOUSE_RESEARCH_KEY"
 BASE_URL_ENV = "WAREHOUSE_BASE_URL"
@@ -42,6 +42,8 @@ CLI_COMMANDS = (
     "file upload|versions|preview|diff|download",
     "document review|annotate|ask",
     "workflow show",
+    "collaboration context|publish",
+    "stage save",
     "dmp show|update",
     "protocol list|create",
     "run list|start|update",
@@ -539,6 +541,42 @@ def build_parser() -> argparse.ArgumentParser:
     document_ask.add_argument("--question", required=True)
     _add_json_option(document_ask, "anchor", "Optional selected-text anchor object")
 
+    collaboration = sub.add_parser(
+        "collaboration", help="Hand a research step to Codex and publish its outputs"
+    ).add_subparsers(dest="action", required=True)
+    context = collaboration.add_parser("context", help="Read the live project and step collaboration contract")
+    _project_option(context)
+    context.add_argument("--stage", required=True)
+    context.add_argument("--format", choices=("json", "prompt"), default="json")
+    context.add_argument("--output", help="Write context or prompt to a UTF-8 file")
+    context.add_argument("--force", action="store_true", help="Replace an existing context output file")
+    publish = collaboration.add_parser("publish", help="Upload a file and attach its immutable version to this step")
+    _project_option(publish)
+    publish.add_argument("--stage", required=True)
+    publish.add_argument("--file", required=True, dest="source")
+    publish.add_argument("--role", required=True, choices=("design", "dataset", "code", "visualization", "report", "other"))
+    publish.add_argument("--title")
+    publish.add_argument("--path", dest="logical_path")
+    publish.add_argument("--message", dest="commit_message")
+    publish.add_argument("--discipline")
+    publish.add_argument("--expected-revision", type=int)
+
+    stage = sub.add_parser("stage", help="Save research progress and collaboration details").add_subparsers(dest="action", required=True)
+    stage_save = stage.add_parser("save")
+    _project_option(stage_save)
+    stage_save.add_argument("--stage", required=True)
+    _add_json_option(stage_save, "payload", "Stage update object, including discipline and expected_revision")
+    stage_save.add_argument("--discipline")
+    stage_save.add_argument("--expected-revision", type=int)
+    stage_save.add_argument("--notes")
+    stage_save.add_argument("--status", choices=("planned", "in_progress", "blocked", "completed"))
+    stage_save.add_argument("--plan")
+    stage_save.add_argument("--findings")
+    stage_save.add_argument("--blockers")
+    stage_save.add_argument("--next-action")
+    stage_save.add_argument("--assignee", choices=("user", "codex", "shared"))
+    _add_json_option(stage_save, "artifacts", "Immutable artifact reference array")
+
     workflow = sub.add_parser("workflow").add_subparsers(dest="action", required=True)
     workflow_show = workflow.add_parser("show")
     _project_option(workflow_show)
@@ -705,6 +743,102 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_context_file(destination: Path, content: str, *, force: bool) -> str:
+    destination = destination.expanduser().resolve()
+    if destination.exists() and not force:
+        raise CliError("Context output already exists; choose another path or use --force")
+    temporary: Path | None = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=destination.parent, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+        os.replace(temporary, destination)
+        temporary = None
+    except OSError as exc:
+        raise CliError(f"Cannot write collaboration context: {exc}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return str(destination)
+
+
+def _collaboration_publish(
+    client: ResearchClient, args: argparse.Namespace, project_path: str
+) -> object:
+    source = Path(args.source).expanduser().resolve()
+    if not source.is_file():
+        raise CliError(f"Upload source is not a regular file: {source}")
+    if args.title is not None and len(args.title) > 200:
+        raise CliError("Artifact title must contain at most 200 characters")
+    artifact_title = args.title if args.title is not None else source.name[:200]
+    context = client.request(
+        "GET", _with_query(f"{project_path}/collaboration", stage=args.stage)
+    )
+    if not isinstance(context, dict) or not isinstance(context.get("stage"), dict):
+        raise CliError("Collaboration context did not contain a stage")
+    permissions = context.get("permissions")
+    if isinstance(permissions, dict) and permissions.get("can_write") is False:
+        raise CliError("Research write permission is required", status=403, exit_code=3)
+    stage = context["stage"]
+    discipline = context.get("discipline")
+    discipline = discipline.get("key") if isinstance(discipline, dict) else discipline
+    if not isinstance(discipline, str) or not discipline:
+        raise CliError("Classify the project before publishing a stage artifact")
+    if args.discipline is not None and args.discipline != discipline:
+        raise CliError("Project discipline changed; refresh collaboration context", status=409, exit_code=3)
+    revision = stage.get("revision", 0)
+    if type(revision) is not int or revision < 0:
+        raise CliError("Collaboration context has an invalid stage revision")
+    if args.expected_revision is not None and args.expected_revision != revision:
+        raise CliError(
+            "Stage revision changed; refresh collaboration context before uploading",
+            kind="revision_conflict", status=409, detail={"current_revision": revision}, exit_code=3,
+        )
+    artifacts = []
+    for item in stage.get("artifact_references", stage.get("artifacts")) or []:
+        if not isinstance(item, dict) or not isinstance(item.get("file_version_id"), str):
+            raise CliError("Collaboration context contains an invalid artifact reference")
+        artifacts.append({key: item[key] for key in ("file_version_id", "role", "title") if key in item})
+    logical_path = args.logical_path or f"results/{args.stage}/{source.name}"
+    uploaded = client.upload(
+        f"{project_path}/files", source, logical_path=logical_path,
+        commit_message=args.commit_message or f"Add {args.role} for research stage {args.stage}",
+        expected_sha256=_sha256(source),
+    )
+    version = uploaded.get("version") if isinstance(uploaded, dict) else None
+    version_id = version.get("id") if isinstance(version, dict) else None
+    if not isinstance(version_id, str) or not version_id:
+        raise CliError(
+            "Upload completed but did not return a version ID; inspect project files before retrying",
+            kind="artifact_attachment_failed", detail={"uploaded": True, "logical_path": logical_path},
+            exit_code=3,
+        )
+    artifacts = [item for item in artifacts if item["file_version_id"] != version_id]
+    artifacts.append({"file_version_id": version_id, "role": args.role, "title": artifact_title})
+    payload = {key: stage[key] for key in (
+        "notes", "status", "plan", "findings", "blockers", "next_action", "assignee"
+    ) if key in stage}
+    if payload.get("status") in (None, "planned"):
+        payload["status"] = "in_progress"
+    payload.update(discipline=discipline, expected_revision=revision, artifacts=artifacts)
+    save_path = f"{project_path}/discipline-workflow/stages/{_ref(args.stage)}"
+    try:
+        result = client.request("PUT", save_path, payload)
+    except CliError as exc:
+        raise CliError(
+            "File uploaded, but stage attachment was not saved. Refresh the stage and attach the existing version; do not re-upload.",
+            kind="artifact_attachment_failed", status=exc.status, request_id=exc.request_id,
+            detail={"uploaded": True, "file_version_id": version_id, "logical_path": logical_path,
+                    "stage": args.stage, "save_path": save_path, "cause": exc.kind},
+            exit_code=exc.exit_code,
+        ) from exc
+    return {"ok": True, "file_version_id": version_id, "logical_path": logical_path,
+            "stage": args.stage, "attached": True, "result": result}
+
+
 def _dispatch(client: ResearchClient, args: argparse.Namespace) -> object:
     group = args.group
     action = getattr(args, "action", None)
@@ -783,6 +917,34 @@ def _dispatch(client: ResearchClient, args: argparse.Namespace) -> object:
             return client.request("POST", f"{file_path}/annotations", payload)
         payload["question"] = args.question
         return client.request("POST", f"{file_path}/questions", payload)
+
+    if group == "collaboration":
+        if action == "publish":
+            return _collaboration_publish(client, args, project_path)
+        result = client.request("GET", _with_query(f"{project_path}/collaboration", stage=args.stage))
+        if not isinstance(result, dict):
+            raise CliError("Collaboration context must be an object")
+        if args.output:
+            content = result.get("prompt") if args.format == "prompt" else json.dumps(result, ensure_ascii=False, indent=2)
+            if not isinstance(content, str):
+                raise CliError("Collaboration context did not contain a text prompt")
+            output = _write_context_file(Path(args.output), content.rstrip() + "\n", force=args.force)
+            return {"ok": True, "output": output, "format": args.format}
+        if args.format == "prompt" and not isinstance(result.get("prompt"), str):
+            raise CliError("Collaboration context did not contain a text prompt")
+        return result
+
+    if group == "stage":
+        payload = _read_json(args.payload, label="stage payload", expected=dict) or {}
+        for name in ("discipline", "expected_revision", "notes", "status", "plan", "findings", "blockers", "next_action", "assignee"):
+            _field(payload, name, getattr(args, name))
+        _field(payload, "artifacts", _read_json(args.artifacts, label="artifacts", expected=list))
+        if not isinstance(payload.get("discipline"), str) or not payload["discipline"]:
+            raise CliError("stage save requires discipline in --payload or --discipline")
+        revision = payload.get("expected_revision")
+        if type(revision) is not int or revision < 0:
+            raise CliError("stage save requires a nonnegative expected_revision in --payload or --expected-revision")
+        return client.request("PUT", f"{project_path}/discipline-workflow/stages/{_ref(args.stage)}", payload)
 
     simple_lists = {
         ("workflow", "show"): "workflow",
@@ -962,7 +1124,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         key = _read_key(args.key_file)
         result = _dispatch(ResearchClient(base_url, key, args.timeout), args)
-        _print_json(result, compact=args.compact)
+        if args.group == "collaboration" and getattr(args, "action", None) == "context" and args.format == "prompt" and not args.output:
+            sys.stdout.write(result["prompt"].rstrip() + "\n")
+        else:
+            _print_json(result, compact=args.compact)
         if (
             args.group == "execution"
             and getattr(args, "action", None) == "watch"

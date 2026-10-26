@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import ActorContext, current_actor
 from app.main import app
-from app.research_cli import KEY_ENV, VERSION, ResearchClient, build_parser, main
+from app.research_cli import CliError, KEY_ENV, VERSION, ResearchClient, build_parser, main
 
 TEST_KEY = "wsk_bonfire_012345abcdef_abcdefghijklmnopqrstuvwxyzABCDEF"
 
@@ -314,3 +314,128 @@ def test_authenticated_cli_manifest_and_download_match() -> None:
     assert hashlib.sha256(download_response.content).hexdigest() == manifest["sha256"]
     assert download_response.headers["x-content-sha256"] == manifest["sha256"]
     assert b"def main(" in download_response.content
+
+
+def test_collaboration_context_exports_prompt_without_credentials(tmp_path, monkeypatch, capsys):
+    observed = []
+
+    def request(client, method, path, payload=None):
+        observed.append((method, path))
+        return {"schema": "bonfire.research.collaboration.v1", "prompt": "Use the current data version.\n保存研究產物。"}
+
+    monkeypatch.setattr(ResearchClient, "request", request)
+    monkeypatch.setenv(KEY_ENV, TEST_KEY)
+    output = tmp_path / "AGENTS.md"
+    assert main(["collaboration", "context", "--project", "mk51", "--stage", "dynamic_equilibrium", "--format", "prompt", "--output", str(output)]) == 0
+    assert "保存研究產物" in output.read_text(encoding="utf-8")
+    assert json.loads(capsys.readouterr().out)["format"] == "prompt"
+    assert observed == [("GET", "/api/research/projects/mk51/collaboration?stage=dynamic_equilibrium")]
+    assert main(["collaboration", "context", "--project", "mk51", "--stage", "question", "--format", "prompt"]) == 0
+    rendered = capsys.readouterr().out
+    assert rendered.startswith("Use the current data version.")
+    assert TEST_KEY not in rendered + output.read_text(encoding="utf-8")
+
+
+def test_stage_save_accepts_versioned_payload_file_and_explicit_fields(tmp_path, monkeypatch, capsys):
+    observed = []
+    payload = tmp_path / "stage.json"
+    payload.write_text(json.dumps({"discipline": "econometrics", "expected_revision": 2, "notes": "Current model", "plan": "Compare estimators"}), encoding="utf-8")
+    monkeypatch.setenv(KEY_ENV, TEST_KEY)
+    monkeypatch.setattr(ResearchClient, "request", lambda client, method, path, payload=None: observed.append((method, path, payload)) or {"ok": True})
+    assert main(["stage", "save", "--project", "mk51", "--stage", "econometric_model", "--payload", "@" + str(payload), "--status", "blocked", "--blockers", "Need variable definitions", "--assignee", "shared"]) == 0
+    assert observed == [("PUT", "/api/research/projects/mk51/discipline-workflow/stages/econometric_model", {
+        "discipline": "econometrics", "expected_revision": 2, "notes": "Current model", "plan": "Compare estimators",
+        "status": "blocked", "blockers": "Need variable definitions", "assignee": "shared",
+    })]
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def _collaboration_context():
+    return {"discipline": {"key": "econometrics"}, "permissions": {"can_write": True}, "stage": {
+        "key": "question", "revision": 3, "notes": "Keep the research question", "status": "blocked",
+        "plan": "Compare assumptions", "findings": "Preliminary association", "blockers": "Need more data",
+        "next_action": "Check missingness", "assignee": "shared",
+        "artifacts": [{"file_version_id": "old-version", "role": "design", "title": "Study design", "download_path": "/safe/download"}],
+    }}
+
+
+def test_collaboration_publish_preserves_stage_and_binds_uploaded_version(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "curve.html"
+    source.write_text("<html>Research visualization</html>", encoding="utf-8")
+    observed = []
+
+    def request(client, method, path, payload=None):
+        observed.append((method, path, payload))
+        if method == "GET":
+            context = _collaboration_context()
+            context["stage"]["artifact_references"] = [
+                {"file_version_id": "old-version", "role": "design", "title": "Study design"},
+                {"file_version_id": "unavailable-version", "role": "report", "title": "Retained historical reference"},
+            ]
+            return context
+        return {"ok": True}
+
+    def upload(client, path, uploaded_source, **kwargs):
+        assert uploaded_source == source.resolve()
+        assert kwargs["expected_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+        assert kwargs["logical_path"] == "results/question/curve.html"
+        return {"version": {"id": "new-version"}, "file": {"id": "file-one"}}
+
+    monkeypatch.setenv(KEY_ENV, TEST_KEY)
+    monkeypatch.setattr(ResearchClient, "request", request)
+    monkeypatch.setattr(ResearchClient, "upload", upload)
+    assert main(["collaboration", "publish", "--project", "mk51", "--stage", "question", "--file", str(source), "--role", "visualization"]) == 0
+    assert observed[1] == ("PUT", "/api/research/projects/mk51/discipline-workflow/stages/question", {
+        "discipline": "econometrics", "expected_revision": 3, "notes": "Keep the research question", "status": "blocked",
+        "plan": "Compare assumptions", "findings": "Preliminary association", "blockers": "Need more data",
+        "next_action": "Check missingness", "assignee": "shared",
+        "artifacts": [{"file_version_id": "old-version", "role": "design", "title": "Study design"},
+                      {"file_version_id": "unavailable-version", "role": "report", "title": "Retained historical reference"},
+                      {"file_version_id": "new-version", "role": "visualization", "title": "curve.html"}],
+    })
+    assert json.loads(capsys.readouterr().out)["attached"] is True
+
+
+def test_collaboration_publish_rejects_long_explicit_title_before_network(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "curve.html"
+    source.write_text("plot", encoding="utf-8")
+    monkeypatch.setenv(KEY_ENV, TEST_KEY)
+    monkeypatch.setattr(ResearchClient, "request", lambda *args, **kwargs: pytest.fail("Title must be checked before the context request"))
+    assert main(["collaboration", "publish", "--project", "mk51", "--stage", "question", "--file", str(source), "--role", "visualization", "--title", "x" * 201]) == 2
+    assert "at most 200" in json.loads(capsys.readouterr().err)["error"]["message"]
+
+
+@pytest.mark.parametrize("stale_before_upload", [False, True])
+def test_collaboration_publish_never_overwrites_conflicting_stage(tmp_path, monkeypatch, capsys, stale_before_upload):
+    source = tmp_path / "results.csv"
+    source.write_bytes(b"x,y\n1,2\n")
+    uploads = []
+    writes = []
+
+    def request(client, method, path, payload=None):
+        if method == "GET":
+            return _collaboration_context()
+        writes.append(payload)
+        raise CliError("Stage changed", kind="http_error", status=409, exit_code=3)
+
+    def upload(*args, **kwargs):
+        uploads.append(kwargs)
+        return {"version": {"id": "retained-version"}}
+
+    monkeypatch.setenv(KEY_ENV, TEST_KEY)
+    monkeypatch.setattr(ResearchClient, "request", request)
+    monkeypatch.setattr(ResearchClient, "upload", upload)
+    args = ["collaboration", "publish", "--project", "mk51", "--stage", "question", "--file", str(source), "--role", "dataset"]
+    if stale_before_upload:
+        args += ["--expected-revision", "1"]
+    assert main(args) == 3
+    captured = capsys.readouterr()
+    error = json.loads(captured.err)["error"]
+    if stale_before_upload:
+        assert error["type"] == "revision_conflict"
+        assert uploads == [] and writes == []
+    else:
+        assert error["type"] == "artifact_attachment_failed"
+        assert error["detail"]["file_version_id"] == "retained-version"
+        assert len(uploads) == 1 and len(writes) == 1
+    assert TEST_KEY not in captured.out + captured.err

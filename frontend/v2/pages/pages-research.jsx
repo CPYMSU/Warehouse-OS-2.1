@@ -2045,10 +2045,10 @@ const Page = () => {
       if (request === detailRequestSerial.current) setDetailBusy(false);
     }
   };
-  const loadWorkflow = async id => {
+  const loadWorkflow = async (id, { background = false } = {}) => {
     const request = ++workflowRequestSerial.current;
     if (!id) { setWorkflow(null); setWorkflowBusy(false); return; }
-    setWorkflowBusy(true);
+    if (!background) setWorkflowBusy(true);
     try {
       const data = await researchRead("/api/research/projects/" + encodeURIComponent(id) + "/workflow");
       if (request === workflowRequestSerial.current) setWorkflow(data);
@@ -2083,6 +2083,24 @@ const Page = () => {
       rememberResearchSelection({ projectId, fileId, tab, section });
     }
   }, [projectId, fileId, tab]);
+  useEffect(() => {
+    if (!["disciplines", "workflow"].includes(section) || !projectId || workflowBusy ||
+      !workflow || clean(workflow.project.id) !== clean(projectId)) return () => {};
+    let pending = false;
+    const refresh = () => {
+      if (pending || document.visibilityState === "hidden" || clean(activeProjectId.current) !== clean(projectId)) return;
+      pending = true;
+      loadWorkflow(projectId, { background: true }).catch(() => {}).finally(() => { pending = false; });
+    };
+    const timer = window.setInterval(refresh, 20000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [section, projectId, workflowBusy, Boolean(workflow && clean(workflow.project.id) === clean(projectId))]);
   useEffect(() => {
     if (section !== "execution" || !projectId || !workflow) return () => {};
     const active = (workflow.executions || []).some(item =>
@@ -2174,6 +2192,12 @@ const Page = () => {
       ...current, dmp: result.dmp, discipline_workflow: result.discipline_workflow,
       stats: { ...current.stats, dmp_version: result.dmp.version },
     } : current);
+    if (result.artifacts_changed) {
+      researchRead("/api/research/projects").then(data => {
+        if (Array.isArray(data.projects)) setProjects(data.projects);
+        if (clean(activeProjectId.current) === clean(id)) return loadDetail(id);
+      }).catch(() => {});
+    }
   };
   const uploadFile = async event => {
     event.preventDefault();

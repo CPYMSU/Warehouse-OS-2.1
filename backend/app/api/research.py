@@ -197,6 +197,19 @@ def research_project_classify(
     return set_project_discipline(actor, project_ref, payload)
 
 
+@router.get("/api/research/projects/{project_ref}/collaboration")
+def research_collaboration_context(
+    project_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    response: Response,
+    stage: str | None = Query(default=None, max_length=100),
+) -> dict[str, object]:
+    from app.services.research_collaboration import collaboration_context
+
+    response.headers["Cache-Control"] = "private, no-store"
+    return collaboration_context(actor, project_ref, stage)
+
+
 @router.put("/api/research/projects/{project_ref}/discipline-workflow/stages/{stage_key}")
 def research_discipline_stage_save(
     project_ref: str,

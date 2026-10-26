@@ -3,6 +3,34 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from uuid import UUID
+
+STAGE_STATUSES = frozenset({"planned", "in_progress", "blocked", "completed"})
+STAGE_ASSIGNEES = frozenset({"user", "codex", "shared"})
+STAGE_TEXT_FIELDS = {"plan": 16000, "findings": 32000, "blockers": 8000, "next_action": 8000}
+ARTIFACT_ROLES = frozenset({"design", "dataset", "code", "visualization", "report", "other"})
+MAX_STAGE_ARTIFACTS = 40
+
+
+def normalized_artifacts(value: object) -> list[dict]:
+    """Normalize stored references only; the service resolves their project membership."""
+    if not isinstance(value, list):
+        return []
+    result, seen = [], set()
+    for item in value[:MAX_STAGE_ARTIFACTS]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            version_id = str(UUID(str(item.get("file_version_id") or "")))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        role = item.get("role", "other")
+        if not isinstance(role, str) or role not in ARTIFACT_ROLES or version_id in seen:
+            continue
+        seen.add(version_id)
+        result.append({"file_version_id": version_id, "role": role,
+                       "title": item.get("title", "")[:200] if isinstance(item.get("title", ""), str) else ""})
+    return result
 
 
 def _step(key: str, title: str, en: str, output: str, prompt: str, workspace: str) -> dict:
@@ -154,12 +182,19 @@ def discipline_workflow(project: dict, content: dict | None) -> dict:
         status = value.get("status")
         stages[name] = {
             "notes": value.get("notes") if isinstance(value.get("notes"), str) else "",
-            "status": status if isinstance(status, str) and status in {"planned", "in_progress", "completed"} else "planned",
+            "status": status if isinstance(status, str) and status in STAGE_STATUSES else "planned",
             "revision": value["revision"] if type(value.get("revision")) is int and value["revision"] >= 0 else 0,
             "updated_at": value.get("updated_at") if isinstance(value.get("updated_at"), str) else None,
             "updated_by": value.get("updated_by") if isinstance(value.get("updated_by"), str) else None,
+            **{field: value[field][:limit] if isinstance(value.get(field), str) else ""
+               for field, limit in STAGE_TEXT_FIELDS.items()},
+            "assignee": value.get("assignee") if isinstance(value.get("assignee"), str) and value["assignee"] in STAGE_ASSIGNEES else "shared",
+            "artifacts": normalized_artifacts(value.get("artifacts")),
         }
     return {"discipline": key, "template_version": 1, "stages": stages,
             "total": len(allowed),
             "completed": sum(item.get("status") == "completed" and bool(str(item.get("notes") or "").strip())
-                             for item in stages.values())}
+                             for item in stages.values()),
+            "in_progress": sum(item["status"] == "in_progress" for item in stages.values()),
+            "blocked": sum(item["status"] == "blocked" for item in stages.values()),
+            "artifact_count": len({artifact["file_version_id"] for item in stages.values() for artifact in item["artifacts"]})}

@@ -15,6 +15,11 @@ from sqlalchemy.orm import Session
 
 from app.db.session import tenant_session
 from app.services.research_disciplines import (
+    ARTIFACT_ROLES,
+    MAX_STAGE_ARTIFACTS,
+    STAGE_ASSIGNEES,
+    STAGE_STATUSES,
+    STAGE_TEXT_FIELDS,
     discipline_template,
     discipline_workflow,
     project_discipline,
@@ -351,15 +356,39 @@ def save_discipline_stage(
     template = discipline_template(supplied_discipline) if isinstance(supplied_discipline, str) else None
     if not template or stage_key not in {item["key"] for item in template["stages"]}:
         raise HTTPException(status_code=422, detail="Unknown discipline workflow stage")
-    stage_status = payload.get("status", "in_progress")
-    if not isinstance(stage_status, str) or stage_status not in {"planned", "in_progress", "completed"}:
-        raise HTTPException(status_code=422, detail="Invalid discipline stage status")
-    notes = payload.get("notes", "")
-    if not isinstance(notes, str) or len(notes) > 32000:
-        raise HTTPException(status_code=422, detail="Stage notes must be text of at most 32000 characters")
-    notes = notes.strip()
-    if stage_status == "completed" and not notes:
-        raise HTTPException(status_code=422, detail="Record the stage outcome before marking it complete")
+    changes = {}
+    for field, limit in {"notes": 32000, **STAGE_TEXT_FIELDS}.items():
+        if field not in payload:
+            continue
+        value = payload[field]
+        if not isinstance(value, str) or len(value) > limit:
+            raise HTTPException(status_code=422, detail=f"{field} must be text of at most {limit} characters")
+        changes[field] = value.strip()
+    if "status" in payload:
+        if not isinstance(payload["status"], str) or payload["status"] not in STAGE_STATUSES:
+            raise HTTPException(status_code=422, detail="Invalid discipline stage status")
+        changes["status"] = payload["status"]
+    if "assignee" in payload:
+        if not isinstance(payload["assignee"], str) or payload["assignee"] not in STAGE_ASSIGNEES:
+            raise HTTPException(status_code=422, detail="Invalid stage assignee")
+        changes["assignee"] = payload["assignee"]
+    if "artifacts" in payload:
+        supplied_artifacts = payload["artifacts"]
+        if not isinstance(supplied_artifacts, list) or len(supplied_artifacts) > MAX_STAGE_ARTIFACTS:
+            raise HTTPException(status_code=422, detail=f"artifacts must be an array of at most {MAX_STAGE_ARTIFACTS} references")
+        references, seen = [], set()
+        for item in supplied_artifacts:
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=422, detail="Invalid artifact reference")
+            identifier = _uuid(item.get("file_version_id"))
+            role, title = item.get("role", "other"), item.get("title", "")
+            if identifier is None or not isinstance(role, str) or role not in ARTIFACT_ROLES or not isinstance(title, str) or len(title) > 200:
+                raise HTTPException(status_code=422, detail="Invalid artifact version, role or title")
+            if str(identifier) in seen:
+                raise HTTPException(status_code=422, detail="Duplicate artifact version")
+            seen.add(str(identifier))
+            references.append({"file_version_id": str(identifier), "role": role, "title": title.strip()})
+        changes["artifacts"] = references
     revision = payload.get("expected_revision")
     if type(revision) is not int or revision < 0:
         raise HTTPException(status_code=422, detail="expected_revision must be a nonnegative integer")
@@ -377,18 +406,33 @@ def save_discipline_stage(
         prior_revision = prior_revision if type(prior_revision) is int else 0
         if revision != prior_revision:
             raise HTTPException(status_code=409, detail="This stage changed; reload before saving your draft")
+        if changes.get("artifacts"):
+            identifiers = [item["file_version_id"] for item in changes["artifacts"]]
+            owned = session.execute(
+                text("SELECT v.id FROM research.file_versions v "
+                     "JOIN research.files f ON f.id = v.file_id AND f.project_id = v.project_id AND f.tenant_id = v.tenant_id "
+                     "WHERE v.project_id = :project_id AND v.tenant_id = :tenant_id AND f.status = 'active' "
+                     "AND v.id = ANY(CAST(:version_ids AS uuid[]))"),
+                {"project_id": project["id"], "tenant_id": actor.tenant_id, "version_ids": identifiers},
+            ).mappings().all()
+            if {str(item["id"]) for item in owned} != set(identifiers):
+                raise HTTPException(status_code=422, detail="Artifact version does not belong to this research project")
         workflows = content.get("discipline_workflows")
         workflows = dict(workflows) if isinstance(workflows, dict) else {}
         stages = workflows.get(supplied_discipline)
         stages = dict(stages) if isinstance(stages, dict) else {}
-        stage = {"notes": notes, "status": stage_status, "revision": revision + 1,
+        stage = {"notes": "", "status": "in_progress", "assignee": "shared", "artifacts": [],
+                 **{field: "" for field in STAGE_TEXT_FIELDS}, **before, **changes, "revision": revision + 1,
                  "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": str(actor.user_id)}
+        if stage["status"] == "completed" and not stage["notes"]:
+            raise HTTPException(status_code=422, detail="Record the stage outcome before marking it complete")
         stages[stage_key] = stage
         workflows[supplied_discipline] = stages
         row = _save_dmp_revision(session, actor, project, {"discipline_workflows": workflows})
         _audit(session, actor, "research.discipline.stage_updated", {
             "project_id": project["id"], "discipline": supplied_discipline,
-            "stage": stage_key, "revision": stage["revision"], "status": stage_status,
+            "stage": stage_key, "revision": stage["revision"], "status": stage["status"],
+            "artifacts": len(stage["artifacts"]), "assignee": stage["assignee"],
         })
     return {"ok": True, "dmp": _json_safe(row),
             "discipline_workflow": discipline_workflow(project, row["content"])}
