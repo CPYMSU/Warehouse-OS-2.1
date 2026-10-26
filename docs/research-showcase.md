@@ -30,6 +30,14 @@ exact file manifest; the authenticated parent fetches the next page. PDFs
 use authenticated fetches and revocable blob URLs. Selecting another tenant
 clears the prior edition and pending responses.
 
+Opening a document immediately reveals and focuses the reader. A Swiss grid
+animation identifies connection, byte transfer and page composition separately;
+the byte count and percentage use the actual response stream and edition file
+size. The indicator remains until the HTML/PDF frame has loaded. Slow requests
+retain visible feedback, and failures offer retry inside the reading panel.
+Closing or switching documents aborts the prior transfer. Reduced-motion
+preferences retain the progress information without animation.
+
 ## Update an edition
 
 With the selected reading server running on the author's computer:

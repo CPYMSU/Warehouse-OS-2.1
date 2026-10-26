@@ -1654,6 +1654,75 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   </div>;
 };
 
+const readResearchShowcase = async (response, onProgress) => {
+  if (!response.body || !response.body.getReader) {
+    const blob = await response.blob();
+    onProgress(blob.size);
+    return blob;
+  }
+  const stream = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  let reportedAt = 0;
+  try {
+    while (true) {
+      const { done, value } = await stream.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+      if (performance.now() - reportedAt >= 80) {
+        onProgress(received);
+        reportedAt = performance.now();
+      }
+    }
+  } finally { stream.releaseLock(); }
+  onProgress(received);
+  return new Blob(chunks, { type: response.headers.get("Content-Type") || "application/octet-stream" });
+};
+
+const ResearchShowcaseLoading = ({ phase = "connecting", received = 0, total = 0, catalogue = false }) => {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(timer);
+  }, []);
+  const phases = [
+    ["connecting", "CONNECT", "建立連線"],
+    ["transferring", "RECEIVE", "接收內容"],
+    ["rendering", "COMPOSE", "準備閱讀"],
+  ];
+  const index = Math.max(0, phases.findIndex(item => item[0] === phase));
+  const percent = total > 0 ? Math.min(100, Math.floor(received / total * 100)) : null;
+  const determinate = percent !== null && received > 0;
+  const message = catalogue ? "正在載入研究目錄" : phase === "rendering" ? "正在準備閱讀畫面" : "正在載入研究內容";
+  return <div className={"rv-atlas-loading" + (catalogue ? " catalogue" : "")} data-testid="research-showcase-loading">
+    <div className="rv-atlas-loading-register" aria-hidden="true"><span>THE RESEARCH ATLAS</span><span>READER / {String(index + 1).padStart(2, "0")}</span></div>
+    <div className="rv-atlas-loading-body">
+      <div className="rv-atlas-loading-mark" aria-hidden="true">
+        <svg viewBox="0 0 160 128" fill="none">
+          <path className="register" d="M0 8H16M8 0V16M144 8H160M152 0V16M0 120H16M8 112V128M144 120H160M152 112V128"/>
+          <path className="grid" d="M28 20V108M62 20V108M96 20V108M130 20V108M22 30H138M22 64H138M22 98H138"/>
+          <rect className="type-line line-one" x="39" y="27" width="81" height="6"/>
+          <rect className="type-line line-two" x="39" y="61" width="62" height="6"/>
+          <rect className="type-line line-three" x="39" y="95" width="76" height="6"/>
+          <rect className="red-cell" x="23" y="25" width="10" height="10"/>
+        </svg>
+        <span>{String(index + 1).padStart(2, "0")}<i>/ 03</i></span>
+      </div>
+      <div className="rv-atlas-loading-copy">
+        <span className="rv-atlas-loading-kicker">{phases[index][1]} / {phases[index][2]}</span>
+        <h4 role="status" aria-live="polite">{message}<span className="rv-atlas-loading-dot" aria-hidden="true">.</span></h4>
+        <p>{phase === "rendering" ? "內容已接收，正在排版文字、公式與圖表。" : slow ? "連線較慢，內容仍在載入中，請稍候。" : "論文、公式與互動圖表，正在為你就位。"}</p>
+        <div className="rv-atlas-loading-transfer" aria-hidden="true"><span>{received > 0 ? compact(received) + (total > 0 ? " / " + compact(total) : "") : total > 0 ? compact(total) + " · 等候傳送" : "正在取得內容"}</span><b>{determinate ? percent + "%" : "—"}</b></div>
+        <div className={"rv-atlas-loading-track" + (!determinate ? " indeterminate" : "")} role="progressbar" aria-label="文件接收進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={determinate ? percent : undefined}>
+          <i style={determinate ? { width: percent + "%" } : undefined}/>
+        </div>
+      </div>
+    </div>
+    <ol className="rv-atlas-loading-steps" aria-label="載入階段">{phases.map(([key, en, zh], position) => <li key={key} className={position < index ? "complete" : position === index ? "current" : ""} aria-current={position === index ? "step" : undefined}><span>{String(position + 1).padStart(2, "0")}</span><b>{zh}</b><small>{en}</small></li>)}</ol>
+  </div>;
+};
+
 const ResearchShowcase = () => {
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState("");
@@ -1662,24 +1731,29 @@ const ResearchShowcase = () => {
   const [selected, setSelected] = useState(null);
   const [content, setContent] = useState("");
   const [pdf, setPdf] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loadPhase, setLoadPhase] = useState("idle");
+  const [received, setReceived] = useState(0);
+  const [readerError, setReaderError] = useState("");
   const [expanded, setExpanded] = useState(false);
   const reader = useRef(null);
   const frame = useRef(null);
   const request = useRef(0);
   const anchor = useRef("");
   const pdfObject = useRef("");
+  const transfer = useRef(null);
+  const loading = ["connecting", "transferring", "rendering"].includes(loadPhase);
   const tenant = W2.tenant();
   useEffect(() => {
     let active = true;
     request.current += 1;
-    setCatalog(null); setSelected(null); setContent(""); setPdf(""); setError(""); setExpanded(false);
+    setCatalog(null); setSelected(null); setContent(""); setPdf(""); setError(""); setExpanded(false); setLoadPhase("idle"); setReaderError("");
     researchRead("/api/research/showcase").then(data => {
       if (active) setCatalog(data);
     }).catch(reason => { if (active) setError(reason.message); });
     return () => {
       active = false;
       request.current += 1;
+      if (transfer.current) transfer.current.abort();
       if (pdfObject.current) URL.revokeObjectURL(pdfObject.current);
     };
   }, [tenant]);
@@ -1688,40 +1762,55 @@ const ResearchShowcase = () => {
     window.addEventListener("keydown", escape);
     return () => window.removeEventListener("keydown", escape);
   }, []);
+  useLayoutEffect(() => {
+    if (!selected || !reader.current) return;
+    reader.current.focus({ preventScroll: true });
+    reader.current.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  }, [selected && selected.requestId]);
   const open = async logicalPath => {
     const [path, fragment = ""] = logicalPath.split("#");
     if (!catalog || !Object.prototype.hasOwnProperty.call(catalog.files || {}, path)) return;
     const serial = ++request.current;
+    if (transfer.current) transfer.current.abort();
+    const controller = new AbortController();
+    transfer.current = controller;
     const document = catalog.documents.find(item => item.path === path) || {
       path, title: path === "index.html" ? "研究目錄" : path.split("/").pop(),
       kind: path.endsWith(".pdf") ? "paper" : "page",
     };
-    setSelected(document);
-    setLoading(true);
+    setSelected({ ...document, requestId: serial, bytes: Number((catalog.files[path] || {}).bytes) || document.bytes || 0 });
+    setLoadPhase("connecting");
+    setReceived(0);
+    setReaderError("");
     setError("");
     setContent("");
     setPdf("");
     anchor.current = fragment;
     if (pdfObject.current) { URL.revokeObjectURL(pdfObject.current); pdfObject.current = ""; }
     try {
-      const response = await W2.fetch("/api/research/showcase/content/" + path.split("/").map(encodeURIComponent).join("/"), { cache: "no-store" });
+      const response = await W2.fetch("/api/research/showcase/content/" + path.split("/").map(encodeURIComponent).join("/"), { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw await apiError(response);
+      if (serial !== request.current) return;
+      setLoadPhase("transferring");
+      const blob = await readResearchShowcase(response, bytes => {
+        if (serial === request.current) setReceived(bytes);
+      });
+      if (serial !== request.current) return;
       if (path.endsWith(".pdf")) {
-        const blob = await response.blob();
-        if (serial !== request.current) return;
         pdfObject.current = URL.createObjectURL(blob);
         setPdf(pdfObject.current);
       } else {
-        const html = await response.text();
+        const html = await blob.text();
         if (serial !== request.current) return;
         setContent(html);
       }
+      setLoadPhase("rendering");
     } catch (reason) {
-      if (serial === request.current) setError(reason.message);
-    } finally {
-      if (serial === request.current) setLoading(false);
+      if (serial === request.current && reason.name !== "AbortError") {
+        setReaderError(reason.message);
+        setLoadPhase("error");
+      }
     }
-    requestAnimationFrame(() => { if (reader.current) reader.current.scrollIntoView({ behavior: "smooth", block: "start" }); });
   };
   useEffect(() => {
     const navigate = event => {
@@ -1733,7 +1822,8 @@ const ResearchShowcase = () => {
   }, [catalog]);
   const close = () => {
     request.current += 1;
-    setSelected(null); setExpanded(false); setContent(""); setPdf(""); setLoading(false);
+    if (transfer.current) transfer.current.abort();
+    setSelected(null); setExpanded(false); setContent(""); setPdf(""); setLoadPhase("idle"); setReaderError("");
     if (pdfObject.current) { URL.revokeObjectURL(pdfObject.current); pdfObject.current = ""; }
   };
   const documents = (catalog && catalog.documents) || [];
@@ -1742,7 +1832,12 @@ const ResearchShowcase = () => {
   const papers = visible.filter(item => item.kind === "paper");
   const pages = visible.filter(item => item.kind !== "paper");
   const kindLabel = { paper: "PDF 論文", interactive: "互動模型", page: "研究頁面" };
-  if (!catalog && !error) return <div className="rv-atlas-state" role="status">正在載入研究展示…</div>;
+  const readerReady = () => {
+    if (!selected || selected.requestId !== request.current) return;
+    setLoadPhase("ready");
+    if (anchor.current && frame.current) frame.current.contentWindow.postMessage({ type: "bonfire-research-anchor", anchor: anchor.current }, "*");
+  };
+  if (!catalog && !error) return <div className="rv-atlas"><ResearchShowcaseLoading catalogue/></div>;
   return <div className="rv-atlas" data-testid="research-showcase">
     <section className="rv-atlas-hero">
       <div className="rv-atlas-intro"><span className="rv-atlas-eyebrow">THE RESEARCH ATLAS / 研究展示</span>
@@ -1772,26 +1867,27 @@ const ResearchShowcase = () => {
       {papers.length > 0 && <section className="rv-atlas-section"><header><h3><small>01 / MANUSCRIPTS</small>讀論文</h3><span>全文與摘要 · PDF</span></header>
         <div className="rv-atlas-papers">{papers.map((item, index) => <button type="button" key={item.path} onClick={() => open(item.path)} className={selected && selected.path === item.path ? "selected" : ""}>
           <div className="rv-atlas-paper-mark"><span>{item.group.toUpperCase()}</span><b>{String(index + 1).padStart(2, "0")}</b><i>PDF ↗</i></div>
-          <div><h4>{item.title}</h4><p>{item.description}</p><small>{compact(item.bytes)}<span>閱讀全文 →</span></small></div>
+          <div><h4>{item.title}</h4><p>{item.description}</p><small>{compact(item.bytes)}<span>{loading && selected && selected.path === item.path ? <><i className="rv-atlas-card-loading" aria-hidden="true"/>正在開啟</> : "閱讀全文 →"}</span></small></div>
         </button>)}</div></section>}
       {pages.length > 0 && <section className="rv-atlas-section"><header><h3><small>02 / IDEAS IN MOTION</small>走進模型與論證</h3><span>{pages.length} 個閱讀入口</span></header>
         <div className="rv-atlas-pages">{pages.map((item, index) => <button type="button" key={item.path} onClick={() => open(item.path)} className={selected && selected.path === item.path ? "selected" : ""}>
           <div className="rv-atlas-card-meta"><span>{item.group.toUpperCase()} / {String(index + 1).padStart(2, "0")}</span><b>{kindLabel[item.kind]}</b></div>
-          <h4>{item.title}</h4><p>{item.description}</p><footer><span>開始閱讀</span><b>↗</b></footer>
+          <h4>{item.title}</h4><p>{item.description}</p><footer><span>{loading && selected && selected.path === item.path ? <><i className="rv-atlas-card-loading" aria-hidden="true"/>正在開啟</> : "開始閱讀"}</span><b>↗</b></footer>
         </button>)}</div></section>}
       {!visible.length && <div className="rv-atlas-state" role="status">找不到符合的研究。試試其他關鍵字或切換主題。</div>}
       <footer className="rv-atlas-footnote"><span>研究工作稿 · 版本以本次同步日期為準</span><button type="button" onClick={() => open("index.html")}>瀏覽完整目錄與歷史版本 ↗</button></footer>
     </>}
-    {selected && <section ref={reader} className={"rv-atlas-reader" + (expanded ? " expanded" : "")} aria-label="研究閱讀區">
+    {selected && <section ref={reader} tabIndex={-1} className={"rv-atlas-reader" + (expanded ? " expanded" : "")} aria-label="研究閱讀區" aria-busy={loading}>
       <header><div><span>{selected.kind === "paper" ? "MANUSCRIPT / PDF" : "RESEARCH READER"}</span><h3>{selected.title}</h3></div>
         <div>{pdf && <a className="btn" href={pdf} download={selected.path.split("/").pop()}>下載 PDF</a>}
           <button type="button" className="btn" onClick={() => setExpanded(value => !value)} aria-pressed={expanded}>{expanded ? "收合閱讀" : "展開閱讀"}</button>
           <button type="button" className="btn" onClick={close}>關閉</button></div></header>
-      {loading && <div className="rv-atlas-state" role="status">正在開啟研究內容…</div>}
-      {!loading && content && <iframe ref={frame} key={selected.path} title={selected.title} srcDoc={content} sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" onLoad={() => {
-        if (anchor.current && frame.current) frame.current.contentWindow.postMessage({ type: "bonfire-research-anchor", anchor: anchor.current }, "*");
-      }}/>}
-      {!loading && pdf && <iframe title={selected.title} src={pdf}/>}
+      <div className={"rv-atlas-reader-stage" + (loading ? " is-loading" : "")}>
+        {loading && <ResearchShowcaseLoading key={"loading-" + selected.requestId} phase={loadPhase} received={received} total={selected.bytes}/>}
+        {readerError && <div className="rv-atlas-load-error" role="alert"><span>READER / RETRY</span><h4>內容暫時未能載入</h4><p>{readerError}</p><button type="button" className="btn" onClick={() => open(selected.path)}>重新載入 →</button></div>}
+        {content && <iframe ref={frame} key={"html-" + selected.requestId} title={selected.title} srcDoc={content} tabIndex={loading ? -1 : 0} aria-hidden={loading} sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" onLoad={readerReady}/>}
+        {pdf && <iframe key={"pdf-" + selected.requestId} title={selected.title} src={pdf} tabIndex={loading ? -1 : 0} aria-hidden={loading} onLoad={readerReady}/>}
+      </div>
     </section>}
   </div>;
 };
