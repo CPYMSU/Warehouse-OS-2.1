@@ -139,6 +139,11 @@ Vultr. Both candidates are prepared in parallel; standby schema runs before
 primary data, replication is refreshed and verified, and activation is sent
 to both nodes together. Dispatching computers only need GitHub authorization.
 
+Standby preparation uses the same pinned public SSH endpoint as its status
+and activation commands. `WAREHOUSE_STANDBY_PREPARE_HOST` can select a separate
+preparation route when required. Both routes retain the restricted deployment
+identity, strict host-key checks and all two-node activation gates.
+
 Before an ordinary coordinated deployment starts, the Mac runner executes
 `ops/macos/audit-runtime-storage`. The gate verifies that the governed runtime
 root is a dedicated external volume of at least 2 TB and that both the API and

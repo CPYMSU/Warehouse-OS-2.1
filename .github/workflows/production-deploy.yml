@@ -46,9 +46,9 @@ jobs:
       WAREHOUSE_PRIMARY_MANAGER_SUDO: "0"
       WAREHOUSE_PRIMARY_PREPARE_INCOMING: "0"
       WAREHOUSE_STANDBY_TRANSPORT: ssh
-      # Use the authenticated Tailscale path only for the large release
-      # upload. Short status/activation commands retain the public SSH route.
-      WAREHOUSE_STANDBY_PREPARE_HOST: 100.98.166.49
+      # Preparation uses the standby's existing, host-key-verified SSH route,
+      # matching the status and activation control channel.
+      WAREHOUSE_STANDBY_PREPARE_HOST: 207.148.120.30
     steps:
       - uses: actions/checkout@v4
         env:

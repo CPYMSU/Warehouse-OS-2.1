@@ -73,9 +73,8 @@ run_node() {
   fi
   read -r action_command action_argument <<<"${action}"
   if [[ "${prefix}" == WAREHOUSE_STANDBY && "${action_command}" == prepare ]]; then
-    # The standby's Tailscale route is reliable for the bounded release upload,
-    # while short control-plane SSH commands are more reliable on its public
-    # address.  Keep these routes independently configurable.
+    # Keep preparation independently configurable while using the same
+    # authenticated control-plane endpoint by default.
     host="$(node_value "${prefix}" PREPARE_HOST "${host}")"
   fi
   [[ "${action_command}" =~ ^(prepare|prepared-status|migration-start|migration-status|migration-wait|migration-reconcile|activate|status|rollback)$ ]] \
