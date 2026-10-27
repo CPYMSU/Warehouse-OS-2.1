@@ -37,6 +37,7 @@ from app.services.research_execution import (
     retry_execution,
 )
 from app.services.research_ai_assessment import list_ai_reviews, run_ai_review
+from app.services.research_committee import answer_committee, list_committee, start_committee
 from app.services.research_refinement import (
     publish_refinement,
     rebase_refinement,
@@ -650,6 +651,24 @@ def research_ai_review_reply(
     payload: dict[str, object] = Body(...),
 ) -> dict[str, object]:
     return run_ai_review(actor, project_ref, payload, settings, str(review_id))
+
+
+@router.get("/api/research/projects/{project_ref}/committee")
+def research_committee_list(project_ref: str, actor: Annotated[ActorContext, Depends(current_actor)], response: Response, offset: int = 0) -> dict[str, object]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return list_committee(actor, project_ref, offset=offset)
+
+
+@router.post("/api/research/projects/{project_ref}/committee/start")
+def research_committee_start(project_ref: str, actor: Annotated[ActorContext, Depends(current_actor)],
+                             settings: Annotated[Settings, Depends(get_settings)], payload: dict[str, object] = Body(default={})) -> dict[str, object]:
+    return start_committee(actor, project_ref, settings)
+
+
+@router.post("/api/research/projects/{project_ref}/committee/{session_id}/answer")
+def research_committee_answer(project_ref: str, session_id: UUID, actor: Annotated[ActorContext, Depends(current_actor)],
+                              settings: Annotated[Settings, Depends(get_settings)], payload: dict[str, object] = Body(...)) -> dict[str, object]:
+    return answer_committee(actor, project_ref, session_id, payload, settings)
 
 
 @router.get("/api/research/projects/{project_ref}/dmp")

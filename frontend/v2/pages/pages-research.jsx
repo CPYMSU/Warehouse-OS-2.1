@@ -66,6 +66,7 @@ const RESEARCH_TABS = [
   ["showcase", "研究展示"],
   ["projects", "課題庫"],
   ["refinement", "論文精修"],
+  ["committee", "模擬答辯"],
   ["evidence", "證據與覆核"],
   ["execution", "重現運算"],
   ["revisions", "版本譜系"],
@@ -2414,6 +2415,7 @@ const Page = () => {
     guide: ["R02", "RESEARCH COMPASS", "論文導引", "把一個模糊想法推進為可提交論文：每一步都有產出、完成條件與下一個動作。"],
     projects: ["R03", "PROJECT LIBRARY", "課題庫", "每個課題都是獨立 Git 空間；文件、數據、代碼與提交保持同步。"],
     refinement: ["R04", "MANUSCRIPT REFINEMENT", "論文精修", "提取正文、圖像與表格，在瀏覽器本地精修內容；草稿即時同步，正式提交才生成新版本。"],
+    committee: ["R12", "THE DEFENSE ROOM", "模擬答辯", "用簡單的問題，練習把你的研究講清楚。"],
     workflow: ["R05", "RESEARCH OPERATING MODEL", "研究流程", "把研究問題、資料治理、協議與每一次 Run 連成可執行的工作流。"],
     evidence: ["R06", "CLAIM — EVIDENCE", "證據與覆核", "每項主張都必須指向精確資料版本或 Run，經覆核後才進入研究發布。"],
     execution: ["R07", "REPRODUCIBLE COMPUTE", "重現運算", "把固定文件版本送進受控計算環境，讓日誌、產物與結果雜湊回到證據鏈。"],
@@ -2428,6 +2430,7 @@ const Page = () => {
     guide: selectedProject ? "09" : "—",
     projects: totals.files,
     refinement: refinementFiles.length,
+    committee: "21",
     workflow: workflow ? (workflow.stats.protocols + workflow.stats.runs) : 0,
     evidence: workflow ? workflow.stats.claims : 0,
     execution: workflow ? workflow.stats.executions : 0,
@@ -3118,6 +3121,8 @@ const Page = () => {
       {section === "disciplines" && disciplineWorkspace}
 
       {section === "showcase" && <ResearchShowcase/>}
+
+      {section === "committee" && <W2.ResearchCommittee project={selectedProject} projects={visibleProjects} onProject={selectProject} canWrite={canWrite}/>}
 
       {section === "overview" && <>
         <button type="button" className="rv-atlas-entry" onClick={() => selectSection("showcase")}><span>NEW / THE RESEARCH ATLAS</span><strong>研究展示</strong><p>MK73 / MK77 / MK78 / MK79 · 論文、互動模型與方法學習</p><b>走進研究 →</b></button>
