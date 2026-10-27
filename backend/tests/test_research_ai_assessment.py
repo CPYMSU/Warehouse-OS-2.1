@@ -123,6 +123,86 @@ def test_initial_review_is_fast_grounded_and_preserves_manual_assessment(state):
     assert readback['reviews'][0]['history'][0]['kind'] == 'initial'
 
 
+def stage_result(dimension, stage_key, *, defense='unassessed', evidence='insufficient', cited=False):
+    result = model_result(dimension, defense=defense, evidence=evidence, cited=cited)
+    criterion = result['dimensions'][0]['criteria'][0]
+    criterion['key'] = stage_key
+    result['dimensions'][0]['criteria'] = [criterion]
+    for question in result['questions']:
+        question['criterion'] = stage_key
+    return result
+
+
+def test_specialist_stage_and_defense_keep_manual_progress_and_history(state):
+    state.project['metadata']['research_discipline'] = 'econometrics'
+    manual = copy.deepcopy(state.content['research_dashboard_assessment'])
+    state.output = stage_result('theory', 'phenomenon', evidence='supported', cited=True)
+    first = state.start(stage_key='phenomenon')['review']
+    assert first['discipline'] == 'econometrics' and first['stage_key'] == 'phenomenon'
+    assert first['stage_title'] in first['specialist']['name'] and first['dimension'] == 'theory'
+    dimension = first['result']['dimensions'][0]
+    assert dimension['criteria'][0]['key'] == 'phenomenon'
+    assert dimension['evidence_verdict'] == 'partial'  # A manuscript statement is not observed data.
+    assert '資料或分析產物' in dimension['criteria'][0]['gaps'][0]
+    prompt = json.loads(state.calls[0]['user_prompt'])
+    assert prompt['stage']['key'] == 'phenomenon' and prompt['rubric']['theory'] == {'phenomenon': first['stage_title']}
+    assert prompt['specialists'][0]['name'] == first['specialist']['name']
+    state.output = stage_result('theory', 'phenomenon', defense='clear', evidence='supported', cited=True)
+    second = state.reply(first)['review']
+    assert second['revision'] == 2 and len(second['history']) == 2
+    assert second['result']['dimensions'][0]['defense_verdict'] == 'clear'
+    assert state.content['research_dashboard_assessment'] == manual
+    assert 'discipline_workflows' not in state.content
+
+
+def test_stage_rejects_unknown_or_changed_discipline_before_calling_provider(state):
+    state.project['metadata']['research_discipline'] = 'econometrics'
+    with pytest.raises(HTTPException) as error:
+        state.start(stage_key='not_a_stage')
+    assert error.value.status_code == 422 and not state.calls
+    state.output = stage_result('theory', 'phenomenon')
+    first = state.start(stage_key='phenomenon')['review']
+    state.project['metadata']['research_discipline'] = 'theoretical_science'
+    with pytest.raises(HTTPException) as error:
+        state.reply(first, refresh_context=True)
+    assert error.value.status_code == 409 and len(state.calls) == 1
+
+
+def test_changed_stage_rubric_marks_review_stale_and_requires_new_review(state, monkeypatch):
+    state.project['metadata']['research_discipline'] = 'econometrics'
+    state.output = stage_result('theory', 'phenomenon')
+    first = state.start(stage_key='phenomenon')['review']
+    template = service.discipline_template('econometrics')
+    next(item for item in template['stages'] if item['key'] == 'phenomenon')['prompt'] = 'Changed criterion'
+    monkeypatch.setattr(service, 'discipline_template', lambda key: template)
+    assert service.list_ai_reviews(actor(), UUID(int=3))['reviews'][0]['stale']
+    with pytest.raises(HTTPException) as error:
+        state.reply(first, refresh_context=True)
+    assert error.value.status_code == 409 and len(state.calls) == 1
+
+
+@pytest.mark.parametrize('discipline', ['data_science', 'engineering_science', 'theoretical_science', 'econometrics'])
+def test_every_stage_has_a_discipline_specific_specialist_and_safe_scope(state, discipline):
+    state.project['metadata']['research_discipline'] = discipline
+    snapshot = {'project': state.project, 'content': state.content}
+    template = service.discipline_template(discipline)
+    assert len({stage['key'] for stage in template['stages']}) == len(template['stages'])
+    for expected in template['stages']:
+        resolved, stage, dimension, specialist = service._stage_for_review(snapshot, expected['key'])
+        assert resolved == discipline and stage == expected and dimension in workflow.DASHBOARD_CHECKS
+        assert template['title'] in specialist['name'] and stage['title'] in specialist['name']
+        assert specialist['focus'] == stage['prompt']
+
+
+def test_four_dimensions_get_distinct_real_specialist_prompts(state):
+    for dimension in workflow.DASHBOARD_CHECKS:
+        state.output = model_result(dimension)
+        result = state.start(dimension=dimension)['review']
+        assert result['specialist'] == service.SPECIALISTS[dimension]
+        assert json.loads(state.calls[-1]['user_prompt'])['specialists'] == [service.SPECIALISTS[dimension]]
+    assert len({item['name'] for item in service.SPECIALISTS.values()}) == 4
+
+
 def test_split_single_dimension_is_safely_reassembled_with_verified_citations():
     response = model_result('paper', evidence='supported', cited=True)
     whole = response['dimensions'][0]
@@ -307,3 +387,43 @@ def test_context_prefers_current_saved_draft_but_never_mixes_stale_word(monkeypa
     else:
         assert 'Latest Word' in texts and 'Current saved' not in texts
         assert context['scope']['latest_word_instead_of_stale_draft'] == [str(UUID(int=4))]
+
+
+def test_stage_context_prefers_pinned_data_and_excludes_old_manuscript(monkeypatch):
+    project = {'id': UUID(int=3), 'metadata': {'research_discipline': 'econometrics'}}
+    current = rows()
+    current['files'] = [
+        {'file_id': str(UUID(int=4)), 'file_version_id': str(UUID(int=5)), 'logical_path': 'manuscript/paper.docx', 'file_kind': 'document'},
+        {'file_id': str(UUID(int=7)), 'file_version_id': str(UUID(int=8)), 'logical_path': 'data/sample.csv', 'file_kind': 'dataset'},
+    ]
+    content = {'discipline_workflows': {'econometrics': {'phenomenon': {'artifacts': [
+        {'file_version_id': str(UUID(int=9)), 'role': 'dataset'},
+        {'file_version_id': str(UUID(int=6)), 'role': 'report'},
+    ]}}}}
+    versions = {
+        UUID(int=5): (UUID(int=4), 2, 'manuscript/paper.docx', 'document'),
+        UUID(int=6): (UUID(int=4), 1, 'manuscript/paper.docx', 'document'),
+        UUID(int=8): (UUID(int=7), 2, 'data/sample.csv', 'dataset'),
+        UUID(int=9): (UUID(int=7), 1, 'data/sample.csv', 'dataset'),
+    }
+    class Session:
+        def execute(self, query, params):
+            if 'FROM research.file_versions' in str(query):
+                return Result([{'file_version_id': identifier, 'file_id': versions[identifier][0],
+                    'version': versions[identifier][1], 'logical_path': versions[identifier][2], 'file_kind': versions[identifier][3],
+                    'content_sha256': 'a' * 64, 'original_filename': 'sample', 'extracted_text': 'Extracted source.',
+                    'draft_id': None, 'base_file_version_id': None, 'draft_revision': None, 'draft_blocks': []}
+                    for raw in params['ids'] if (identifier := UUID(raw)) in versions])
+            return Result([{'file_version_id': UUID(raw), 'block_id': 'source-' + raw, 'block_type': 'paragraph',
+                            'text': 'Source text for version ' + raw, 'heading_path': []} for raw in params['ids']])
+    @contextmanager
+    def session(_tenant):
+        yield Session()
+    monkeypatch.setattr(service, 'tenant_session', session)
+    stage = next(item for item in service.discipline_template('econometrics')['stages'] if item['key'] == 'phenomenon')
+    context = service._context(actor(), {'project': project, 'rows': current, 'content': content}, ['theory'], [], stage)
+    included = [item['file_version_id'] for item in context['sources']]
+    assert included[0] == str(UUID(int=9))  # The stage's fixed data takes precedence over other excerpts.
+    assert str(UUID(int=5)) in included and str(UUID(int=6)) not in included
+    assert context['scope']['stage_artifacts_used'] == [str(UUID(int=9))]
+    assert context['scope']['stage_artifacts_not_read'] == [str(UUID(int=6))]

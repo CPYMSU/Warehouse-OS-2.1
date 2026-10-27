@@ -11213,7 +11213,7 @@ COMMANDS = [
     {
         "command": "research assessment ai start",
         "tool_name": "research_assessment_ai_start",
-        "description": "根據已保存的課題材料產生 Bonfire AI 暫定初評；分開評估研究證據與答辯理解，不改動人工檢查",
+        "description": "由對應專業 Agent 根據已保存材料評估研究面向或單個專業流程階段；研究證據與答辯理解分開，人工檢查不變",
         "api_method": "POST",
         "api_path": "/api/research/projects/{project_ref}/assessment/ai-reviews",
         "permission": "research.write",
@@ -11223,6 +11223,7 @@ COMMANDS = [
             _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
             _p("version", "body.expected_dmp_version", "目前 DMP 版本；尚無紀錄時為 0", required=True, ptype="int"),
             _p("dimension", "body.dimension", "paper/data/theory/model；all 同時評估四個面向，預設 paper"),
+            _p("stage", "body.stage_key", "本課題所選專業流程的階段 key；提供時評估該階段並保留獨立答辯"),
         ],
         "examples": ["research assessment ai start --project MK73 --version 0 --dimension theory"],
     },
