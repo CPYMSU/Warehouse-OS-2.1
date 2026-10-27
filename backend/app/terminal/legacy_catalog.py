@@ -11171,7 +11171,7 @@ COMMANDS = [
     {
         "command": "research workflow show",
         "tool_name": "research_workflow_show",
-        "description": "讀取課題從 DMP、協議、Run、主張證據、覆核到發布的完整研究工作流",
+        "description": "讀取科研可視化面板、人工檢查與實際文件、模型運行、證據和研究流程紀錄",
         "api_method": "GET",
         "api_path": "/api/research/projects/{project_ref}/workflow",
         "permission": "research.read",
@@ -11181,6 +11181,22 @@ COMMANDS = [
             _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
         ],
         "examples": ["research workflow show --project RSH-2026-001"],
+    },
+    {
+        "command": "research assessment save",
+        "tool_name": "research_assessment_save",
+        "description": "版本化保存論文、資料、理論與模型的檢查項、備註及本課題證據；檢查完成度不代表科研結論正確性",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/assessment",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("version", "body.expected_dmp_version", "目前 DMP 版本；尚無紀錄時為 0", required=True, ptype="int"),
+            _p("assessment", "body.assessment", "paper/data/theory/model 檢查項 JSON；狀態為 unassessed/missing/in_progress/ready，證據使用本課題 file_version_ids", required=True, ptype="json"),
+        ],
+        "examples": ["research assessment save --project MK73 --version 0 --assessment @assessment.json"],
     },
     {
         "command": "research dmp show",
@@ -12281,6 +12297,12 @@ _RESEARCH_SEMANTIC_MATRIX = {
         "observe_complete_research_workflow",
         "workflow_observation_never_advances_any_research_state",
         "dmp_protocol_run_claim_evidence_review_and_release_readback",
+    ),
+    "research_assessment_save": (
+        "research.assessment",
+        "record_research_checklists_and_project_evidence",
+        "dmp_version_matches_and_confirmed_checks_never_claim_scientific_validity",
+        "new_dmp_revision_assessment_sources_gaps_and_dashboard_readback",
     ),
     "research_dmp_show": (
         "research.data_management_plan",

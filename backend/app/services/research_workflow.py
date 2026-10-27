@@ -30,6 +30,7 @@ from app.services.research_vault import (
     _require_read,
     _require_write,
     _uuid,
+    research_asset_class,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +59,153 @@ REVIEW_TARGETS = {
     "release": ("research.releases", "id"),
 }
 REVIEW_DECISIONS = frozenset({"comment", "approve", "changes_requested", "reject"})
+DASHBOARD_STATUSES = frozenset({"unassessed", "missing", "in_progress", "ready"})
+PAPER_STAGES = ("planning", "outline", "drafting", "analysis", "revision", "submission", "published")
+DASHBOARD_CHECKS = {
+    "paper": ("論文進度", (("question", "研究問題"), ("outline", "論文架構"), ("draft", "主稿撰寫"),
+                          ("results", "結果呈現"), ("discussion", "討論與限制"), ("references", "參考文獻"), ("revision", "精修覆核"))),
+    "data": ("資料準備", (("sources", "資料來源"), ("coverage", "樣本與時間範圍"), ("dictionary", "變量與單位"),
+                         ("cleaning", "資料清理"), ("reproducibility", "可重現資料流程"))),
+    "theory": ("理論檢查", (("assumptions", "理論假設"), ("definitions", "概念定義"), ("mechanism", "作用機制"),
+                           ("alternatives", "替代解釋"), ("predictions", "可檢驗預測"), ("evidence", "證據對照"), ("citations", "文獻依據"))),
+    "model": ("模型與結果", (("specification", "模型設定"), ("estimation", "估計與運算"), ("diagnostics", "診斷檢查"),
+                            ("robustness", "穩健性驗證"), ("interpretation", "結果解釋與邊界"))),
+}
+
+
+def _dashboard_saved(content: object) -> dict:
+    value = content.get("research_dashboard_assessment") if isinstance(content, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _dashboard_items(saved: dict, dimension: str) -> list[dict]:
+    raw = saved.get(dimension)
+    raw = raw if isinstance(raw, dict) else {}
+    items = raw.get("items") if isinstance(raw.get("items"), dict) else {}
+    result = []
+    for key, label in DASHBOARD_CHECKS[dimension][1]:
+        item = items.get(key) if isinstance(items.get(key), dict) else {}
+        status = item.get("status")
+        references = item.get("file_version_ids")
+        result.append({"key": key, "label": label,
+                       "status": status if isinstance(status, str) and status in DASHBOARD_STATUSES else "unassessed",
+                       "note": item.get("note", "")[:2000] if isinstance(item.get("note"), str) else "",
+                       "file_version_ids": list(dict.fromkeys(str(identifier) for value in references[:20]
+                           if (identifier := _uuid(value)) is not None)) if isinstance(references, list) else []})
+    return result
+
+
+def _dashboard_references(content: dict, project: dict) -> set[str]:
+    saved = _dashboard_saved(content)
+    identifiers = {identifier for dimension in DASHBOARD_CHECKS
+                   for item in _dashboard_items(saved, dimension) for identifier in item["file_version_ids"]}
+    for stage in discipline_workflow(project, content)["stages"].values():
+        identifiers.update(item["file_version_id"] for item in stage["artifacts"])
+    return identifiers
+
+
+def _dashboard_artifacts(session: Session, project_id: UUID, identifiers: set[str]) -> dict[str, dict]:
+    if not identifiers:
+        return {}
+    rows = session.execute(text(
+        "SELECT v.id AS file_version_id, v.file_id, v.version, f.logical_path "
+        "FROM research.file_versions v JOIN research.files f ON f.id=v.file_id "
+        "AND f.project_id=v.project_id AND f.tenant_id=v.tenant_id "
+        "WHERE v.project_id=:project_id AND f.status='active' "
+        "AND v.id=ANY(CAST(:version_ids AS uuid[]))"
+    ), {"project_id": project_id, "version_ids": sorted(identifiers)}).mappings().all()
+    return {str(row["file_version_id"]): {**_json_safe(dict(row)),
+            "url": f"/api/research/projects/{project_id}/files/{row['file_id']}/preview?version={row['version']}"}
+            for row in rows}
+
+
+def _research_dashboard(project: dict, rows: dict, current_dmp: dict | None, artifacts: dict) -> dict:
+    """Only registered facts and explicit human assessments; no quality score or AI."""
+    content = current_dmp.get("content") if current_dmp else {}
+    saved = _dashboard_saved(content)
+    files = []
+    for raw in rows.get("files", []):
+        item = {**raw, "asset_class": research_asset_class(raw.get("logical_path"), raw.get("file_kind"))}
+        item["url"] = f"/api/research/projects/{project['id']}/files/{item['file_id']}/preview?version={item['version']}"
+        files.append(item)
+    count = lambda key, status: sum(item.get("status") == status for item in rows.get(key, []))
+    facts = {
+        "paper": {"manuscripts": sum(item["asset_class"] == "manuscript" for item in files),
+                  "versions": sum(int(item.get("version_count") or 0) for item in files if item["asset_class"] == "manuscript"),
+                  "saved_drafts": sum(item.get("draft_revision") is not None for item in files),
+                  "source_changed_drafts": sum(bool(item.get("source_changed")) for item in files)},
+        "data": {"data_files": sum(item["asset_class"] == "dataset" for item in files),
+                 "database_files": sum(item["asset_class"] == "database" for item in files),
+                 "collection_plan_recorded": bool(str(content.get("data_collection") or "").strip()) if isinstance(content, dict) else False},
+        "theory": {"claims": len(rows.get("claims", [])), "accepted_claims": count("claims", "accepted"),
+                   "evidence_links": len(rows.get("evidence", [])), "reviews": len(rows.get("reviews", []))},
+        "model": {"protocols": len(rows.get("protocols", [])), "locked_protocols": count("protocols", "locked"),
+                  "completed_runs": count("runs", "completed"), "successful_executions": count("executions", "succeeded"),
+                  "failed_executions": count("executions", "failed"),
+                  "reproduction_status": rows["reproduction_checks"][0]["status"] if rows.get("reproduction_checks") else "not_checked"},
+    }
+    dimensions, blockers = [], []
+    for key, (title, _) in DASHBOARD_CHECKS.items():
+        items = _dashboard_items(saved, key)
+        for item in items:
+            item["evidence"] = [artifacts[identifier] for identifier in item["file_version_ids"] if identifier in artifacts]
+            item["file_version_ids"] = [entry["file_version_id"] for entry in item["evidence"]]
+        assessed = sum(item["status"] != "unassessed" for item in items)
+        completed = sum(item["status"] == "ready" for item in items)
+        status = ("unassessed" if not assessed else "missing" if any(item["status"] == "missing" for item in items)
+                  else "ready" if completed == len(items) else "in_progress")
+        dimension = {"key": key, "title": title, "source": "manual" if key in saved else "unassessed",
+                     "status": status, "assessed": bool(assessed), "assessed_count": assessed,
+                     "completed": completed if assessed else None, "total": len(items), "items": items, "facts": facts[key]}
+        if key == "paper":
+            paper = saved.get("paper") if isinstance(saved.get("paper"), dict) else {}
+            dimension["stage"] = paper.get("stage") if paper.get("stage") in PAPER_STAGES else None
+        dimensions.append(dimension)
+        for item in items:
+            if item["status"] == "missing":
+                blockers.append({"key": key + ":" + item["key"], "dimension": key,
+                                 "label": item["label"] + "：使用者標記待補", "source": "manual",
+                                 "action": {"kind": "assessment", "dimension": key, "item": item["key"]}})
+        if not assessed:
+            blockers.append({"key": key + ":unassessed", "dimension": key, "label": title + "待評估",
+                             "source": "unassessed", "action": {"kind": "assessment", "dimension": key}})
+    discipline = discipline_workflow(project, content)
+    template = discipline_template(discipline["discipline"])
+    nodes = []
+    for stage in template["stages"] if template else []:
+        recorded = discipline["stages"].get(stage["key"], {})
+        section = stage["workspace"]
+        dimension = {"projects": "data", "execution": "model", "evidence": "theory"}.get(section, "paper")
+        nodes.append({"key": stage["key"], "title": stage["title"], "dimension": dimension,
+                      "status": recorded.get("status", "unassessed"), "revision": recorded.get("revision", 0),
+                      "source": "manual" if recorded else "unassessed",
+                      "action": {"kind": "discipline_stage", "stage_key": stage["key"], "section": section},
+                      "task": {name: recorded.get(name, "shared" if name == "assignee" else "")
+                               for name in ("plan", "findings", "blockers", "next_action", "assignee")},
+                      "evidence": [artifacts[item["file_version_id"]] for item in recorded.get("artifacts", [])
+                                   if item["file_version_id"] in artifacts]})
+        if recorded.get("status") == "blocked":
+            blockers.append({"key": "stage:" + stage["key"], "dimension": dimension,
+                             "label": recorded.get("blockers") or stage["title"] + "：已標記阻塞",
+                             "source": "manual", "action": nodes[-1]["action"]})
+    blockers.sort(key=lambda item: item["source"] == "unassessed")
+    active = next((item["key"] for item in nodes if item["status"] in {"in_progress", "blocked"}), None)
+    completed_stages = [item["key"] for item in nodes if item["status"] == "completed"]
+    activity = []
+    for kind, label, records in (("file", "主稿／研究檔案已登記", files), ("run", "運算紀錄", rows.get("runs", [])),
+                                 ("review", "覆核紀錄", rows.get("reviews", []))):
+        for item in records:
+            stamp = item.get("version_created_at") if kind == "file" else item.get("created_at")
+            if stamp:
+                activity.append({"kind": kind, "label": label, "created_at": str(stamp)})
+    return {"schema_version": 1, "dmp_version": int(current_dmp["version"]) if current_dmp else 0,
+            "dimensions": dimensions, "files": files, "blockers": blockers,
+            "next_action": ({"label": blockers[0]["label"], "dimension": blockers[0]["dimension"],
+                             "action": blockers[0]["action"]} if blockers else None),
+            "stage_graph": {"discipline": discipline["discipline"], "current_stage": active or (completed_stages[-1] if completed_stages else None),
+                            "nodes": nodes, "edges": [{"from": a["key"], "to": b["key"]} for a, b in zip(nodes, nodes[1:])]},
+            "activity": sorted(activity, key=lambda item: item["created_at"], reverse=True)[:12],
+            "paper_stages": list(PAPER_STAGES)}
 
 
 def _json_safe(value: object) -> object:
@@ -136,6 +284,24 @@ def _workflow_rows(
     session: Session, project_id: UUID
 ) -> dict[str, list[dict[str, object]]]:
     queries = {
+        "files": """
+            WITH ranked_versions AS (
+              SELECT v.*, row_number() OVER (PARTITION BY file_id ORDER BY version DESC) AS rank,
+                     count(*) OVER (PARTITION BY file_id)::integer AS version_count
+              FROM research.file_versions v WHERE v.project_id=:project_id
+            )
+            SELECT f.id AS file_id, f.logical_path, f.display_name, f.file_kind,
+                   v.id AS file_version_id, v.version, v.content_sha256, v.size_bytes,
+                   v.created_at AS version_created_at, v.version_count,
+                   i.status AS index_status, i.block_count, d.revision AS draft_revision,
+                   COALESCE(d.base_file_version_id <> v.id, false) AS source_changed
+            FROM research.files f
+            JOIN ranked_versions v ON v.file_id=f.id AND v.rank=1
+            LEFT JOIN research.document_indexes i ON i.file_version_id=v.id
+            LEFT JOIN research.manuscript_drafts d ON d.file_id=f.id
+            WHERE f.project_id=:project_id AND f.status='active'
+            ORDER BY f.logical_path
+        """,
         "dmp_history": """
             SELECT d.*, u.display_name AS author_name
             FROM research.dmp_revisions d
@@ -223,6 +389,9 @@ def workflow_detail(actor: ActorContext, project_ref: object) -> dict[str, objec
     with tenant_session(actor.tenant_id) as session:
         project = _project_row(session, project_ref)
         rows = _workflow_rows(session, project["id"])
+        latest_dmp = rows["dmp_history"][0] if rows["dmp_history"] else None
+        content = latest_dmp["content"] if latest_dmp else {}
+        artifacts = _dashboard_artifacts(session, project["id"], _dashboard_references(content, project))
     evidence_by_claim: dict[str, list[dict[str, object]]] = {}
     for item in rows["evidence"]:
         evidence_by_claim.setdefault(str(item["claim_id"]), []).append(item)
@@ -281,6 +450,7 @@ def workflow_detail(actor: ActorContext, project_ref: object) -> dict[str, objec
         "dmp": current_dmp,
         **rows,
         "stats": stats,
+        "research_dashboard": _research_dashboard(project, rows, current_dmp, artifacts),
         "discipline_workflow": discipline_workflow(
             project, current_dmp["content"] if current_dmp else None
         ),
@@ -345,6 +515,76 @@ def _save_dmp_revision(
         "project_id": project["id"], "dmp_id": row["id"], "version": version,
     })
     return dict(row)
+
+
+def save_research_assessment(
+    actor: ActorContext, project_ref: object, payload: dict[str, object]
+) -> dict[str, object]:
+    """Version an explicit human assessment without changing other DMP/stage notes."""
+    _require_write(actor)
+    expected = payload.get("expected_dmp_version")
+    if type(expected) is not int or expected < 0:
+        raise HTTPException(status_code=422, detail="expected_dmp_version must be a nonnegative integer")
+    patch = payload.get("assessment")
+    if not isinstance(patch, dict) or not patch or set(patch) - set(DASHBOARD_CHECKS):
+        raise HTTPException(status_code=422, detail="assessment must contain known research dimensions")
+    for dimension, change in patch.items():
+        allowed = {"items", "stage"} if dimension == "paper" else {"items"}
+        if not isinstance(change, dict) or not change or set(change) - allowed:
+            raise HTTPException(status_code=422, detail="Invalid assessment dimension fields")
+        if "stage" in change and change["stage"] is not None and change["stage"] not in PAPER_STAGES:
+            raise HTTPException(status_code=422, detail="Unknown paper stage")
+        items = change.get("items", {})
+        known = {key for key, _ in DASHBOARD_CHECKS[dimension][1]}
+        if not isinstance(items, dict) or set(items) - known:
+            raise HTTPException(status_code=422, detail="Unknown assessment checklist item")
+        for item in items.values():
+            if not isinstance(item, dict) or not item or set(item) - {"status", "note", "file_version_ids"}:
+                raise HTTPException(status_code=422, detail="Invalid checklist item fields")
+            if "status" in item and (not isinstance(item["status"], str) or item["status"] not in DASHBOARD_STATUSES):
+                raise HTTPException(status_code=422, detail="Invalid assessment checklist status")
+            if "note" in item and (not isinstance(item["note"], str) or len(item["note"]) > 2000):
+                raise HTTPException(status_code=422, detail="Assessment note must be at most 2000 characters")
+            if "file_version_ids" in item:
+                references = item["file_version_ids"]
+                if not isinstance(references, list) or len(references) > 20 or any(_uuid(value) is None for value in references):
+                    raise HTTPException(status_code=422, detail="Evidence must reference at most 20 file-version UUIDs")
+                if len({str(_uuid(value)) for value in references}) != len(references):
+                    raise HTTPException(status_code=422, detail="Duplicate assessment evidence version")
+    with tenant_session(actor.tenant_id) as session:
+        project = _project_row(session, project_ref, lock=True)
+        current = session.execute(text(
+            "SELECT * FROM research.dmp_revisions WHERE project_id=:project_id ORDER BY version DESC LIMIT 1 FOR UPDATE"
+        ), {"project_id": project["id"]}).mappings().one_or_none()
+        if expected != (int(current["version"]) if current else 0):
+            raise HTTPException(status_code=409, detail="Research assessment changed; reload before saving your draft")
+        content = dict(current["content"]) if current else {}
+        assessment = dict(_dashboard_saved(content))
+        for dimension, change in patch.items():
+            before = assessment.get(dimension)
+            before = dict(before) if isinstance(before, dict) else {}
+            items = dict(before["items"]) if isinstance(before.get("items"), dict) else {}
+            for key, item in change.get("items", {}).items():
+                previous = items.get(key)
+                previous = dict(previous) if isinstance(previous, dict) else {}
+                update = dict(item)
+                if "file_version_ids" in update:
+                    update["file_version_ids"] = [str(_uuid(value)) for value in update["file_version_ids"]]
+                items[key] = {**previous, **update}
+            assessment[dimension] = {**before, "items": items,
+                **({"stage": change["stage"]} if "stage" in change else {}),
+                "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": str(actor.user_id)}
+        references = {identifier for dimension in DASHBOARD_CHECKS
+                      for item in _dashboard_items(assessment, dimension) for identifier in item["file_version_ids"]}
+        if len(references) > 100:
+            raise HTTPException(status_code=422, detail="Assessment has too many evidence references")
+        owned = _dashboard_artifacts(session, project["id"], references)
+        if set(owned) != references:
+            raise HTTPException(status_code=422, detail="Evidence version does not belong to this research project")
+        row = _save_dmp_revision(session, actor, project, {"research_dashboard_assessment": assessment})
+        _audit(session, actor, "research.dashboard.assessed", {"project_id": project["id"],
+            "dmp_version": int(row["version"]), "dimensions": sorted(patch), "source": "manual"})
+    return {"ok": True, "dmp": _json_safe(row), "assessment": assessment}
 
 
 def save_discipline_stage(

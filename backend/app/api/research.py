@@ -88,6 +88,7 @@ from app.services.research_workflow import (
     run_reproduction_check,
     save_dmp,
     save_discipline_stage,
+    save_research_assessment,
     submit_review,
     update_run,
     workflow_detail,
@@ -608,6 +609,15 @@ def research_workflow_show(
     actor: Annotated[ActorContext, Depends(current_actor)],
 ) -> dict[str, object]:
     return workflow_detail(actor, project_ref)
+
+
+@router.post("/api/research/projects/{project_ref}/assessment")
+def research_assessment_save(
+    project_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    payload: dict[str, object] = Body(...),
+) -> dict[str, object]:
+    return save_research_assessment(actor, project_ref, payload)
 
 
 @router.get("/api/research/projects/{project_ref}/dmp")

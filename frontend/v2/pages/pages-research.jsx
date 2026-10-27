@@ -60,18 +60,18 @@ const apiError = async response => {
   return new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
 };
 const RESEARCH_TABS = [
+  ["dashboard", "研究面板"],
   ["overview", "總覽"],
   ["disciplines", "專業與流程"],
   ["showcase", "研究展示"],
-  ["guide", "論文導引"],
   ["projects", "課題庫"],
   ["refinement", "論文精修"],
-  ["workflow", "研究流程"],
   ["evidence", "證據與覆核"],
   ["execution", "重現運算"],
   ["revisions", "版本譜系"],
   ["formats", "格式能力"],
 ];
+const researchSection = key => ["guide","workflow"].includes(key) ? "dashboard" : key;
 const FORMAT_ROWS = [
   ["DOCX", "WORD / OPENXML", "原貌渲染 · 可選文字", "字符批注 · 語義 DIFF"],
   ["PDF", "PAGED DOCUMENT", "原文內嵌", "提取文字 DIFF"],
@@ -2348,13 +2348,14 @@ const ResearchShowcase = () => {
 
 const Page = () => {
   const [section, setSection] = useState(() => {
-    if (location.hash.split("?")[1] && new URLSearchParams(location.hash.split("?")[1]).get("section") === "showcase") return "showcase";
+    const requested=researchSection(new URLSearchParams(location.hash.split("?")[1]||"").get("section"));
+    if(RESEARCH_TABS.some(item=>item[0]===requested))return requested;
     try {
-      const saved = sessionStorage.getItem("w2_research_tab");
-      const remembered = readResearchMemory().section;
+      const saved = researchSection(sessionStorage.getItem("w2_research_tab"));
+      const remembered = researchSection(readResearchMemory().section);
       return RESEARCH_TABS.some(item => item[0] === saved) ? saved
-        : RESEARCH_TABS.some(item => item[0] === remembered) ? remembered : "overview";
-    } catch (_error) { return "overview"; }
+        : RESEARCH_TABS.some(item => item[0] === remembered) ? remembered : "dashboard";
+    } catch (_error) { return "dashboard"; }
   });
   const [projectsMounted, setProjectsMounted] = useState(() => section === "projects");
   const [projects, setProjects] = useState([]);
@@ -2378,6 +2379,9 @@ const Page = () => {
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [mutating, setMutating] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [advancedWorkflowOpen, setAdvancedWorkflowOpen] = useState(false);
+  const [disciplineStageTarget, setDisciplineStageTarget] = useState("");
+  const advancedWorkflowRef = useRef(null);
   const [blobUrl, setBlobUrl] = useState("");
   const [executionPinMode, setExecutionPinMode] = useState("all");
   const [executionInputIds, setExecutionInputIds] = useState([]);
@@ -2403,6 +2407,7 @@ const Page = () => {
     bytes: sum.bytes + (Number(item.stored_bytes) || 0),
   }), { files: 0, versions: 0, commits: 0, bytes: 0 }), [projects]);
   const sectionMeta = {
+    dashboard: ["R02", "RESEARCH CONTROL", "研究面板", "按目前課題查看論文、資料、理論與模型的登記證據、評估缺口與下一步。"],
     overview: ["R01", "RESEARCH VAULT", "科研總覽", "研究不是文件堆積，而是一條可閱讀、可比較、可重現的證據鏈。"],
     disciplines: ["R11", "FOUR DISCIPLINES", "專業與流程", "用專業的方法推進問題，讓每一步思考、模型與案例都有可追溯的研究紀錄。"],
     showcase: ["R10", "THE RESEARCH ATLAS", "研究展示", "把論文、互動模型與方法學習放在一起，從問題一路讀到解釋。"],
@@ -2416,6 +2421,7 @@ const Page = () => {
     formats: ["R09", "FORMAT CAPABILITIES", "格式能力", "同一托管邊界內直接閱覽異構科研材料，並按格式選擇差異策略。"],
   }[section];
   const sectionCounts = {
+    dashboard: workflow && workflow.research_dashboard ? ((workflow.research_dashboard.stage_graph||{}).nodes||[]).length : "—",
     overview: projects.length,
     disciplines: disciplines.length,
     showcase: "MK",
@@ -2429,6 +2435,8 @@ const Page = () => {
     formats: FORMAT_ROWS.length,
   };
   const selectSection = next => {
+    next=researchSection(next);
+    if(!RESEARCH_TABS.some(item=>item[0]===next))return;
     setSection(next);
     if (next === "projects") setProjectsMounted(true);
     try { sessionStorage.setItem("w2_research_tab", next); } catch (_error) {}
@@ -2445,8 +2453,19 @@ const Page = () => {
     setDetailBusy(Boolean(id));
     setAssetFilter("all");
     setTab("review");
+    setAdvancedWorkflowOpen(false);setDisciplineStageTarget("");
     rememberResearchSelection({ projectId: id, section });
   };
+  useEffect(()=>{
+    const change=()=>{
+      const next=researchSection(new URLSearchParams(location.hash.split("?")[1]||"").get("section"));
+      if(!RESEARCH_TABS.some(item=>item[0]===next))return;
+      setSection(next);if(next==="projects")setProjectsMounted(true);
+      try{sessionStorage.setItem("w2_research_tab",next);}catch(_error){}
+    };
+    window.addEventListener("hashchange",change);
+    return ()=>window.removeEventListener("hashchange",change);
+  },[]);
   const filterDiscipline = key => {
     setDisciplineFilter(key);
     const matching = projects.filter(item => key === "all" || W2.researchDisciplineOf(item) === key);
@@ -2504,7 +2523,8 @@ const Page = () => {
     if (!background) setWorkflowBusy(true);
     try {
       const data = await researchRead("/api/research/projects/" + encodeURIComponent(id) + "/workflow");
-      if (request === workflowRequestSerial.current) setWorkflow(data);
+      if (request === workflowRequestSerial.current && clean(activeProjectId.current)===clean(id)) {setWorkflow(data);return data;}
+      return null;
     } finally {
       if (request === workflowRequestSerial.current) setWorkflowBusy(false);
     }
@@ -2537,7 +2557,7 @@ const Page = () => {
     }
   }, [projectId, fileId, tab]);
   useEffect(() => {
-    if (!["disciplines", "workflow"].includes(section) || !projectId || workflowBusy ||
+    if (!["disciplines", "dashboard"].includes(section) || !projectId || workflowBusy ||
       !workflow || clean(workflow.project.id) !== clean(projectId)) return () => {};
     let pending = false;
     const refresh = () => {
@@ -2714,6 +2734,52 @@ const Page = () => {
     await workflowMutation("dmp",
       "/api/research/projects/" + encodeURIComponent(projectId) + "/dmp", "PUT", { content });
   };
+  const saveDashboardAssessment = async payload => {
+    const id=projectId;
+    if(!id || !canWrite)throw new Error("目前帳號沒有更新研究評估的權限。");
+    const result=await W2.json("/api/research/projects/"+encodeURIComponent(id)+"/assessment",{
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),
+    });
+    if(clean(activeProjectId.current)===clean(id)){
+      try{await loadWorkflow(id);}catch(reason){setError("評估已保存；重新讀取面板時遇到問題："+clean(reason.message||reason));}
+    }
+    return result;
+  };
+  const openDashboardAdvanced = () => {
+    setAdvancedWorkflowOpen(true);
+    window.requestAnimationFrame(()=>advancedWorkflowRef.current && advancedWorkflowRef.current.scrollIntoView({behavior:"smooth",block:"start"}));
+  };
+  const navigateDashboard = action => {
+    if(!action)return;
+    if(action.section==="disciplines" && action.stage_key){setDisciplineStageTarget(clean(action.stage_key));selectSection("disciplines");return;}
+    if(action.section==="workflow"){selectSection("dashboard");openDashboardAdvanced();return;}
+    if(action.section==="projects")setAssetFilter(action.asset_class||"all");
+    if(action.section)selectSection(action.section);
+    if(action.execution_id)loadExecution(projectId,action.execution_id).catch(reason=>setError(clean(reason.message||reason)));
+  };
+  const openDashboardArtifact = async artifact => {
+    const file=((detail && detail.files)||[]).find(item=>clean(item.id)===clean(artifact.file_id));
+    const latest=file && (file.versions||[])[0];
+    if(file && latest && clean(latest.id)===clean(artifact.file_version_id)){
+      setAssetFilter("all");setFileId(clean(file.id));setTab(["document","pdf"].includes(file.file_kind)?"review":"preview");selectSection("projects");return;
+    }
+    if(!artifact.url){setError("這份固定版本尚無可讀取的連結，請重新整理研究面板。");return;}
+    try{
+      const response=await W2.fetch(artifact.url);
+      if(!response.ok)throw await apiError(response);
+      const url=URL.createObjectURL(await response.blob()),link=document.createElement("a");
+      link.href=url;link.download=clean(artifact.logical_path).split("/").pop()||"research-artifact";
+      document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }catch(reason){setError(clean(reason.message||reason));}
+  };
+  useEffect(()=>{
+    if(section!=="disciplines" || !disciplineStageTarget || workflowBusy)return ()=>{};
+    const frame=window.requestAnimationFrame(()=>{
+      const target=Array.from(document.querySelectorAll(".rd-step-list button[data-stage]")).find(button=>button.getAttribute("data-stage")===disciplineStageTarget);
+      if(target){target.click();target.scrollIntoView({block:"nearest"});setDisciplineStageTarget("");}
+    });
+    return ()=>window.cancelAnimationFrame(frame);
+  },[section,disciplineStageTarget,workflowBusy,workflow && workflow.project && workflow.project.id]);
   const createProtocolForm = async event => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -3023,8 +3089,8 @@ const Page = () => {
           }}>＋ 新建課題</button>}
         </div>}/>
 
-      <W2.ResearchDisciplineIndex catalogue={disciplines} projects={projects} filter={disciplineFilter}
-        onFilter={filterDiscipline} onOpen={openDiscipline} compact={section !== "overview" && section !== "disciplines"}/>
+      {section !== "dashboard" && <W2.ResearchDisciplineIndex catalogue={disciplines} projects={projects} filter={disciplineFilter}
+        onFilter={filterDiscipline} onOpen={openDiscipline} compact={section !== "overview" && section !== "disciplines"}/>}
 
       <nav className="subnav rise rv-subnav" aria-label="科研子頁">
         {RESEARCH_TABS.map(([key, label], index) => (
@@ -3132,6 +3198,10 @@ const Page = () => {
           ) : <EmptyPanel title="此分類尚無課題" copy="可新建此專業的課題，或到「待分類」為既有課題選擇專業。"/>}
         </Band>
       </>}
+
+      {section === "dashboard" && <W2.ResearchCockpit key={projectId||"no-project"} project={selectedProject} projects={projects}
+        workflow={workflow} busy={workflowBusy || detailBusy} canWrite={canWrite} onProject={selectProject} onNavigate={navigateDashboard}
+        onOpenFile={openDashboardArtifact} onSave={saveDashboardAssessment} onReload={()=>loadWorkflow(projectId)} onAdvanced={openDashboardAdvanced}/>}
 
       {section === "guide" && <>
         {selectedProject && W2.researchDisciplineOf(selectedProject) !== "unclassified" &&
@@ -3369,7 +3439,10 @@ const Page = () => {
         </Band>
       </div>}
 
-      {section === "workflow" && <>
+      {section === "dashboard" && <details ref={advancedWorkflowRef} className="rcp-advanced" data-testid="research-cockpit-advanced" open={advancedWorkflowOpen}
+        onToggle={event=>setAdvancedWorkflowOpen(event.currentTarget.open)}>
+        <summary>進階設定 <span>資料管理計畫 · 研究協議 · Run · 終端能力</span></summary>
+        {advancedWorkflowOpen && <>
         {selectedProject && W2.researchDisciplineOf(selectedProject) !== "unclassified" && disciplineWorkspace}
         <section className="rv-flow-poster" aria-label="研究生命週期">
           <header>
@@ -3477,7 +3550,8 @@ const Page = () => {
             </Band>
           </div>
         </>}
-      </>}
+        </>}
+      </details>}
 
       {section === "evidence" && <>
         <section className="rv-evidence-poster">
