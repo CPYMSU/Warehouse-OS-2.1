@@ -84,7 +84,12 @@ def state(monkeypatch):
         value.calls.append(kwargs)
         if value.mutate:
             value.mutate()
-        return json.dumps(value.output)
+        output = copy.deepcopy(value.output)
+        if json.loads(kwargs['user_prompt']).get('answer') and 'committee_feedback' not in output:
+            output['committee_feedback'] = {'decision': 'needs_work', 'standard': 'Explain the assumption and its limit.',
+                'reply': 'The answer names the assumption; the boundary still needs an example.',
+                'next_action': 'Give an example that would violate the assumption.'}
+        return json.dumps(output)
 
     def save(session, actor, project, content):
         value.content.update(copy.deepcopy(content))
@@ -104,6 +109,7 @@ def state(monkeypatch):
         {'expected_dmp_version': value.version, 'dimension': 'theory', **kwargs}, Settings())
     value.reply = lambda review, **kwargs: service.run_ai_review(actor(), UUID(int=3), {
         'expected_dmp_version': value.version, 'expected_revision': review['revision'],
+        **({'acknowledged_revision': review['revision']} if review['result'].get('committee_feedback') else {}),
         'answer': 'My explanation is clearer, but I have not supplied new data.', 'question_id': 'q1', **kwargs},
         Settings(), review['id'])
     return value
@@ -260,6 +266,51 @@ def test_answer_can_improve_defense_without_creating_scientific_evidence(state):
     assert dimension['defense_assessed_count'] == 1
     assert len(updated['history']) == 2 and updated['history'][0]['result'] == review['result']
     assert state.content['research_dashboard_assessment']['theory']['items']['assumptions']['status'] == 'missing'
+
+
+def test_committee_must_reply_before_acknowledged_next_defense_and_history_is_immutable(state):
+    first = state.start()['review']
+    original = copy.deepcopy(first['result'])
+    state.output = model_result(defense='developing')
+    first_reply = state.reply(first)['review']
+    feedback = first_reply['result']['committee_feedback']
+    assert feedback['decision'] == 'needs_work' and feedback['standard'] and feedback['reply'] and feedback['next_action']
+    assert first_reply['history'][0]['result'] == original
+    assert first_reply['history'][1]['result']['committee_feedback'] == feedback
+    for acknowledged in (None, first_reply['revision'] - 1, True):
+        with pytest.raises(HTTPException) as error:
+            state.reply(first_reply, acknowledged_revision=acknowledged)
+        assert error.value.status_code == 409
+    assert len(state.calls) == 2 and state.version == 2
+    state.output = model_result(defense='clear')
+    state.output['committee_feedback'] = {'decision': 'meets_standard', 'standard': 'Explain the assumption and limit.',
+        'reply': 'The example explains the assumption and when it breaks.', 'next_action': 'Check the cited evidence.'}
+    second_reply = state.reply(first_reply)['review']
+    assert second_reply['revision'] == 3 and second_reply['result']['committee_feedback']['decision'] == 'meets_standard'
+    assert second_reply['history'][1]['result']['committee_feedback'] == feedback
+    assert second_reply['history'][2]['answer']
+    assert state.content['research_dashboard_assessment']['theory']['items']['assumptions']['status'] == 'missing'
+
+
+def test_legacy_defense_without_committee_feedback_remains_usable(state):
+    initial = state.start()['review']
+    state.output = model_result(defense='clear')
+    old = state.reply(initial)['review']
+    old['result'].pop('committee_feedback')
+    old['history'][-1]['result'].pop('committee_feedback', None)
+    state.content[service.SESSION_KEY][old['id']] = copy.deepcopy(old)
+    updated = state.reply(old)['review']
+    assert updated['revision'] == 3 and updated['result']['committee_feedback']
+
+
+def test_invalid_committee_response_retries_once_without_persisting_answer(state):
+    initial = state.start()['review']
+    state.output = model_result(defense='clear')
+    state.output['committee_feedback'] = None
+    with pytest.raises(HTTPException) as error:
+        state.reply(initial)
+    assert error.value.status_code == 502 and len(state.calls) == 3
+    assert state.version == 1 and state.content[service.SESSION_KEY][initial['id']]['revision'] == 1
 
 
 def test_theory_argument_can_be_provisional_partial_and_later_reassessed_downward(state):

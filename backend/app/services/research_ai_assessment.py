@@ -40,7 +40,14 @@ PROMPT = (
     "重新評估可以不變或降低；只更新答辯實際涉及的理解項目，不能承諾分數上升。不要輸出百分制或科學真實度百分比。"
     "只輸出 JSON：{summary,dimensions:[{key,summary,gaps:[文字],citations:[],criteria:["
     "{key,evidence_verdict,defense_verdict,basis_source,basis,gaps:[文字],citations:[]}]}],"
-    "questions:[{id,dimension,criterion,question}]}。dimensions 和 criteria 必須完整對應 supplied rubric，不能增減鍵。"
+    "questions:[{id,dimension,criterion,question}],committee_feedback:{decision,standard,reply,next_action}}。"
+    "只有提供答辯 answer 時必須輸出 committee_feedback；初評不輸出此欄。"
+    "你是 AI 模擬答辯委員會，不代表真實委員會。針對使用者本次回答和上一輪問題給具體回覆："
+    "decision 只能為 meets_standard 或 needs_work；standard 簡述本輪的可檢查標準，"
+    "reply 用一至兩句回應其實際回答，說明哪些符合、哪些不符合；next_action 說明下一步如何補充或可繼續檢查什麼。"
+    "標準包括是否切題、推理或例子清楚、假設與邊界，以及所需材料是否可核對；沒有提供的材料不可認定為已驗證。"
+    "這是對本輪回答的暫定判斷，不是科研結論或真實答辯通過的認證。無須強行提高判斷。"
+    "dimensions 和 criteria 必須完整對應 supplied rubric，不能增減鍵。"
     "dimensions 必須與 rubric 的外層維度一一對應；例如 rubric 只有 paper，dimensions 只能有一個 key=paper 的物件，"
     "該物件的 criteria 包含 paper 下全部標準，不能把每個標準拆成獨立 dimension。"
     "basis_source 只能 project_evidence/defense_argument/insufficient；每項 basis 最多40字，gap 最多一項，簡明具體。"
@@ -249,12 +256,13 @@ def _citations(values, context):
     return result
 
 
-def _validate_result(value, dimensions, context, *, answer, previous=None, question=None, rubric=None, stage=None):
+def _validate_result(value, dimensions, context, *, answer, previous=None, question=None, rubric=None, stage=None,
+                     require_committee=False):
     rubric = rubric or {key: dict(workflow.DASHBOARD_CHECKS[key][1]) for key in dimensions}
     if isinstance(value, str):
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", value.strip())
         value = json.loads(cleaned)
-    if not isinstance(value, dict) or set(value) - {"summary", "dimensions", "questions"}:
+    if not isinstance(value, dict) or set(value) - {"summary", "dimensions", "questions", "committee_feedback"}:
         raise ValueError("Invalid review structure")
     raw_dimensions = value.get("dimensions")
     # A single-stage specialist can name its dimension after the stage. The
@@ -388,6 +396,16 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
         if question.get("id") != f"q{index+1}" or key not in dimensions or criterion not in rubric[key]:
             raise ValueError("Invalid question identity")
         result["questions"].append({"id": question["id"], "dimension": key, "criterion": criterion, "question": _text(question.get("question"), 500)})
+    if require_committee:
+        feedback = value.get("committee_feedback")
+        if not isinstance(feedback, dict) or feedback.get("decision") not in {"meets_standard", "needs_work"}:
+            raise ValueError("A committee response to the defense is required")
+        result["committee_feedback"] = {
+            "decision": feedback["decision"],
+            "standard": _text(feedback.get("standard"), 300),
+            "reply": _text(feedback.get("reply"), 600),
+            "next_action": _text(feedback.get("next_action"), 300),
+        }
     return result
 
 
@@ -441,6 +459,12 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
             raise HTTPException(status_code=422, detail="expected_revision must be a positive integer")
         if payload["expected_revision"] != previous["revision"]:
             raise HTTPException(status_code=409, detail="此評估已有新的答辯紀錄，請重新載入後再送出。")
+        # A new defense follows a persisted committee reply. Initial assessments
+        # and historical records from before this feature remain usable.
+        prior_feedback = previous.get("result", {}).get("committee_feedback")
+        if prior_feedback and (type(payload.get("acknowledged_revision")) is not int
+                               or payload["acknowledged_revision"] != previous["revision"]):
+            raise HTTPException(status_code=409, detail="請先查看本輪 AI 模擬委員會回覆，再繼續答辯。")
         stage_key = previous.get("stage_key")
         if "stage_key" in payload and payload["stage_key"] != stage_key:
             raise HTTPException(status_code=422, detail="A defense reply cannot change the assessed stage")
@@ -497,7 +521,8 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
                                    thinking=False, max_tokens=limit, json_mode=True)
         try:
             result = _validate_result(response, dimensions, context, answer=answer,
-                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage)
+                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage,
+                                      require_committee=bool(previous))
         except (ValueError, TypeError, KeyError, AttributeError):
             # Only retry model format/validation errors, once. Provider or
             # permission failures are not retried and invalid text is not logged.
@@ -505,7 +530,8 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
             response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
                                        thinking=False, max_tokens=limit, json_mode=True)
             result = _validate_result(response, dimensions, context, answer=answer,
-                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage)
+                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage,
+                                      require_committee=bool(previous))
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI 評估暫時無法提供有效回覆，請重試。既有人工評估與答辯紀錄未變更。") from exc
     now = datetime.now(timezone.utc).isoformat()

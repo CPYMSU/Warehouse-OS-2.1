@@ -11241,6 +11241,7 @@ COMMANDS = [
             _p("review", "path.review_id", "AI 評估 ID", required=True),
             _p("version", "body.expected_dmp_version", "目前 DMP 版本", required=True, ptype="int"),
             _p("revision", "body.expected_revision", "目前 AI 評估輪次", required=True, ptype="int"),
+            _p("acknowledged-revision", "body.acknowledged_revision", "已閱讀的上一輪 AI 模擬委員會答覆版本；首次答辯或舊紀錄無需", ptype="int"),
             _p("answer", "body.answer", "簡明答辯；1–6000 字", required=True),
             _p("question", "body.question_id", "目前輪次的 q1/q2/q3 問題 ID"),
             _p("evidence", "body.file_version_ids", "本課題文件版本 UUID 陣列，最多十項", ptype="json"),

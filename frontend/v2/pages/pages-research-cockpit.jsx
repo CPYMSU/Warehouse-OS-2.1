@@ -30,6 +30,7 @@ const Artifact=({artifact,onOpen})=><button type="button" className="rcp-artifac
   onClick={()=>onOpen(artifact)}><b>V{artifact.version||'—'}</b><span>{artifact.logical_path||artifact.display_name||'固定版本研究物件'}</span><i>↗</i></button>;
 const evidenceLabels={insufficient:'證據不足',partial:'部分支持',supported:'已有引證支持'};
 const defenseLabels={unassessed:'尚未答辯',unclear:'理解仍不清楚',developing:'理解待補充',clear:'解釋清楚'};
+const committeeLabels={meets_standard:'符合本輪標準',needs_work:'仍需補充'};
 const reviewDimension=(review,dimension)=>((review && review.result||{}).dimensions||[]).find(item=>item.key===dimension);
 const reviewFor=(reviews,dimension)=>reviews.filter(review=>!review.stage_key && (review.dimension===dimension||(review.dimensions||[]).includes(dimension)))
   .sort((a,b)=>text(b.updated_at||b.created_at).localeCompare(text(a.updated_at||a.created_at))||Number(b.revision)-Number(a.revision))[0]||null;
@@ -59,6 +60,7 @@ const aiErrorMessage=reason=>{
 const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,otherReviews,files,checks,RichText,canWrite,manualDirty,onResult,onReload,onBusy,onOpenFile,onNavigate})=>{
   const [answers,setAnswers]=useState({});
   const [working,setWorking]=useState(null),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [acknowledged,setAcknowledged]=useState('');
   const lock=useRef(false),alive=useRef(true),controller=useRef(null),localVersion=useRef(serverVersion);
   localVersion.current=Math.max(localVersion.current,serverVersion);
   const base='/api/research/projects/'+encodeURIComponent(project.id)+'/assessment/ai-reviews';
@@ -72,6 +74,9 @@ const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,ot
   const localAnswer=storedAnswer||(legacyAnswer && legacyAnswer.review_id===review.id?legacyAnswer:null);
   const answer=answers[currentKey]||(localAnswer && typeof localAnswer.answer==='string'?{...localAnswer,file_version_ids:Array.isArray(localAnswer.file_version_ids)?localAnswer.file_version_ids:[]}:{answer:'',file_version_ids:[],review_id:''});
   const answerTooLong=answer.answer.length>6000;
+  const committee=review && review.result && review.result.committee_feedback;
+  const roundKey=review?text(review.id)+':'+text(review.revision):'';
+  const readyForAnswer=!committee || acknowledged===roundKey;
   const updateAnswer=(name,patch,id=review && review.id)=>{
     const localKey=answerKey(name,id);
     setAnswers(current=>{
@@ -83,13 +88,13 @@ const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,ot
     });
   };
   const run=async(kind,refreshContext=false)=>{
-    if(!canWrite || lock.current || (kind==='reply' && (!review || !answer.answer.trim() || answerTooLong)))return;
+    if(!canWrite || lock.current || (kind==='reply' && (!review || !readyForAnswer || !answer.answer.trim() || answerTooLong)))return;
     lock.current=true;const selected=scope,sourceReview=review,submitted={...answer,file_version_ids:[...(answer.file_version_ids||[])]};
     const expected=localVersion.current,requestController=new AbortController();controller.current=requestController;
     setWorking({kind,dimension:selected});setError('');setNotice('');onBusy(true);
     try{
       const payload=kind==='initial'?{dimension,...(stage?{stage_key:stage.key}:{}),expected_dmp_version:expected}:{expected_dmp_version:expected,expected_revision:sourceReview.revision,
-        answer:submitted.answer.trim(),file_version_ids:submitted.file_version_ids,...(refreshContext?{refresh_context:true}:{})};
+        answer:submitted.answer.trim(),file_version_ids:submitted.file_version_ids,...(committee?{acknowledged_revision:sourceReview.revision}:{}),...(refreshContext?{refresh_context:true}:{})};
       const result=await W2.json(kind==='initial'?base:base+'/'+encodeURIComponent(sourceReview.id)+'/reply',{
         method:'POST',headers:{'Content-Type':'application/json'},signal:requestController.signal,body:JSON.stringify(payload),
       });
@@ -100,7 +105,7 @@ const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,ot
       if(!alive.current)return;
       if(kind==='reply'){
         updateAnswer(selected,{answer:'',file_version_ids:[],review_id:result.review.id},sourceReview.id);
-        setNotice('答辯與重評已保存；請對照本輪依據與上一輪判斷。');
+        setNotice('答辯與委員會回覆已保存，請先查看本輪判斷。');
       }else setNotice('AI 初評已保存，請確認依據並回答追問。');
     }catch(reason){
       if(!alive.current || reason.name==='AbortError')return;
@@ -110,6 +115,9 @@ const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,ot
   };
   const result=reviewDimension(review,dimension),history=review && Array.isArray(review.history)?[...review.history].sort((a,b)=>Number(a.revision)-Number(b.revision)):[];
   const previous=history.length>1?((history[history.length-2].result||{}).dimensions||[]).find(item=>item.key===dimension):null;
+  const previousRound=history.length>1?history[history.length-2]:null;
+  const previousCommittee=previousRound && previousRound.result && previousRound.result.committee_feedback;
+  const lastAnswer=history.length?history[history.length-1].answer:'';
   const questions=((review && review.result||{}).questions||[]).filter(item=>!item.dimension||item.dimension===dimension).slice(0,3);
   const pinned=review && review.pinned_files||[];
   const busy=Boolean(working),sameDimension=working && working.dimension===scope;
@@ -140,6 +148,14 @@ const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,ot
           {review.context_scope.truncated?'本輪僅評估部分材料摘錄。':''}{(review.context_scope.stage_artifacts_not_read||[]).length>0?' '+review.context_scope.stage_artifacts_not_read.length+' 份固定階段材料未能讀取。':''}
         </small>}</div>
       {review.stale && <p className="rcp-ai-stale" data-testid="research-cockpit-ai-stale">材料或研究紀錄已有更新。以下為舊版本初評；可保留答辯，讀取最新材料後重新評估。</p>}
+      {committee && <section className="rcp-committee" data-testid="research-cockpit-committee" aria-label="AI 模擬委員會回覆">
+        <header><div><span>COMMITTEE / ROUND {review.revision-1}</span><h4>AI 模擬委員會回覆</h4></div><strong className={committee.decision} data-testid="research-cockpit-committee-decision">{committeeLabels[committee.decision]||'待判斷'}</strong></header>
+        <div className="rcp-committee-body"><div><b>本輪標準</b><Body body={committee.standard}/></div>
+          <div><b>對您回答的答覆</b><Body body={committee.reply} testId="research-cockpit-committee-reply"/></div>
+          <div><b>下一步</b><Body body={committee.next_action}/></div></div>
+        {lastAnswer && <details className="rcp-committee-answer"><summary>查看本輪提交的答辯</summary><Body body={lastAnswer}/></details>}
+        {previous && <div className="rcp-committee-previous" data-testid="research-cockpit-committee-previous"><span>上一輪 · R{previousRound && previousRound.revision}</span><strong>{previousCommittee?'委員會：'+(committeeLabels[previousCommittee.decision]||'待判斷')+' · ':''}{evidenceLabels[previous.evidence_verdict]||'待判斷'} · {defenseLabels[previous.defense_verdict]||'尚未答辯'}</strong><Body body={previousCommittee && previousCommittee.reply || previous.summary}/></div>}
+      </section>}
       <div className="rcp-ai-grid"><section className="rcp-ai-verdict" data-testid="research-cockpit-ai-verdict">
         <div className="rcp-ai-levels"><div data-testid="research-cockpit-ai-evidence-verdict"><span>研究證據</span><strong className={result.evidence_verdict}>{evidenceLabels[result.evidence_verdict]||'待判斷'}</strong>
           {previous && <small>上一輪：{evidenceLabels[previous.evidence_verdict]||'待判斷'}</small>}</div>
@@ -154,6 +170,8 @@ const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,ot
         <header><span>DEFEND / 回應追問</span><b>{questions.length} 個問題</b></header>
         <ol className="rcp-ai-questions">{questions.slice(0,2).map((question,index)=><li key={question.id||index} data-testid="research-cockpit-ai-question"><b>{String(index+1).padStart(2,'0')}</b><Body body={question.question}/></li>)}</ol>
         {questions.length>2 && <details className="rcp-ai-more-question"><summary>再看一個追問</summary><div data-testid="research-cockpit-ai-question"><Body body={questions[2].question}/></div></details>}
+        {!readyForAnswer && <div className="rcp-committee-gate"><p>請先查看上方委員會答覆，再開始下一輪。</p><button type="button" data-testid="research-cockpit-committee-continue" disabled={!canWrite||busy} onClick={()=>setAcknowledged(roundKey)}>已閱讀，進入下一輪 ↗</button></div>}
+        {readyForAnswer && <>
         {answer.review_id && answer.review_id!==review.id && answer.answer && <p className="rcp-ai-context-note">已保留上一輪答辯草稿，請依目前追問調整後提交。</p>}
         <label className="rcp-ai-answer-label"><span>您的答辯 · 可依序回應上方問題（最多 6000 字）</span><textarea data-testid="research-cockpit-ai-answer" value={answer.answer} maxLength={6000} disabled={!canWrite||busy} placeholder="可依序回應上方問題，解釋推導、假設與邊界；有實證或模型結果時，附上下面的固定版本證據。"
           onChange={event=>updateAnswer(scope,{answer:event.target.value,review_id:review.id})}/></label>
@@ -161,16 +179,20 @@ const AIReviewPanel=({project,dimension,stage,discipline,serverVersion,review,ot
         <details className="rcp-ai-attachments"><summary>附上目前課題的固定版本證據 · {(answer.file_version_ids||[]).length} 份</summary>
           <div className="rcp-file-checks">{files.map(file=><label key={file.file_version_id}><input type="checkbox" data-testid="research-cockpit-ai-evidence" data-file-version-id={file.file_version_id} disabled={!canWrite||busy} checked={(answer.file_version_ids||[]).includes(file.file_version_id)} onChange={event=>updateAnswer(scope,{file_version_ids:event.target.checked?[...(answer.file_version_ids||[]),file.file_version_id]:(answer.file_version_ids||[]).filter(id=>id!==file.file_version_id),review_id:review.id})}/><span>V{file.version} · {file.logical_path}</span></label>)}</div>
           {(answer.file_version_ids||[]).filter(id=>!files.some(file=>file.file_version_id===id)).map(id=><label className="rcp-ai-retained-evidence" key={id}><input type="checkbox" checked disabled={!canWrite||busy} onChange={()=>updateAnswer(scope,{file_version_ids:(answer.file_version_ids||[]).filter(item=>item!==id)})}/><span>保留的舊固定版本 · {id.slice(0,12)}</span></label>)}
+          <button type="button" className="rcp-committee-upload" data-testid="research-cockpit-committee-upload" disabled={!canWrite||busy} onClick={()=>onNavigate({section:'projects'})}>上傳新材料 ↗</button>
         </details>
         <footer><small>答辯草稿保留在這部裝置；提交後進入本課題的評估紀錄。</small>
           <button type="button" className="primary" data-testid="research-cockpit-ai-submit" disabled={!canWrite||busy||!answer.answer.trim()||answerTooLong||Boolean(review.stale)} onClick={()=>run('reply')}>提交答辯並重評 ↗</button>
           {review.stale && <button type="button" data-testid="research-cockpit-ai-refresh-reply" disabled={!canWrite||busy||!answer.answer.trim()||answerTooLong} onClick={()=>run('reply',true)}>讀取最新材料並重新評估 ↗</button>}</footer>
+        </>}
       </section></div>
       <details className="rcp-ai-history" data-testid="research-cockpit-ai-history"><summary>初評與答辯歷史 · {history.length} 輪</summary>{[...history].reverse().map(entry=>{
         const value=((entry.result||{}).dimensions||[]).find(item=>item.key===dimension);
         return <article key={entry.revision}><header><b>R{entry.revision} · {entry.kind==='reply'?'答辯重評':'AI 初評'}</b><time>{stamp(entry.created_at)}</time></header>
           {value && <p className="rcp-ai-history-level">研究證據：{evidenceLabels[value.evidence_verdict]||'待判斷'} · 答辯理解：{defenseLabels[value.defense_verdict]||'尚未答辯'}</p>}
-          {entry.context_refreshed && <small>本輪已讀取最新材料</small>}{entry.answer && <details><summary>查看這次答辯</summary><Body body={entry.answer}/></details>}{value && <Body body={value.summary}/>}</article>;
+          {entry.context_refreshed && <small>本輪已讀取最新材料</small>}{entry.answer && <details><summary>查看這次答辯</summary><Body body={entry.answer}/></details>}
+          {entry.result && entry.result.committee_feedback && <div className="rcp-committee-history"><b>AI 模擬委員會 · {committeeLabels[entry.result.committee_feedback.decision]||'待判斷'}</b><Body body={entry.result.committee_feedback.reply}/></div>}
+          {value && <Body body={value.summary}/>}</article>;
       })}</details>
       {!!otherReviews.length && <details className="rcp-ai-history" data-testid="research-cockpit-ai-previous-reviews"><summary>其他評估紀錄 · {otherReviews.length} 次</summary>{otherReviews.map(old=>{
         const oldResult=reviewDimension(old,dimension),oldSpecialist=specialistFor(old,dimension);
@@ -342,7 +364,7 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
         </button>;
       })}</div>
       <div className="rcp-evidence-key"><span><i/>實際登記：文件、資料與執行紀錄</span><span><i/>研究者評估：檢查項目與缺口</span><small>檢查數量表示紀錄覆蓋，研究結論仍需證據與覆核。</small></div>
-      <section className="rcp-route" aria-label="完整研究路線"><header><div><span>01 / RESEARCH ROUTE</span><h3>從問題走到論證</h3></div><small>{graph.current_stage?'目前紀錄：'+text((nodes.find(node=>node.key===graph.current_stage)||{}).title):'目前階段尚未標記'}</small></header>
+      <section className="rcp-route" aria-label="完整研究路線"><header><div><span>01 / RESEARCH ROUTE</span><h3>從問題走到論證</h3></div><small>{graph.current_stage?'目前紀錄：'+text((nodes.find(node=>node.key===graph.current_stage)||{}).title):'目前階段尚未標記'} · 點選任一步驟查看評估與答辯</small></header>
         <ol>{nodes.map((node,index)=>{const review=stageReviewFor(aiReviews,discipline,node.key),result=reviewDimension(review,node.dimension);return <li key={node.key}><button type="button" className={text(node.status)+(selectedStage && selectedStage.key===node.key && aiTarget==='stage'?' active':'')}
           data-testid={'research-cockpit-stage-'+node.key} aria-pressed={Boolean(selectedStage && selectedStage.key===node.key && aiTarget==='stage')} onClick={()=>{setActiveStage(node.key);setAITarget('stage');if(dimensions.some(item=>item[0]===node.dimension))setActiveDimension(node.dimension);}}>
           <span>{String(index+1).padStart(2,'0')}<i data-testid={'research-cockpit-stage-ai-'+node.key}>{review?(review.stale?'AI 需重評':'AI：'+(evidenceLabels[result && result.evidence_verdict]||'已評估')):'AI 待評估'}</i></span><strong>{node.title}</strong><small>人工：{statusNames[node.status]||'待標記'} · {(node.evidence||[]).length?(node.evidence||[]).length+' 份證據':'尚未連結證據'}</small></button></li>;})}</ol>
