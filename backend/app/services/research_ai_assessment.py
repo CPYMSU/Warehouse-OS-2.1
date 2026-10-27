@@ -115,7 +115,7 @@ def _context(actor, snapshot, dimensions, references):
                 asset_class = research_asset_class(item["logical_path"], item["file_kind"])
                 if version_id in references and asset_class == "manuscript" and latest_by_file.get(file_id) != version_id:
                     raise HTTPException(status_code=422, detail="Please reference the latest manuscript version to avoid mixing source versions")
-                url = f"/api/research/projects/{snapshot['project']['id']}/files/{file_id}/preview?version={item['version']}"
+                url = f"/api/research/projects/{snapshot['project']['id']}/files/{file_id}/content?version={item['version']}"
                 pinned.append({key: item[key] for key in ("file_version_id", "file_id", "logical_path", "version", "content_sha256")})
                 pinned[-1]["url"] = url
                 common = {"file_version_id": version_id, "label": item["logical_path"] + f" V{item['version']}", "url": url, "asset_class": asset_class}
@@ -254,6 +254,10 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
                 raise ValueError("Supported evidence needs real project citations")
             if basis_source == "defense_argument" and not answer:
                 raise ValueError("No defense argument was supplied")
+            argument_support = (key in {"paper", "theory"} and bool(answer) and basis_source == "defense_argument"
+                                and (not question or (question["dimension"], question["criterion"]) == (key, criterion)))
+            if evidence == "partial" and not ((basis_source == "project_evidence" and citations) or argument_support):
+                evidence, basis_source = "insufficient", "insufficient"
             evidence_limit = None
             if key == "data" and not any(cite.get("asset_class") in {"dataset", "database"} for cite in citations):
                 evidence = "insufficient"
@@ -262,9 +266,7 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
                 evidence = "partial"
                 evidence_limit = "目前只能檢查論文報告，尚缺可核對的分析產物或運算紀錄。"
             prior = previous_items.get((key, criterion))
-            provisional_argument = (key in {"paper", "theory"} and bool(answer) and basis_source == "defense_argument"
-                                    and evidence == "partial" and (not question or
-                                    (question["dimension"], question["criterion"]) == (key, criterion)))
+            provisional_argument = argument_support and evidence == "partial"
             if prior and not provisional_argument and EVIDENCE.index(evidence) > EVIDENCE.index(prior["evidence_verdict"]):
                 old = {workflow._canonical(cite) for cite in prior.get("citations", [])}
                 if not any(workflow._canonical(cite) not in old for cite in citations):

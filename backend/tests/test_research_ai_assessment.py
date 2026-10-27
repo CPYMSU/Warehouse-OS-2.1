@@ -213,6 +213,18 @@ def test_paper_narrative_cannot_satisfy_data_verdict_or_answer_only_supported_cl
         service._validate_result(model_result(evidence='supported', argument=True), ['theory'], context, answer='A proof without supplied source')
 
 
+def test_partial_model_verdict_requires_a_real_project_citation():
+    context = {'sources': [SOURCE]}
+    output = model_result('model', evidence='partial')
+    for basis_source in ('insufficient', 'project_evidence'):
+        for item in output['dimensions'][0]['criteria']:
+            item['basis_source'] = basis_source
+        result = service._validate_result(output, ['model'], context, answer='An eloquent but unsupported answer')
+        assert result['dimensions'][0]['evidence_verdict'] == 'insufficient'
+    cited = service._validate_result(model_result('model', evidence='partial', cited=True), ['model'], context, answer='')
+    assert cited['dimensions'][0]['evidence_verdict'] == 'partial'
+
+
 def test_fingerprint_excludes_ai_history_and_indexing_but_tracks_saved_content():
     project = {'id': UUID(int=3), 'metadata': {}, 'updated_at': 'before'}
     actual = rows()
@@ -259,6 +271,7 @@ def test_context_prefers_current_saved_draft_but_never_mixes_stale_word(monkeypa
 
     monkeypatch.setattr(service, 'tenant_session', session)
     context = service._context(actor(), {'project': project, 'rows': actual, 'content': {}}, ['theory'], [])
+    assert context['pinned_files'][0]['url'].endswith('/content?version=2')
     texts = ' '.join(item['text'] for item in context['sources'])
     if fresh:
         assert 'Current saved' in texts and 'y=2x' in texts
