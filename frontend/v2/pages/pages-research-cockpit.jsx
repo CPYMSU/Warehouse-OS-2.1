@@ -72,13 +72,15 @@ const aiErrorMessage=reason=>{
 const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,review,otherReviews,files,checks,RichText,canWrite,manualDirty,onResult,onReload,onBusy,onOpenFile,onNavigate})=>{
   const [answers,setAnswers]=useState({});
   const [working,setWorking]=useState(null),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [failedRequest,setFailedRequest]=useState(null),[retryChecking,setRetryChecking]=useState(false);
   const [acknowledged,setAcknowledged]=useState('');
   const lock=useRef(false),alive=useRef(true),controller=useRef(null),localVersion=useRef(serverVersion);
   localVersion.current=Math.max(localVersion.current,serverVersion);
   const base='/api/research/projects/'+encodeURIComponent(project.id)+'/assessment/ai-reviews';
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;if(controller.current)controller.current.abort();onBusy(false);};},[]);
   const scope=stage?'stage:'+discipline+':'+stage.key:item?'item:'+dimension+':'+item.key:dimension;
-  useEffect(()=>{setError('');setNotice('');},[scope]);
+  const target=useRef({});target.current={scope,reviewId:review && review.id || '',revision:review && review.revision || 0};
+  useEffect(()=>{setError('');setNotice('');setFailedRequest(null);},[scope]);
   const answerKey=(name,id)=>draftKey(project)+':ai:'+name+':review:'+encodeURIComponent(text(id));
   const currentKey=answerKey(scope,review && review.id);
   const storedAnswer=readLocal(currentKey);
@@ -103,7 +105,7 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
     if(!canWrite || lock.current || (kind==='reply' && (!review || !readyForAnswer || !answer.answer.trim() || answerTooLong)))return;
     lock.current=true;const selected=scope,sourceReview=review,submitted={...answer,file_version_ids:[...(answer.file_version_ids||[])]};
     const expected=localVersion.current,requestController=new AbortController();controller.current=requestController;
-    setWorking({kind,dimension:selected});setError('');setNotice('');onBusy(true);
+    setWorking({kind,dimension:selected});setError('');setNotice('');setFailedRequest(null);onBusy(true);
     try{
       const payload=kind==='initial'?{dimension,...(stage?{stage_key:stage.key}:item?{criterion_key:item.key}:{}),expected_dmp_version:expected}:{expected_dmp_version:expected,expected_revision:sourceReview.revision,
         answer:submitted.answer.trim(),file_version_ids:submitted.file_version_ids,...(committee?{acknowledged_revision:sourceReview.revision}:{}),...(refreshContext?{refresh_context:true}:{})};
@@ -120,10 +122,34 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
         setNotice('答辯與委員會回覆已保存，請先查看本輪判斷。');
       }else setNotice('AI 初評已保存，請確認依據並回答追問。');
     }catch(reason){
-      if(!alive.current || reason.name==='AbortError')return;
+      if(!alive.current || reason.name==='AbortError' || target.current.scope!==selected)return;
       setError(aiErrorMessage(reason));
+      if(!reason.status || reason.status>=500)setFailedRequest({kind,refreshContext,scope:selected,
+        reviewId:sourceReview && sourceReview.id || '',revision:sourceReview && sourceReview.revision || 0,expected});
       if(reason.status===409){try{const latest=await onReload();if(alive.current && latest)localVersion.current=Math.max(localVersion.current,Number(latest.research_dashboard && latest.research_dashboard.dmp_version)||0);}catch(_error){}}
     }finally{lock.current=false;if(alive.current){setWorking(null);onBusy(false);}}
+  };
+  const retryFailed=async()=>{
+    if(!failedRequest || retryChecking || lock.current || !canWrite)return;
+    lock.current=true;const failed=failedRequest;setRetryChecking(true);onBusy(true);
+    try{
+      const latest=await onReload();
+      if(!alive.current)return;
+      const version=latest && latest.research_dashboard && latest.research_dashboard.dmp_version;
+      if(!Number.isInteger(version))throw new Error('無法確認最新研究紀錄，請重新讀取後再試。');
+      localVersion.current=Math.max(localVersion.current,version);
+      if(version!==failed.expected){
+        setFailedRequest(null);
+        setError('研究紀錄已有更新，請先確認目前評估；答辯草稿仍保留。');
+        return;
+      }
+      const current=target.current;
+      if(current.scope!==failed.scope || current.reviewId!==failed.reviewId || current.revision!==failed.revision)return;
+      setRetryChecking(false);onBusy(false);
+      lock.current=false;
+      await run(failed.kind,failed.refreshContext);
+    }catch(reason){if(alive.current)setError(aiErrorMessage(reason));}
+    finally{lock.current=false;if(alive.current){setRetryChecking(false);onBusy(false);}}
   };
   const result=reviewDimension(review,dimension),history=review && Array.isArray(review.history)?[...review.history].sort((a,b)=>Number(a.revision)-Number(b.revision)):[];
   const previous=history.length>1?((history[history.length-2].result||{}).dimensions||[]).find(item=>item.key===dimension):null;
@@ -132,7 +158,7 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
   const lastAnswer=history.length?history[history.length-1].answer:'';
   const questions=((review && review.result||{}).questions||[]).filter(item=>!item.dimension||item.dimension===dimension).slice(0,3);
   const pinned=review && review.pinned_files||[];
-  const busy=Boolean(working),sameDimension=working && working.dimension===scope;
+  const busy=Boolean(working || retryChecking),sameDimension=working && working.dimension===scope;
   const title=stage?stage.title:item?item.label:(dimensions.find(entry=>entry[0]===dimension)||[])[1]||dimension;
   const specialist=(specialistFor(review,dimension)||{}).name||(review?'Bonfire AI（既有評估）':stage?'本步專業 Agent':specialistNames[dimension]||'研究評估 Agent');
   const Body=({body,className='rcp-ai-richtext',testId,formula=false})=>RichText?<RichText body={body} formula={formula} className={className} testId={testId||'research-cockpit-ai-richtext'}/>:<p className={className}>{text(body)}</p>;
@@ -167,7 +193,9 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
     {review && answer.answer.trim() && <p className="rcp-ai-context-note">重新評估會建立新紀錄；未提交的草稿會保留在「其他評估紀錄」中。</p>}
     {manualDirty && <p className="rcp-ai-context-note">AI 讀取已保存的研究紀錄；目前人工檢查仍有未保存的編輯。</p>}
     {working && <div className="rcp-ai-loading" data-testid="research-cockpit-ai-loading" role="status"><i/><div><b>{sameDimension?(working.kind==='reply'?'正在核對答辯與證據，重新評估…':'正在閱讀固定版本材料，整理判斷與追問…'):'另一個研究面向正在進行 AI 評估…'}</b><span>讀取材料 → 核對依據 → 提出可回答的問題</span></div></div>}
-    {error && <div className="rcp-ai-error" data-testid="research-cockpit-ai-error" role="alert"><p>{error}</p><button type="button" data-testid="research-cockpit-ai-refresh" disabled={busy} onClick={async()=>{try{await onReload();setError('');}catch(reason){setError(aiErrorMessage(reason));}}}>重新讀取材料與紀錄 ↻</button></div>}
+    {error && <div className="rcp-ai-error" data-testid="research-cockpit-ai-error" role="alert"><p>{error}</p>
+      {failedRequest && failedRequest.scope===scope && failedRequest.reviewId===(review && review.id || '') && failedRequest.revision===(review && review.revision || 0) && <button type="button" data-testid="research-cockpit-ai-retry" disabled={busy||!canWrite||(failedRequest.kind==='reply'&&(!answer.answer.trim()||answerTooLong||!readyForAnswer))} onClick={retryFailed}>{retryChecking?'正在核對紀錄…':failedRequest.kind==='reply'?'重試提交答辯 ↻':'重試專家評估 ↻'}</button>}
+      <button type="button" data-testid="research-cockpit-ai-refresh" disabled={busy} onClick={async()=>{try{await onReload();setError('');setFailedRequest(null);}catch(reason){setError(aiErrorMessage(reason));}}}>重新讀取材料與紀錄 ↻</button></div>}
     {review && result?<>
       <div className="rcp-ai-source"><b>AI 初評 · 待確認</b><span>評估 R{review.revision} · 來源 DMP V{review.source_dmp_version} · {stamp(review.updated_at||review.created_at)}</span>
         <details><summary>本輪固定材料 · {pinned.length} 份</summary>{pinned.map(file=><Artifact key={file.file_version_id} artifact={file} onOpen={onOpenFile}/>)}

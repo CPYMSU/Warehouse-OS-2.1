@@ -129,6 +129,30 @@ def test_initial_review_is_fast_grounded_and_preserves_manual_assessment(state):
     assert readback['reviews'][0]['history'][0]['kind'] == 'initial'
 
 
+def test_question_source_aliases_resolve_only_to_actual_supplied_excerpts():
+    second = {**SOURCE, 'file_version_id': str(UUID(int=6)), 'block_id': 'block-2',
+              'text': 'Another real paragraph describing a different mechanism.'}
+    context = {'sources': [SOURCE, second]}
+    citations = service._question_source_excerpts(['S1', 'S2', 'block-1'], context)
+    assert [item['quote'] for item in citations] == [SOURCE['text'], second['text'], SOURCE['text']]
+    assert service._question_source_excerpts('S2', context)[0]['file_version_id'] == second['file_version_id']
+    assert service._question_source_excerpts({'source_id': 'S1', 'block_id': 'block-1'}, context)[0]['quote'] == SOURCE['text']
+    # A conflicting full ID, a file alone, and a guessed alias cannot select
+    # a convenient but unrelated paragraph.
+    for bad in ('S3', SOURCE['file_version_id'], {'source_id': 'S1', 'block_id': 'block-2'}):
+        with pytest.raises(ValueError, match='Question source was not present'):
+            service._question_source_excerpts([bad], context)
+
+
+def test_question_source_strings_reject_ambiguous_block_or_alias():
+    duplicate = {**SOURCE, 'file_version_id': str(UUID(int=6))}
+    with pytest.raises(ValueError, match='Question source was not present'):
+        service._question_source_excerpts(['block-1'], {'sources': [SOURCE, duplicate]})
+    collision = {**duplicate, 'block_id': 'S1'}
+    with pytest.raises(ValueError, match='Question source was not present'):
+        service._question_source_excerpts(['S1'], {'sources': [SOURCE, collision]})
+
+
 def test_economic_questions_require_a_verified_paper_excerpt_and_keep_the_hint():
     value = model_result('theory')
     value['questions'][0].update({'category': 'theory', 'hint': 'Check the assumptions.',

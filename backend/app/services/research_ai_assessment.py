@@ -66,7 +66,8 @@ PROMPT = (
     "citation 用 {file_version_id,block_id,quote}，或 {record_type,record_id,quote}；只能引用 sources 中提供的身份，"
     "quote 必須逐字取自其 text（20–80字內的連續原文），不可捏造引用、數字或來源。每項最多一個引文；"
     "無法逐字複製時使用 insufficient 與空 citations，切勿改寫原文充當引文。"
-    "每個問題 category 為 theory、method 或 evidence；問題 source_refs 只寫來源 file_version_id 與 block_id（或 record_type 和 record_id），"
+    "每個問題 category 為 theory、method 或 evidence；問題 source_refs 請填 sources 的短 source_id 字串陣列，"
+    "例如 [\"S1\"]；只能選本次提供的 source_id。"
     "不要自行生成問題的 quote，系統會從對應段落原文機械擷取摘錄。hint 是簡短的思考方向，可為空。"
     "總結只用1–2句、100字以內；優先提出2個短而具體的問題（必要時最多3個），id 使用 q1/q2/q3，綁定所評估的 dimension 和 criterion。"
     r"如有公式，以 \( ... \) 或 \[ ... \] 表達，不使用程式碼框。"
@@ -365,6 +366,8 @@ def _context(actor, snapshot, dimensions, references, stage=None, focus_item=Non
         used_item = {item["file_version_id"] for item in sources if item.get("file_version_id") in item_refs}
         scope["item_artifacts_used"] = [identifier for identifier in item_refs if identifier in used_item]
         scope["item_artifacts_not_read"] = [identifier for identifier in item_refs if identifier not in used_item]
+    for index, item in enumerate(sources, 1):
+        item["source_id"] = f"S{index}"
     return {"sources": sources, "pinned_files": pinned, "scope": scope,
             "manual_dmp_excerpt": workflow._canonical({key: value for key, value in snapshot["content"].items() if key != SESSION_KEY})[:6000]}
 
@@ -407,19 +410,41 @@ def _verified_assessment_citations(values, context):
 
 def _question_source_excerpts(references, context):
     """Resolve model-selected identities; all displayed words come from actual source text."""
+    if isinstance(references, (str, dict)):
+        references = [references]
     if not isinstance(references, list) or len(references) > 5:
         raise ValueError("Invalid question sources")
     result = []
     for reference in references:
-        if not isinstance(reference, dict):
+        if isinstance(reference, str):
+            # A string may be a per-request short ID or a complete block ID.
+            # A file ID alone is ambiguous because it can contain many blocks.
+            matches = [item for index, item in enumerate(context["sources"], 1)
+                       if reference == item.get("source_id", f"S{index}")
+                       or reference == item.get("block_id")]
+        elif isinstance(reference, dict):
+            source_id = reference.get("source_id")
+            if source_id is not None:
+                if not isinstance(source_id, str):
+                    raise ValueError("Invalid question source")
+                # If a model also supplies full IDs, they must agree with the
+                # alias; never silently resolve conflicting source identities.
+                matches = [item for index, item in enumerate(context["sources"], 1)
+                           if source_id == item.get("source_id", f"S{index}")
+                           and all(str(reference[key]) == str(item.get(key))
+                                   for key in ("file_version_id", "block_id", "record_type", "record_id")
+                                   if key in reference)]
+            else:
+                matches = [item for item in context["sources"] if (
+                    str(reference.get("file_version_id")) == item.get("file_version_id")
+                    and reference.get("block_id") == item.get("block_id")
+                    if reference.get("file_version_id") else reference.get("record_type") == item.get("record_type")
+                    and str(reference.get("record_id")) == item.get("record_id"))]
+        else:
             raise ValueError("Invalid question source")
-        source = next((item for item in context["sources"] if (
-            str(reference.get("file_version_id")) == item.get("file_version_id")
-            and reference.get("block_id") == item.get("block_id")
-            if reference.get("file_version_id") else reference.get("record_type") == item.get("record_type")
-            and str(reference.get("record_id")) == item.get("record_id"))), None)
-        if source is None:
+        if len(matches) != 1:
             raise ValueError("Question source was not present in the supplied project evidence")
+        source = matches[0]
         excerpt = str(source.get("text") or "")[:160].strip()
         if not excerpt:
             raise ValueError("Question source is empty")
