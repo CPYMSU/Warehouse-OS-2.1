@@ -135,20 +135,36 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
   const busy=Boolean(working),sameDimension=working && working.dimension===scope;
   const title=stage?stage.title:item?item.label:(dimensions.find(entry=>entry[0]===dimension)||[])[1]||dimension;
   const specialist=(specialistFor(review,dimension)||{}).name||(review?'Bonfire AI（既有評估）':stage?'本步專業 Agent':specialistNames[dimension]||'研究評估 Agent');
-  const Body=({body,className='rcp-ai-richtext',testId})=>RichText?<RichText body={body} className={className} testId={testId||'research-cockpit-ai-richtext'}/>:<p className={className}>{text(body)}</p>;
+  const Body=({body,className='rcp-ai-richtext',testId,formula=false})=>RichText?<RichText body={body} formula={formula} className={className} testId={testId||'research-cockpit-ai-richtext'}/>:<p className={className}>{text(body)}</p>;
   const citation=(item,index)=>{
     const file=pinned.find(entry=>entry.file_version_id===item.file_version_id);
     const record=item.record_type;
     return <div className="rcp-ai-citation" data-testid="research-cockpit-ai-citation" key={index}>
       <span>{item.source_kind==='saved_draft'?'精修草稿 REV '+item.draft_revision:record?item.label||record+' '+text(item.record_id).slice(0,8):file?'V'+file.version+' · '+file.logical_path:'固定版本 · '+text(item.file_version_id).slice(0,8)}</span>
-      {item.quote && <Body body={item.quote}/>}
+      {item.quote && !item.source_latex && <Body body={item.quote}/>}
+      {item.source_latex && <div className="rcp-question-formula" data-testid="research-cockpit-question-formula"><span>同一來源的原稿公式</span><Body body={item.source_latex} formula/></div>}
+      {item.quote && item.source_latex && <details className="rcp-question-original"><summary>查看原文摘錄</summary><pre className="rcp-question-raw-quote">{item.quote}</pre></details>}
       {item.source_kind!=='saved_draft' && file && <button type="button" onClick={()=>onOpenFile(file)}>核對來源 ↗</button>}
       {record && <button type="button" onClick={()=>onNavigate({section:record==='execution'?'execution':record==='protocol'||record==='run'?'workflow':'evidence',...(record==='execution'?{execution_id:item.record_id}:{})})}>查看研究紀錄 ↗</button>}
     </div>;
   };
+  const hasQuestionGroups=questions.some(question=>['theory','method','evidence'].includes(question.category));
+  const questionGroups=[
+    {key:'theory',title:discipline==='econometrics'?'第一組：經濟學理論與機制':'第一組：理論與核心機制'},
+    {key:'method',title:discipline==='econometrics'?'第二組：方法與識別':'第二組：研究方法與檢驗'},
+    {key:'evidence',title:'第三組：資料與證據'},
+    {key:'other',title:'其他追問'},
+  ].map(group=>({...group,items:questions.map((question,index)=>({question,index})).filter(({question})=>group.key==='other'?!['theory','method','evidence'].includes(question.category):question.category===group.key)})).filter(group=>group.items.length);
+  let questionNumber=0;questionGroups.forEach(group=>group.items.forEach(entry=>{entry.displayIndex=questionNumber++;}));
+  const questionRow=(question,index)=><li key={question.id||index} data-testid="research-cockpit-ai-question"><b>{String(index+1).padStart(2,'0')}</b><div><Body body={question.question}/>
+    {question.hint && <div className="rcp-question-hint" data-testid="research-cockpit-question-hint"><span>思考方向</span><Body body={question.hint}/></div>}
+    {Array.isArray(question.citations) && question.citations.length>0 && <div className="rcp-question-source" data-testid="research-cockpit-question-source"><span>來源段落摘錄</span>{question.citations.slice(0,1).map(citation)}
+      {question.citations.length>1 && <details><summary>更多依據 · {question.citations.length-1} 項</summary>{question.citations.slice(1).map(citation)}</details>}</div>}
+  </div></li>;
   return <section className="rcp-ai" data-testid="research-cockpit-ai-panel" aria-label={title+' AI 初評與答辯'} aria-busy={busy}>
     <header><div><span>BONFIRE AI / {stage?'STAGE':item?'CHECK':'DIMENSION'} / {text(dimension).toUpperCase()}</span><h3>{title} · 專家評估與答辯</h3><small>{specialist} · AI 判斷獨立保存，人工檢查由研究者確認。</small></div>
       <button type="button" className="primary" data-testid="research-cockpit-ai-start" disabled={!canWrite||busy} onClick={()=>run('initial')}>{review?'重新進行專家評估':item?'為此項產生答辯問題':'請專家評估'} ↗</button></header>
+    {review && answer.answer.trim() && <p className="rcp-ai-context-note">重新評估會建立新紀錄；未提交的草稿會保留在「其他評估紀錄」中。</p>}
     {manualDirty && <p className="rcp-ai-context-note">AI 讀取已保存的研究紀錄；目前人工檢查仍有未保存的編輯。</p>}
     {working && <div className="rcp-ai-loading" data-testid="research-cockpit-ai-loading" role="status"><i/><div><b>{sameDimension?(working.kind==='reply'?'正在核對答辯與證據，重新評估…':'正在閱讀固定版本材料，整理判斷與追問…'):'另一個研究面向正在進行 AI 評估…'}</b><span>讀取材料 → 核對依據 → 提出可回答的問題</span></div></div>}
     {error && <div className="rcp-ai-error" data-testid="research-cockpit-ai-error" role="alert"><p>{error}</p><button type="button" data-testid="research-cockpit-ai-refresh" disabled={busy} onClick={async()=>{try{await onReload();setError('');}catch(reason){setError(aiErrorMessage(reason));}}}>重新讀取材料與紀錄 ↻</button></div>}
@@ -156,8 +172,8 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
       <div className="rcp-ai-source"><b>AI 初評 · 待確認</b><span>評估 R{review.revision} · 來源 DMP V{review.source_dmp_version} · {stamp(review.updated_at||review.created_at)}</span>
         <details><summary>本輪固定材料 · {pinned.length} 份</summary>{pinned.map(file=><Artifact key={file.file_version_id} artifact={file} onOpen={onOpenFile}/>)}
           <small>來源指紋 {text(review.source_fingerprint).slice(0,12)}</small></details>
-        {review.context_scope && (review.context_scope.truncated || (review.context_scope.stage_artifacts_not_read||[]).length>0 || (review.context_scope.item_artifacts_not_read||[]).length>0) && <small className="rcp-ai-scope" data-testid="research-cockpit-ai-scope" role="note">
-          {review.context_scope.truncated?'本輪僅評估部分材料摘錄。':''}{(review.context_scope.stage_artifacts_not_read||[]).length>0?' '+review.context_scope.stage_artifacts_not_read.length+' 份固定階段材料未能讀取。':''}{(review.context_scope.item_artifacts_not_read||[]).length>0?' '+review.context_scope.item_artifacts_not_read.length+' 份本項固定材料未能讀取。':''}
+        {review.context_scope && (review.context_scope.truncated || review.context_scope.economic_theory_text_available===false || (review.context_scope.stage_artifacts_not_read||[]).length>0 || (review.context_scope.item_artifacts_not_read||[]).length>0) && <small className="rcp-ai-scope" data-testid="research-cockpit-ai-scope" role="note">
+          {review.context_scope.truncated?'本輪僅評估部分材料摘錄。':''}{review.context_scope.economic_theory_text_available===false?' 尚未讀到可供理論提問的正文。':''}{(review.context_scope.stage_artifacts_not_read||[]).length>0?' '+review.context_scope.stage_artifacts_not_read.length+' 份固定階段材料未能讀取。':''}{(review.context_scope.item_artifacts_not_read||[]).length>0?' '+review.context_scope.item_artifacts_not_read.length+' 份本項固定材料未能讀取。':''}
         </small>}</div>
       {review.stale && <p className="rcp-ai-stale" data-testid="research-cockpit-ai-stale">材料或研究紀錄已有更新。以下為舊版本初評；可保留答辯，讀取最新材料後重新評估。</p>}
       {committee && <section className="rcp-committee" data-testid="research-cockpit-committee" aria-label="AI 模擬委員會回覆">
@@ -180,8 +196,11 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
         <p className="rcp-ai-separation">答辯理解反映解釋是否清楚；研究證據以可核對的文件、推導與結果為依據。</p>
       </section><section className="rcp-ai-defense">
         <header><span>DEFEND / 回應追問</span><b>{questions.length} 個問題</b></header>
-        <ol className="rcp-ai-questions">{questions.slice(0,2).map((question,index)=><li key={question.id||index} data-testid="research-cockpit-ai-question"><b>{String(index+1).padStart(2,'0')}</b><Body body={question.question}/></li>)}</ol>
-        {questions.length>2 && <details className="rcp-ai-more-question"><summary>再看一個追問</summary><div data-testid="research-cockpit-ai-question"><Body body={questions[2].question}/></div></details>}
+        {hasQuestionGroups?<div className="rcp-question-groups" data-testid="research-cockpit-question-groups">{questionGroups.map((group,index)=>group.key==='theory'||index===0?
+          <section className="rcp-question-group" key={group.key} data-testid={'research-cockpit-question-group-'+group.key}><h4>{group.title}</h4><ol className="rcp-ai-questions">{group.items.map(({question,displayIndex})=>questionRow(question,displayIndex))}</ol></section>:
+          <details className="rcp-question-group rcp-question-group-more" key={group.key} data-testid={'research-cockpit-question-group-'+group.key}><summary>{group.title} · {group.items.length} 題</summary><ol className="rcp-ai-questions">{group.items.map(({question,displayIndex})=>questionRow(question,displayIndex))}</ol></details>)}</div>:
+          <><p className="rcp-question-legacy">本輪提問尚未分類；可重新進行專家評估，原答辯紀錄仍會保留。</p><ol className="rcp-ai-questions">{questions.slice(0,2).map(questionRow)}</ol>
+          {questions.length>2 && <details className="rcp-ai-more-question"><summary>再看一個追問</summary><ol className="rcp-ai-questions">{questionRow(questions[2],2)}</ol></details>}</>}
         {!readyForAnswer && <div className="rcp-committee-gate"><p>請先查看上方委員會答覆，再開始下一輪。</p><button type="button" data-testid="research-cockpit-committee-continue" disabled={!canWrite||busy} onClick={()=>setAcknowledged(roundKey)}>已閱讀，進入下一輪 ↗</button></div>}
         {readyForAnswer && <>
         {answer.review_id && answer.review_id!==review.id && answer.answer && <p className="rcp-ai-context-note">已保留上一輪答辯草稿，請依目前追問調整後提交。</p>}
@@ -207,9 +226,18 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
           {value && <Body body={value.summary}/>}</article>;
       })}</details>
       {!!otherReviews.length && <details className="rcp-ai-history" data-testid="research-cockpit-ai-previous-reviews"><summary>其他評估紀錄 · {otherReviews.length} 次</summary>{otherReviews.map(old=>{
-        const oldResult=reviewDimension(old,dimension),oldSpecialist=specialistFor(old,dimension);
+        const oldResult=reviewDimension(old,dimension),oldSpecialist=specialistFor(old,dimension),legacyDraft=!stage&&!item?readLocal(draftKey(project)+':ai:'+scope):null;
+        const pastDraft=answers[answerKey(scope,old.id)]||readLocal(answerKey(scope,old.id))||(legacyDraft && legacyDraft.review_id===old.id?legacyDraft:null);
+        const pastHistory=Array.isArray(old.history)?[...old.history].sort((a,b)=>Number(a.revision)-Number(b.revision)):[];
         return <article key={old.id}><header><b>{oldSpecialist && oldSpecialist.name||'既有 AI 評估'} · R{old.revision}</b><time>{stamp(old.updated_at||old.created_at)}</time></header>
-          {old.stale && <small>材料已更新</small>}{oldResult && <><p className="rcp-ai-history-level">研究證據：{evidenceLabels[oldResult.evidence_verdict]||'待判斷'} · 答辯理解：{defenseLabels[oldResult.defense_verdict]||'尚未答辯'}</p><Body body={oldResult.summary}/></>}</article>;
+          {old.stale && <small>材料已更新</small>}{oldResult && <><p className="rcp-ai-history-level">研究證據：{evidenceLabels[oldResult.evidence_verdict]||'待判斷'} · 答辯理解：{defenseLabels[oldResult.defense_verdict]||'尚未答辯'}</p><Body body={oldResult.summary}/></>}
+          {pastDraft && typeof pastDraft.answer==='string' && pastDraft.answer.trim() && <details className="rcp-past-review-draft" data-testid="research-cockpit-past-draft"><summary>查看這份紀錄的未提交草稿</summary><pre>{pastDraft.answer}</pre></details>}
+          {!!pastHistory.length && <details className="rcp-past-review-rounds" data-testid="research-cockpit-past-rounds"><summary>查看過往問題與答辯 · {pastHistory.length} 輪</summary>{pastHistory.map(entry=><div className="rcp-past-review-round" key={entry.revision}><b>R{entry.revision} · {entry.kind==='reply'?'答辯重評':'AI 初評'}</b>
+            {entry.answer && <><small>本輪答辯</small><Body body={entry.answer}/></>}
+            {entry.result && entry.result.committee_feedback && <><small>AI 模擬委員會 · {committeeLabels[entry.result.committee_feedback.decision]||'待判斷'}</small><Body body={entry.result.committee_feedback.reply}/></>}
+            {!!(entry.result && entry.result.questions||[]).length && <><small>{entry.kind==='reply'?'接續追問':'初評問題'}</small>{entry.result.questions.map((question,index)=><Body key={question.id||index} body={question.question}/>)}</>}
+          </div>)}</details>}
+        </article>;
       })}</details>}
     </>:!busy && <p className="rcp-ai-empty">請 Bonfire AI 根據這個課題已保存的材料初評，提出具體追問，再用答辯與證據接續研究。</p>}
     {notice && <p className="rcp-ai-notice" role="status">{notice}</p>}

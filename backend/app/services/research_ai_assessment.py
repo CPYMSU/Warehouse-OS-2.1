@@ -21,6 +21,18 @@ EVIDENCE = ("insufficient", "partial", "supported")
 DEFENSE = ("unassessed", "unclear", "developing", "clear")
 MAX_SOURCE_CHARS = 26_000
 RECORD_TYPES = {"protocols": "protocol", "runs": "run", "claims": "claim", "reviews": "review", "executions": "execution"}
+QUESTION_CATEGORIES = frozenset({"theory", "method", "evidence"})
+ECONOMIC_ANALYSIS = re.compile(
+    r"theor|framework|assum|hypothes|mechanism|equilib|elasticit|identif|"
+    r"transmission|pass.through|threshold|asymmetr|counterfact|welfare|"
+    r"income|expenditure|purchas|trade|export|import", re.I)
+ECONOMIC_BOUNDARIES = re.compile(r"welfare|utility|consumer|counterfact|limit|scope|boundary|bilateral|aggregate", re.I)
+ECONOMIC_MECHANISM = re.compile(r"(?:income|valuation|price|demand|supply|substitution|transmission).{0,45}(?:channel|mechanism)|(?:channel|mechanism).{0,45}(?:income|valuation|price|demand|supply|substitution|transmission)", re.I)
+ECONOMIC_CONTRAST = re.compile(r"(?:sales|revenue|exports?|bilateral).{0,70}welfare|welfare.{0,70}(?:sales|revenue|exports?|bilateral)|not.{0,20}welfare", re.I)
+ECONOMIC_CONDITION = re.compile(r"threshold|inequality|reversal|reverses?|condition|comparative static", re.I)
+UNVERIFIED_QUESTION_EQUATION = re.compile(
+    r"[<>≤≥]|\\(?:gt|lt|ge|le)\b|=\s*(?:\\[A-Za-z]+|[A-Za-zα-ωΑ-Ω])|=\s*[-+]?\d+(?:\.\d+)?\s*[-+*/^]\s*\("
+)
 SPECIALISTS = {
     "paper": {"name": "學術論文評審 Agent", "focus": "研究問題、論文架構、結果、討論及文獻"},
     "data": {"name": "數據治理與統計 Agent", "focus": "來源、樣本、變量、清理與資料可重現性"},
@@ -40,7 +52,7 @@ PROMPT = (
     "重新評估可以不變或降低；只更新答辯實際涉及的理解項目，不能承諾分數上升。不要輸出百分制或科學真實度百分比。"
     "只輸出 JSON：{summary,dimensions:[{key,summary,gaps:[文字],citations:[],criteria:["
     "{key,evidence_verdict,defense_verdict,basis_source,basis,gaps:[文字],citations:[]}]}],"
-    "questions:[{id,dimension,criterion,question}],committee_feedback:{decision,standard,reply,next_action}}。"
+    "questions:[{id,dimension,criterion,question,category,source_refs:[],hint}],committee_feedback:{decision,standard,reply,next_action}}。"
     "只有提供答辯 answer 時必須輸出 committee_feedback；初評不輸出此欄。"
     "你是 AI 模擬答辯委員會，不代表真實委員會。針對使用者本次回答和上一輪問題給具體回覆："
     "decision 只能為 meets_standard 或 needs_work；standard 簡述本輪的可檢查標準，"
@@ -52,9 +64,33 @@ PROMPT = (
     "該物件的 criteria 包含 paper 下全部標準，不能把每個標準拆成獨立 dimension。"
     "basis_source 只能 project_evidence/defense_argument/insufficient；每項 basis 最多40字，gap 最多一項，簡明具體。"
     "citation 用 {file_version_id,block_id,quote}，或 {record_type,record_id,quote}；只能引用 sources 中提供的身份，"
-    "quote 必須逐字取自其 text（20–80字內的連續原文），不可捏造引用、數字或來源。每項最多一個引文。"
+    "quote 必須逐字取自其 text（20–80字內的連續原文），不可捏造引用、數字或來源。每項最多一個引文；"
+    "無法逐字複製時使用 insufficient 與空 citations，切勿改寫原文充當引文。"
+    "每個問題 category 為 theory、method 或 evidence；問題 source_refs 只寫來源 file_version_id 與 block_id（或 record_type 和 record_id），"
+    "不要自行生成問題的 quote，系統會從對應段落原文機械擷取摘錄。hint 是簡短的思考方向，可為空。"
     "總結只用1–2句、100字以內；優先提出2個短而具體的問題（必要時最多3個），id 使用 q1/q2/q3，綁定所評估的 dimension 和 criterion。"
     r"如有公式，以 \( ... \) 或 \[ ... \] 表達，不使用程式碼框。"
+)
+
+ECONOMIC_THEORY_PROMPT = (
+    "本課題是計量經濟學。先以第一組 theory 問題討論經濟學理論本身，"
+    "再視需要提出 method 或 evidence 問題；不要把『需要哪些材料、補資料、提供來源』作為理論問題。"
+    "優先使用讀到的論文方程及其相鄰定義、假設、經濟機制和適用邊界，"
+    "指出一個具體可爭論之處，問清楚變量如何作用、結論依賴什麼條件、比較靜態如何改變、"
+    "是否存在反例或替代機制，以及雙邊結果、因果與福利等不同概念是否被混同。"
+    "若論文使用近似，優先追問離開其適用條件時，精確條件與近似是否會改變論文的具體結論，"
+    "不要只泛問『是否穩健』或要求重述已知前提。"
+    "每題只問一個明確問題，繁體中文盡量不超過50字；來源摘錄會另外展示，不要把大段上下文重複塞進問題。"
+    "避免空泛模板；先確認變量定義及參數可行域，區分精確條件與小變動近似。"
+    "必要時可以設置一組方便手算的假設數字，必須標明『思想實驗』並符合正文變量定義及參數域；"
+    "將數值結果留給研究者或委員會核對，不斷言未經計算驗證的結論，也不把假設數字說成實際發現。"
+    "不可在問題或 hint 中自行改寫、近似、轉錄方程或不等式；指向所選來源段落的原稿公式再就其假設、推導與邊界提問。"
+    "不同變量、對數變化和百分比變化不可混為一談；無法核對時中性提問，不把猜測寫成已知前提。"
+    "不要把待驗證的疑點斷言成已證實的錯誤。每個 theory 問題須用 source_refs 選取真實正文段落，"
+    "hint 只給一句中性思考方向，不給數字範圍或正負方向，不能預設未證結論。"
+    "若片段不足以辨識真實的理論、方程或假設，明說目前無法判斷，勿虛構或套用另一篇論文。"
+    "純理論答辯按回答是否切題、推導是否成立、假設及反例是否合理來回覆；"
+    "沒有數據本身不使純理論答辯不合格，只有實證或可重現性主張才需要相應材料核對。"
 )
 
 
@@ -120,6 +156,76 @@ def _snapshot(actor, project_ref, *, session=None):
         return load(current)
 
 
+def _evenly_spaced(items, maximum=4):
+    if len(items) <= maximum:
+        return items
+    return [items[round(index * (len(items) - 1) / (maximum - 1))] for index in range(maximum)]
+
+
+def _economic_theory_excerpts(candidates):
+    """Reserve a balanced sample of model, mechanism and limitations with nearby prose."""
+    manuscript = [item for item in candidates if item.get("asset_class") == "manuscript"]
+    if manuscript and all(type(item.get("ordinal")) is int for item in manuscript):
+        manuscript = sorted(manuscript, key=lambda item: (item.get("file_version_id", ""), item["ordinal"]))
+    prose = [item for item in manuscript if item.get("block_type") in {"paragraph", "text", None}
+             and len(item.get("text", "").strip()) >= 50]
+    theories = _evenly_spaced([item for item in prose if ECONOMIC_ANALYSIS.search(
+        str(item.get("heading_path", "")) + " " + item["text"])])
+    boundaries = _evenly_spaced([item for item in prose if ECONOMIC_BOUNDARIES.search(item["text"])])
+    equations = _evenly_spaced([item for item in manuscript if item.get("block_type") == "equation"
+        or (item.get("block_type") in {"paragraph", "text"} and re.search(r"(?:=|≤|≥|\b(?:ln|log)\s*\(|[Δππη])", item["text"]))])
+    by_position = {(item.get("file_version_id"), item.get("ordinal")): item for item in manuscript
+                   if type(item.get("ordinal")) is int}
+    selected = []
+    # A claim's explicit mechanism, its boundary, and the equation next to a
+    # threshold paragraph are often more informative than headings alone.
+    selected.extend([item for item in prose if ECONOMIC_MECHANISM.search(item["text"])][:1])
+    selected.extend([item for item in prose if ECONOMIC_CONTRAST.search(item["text"])][:1])
+    conditional = [item for item in prose if ECONOMIC_CONDITION.search(item["text"]) and type(item.get("ordinal")) is int]
+    condition_equations = []
+    for item in conditional:
+        adjacent = [by_position.get((item.get("file_version_id"), item["ordinal"] + offset)) for offset in (-2, -1, 1, 2)]
+        for equation in (near for near in adjacent if near and near.get("block_type") == "equation"):
+            formula = equation["text"]
+            has_log = bool(re.search(r"\\(?:ln|log)\b|\b(?:ln|log)\b", formula))
+            has_comparison = bool(re.search(r"[<>≤≥]|\\(?:gt|lt|ge|le)\b", formula))
+            has_ratio = bool(re.search(r"\\frac|/", formula))
+            text = item["text"].lower()
+            score = (has_log and has_comparison and has_ratio, has_log and has_comparison,
+                     "threshold" in text and "revers" in text, "condition" in text and "revers" in text,
+                     -abs(equation["ordinal"] - item["ordinal"]))
+            condition_equations.append((score, item, equation))
+    if condition_equations:
+        _, item, equation = max(condition_equations, key=lambda entry: entry[0])
+        selected.extend([item, equation])
+        for offset in (-1, 1):
+            neighbour = by_position.get((equation.get("file_version_id"), equation["ordinal"] + offset))
+            if neighbour and neighbour.get("block_type") in {"paragraph", "text"}:
+                selected.append(neighbour)
+    for index in range(4):
+        for group in (theories, equations, boundaries):
+            if index >= len(group):
+                continue
+            item = group[index]
+            selected.append(item)
+            if group is equations and type(item.get("ordinal")) is int:
+                for offset in (-1, 1):
+                    neighbour = by_position.get((item.get("file_version_id"), item["ordinal"] + offset))
+                    if neighbour and neighbour.get("block_type") in {"paragraph", "text"}:
+                        selected.append(neighbour)
+    return selected
+
+
+def _theory_scope(dimensions, stage=None, focus_item=None):
+    if not any(key in {"paper", "theory", "model"} for key in dimensions):
+        return False
+    if stage and stage["key"] in {"database", "measurement", "reproduction"}:
+        return False
+    if focus_item and focus_item["key"] in {"references", "citations", "reproducibility"}:
+        return False
+    return True
+
+
 def _context(actor, snapshot, dimensions, references, stage=None, focus_item=None):
     current = snapshot["rows"]["files"]
     latest_by_file = {str(item["file_id"]): str(item["file_version_id"]) for item in current}
@@ -164,16 +270,20 @@ def _context(actor, snapshot, dimensions, references, stage=None, focus_item=Non
                     saved_drafts.append({"file_id": file_id, "draft_revision": item["draft_revision"]})
                     blocks = item["draft_blocks"]
                     blocks = json.loads(blocks) if isinstance(blocks, str) else blocks
-                    for block in blocks or []:
+                    heading_path = []
+                    for ordinal, block in enumerate(blocks or []):
                         source = block.get("source") if isinstance(block.get("source"), dict) else {}
                         value = str(block.get("text") or " | ".join(str(v) for v in block.get("cells", [])))
                         latex = block.get("latex") or source.get("latex")
                         if latex and str(latex) not in value:
                             value += "\n" + str(latex)
+                        if block.get("type") in {"heading", "title"} and value.strip():
+                            heading_path = [value[:240]]
                         if value.strip():
                             candidates.append({**common, "block_id": f"draft:{item['draft_id']}:r{item['draft_revision']}:{block['id']}",
                                 "text": value[:1400], "source_kind": "saved_draft", "draft_revision": item["draft_revision"],
-                                "block_type": block.get("type", "paragraph")})
+                                "block_type": block.get("type", "paragraph"), "heading_path": heading_path, "ordinal": ordinal,
+                                **({"source_latex": str(latex)} if latex and str(latex) in value[:1400] else {})})
                 else:
                     if item.get("draft_id"):
                         stale_drafts.append(file_id)
@@ -181,7 +291,7 @@ def _context(actor, snapshot, dimensions, references, stage=None, focus_item=Non
                     item["common"] = common
             if formal_ids:
                 indexed = session.execute(text(
-                    "SELECT file_version_id,stable_key AS block_id,block_type,left(content,1400) AS text,heading_path "
+                    "SELECT file_version_id,stable_key AS block_id,block_type,left(content,1400) AS text,heading_path,ordinal "
                     "FROM research.document_blocks WHERE project_id=:project_id AND file_version_id=ANY(CAST(:ids AS uuid[])) "
                     "ORDER BY CASE WHEN block_type IN ('heading','title','equation','table_row') THEN 0 ELSE 1 END,ordinal LIMIT 240"
                 ), {"project_id": snapshot["project"]["id"], "ids": formal_ids}).mappings().all()
@@ -226,7 +336,17 @@ def _context(actor, snapshot, dimensions, references, stage=None, focus_item=Non
         if key and key not in seen_files:
             first.append(item)
             seen_files.add(key)
-    for item in first + candidates:
+    theory_excerpts = (_economic_theory_excerpts(candidates)
+                       if project_discipline(snapshot["project"]) == "econometrics"
+                       and _theory_scope(dimensions, stage, focus_item) else [])
+    if theory_excerpts:
+        # Explicit answer attachments and fixed evidence remain first, while
+        # other project files must not crowd the actual theory out of budget.
+        chosen = set(references + fixed_refs)
+        ordered = [item for item in first if item.get("file_version_id") in chosen] + theory_excerpts + first + candidates
+    else:
+        ordered = first + candidates
+    for item in ordered:
         if item in sources:
             continue
         length = len(workflow._canonical(item))
@@ -272,8 +392,112 @@ def _citations(values, context):
     return result
 
 
+def _verified_assessment_citations(values, context):
+    """Keep only citations verified against sources, reporting discarded claims."""
+    if not isinstance(values, list) or len(values) > 5:
+        raise ValueError("Invalid citations")
+    verified, rejected = [], 0
+    for item in values:
+        try:
+            verified.extend(_citations([item], context))
+        except (ValueError, TypeError):
+            rejected += 1
+    return verified, rejected
+
+
+def _question_source_excerpts(references, context):
+    """Resolve model-selected identities; all displayed words come from actual source text."""
+    if not isinstance(references, list) or len(references) > 5:
+        raise ValueError("Invalid question sources")
+    result = []
+    for reference in references:
+        if not isinstance(reference, dict):
+            raise ValueError("Invalid question source")
+        source = next((item for item in context["sources"] if (
+            str(reference.get("file_version_id")) == item.get("file_version_id")
+            and reference.get("block_id") == item.get("block_id")
+            if reference.get("file_version_id") else reference.get("record_type") == item.get("record_type")
+            and str(reference.get("record_id")) == item.get("record_id"))), None)
+        if source is None:
+            raise ValueError("Question source was not present in the supplied project evidence")
+        excerpt = str(source.get("text") or "")[:160].strip()
+        if not excerpt:
+            raise ValueError("Question source is empty")
+        identity = {key: source[key] for key in ("file_version_id", "block_id", "record_type", "record_id") if key in source}
+        verified = _citations([{**identity, "quote": excerpt}], context)[0]
+        metadata = {"block_type": source["block_type"]} if source.get("block_type") else {}
+        latex = source.get("source_latex")
+        if source.get("block_type") == "equation" and isinstance(latex, str) and latex and latex in source["text"]:
+            metadata["source_latex"] = latex
+        result.append({**verified, "anchor_kind": "source_excerpt", **metadata})
+    return result
+
+
+def _normalized_source_math(value, *, preserve_spacing=False):
+    """Normalize typography only; retain variables, subscripts, signs and operators."""
+    value = str(value)
+    for wrapper in ("\\(", "\\)", "\\[", "\\]", "\\left", "\\right", "$"):
+        value = value.replace(wrapper, "")
+    for command, symbol in ((r"\Delta", "Δ"), (r"\delta", "δ"), (r"\pi", "π"),
+                            (r"\eta", "η"), (r"\theta", "θ"), (r"\lambda", "λ"),
+                            (r"\ln", "ln"), (r"\log", "log"), (r"\geq", "≥"),
+                            (r"\leq", "≤"), (r"\ge", "≥"), (r"\le", "≤"),
+                            (r"\gt", ">"), (r"\lt", "<")):
+        value = value.replace(command, symbol)
+    value = value.translate(str.maketrans({"ᵢ": "_{i}", "ⱼ": "_{j}", "₀": "_{0}", "₁": "_{1}", "₂": "_{2}"}))
+    # Preserve subscript grouping: x_{ij} and x_i * j are not interchangeable.
+    value = re.sub(r"_\s*\{([^{}]+)\}", lambda match: "_⟨" + match.group(1) + "⟩", value)
+    value = re.sub(r"_([A-Za-z0-9α-ωΑ-Ω])", lambda match: "_⟨" + match.group(1) + "⟩", value)
+    # Preserve fraction/parenthesis grouping; simply stripping braces can
+    # falsely equate \frac{a}{bc} with \frac{ab}{c}.
+    value = value.replace("{", "(").replace("}", ")")
+    return value if preserve_spacing else re.sub(r"\s+", "", value)
+
+
+def _complete_math_relation_in_source(expression, source):
+    """Match exact normalized symbols without accepting part of a larger expression."""
+    pattern = re.compile(r"\s*".join(re.escape(character) for character in expression))
+    for match in pattern.finditer(source):
+        before, after = source[:match.start()], source[match.end():]
+        left, right = before.rstrip(), after.lstrip()
+        # Directly adjacent symbols belong to the same mathematical expression.
+        if before and not before[-1].isspace() and re.search(r"[A-Za-z0-9α-ωΑ-Ω_⟩]$", before):
+            continue
+        previous = re.search(r"([A-Za-zα-ωΑ-Ω])$", left)
+        if previous and (previous.group(1) in "αβγδεζηθικλμνξοπρστυφχψωπΔ" or
+                         re.search(r"(?:^|[^A-Za-z])" + re.escape(previous.group(1)) + r"$", left)):
+            continue
+        if right and right[0] in "+-*/^_=<>≤≥⟨":
+            continue
+        if after and not after[0].isspace() and re.match(r"[A-Za-z0-9α-ωΑ-Ω_⟨]", after):
+            continue
+        if len(right) > 1 and right[0] == "." and right[1].isdigit():
+            continue
+        return True
+    return False
+
+
+def _question_math_sources(value, context):
+    """Find exact source blocks for relations, or reject an ungrounded relation."""
+    source_texts = [(item, _normalized_source_math(item.get("text", ""), preserve_spacing=True)) for item in context["sources"]
+                    if item.get("asset_class") == "manuscript"
+                    and item.get("source_kind") in {"document", "saved_draft"}]
+    matched = []
+    for segment in re.split(r"[\u3400-\u9fff，。；：？！、\n]+", value):
+        if not UNVERIFIED_QUESTION_EQUATION.search(segment):
+            continue
+        expression = _normalized_source_math(segment).strip("()[]：:,.!?")
+        source = next((item for item, text in source_texts
+                       if expression and _complete_math_relation_in_source(expression, text)), None)
+        if source is None:
+            return None
+        if source not in matched:
+            matched.append(source)
+    return matched
+
+
 def _validate_result(value, dimensions, context, *, answer, previous=None, question=None, rubric=None, stage=None, criterion_key=None,
-                     require_committee=False):
+                     require_committee=False, require_economic_theory=False, economic_context=False):
     rubric = rubric or {key: dict(workflow.DASHBOARD_CHECKS[key][1]) for key in dimensions}
     if isinstance(value, str):
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", value.strip())
@@ -303,6 +527,7 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
         dimension = dimensions[0]
         allowed = set(rubric[dimension])
         all_criteria, all_gaps, all_citations = [], [], []
+        any_rejected = False
         safe_split = True
         for part in raw_dimensions:
             if not isinstance(part, dict) or not isinstance(part.get("criteria"), list):
@@ -320,14 +545,18 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
                 safe_split = False
                 break
             # Validate all citations, including those beyond the display limit.
-            _citations(citations, context)
+            valid, rejected = _verified_assessment_citations(citations, context)
             all_criteria.extend(criteria)
             all_gaps.extend(gaps)
-            all_citations.extend(citations)
+            all_citations.extend(valid)
+            if rejected:
+                any_rejected = True
+                all_gaps.append("部分引文未能逐字核對，已略去。")
         keys = [item.get("key") if isinstance(item, dict) else None for item in all_criteria]
         if safe_split and len(keys) == len(allowed) and set(keys) == allowed:
             raw_dimensions = [{"key": dimension, "summary": value.get("summary"),
-                               "gaps": all_gaps[:3], "citations": all_citations[:5], "criteria": all_criteria}]
+                               "gaps": all_gaps[:3], "citations": all_citations[:5], "criteria": all_criteria,
+                               "_unverified_citations": any_rejected}]
             questions = value.get("questions")
             if isinstance(questions, list):
                 value = dict(value)
@@ -349,6 +578,7 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
         if not isinstance(criteria, list) or len(criteria) != len(allowed):
             raise ValueError("Wrong criterion count")
         normalized, used = [], set()
+        any_rejected = bool(raw.get("_unverified_citations"))
         for item in criteria:
             criterion = item.get("key") if isinstance(item, dict) else None
             if criterion not in allowed or criterion in used:
@@ -357,16 +587,24 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
             evidence, defense, basis_source = item.get("evidence_verdict"), item.get("defense_verdict"), item.get("basis_source")
             if evidence not in EVIDENCE or defense not in DEFENSE or basis_source not in ("project_evidence", "defense_argument", "insufficient"):
                 raise ValueError("Invalid rubric descriptor")
-            citations = _citations(item.get("citations", []), context)
-            if evidence == "supported" and (not citations or basis_source != "project_evidence"):
-                raise ValueError("Supported evidence needs real project citations")
+            citations, rejected_citations = _verified_assessment_citations(item.get("citations", []), context)
+            any_rejected = any_rejected or bool(rejected_citations)
             if basis_source == "defense_argument" and not answer:
                 raise ValueError("No defense argument was supplied")
             argument_support = (key in {"paper", "theory"} and bool(answer) and basis_source == "defense_argument"
                                 and (not question or (question["dimension"], question["criterion"]) == (key, criterion)))
-            if evidence == "partial" and not ((basis_source == "project_evidence" and citations) or argument_support):
+            # Unsupported claims must not survive a discarded or missing quote.
+            unverified_basis = not argument_support and not citations and (basis_source == "project_evidence" or bool(rejected_citations))
+            if evidence == "supported" and argument_support:
+                evidence = "partial"
+            if evidence in {"supported", "partial"} and not ((basis_source == "project_evidence" and citations) or argument_support):
                 evidence, basis_source = "insufficient", "insufficient"
-            evidence_limit = None
+                unverified_basis = True
+            if unverified_basis:
+                basis_source = "insufficient"
+            unverified_argument = argument_support and bool(rejected_citations) and not citations
+            evidence_limit = ("本項引文未能逐字核對，暫不能支持該判斷。" if unverified_basis else
+                              "所引材料未能逐字核對，請核實原文。" if unverified_argument else None)
             if key == "data" and not any(cite.get("asset_class") in {"dataset", "database"} for cite in citations):
                 evidence = "insufficient"
                 evidence_limit = "尚未提供可核對的資料摘錄；論文描述不能替代原始資料。"
@@ -393,25 +631,67 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
             if not isinstance(gaps, list) or len(gaps) > 3:
                 raise ValueError("Invalid gaps")
             normalized.append({"key": criterion, "evidence_verdict": evidence, "defense_verdict": defense,
-                "basis_source": basis_source, "basis": _text(item.get("basis"), 500),
-                "gaps": ([evidence_limit] if evidence_limit else []) + [_text(gap, 300) for gap in gaps][:2], "citations": citations})
+                "basis_source": basis_source, "basis": ("本項引文未能逐字核對，請核實原文。" if unverified_basis else
+                    "此項為答辯中的暫定論證；所引材料未能核對。" if unverified_argument else _text(item.get("basis"), 500)),
+                "gaps": ([evidence_limit] if evidence_limit else []) + (["部分引文未能逐字核對，已略去。"] if rejected_citations and citations else []) + [_text(gap, 300) for gap in gaps][:2], "citations": citations})
         evidence = "supported" if all(item["evidence_verdict"] == "supported" for item in normalized) else "insufficient" if all(item["evidence_verdict"] == "insufficient" for item in normalized) else "partial"
         assessed = [item["defense_verdict"] for item in normalized if item["defense_verdict"] != "unassessed"]
         dimension_gaps = raw.get("gaps", [])
         if not isinstance(dimension_gaps, list) or len(dimension_gaps) > 3:
             raise ValueError("Invalid dimension gaps")
+        dimension_citations, rejected_dimension_citations = _verified_assessment_citations(raw.get("citations", []), context)
+        dimension_summary = _text(raw.get("summary"), 600)
+        any_rejected = any_rejected or bool(rejected_dimension_citations)
+        if any_rejected and not dimension_citations and all(
+            item["evidence_verdict"] == "insufficient" and not item["citations"] for item in normalized
+        ):
+            dimension_summary = "本面向引文未能逐字核對，請核實原文後再判斷。"
+            if len(dimensions) == 1:
+                result["summary"] = dimension_summary
         result["dimensions"].append({"key": key, "evidence_verdict": evidence,
             "defense_verdict": min(assessed, key=DEFENSE.index) if assessed else "unassessed",
-            "defense_assessed_count": len(assessed), "summary": _text(raw.get("summary"), 600), "criteria": normalized,
-            "gaps": [_text(gap, 300) for gap in dimension_gaps], "citations": _citations(raw.get("citations", []), context)})
+            "defense_assessed_count": len(assessed), "summary": dimension_summary, "criteria": normalized,
+            "gaps": (["部分引文未能逐字核對，已略去。"] if rejected_dimension_citations else []) + [_text(gap, 300) for gap in dimension_gaps][:2], "citations": dimension_citations})
     questions = value.get("questions")
-    if not isinstance(questions, list) or not 2 <= len(questions) <= 3:
-        raise ValueError("Expected two or three defense questions")
-    for index, question in enumerate(questions):
+    if not isinstance(questions, list) or not questions:
+        raise ValueError("Expected at least one defense question")
+    for index, question in enumerate(questions[:3]):
         key, criterion = question.get("dimension"), question.get("criterion")
         if question.get("id") != f"q{index+1}" or key not in dimensions or criterion not in rubric[key]:
             raise ValueError("Invalid question identity")
-        result["questions"].append({"id": question["id"], "dimension": key, "criterion": criterion, "question": _text(question.get("question"), 500)})
+        normalized_question = {"id": question["id"], "dimension": key, "criterion": criterion,
+                               "question": _text(question.get("question"), 500)}
+        category = question.get("category")
+        if category is not None:
+            if category not in QUESTION_CATEGORIES:
+                raise ValueError("Invalid question category")
+            normalized_question["category"] = category
+        if "source_refs" in question or "citations" in question:
+            normalized_question["citations"] = _question_source_excerpts(question.get("source_refs", question.get("citations")), context)
+        if "hint" in question and question["hint"] is not None:
+            normalized_question["hint"] = _text(question["hint"], 300, empty=True)
+        if (economic_context or require_economic_theory) and category == "theory" and normalized_question.get("hint"):
+            # A model's suggested answer may contain an unverified assumption;
+            # use only this neutral, non-assertive thinking prompt.
+            normalized_question["hint"] = "先釐清原文的變量與假設，再比較不同條件下的結論。"
+        if require_economic_theory and category == "theory":
+            for field in ("question", "hint"):
+                matches = _question_math_sources(normalized_question.get(field, ""), context)
+                if matches is None:
+                    raise ValueError("Refer to the source formula without rewriting it in the question")
+                for source in matches:
+                    existing = normalized_question.setdefault("citations", [])
+                    if not any(item.get("file_version_id") == source.get("file_version_id")
+                               and item.get("block_id") == source.get("block_id") for item in existing):
+                        identity = {name: source[name] for name in ("file_version_id", "block_id", "record_type", "record_id") if name in source}
+                        existing.extend(_question_source_excerpts([identity], context))
+        if require_economic_theory and category == "theory" and not any(
+            citation.get("source_kind") in {"document", "saved_draft"} for citation in normalized_question.get("citations", [])
+        ):
+            raise ValueError("Economic theory question requires a verified manuscript citation")
+        result["questions"].append(normalized_question)
+    if require_economic_theory and not any(item.get("category") == "theory" for item in result["questions"]):
+        raise ValueError("A grounded economic theory question is required")
     if require_committee:
         feedback = value.get("committee_feedback")
         if not isinstance(feedback, dict) or feedback.get("decision") not in {"meets_standard", "needs_work"}:
@@ -552,6 +832,15 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         specialists = [SPECIALISTS[key] for key in dimensions]
         stage_record = None
     context = _context(actor, snapshot, dimensions, references, stage, focus_item)
+    economic = project_discipline(snapshot["project"]) == "econometrics"
+    has_theory_text = economic and any(
+        item.get("source_kind") in {"document", "saved_draft"} and item.get("asset_class") == "manuscript"
+        and len(item.get("text", "").strip()) >= 60 and ECONOMIC_ANALYSIS.search(item["text"])
+        for item in context["sources"]
+    )
+    theory_scope = _theory_scope(dimensions, stage, focus_item)
+    if economic and theory_scope:
+        context["scope"]["economic_theory_text_available"] = bool(has_theory_text)
     prompt = {"rubric": rubric, "specialists": specialists,
               "stage": ({"discipline": discipline, **stage, "record": stage_record} if stage else None),
               "checklist_item": ({"dimension": dimension, "key": criterion_key, "label": focus_item["label"],
@@ -563,7 +852,7 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
     try:
         connection = _connection(actor, settings, thinking=False)
         expert_prompt = "請以指定 specialists 的專業視角評估其範圍，根據各專業方法、階段目標與真實材料指出可核對的缺口。階段或檢查項評估只判斷所指定的階段或項目，不代替整個面向。"
-        system = PROMPT + expert_prompt
+        system = PROMPT + expert_prompt + (ECONOMIC_THEORY_PROMPT if economic and theory_scope else "")
         user_prompt = workflow._canonical(prompt)
         limit = 2600 if stage or focus_item else 8192 if len(dimensions) > 1 else 6400
         response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
@@ -571,16 +860,20 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         try:
             result = _validate_result(response, dimensions, context, answer=answer,
                                       previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
-                                      require_committee=bool(previous))
-        except (ValueError, TypeError, KeyError, AttributeError):
+                                      require_committee=bool(previous), require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
+        except (ValueError, TypeError, KeyError, AttributeError) as invalid_response:
             # Only retry model format/validation errors, once. Provider or
             # permission failures are not retried and invalid text is not logged.
             system += "上次回覆未通過格式或引用核對，請重新輸出有效完整 JSON；逐一使用 rubric 原有鍵名，所有引文必須逐字取自提供的來源。"
+            if str(invalid_response) == "Refer to the source formula without rewriting it in the question":
+                system += "上次問題改寫了論文公式；這次 question 與 hint 必須完全使用中文自然語言，"
+                system += "不寫數學符號、變量、數字、等號或不等號。用所選來源段落指代原稿公式，"
+                system += "中性追問條件、推導或結論如何變化，不把未核對的前提說成事實。"
             response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
                                        thinking=False, max_tokens=limit, json_mode=True)
             result = _validate_result(response, dimensions, context, answer=answer,
                                       previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
-                                      require_committee=bool(previous))
+                                      require_committee=bool(previous), require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI 評估暫時無法提供有效回覆，請重試。既有人工評估與答辯紀錄未變更。") from exc
     now = datetime.now(timezone.utc).isoformat()

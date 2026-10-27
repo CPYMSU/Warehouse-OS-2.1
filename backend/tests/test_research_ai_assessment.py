@@ -129,6 +129,140 @@ def test_initial_review_is_fast_grounded_and_preserves_manual_assessment(state):
     assert readback['reviews'][0]['history'][0]['kind'] == 'initial'
 
 
+def test_economic_questions_require_a_verified_paper_excerpt_and_keep_the_hint():
+    value = model_result('theory')
+    value['questions'][0].update({'category': 'theory', 'hint': 'Check the assumptions.',
+        'citations': [{'file_version_id': SOURCE['file_version_id'], 'block_id': SOURCE['block_id'], 'quote': SOURCE['text']}]})
+    result = service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    assert result['questions'][0]['citations'][0]['quote'] == SOURCE['text']
+    assert result['questions'][0]['citations'][0]['anchor_kind'] == 'source_excerpt'
+    assert result['questions'][0]['category'] == 'theory' and result['questions'][0]['hint']
+    value['questions'][0]['question'] = 'In the paper, ΔlnX_i=v_i x. Why is it linear?'
+    with pytest.raises(ValueError, match='without rewriting'):
+        service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    value['questions'][0]['question'] = 'As a thought experiment, if x=0.4, what must be checked?'
+    assert service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    value['questions'][0]['hint'] = '先固定各參數在 0 和 1 之間。'
+    safe = service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    assert safe['questions'][0]['hint'] == '先釐清原文的變量與假設，再比較不同條件下的結論。'
+    value['questions'][0]['hint'] = '衝擊必然提高所有變量。'
+    safe = service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    assert '必然' not in safe['questions'][0]['hint']
+    # Model-written quotes are never presented as facts; excerpts come from the real block.
+    value['questions'][0]['citations'][0]['quote'] = 'fabricated claim'
+    result = service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    assert result['questions'][0]['citations'][0]['quote'] == SOURCE['text']
+    value['questions'][0]['citations'][0]['block_id'] = 'unrelated-block'
+    with pytest.raises(ValueError, match='Question source was not present'):
+        service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    value['questions'][0]['citations'] = []
+    with pytest.raises(ValueError, match='requires a verified manuscript citation'):
+        service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    value['questions'][0].pop('category')
+    with pytest.raises(ValueError, match='grounded economic theory'):
+        service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='', require_economic_theory=True)
+    # Older assessments and projects without readable theory stay usable.
+    assert service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='')['questions']
+
+
+def test_question_formula_comes_only_from_the_original_equation_block():
+    original_latex = r'\pi_i \eta_i > \frac{\ln(1-v_i x)}{\ln(1-x)}'
+    source = {**SOURCE, 'block_type': 'equation', 'text': 'threshold\n' + original_latex,
+              'source_latex': original_latex}
+    value = model_result('theory')
+    value['questions'][0].update({'category': 'theory', 'source_refs': [{
+        'file_version_id': source['file_version_id'], 'block_id': source['block_id'],
+        'quote': 'invented', 'source_latex': 'invented'}]})
+    result = service._validate_result(value, ['theory'], {'sources': [source]}, answer='', require_economic_theory=True)
+    citation = result['questions'][0]['citations'][0]
+    assert citation['quote'] == source['text'] and citation['source_latex'] == original_latex
+    # Metadata unsupported by the original block must never be rendered as a source formula.
+    source['source_latex'] = 'not in source'
+    result = service._validate_result(value, ['theory'], {'sources': [source]}, answer='', require_economic_theory=True)
+    assert 'source_latex' not in result['questions'][0]['citations'][0]
+
+
+def test_question_math_accepts_only_complete_source_relations_not_wrong_variables():
+    source = {**SOURCE, 'text': r'The approximation is \pi_i\eta_i > v_i. The exact sales relation is \Delta\ln M_i=\ln(1-v_i x).'}
+    value = model_result('theory')
+    value['questions'][0].update({'category': 'theory', 'source_refs': [{
+        'file_version_id': source['file_version_id'], 'block_id': source['block_id']}],
+        'question': r'在近似條件 \(\pi_i\eta_i > v_i\) 下，大幅變動會如何影響結論？'})
+    assert service._validate_result(value, ['theory'], {'sources': [source]}, answer='', require_economic_theory=True)
+    value['questions'][0]['question'] = '若 ΔlnX_i=v_i x，這個結論是否成立？'
+    with pytest.raises(ValueError, match='without rewriting'):
+        service._validate_result(value, ['theory'], {'sources': [source]}, answer='', require_economic_theory=True)
+    value['questions'][0]['question'] = '若 πη>v，這個結論是否成立？'
+    with pytest.raises(ValueError, match='without rewriting'):
+        service._validate_result(value, ['theory'], {'sources': [source]}, answer='', require_economic_theory=True)
+    value['questions'][0]['question'] = '若 π_iη_i≥v_i，這個結論是否成立？'
+    with pytest.raises(ValueError, match='without rewriting'):
+        service._validate_result(value, ['theory'], {'sources': [source]}, answer='', require_economic_theory=True)
+    assert service._normalized_source_math(r'\pi_{ij}') != service._normalized_source_math(r'\pi_i j')
+    assert service._normalized_source_math(r'\frac{a}{bc}') != service._normalized_source_math(r'\frac{ab}{c}')
+    assert service._normalized_source_math(r'\pi_{i}') == service._normalized_source_math('πᵢ')
+    # A prefix/suffix of a larger expression is not the same equation.
+    relation = service._normalized_source_math(r'\pi_i\eta_i > v_i')
+    assert not service._complete_math_relation_in_source(relation, service._normalized_source_math(
+        r'The relation is \pi_i\eta_i > v_i + z_i.', preserve_spacing=True))
+    assert not service._complete_math_relation_in_source(relation, service._normalized_source_math(
+        r'The relation is \theta_i\pi_i\eta_i > v_i.', preserve_spacing=True))
+
+
+def test_exact_formula_from_another_read_source_is_attached_to_question():
+    formula = {**SOURCE, 'block_id': 'exact-formula', 'block_type': 'equation',
+        'text': r'\pi_i\eta_i > v_i', 'source_latex': r'\pi_i\eta_i > v_i'}
+    value = model_result('theory')
+    value['questions'][0].update({'category': 'theory', 'source_refs': [{
+        'file_version_id': SOURCE['file_version_id'], 'block_id': SOURCE['block_id']}],
+        'question': r'在近似條件 \(\pi_i\eta_i > v_i\) 下，如何檢查結論？'})
+    result = service._validate_result(value, ['theory'], {'sources': [SOURCE, formula]}, answer='', require_economic_theory=True)
+    attached = result['questions'][0]['citations']
+    assert [cite['block_id'] for cite in attached] == ['block-1', 'exact-formula']
+    assert attached[1]['quote'] == formula['text'] and attached[1]['source_latex'] == formula['source_latex']
+
+
+def test_invalid_equation_retries_once_with_natural_language_only(state, monkeypatch):
+    state.project['metadata']['research_discipline'] = 'econometrics'
+    source = {**SOURCE, 'text': SOURCE['text'] + ' The trade theory explains price mechanisms and their assumptions.'}
+    context = {'sources': [source], 'pinned_files': [], 'scope': {}, 'manual_dmp_excerpt': ''}
+    monkeypatch.setattr(service, '_context', lambda *args: copy.deepcopy(context))
+    invalid = model_result('theory')
+    invalid['questions'][0].update({'category': 'theory', 'question': '假設 ΔlnX_i=v_i x，這個推導成立嗎？',
+        'source_refs': [{'file_version_id': source['file_version_id'], 'block_id': source['block_id']}]})
+    valid = copy.deepcopy(invalid)
+    valid['questions'][0]['question'] = '在來源中的假設改變時，推導仍然成立嗎？'
+    calls = []
+    def completion(_connection, **kwargs):
+        calls.append(kwargs)
+        return json.dumps(invalid if len(calls) == 1 else valid)
+    monkeypatch.setattr(service, 'chat_completion', completion)
+    result = state.start()
+    assert len(calls) == 2 and '完全使用中文自然語言' in calls[1]['system_prompt']
+    assert result['review']['result']['questions'][0]['question'] == valid['questions'][0]['question']
+
+
+def test_economic_excerpts_include_mechanism_condition_equation_and_welfare_boundary():
+    common = {'file_version_id': str(UUID(int=5)), 'asset_class': 'manuscript', 'source_kind': 'document'}
+    candidates = [{**common, 'ordinal': 0, 'block_type': 'heading', 'text': 'Abstract'},
+        {**common, 'ordinal': 1, 'block_type': 'paragraph', 'text': 'The income channel and valuation channel describe two different effects on economic activity.'},
+        {**common, 'ordinal': 2, 'block_type': 'paragraph', 'text': 'The reversal threshold compares the competing movements under the stated assumptions.'},
+        {**common, 'ordinal': 3, 'block_type': 'equation', 'text': 'x > ln(1-v*x) / ln(1-x)'},
+        {**common, 'ordinal': 4, 'block_type': 'paragraph', 'text': 'This equation only applies within the specified parameter ranges and conditions.'},
+        {**common, 'ordinal': 5, 'block_type': 'paragraph', 'text': 'The model studies bilateral sales, not welfare; the aggregate welfare implication remains open.'}]
+    picked = service._economic_theory_excerpts(candidates)
+    assert {item['ordinal'] for item in picked} >= {1, 2, 3, 4, 5}
+
+
+def test_data_and_reference_scopes_keep_their_own_material_priority():
+    assert service._theory_scope(['theory'])
+    assert service._theory_scope(['paper'], {'key': 'hypothesis_model'})
+    assert not service._theory_scope(['data'])
+    assert not service._theory_scope(['paper'], {'key': 'reproduction'})
+    assert not service._theory_scope(['paper'], focus_item={'key': 'references'})
+    assert not service._theory_scope(['theory'], focus_item={'key': 'citations'})
+
+
 def stage_result(dimension, stage_key, *, defense='unassessed', evidence='insufficient', cited=False):
     result = model_result(dimension, defense=defense, evidence=evidence, cited=cited)
     criterion = result['dimensions'][0]['criteria'][0]
@@ -203,8 +337,9 @@ def test_single_item_dimension_normalization_still_verifies_citations():
     result = service._validate_result(value, ['paper'], {'sources':[SOURCE]}, answer='', rubric=rubric, criterion_key='question')
     assert result['dimensions'][0]['key'] == 'paper' and result['questions'][0]['dimension'] == 'paper'
     value['dimensions'][0]['criteria'][0]['citations'][0]['quote'] = 'fabricated'
-    with pytest.raises(ValueError, match='Citation was not present'):
-        service._validate_result(value, ['paper'], {'sources':[SOURCE]}, answer='', rubric=rubric, criterion_key='question')
+    sanitized = service._validate_result(value, ['paper'], {'sources':[SOURCE]}, answer='', rubric=rubric, criterion_key='question')
+    item = sanitized['dimensions'][0]['criteria'][0]
+    assert item['evidence_verdict'] == 'insufficient' and not item['citations'] and 'fabricated' not in json.dumps(item)
 
 
 def test_specialist_stage_and_defense_keep_manual_progress_and_history(state):
@@ -245,8 +380,9 @@ def test_single_stage_dimension_name_is_normalized_only_with_unique_stage_identi
         service._validate_result(response, ['model'], {'sources': [SOURCE]}, **kwargs)
     response['dimensions'][0]['criteria'][0]['key'] = 'regularities'
     response['dimensions'][0]['criteria'][0]['citations'][0]['quote'] = 'invented quote'
-    with pytest.raises(ValueError, match='Citation was not present'):
-        service._validate_result(response, ['model'], {'sources': [SOURCE]}, **kwargs)
+    sanitized = service._validate_result(response, ['model'], {'sources': [SOURCE]}, **kwargs)
+    item = sanitized['dimensions'][0]['criteria'][0]
+    assert item['evidence_verdict'] == 'insufficient' and not item['citations'] and 'invented quote' not in json.dumps(item)
 
 
 def test_stage_rejects_unknown_or_changed_discipline_before_calling_provider(state):
@@ -321,8 +457,8 @@ def test_split_dimension_rejects_duplicates_and_unverified_citations():
     response['dimensions'][-1] = {**whole, 'key': whole['criteria'][-1]['key'], 'criteria': [whole['criteria'][-1]]}
     response['dimensions'][-1]['citations'] = [{
         'file_version_id': SOURCE['file_version_id'], 'block_id': SOURCE['block_id'], 'quote': 'fabricated'}]
-    with pytest.raises(ValueError, match='Citation was not present'):
-        service._validate_result(response, ['paper'], {'sources': [SOURCE]}, answer='')
+    sanitized = service._validate_result(response, ['paper'], {'sources': [SOURCE]}, answer='')
+    assert 'fabricated' not in json.dumps(sanitized)
 
 
 def test_answer_can_improve_defense_without_creating_scientific_evidence(state):
@@ -425,12 +561,9 @@ def test_inflight_changes_reject_ai_save_and_preserve_latest_source(state, chang
     assert service.SESSION_KEY not in state.content
 
 
-@pytest.mark.parametrize('invalid', ['citation', 'criterion', 'question'])
+@pytest.mark.parametrize('invalid', ['criterion', 'question'])
 def test_invalid_structured_provider_result_returns502_without_persisting(state, invalid):
-    if invalid == 'citation':
-        state.output = model_result(evidence='supported', cited=True)
-        state.output['dimensions'][0]['criteria'][0]['citations'][0]['quote'] = 'Invented original source quotation'
-    elif invalid == 'criterion':
+    if invalid == 'criterion':
         state.output['dimensions'][0]['criteria'][0]['key'] = 'made_up_quality'
     else:
         state.output['questions'][0]['id'] = 'q99'
@@ -460,7 +593,7 @@ def test_invalid_format_retries_once_but_provider_failure_does_not(state, monkey
     assert error.value.status_code == 502 and len(calls) == 1
 
 
-def test_invalid_citation_retry_saves_only_verified_output(state, monkeypatch):
+def test_invalid_citation_is_discarded_and_unsupported_judgment_downgraded(state, monkeypatch):
     valid = model_result(evidence='supported', cited=True)
     invalid = copy.deepcopy(valid)
     invalid['dimensions'][0]['criteria'][0]['citations'][0]['quote'] = 'Invented quotation'
@@ -470,9 +603,57 @@ def test_invalid_citation_retry_saves_only_verified_output(state, monkeypatch):
         return json.dumps(invalid if len(calls) == 1 else valid)
     monkeypatch.setattr(service, 'chat_completion', completion)
     review = state.start()['review']
-    assert len(calls) == 2 and len(state.saved) == 1
-    assert review['result']['dimensions'][0]['criteria'][0]['citations'][0]['quote'] == SOURCE['text']
+    assert len(calls) == 1 and len(state.saved) == 1
+    first, second = review['result']['dimensions'][0]['criteria'][:2]
+    assert first['evidence_verdict'] == 'insufficient' and not first['citations']
+    assert '核對' in first['basis'] and second['citations'][0]['quote'] == SOURCE['text']
     assert 'Invented quotation' not in json.dumps(review)
+
+
+def test_mixed_citations_keep_only_the_verified_source():
+    value = model_result(evidence='supported', cited=True)
+    item = value['dimensions'][0]['criteria'][0]
+    item['citations'].append({**item['citations'][0], 'quote': 'invented quote'})
+    result = service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='')
+    checked = result['dimensions'][0]['criteria'][0]
+    assert checked['evidence_verdict'] == 'supported' and len(checked['citations']) == 1
+    assert checked['citations'][0]['quote'] == SOURCE['text'] and 'invented quote' not in json.dumps(result)
+    assert any('略去' in gap for gap in checked['gaps'])
+
+
+def test_only_unverified_citations_cannot_leave_an_unsupported_summary():
+    value = model_result(evidence='supported', cited=True)
+    value['summary'] = 'Unsupported claim'
+    value['dimensions'][0]['summary'] = 'Unsupported claim'
+    for item in value['dimensions'][0]['criteria']:
+        item['citations'][0]['quote'] = 'invented'
+    result = service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='')
+    assert '未能逐字核對' in result['summary'] and '未能逐字核對' in result['dimensions'][0]['summary']
+    assert all(item['evidence_verdict'] == 'insufficient' for item in result['dimensions'][0]['criteria'])
+
+
+def test_defense_argument_remains_provisional_when_a_citation_is_discarded():
+    value = model_result(evidence='supported', argument=True)
+    item = value['dimensions'][0]['criteria'][0]
+    item['citations'] = [{'file_version_id': SOURCE['file_version_id'], 'block_id': SOURCE['block_id'], 'quote': 'invented'}]
+    result = service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='An actual theoretical argument')
+    checked = result['dimensions'][0]['criteria'][0]
+    assert checked['evidence_verdict'] == 'partial' and checked['basis_source'] == 'defense_argument'
+    assert not checked['citations'] and 'invented' not in json.dumps(result)
+    assert '暫定論證' in checked['basis'] and '未能核對' in checked['basis']
+    assert any('未能逐字核對' in gap for gap in checked['gaps'])
+
+
+def test_one_real_question_is_accepted_but_none_is_not_invented():
+    value = model_result()
+    value['questions'] = value['questions'][:1]
+    assert len(service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='')['questions']) == 1
+    value['questions'] = []
+    with pytest.raises(ValueError, match='at least one'):
+        service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='')
+    value['questions'] = model_result()['questions']
+    value['questions'].extend([{**value['questions'][0], 'id': 'q3'}, {**value['questions'][0], 'id': 'q4'}])
+    assert len(service._validate_result(value, ['theory'], {'sources': [SOURCE]}, answer='')['questions']) == 3
 
 
 def test_read_only_actor_and_stale_question_revision_never_call_provider(state):
@@ -492,8 +673,8 @@ def test_paper_narrative_cannot_satisfy_data_verdict_or_answer_only_supported_cl
     result = service._validate_result(model_result('data', evidence='supported', cited=True), ['data'], context, answer='eloquent answer')
     assert result['dimensions'][0]['evidence_verdict'] == 'insufficient'
     assert all(item['gaps'] for item in result['dimensions'][0]['criteria'])
-    with pytest.raises(ValueError, match='real project citations'):
-        service._validate_result(model_result(evidence='supported', argument=True), ['theory'], context, answer='A proof without supplied source')
+    argument = service._validate_result(model_result(evidence='supported', argument=True), ['theory'], context, answer='A proof without supplied source')
+    assert all(item['evidence_verdict'] == 'partial' for item in argument['dimensions'][0]['criteria'])
 
 
 def test_partial_model_verdict_requires_a_real_project_citation():
