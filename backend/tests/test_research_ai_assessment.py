@@ -155,6 +155,26 @@ def test_specialist_stage_and_defense_keep_manual_progress_and_history(state):
     assert 'discipline_workflows' not in state.content
 
 
+def test_single_stage_dimension_name_is_normalized_only_with_unique_stage_identity():
+    response = stage_result('model', 'regularities', evidence='supported', cited=True)
+    response['dimensions'][0]['key'] = 'regularities'
+    for question in response['questions']:
+        question['dimension'] = 'regularities'
+    kwargs = {'answer': '', 'rubric': {'model': {'regularities': '估計模型與發現規律'}},
+              'stage': {'key': 'regularities'}}
+    result = service._validate_result(response, ['model'], {'sources': [SOURCE]}, **kwargs)
+    assert result['dimensions'][0]['key'] == 'model'
+    assert all(q['dimension'] == 'model' and q['criterion'] == 'regularities' for q in result['questions'])
+    assert result['dimensions'][0]['evidence_verdict'] == 'partial'
+    response['dimensions'][0]['criteria'][0]['key'] = 'other'
+    with pytest.raises(ValueError):
+        service._validate_result(response, ['model'], {'sources': [SOURCE]}, **kwargs)
+    response['dimensions'][0]['criteria'][0]['key'] = 'regularities'
+    response['dimensions'][0]['criteria'][0]['citations'][0]['quote'] = 'invented quote'
+    with pytest.raises(ValueError, match='Citation was not present'):
+        service._validate_result(response, ['model'], {'sources': [SOURCE]}, **kwargs)
+
+
 def test_stage_rejects_unknown_or_changed_discipline_before_calling_provider(state):
     state.project['metadata']['research_discipline'] = 'econometrics'
     with pytest.raises(HTTPException) as error:
@@ -297,7 +317,43 @@ def test_invalid_structured_provider_result_returns502_without_persisting(state,
         state.output['questions'][0]['id'] = 'q99'
     with pytest.raises(HTTPException) as error:
         state.start()
-    assert error.value.status_code == 502 and not state.saved and service.SESSION_KEY not in state.content
+    assert error.value.status_code == 502 and len(state.calls) == 2 and not state.saved and service.SESSION_KEY not in state.content
+
+
+def test_invalid_format_retries_once_but_provider_failure_does_not(state, monkeypatch):
+    calls = []
+    valid = model_result()
+    def completion(_connection, **kwargs):
+        calls.append(kwargs)
+        return '{"dimensions": [' if len(calls) == 1 else json.dumps(valid)
+    monkeypatch.setattr(service, 'chat_completion', completion)
+    assert state.start()['review']['revision'] == 1
+    assert len(calls) == 2 and calls[0]['user_prompt'] == calls[1]['user_prompt']
+    assert '逐字' in calls[1]['system_prompt']
+
+    calls.clear()
+    def unavailable(_connection, **kwargs):
+        calls.append(kwargs)
+        raise ConnectionError('provider unavailable')
+    monkeypatch.setattr(service, 'chat_completion', unavailable)
+    with pytest.raises(HTTPException) as error:
+        state.start()
+    assert error.value.status_code == 502 and len(calls) == 1
+
+
+def test_invalid_citation_retry_saves_only_verified_output(state, monkeypatch):
+    valid = model_result(evidence='supported', cited=True)
+    invalid = copy.deepcopy(valid)
+    invalid['dimensions'][0]['criteria'][0]['citations'][0]['quote'] = 'Invented quotation'
+    calls = []
+    def completion(_connection, **kwargs):
+        calls.append(kwargs)
+        return json.dumps(invalid if len(calls) == 1 else valid)
+    monkeypatch.setattr(service, 'chat_completion', completion)
+    review = state.start()['review']
+    assert len(calls) == 2 and len(state.saved) == 1
+    assert review['result']['dimensions'][0]['criteria'][0]['citations'][0]['quote'] == SOURCE['text']
+    assert 'Invented quotation' not in json.dumps(review)
 
 
 def test_read_only_actor_and_stale_question_revision_never_call_provider(state):

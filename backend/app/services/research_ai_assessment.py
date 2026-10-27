@@ -257,6 +257,22 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
     if not isinstance(value, dict) or set(value) - {"summary", "dimensions", "questions"}:
         raise ValueError("Invalid review structure")
     raw_dimensions = value.get("dimensions")
+    # A single-stage specialist can name its dimension after the stage. The
+    # stage and its one criterion make the intended mapping unambiguous; do
+    # not infer a mapping for missing, duplicate, or unrelated criteria.
+    if stage and len(dimensions) == 1 and isinstance(raw_dimensions, list) and len(raw_dimensions) == 1:
+        raw = raw_dimensions[0]
+        criteria = raw.get("criteria") if isinstance(raw, dict) else None
+        stage_key = stage["key"]
+        if (isinstance(criteria, list) and len(criteria) == 1 and isinstance(criteria[0], dict)
+                and criteria[0].get("key") == stage_key and raw.get("key") in {dimensions[0], stage_key}):
+            raw_dimensions = [dict(raw, key=dimensions[0])]
+            questions = value.get("questions")
+            if isinstance(questions, list):
+                value = dict(value)
+                value["questions"] = [dict(item, dimension=dimensions[0])
+                    if isinstance(item, dict) and item.get("dimension") == stage_key
+                    and item.get("criterion") == stage_key else item for item in questions]
     # Some providers split one dimension into one object per criterion. Merge
     # only when the complete, unique rubric proves every object belongs to it.
     if len(dimensions) == 1 and isinstance(raw_dimensions, list) and len(raw_dimensions) > 1:
@@ -474,10 +490,22 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
     try:
         connection = _connection(actor, settings, thinking=False)
         expert_prompt = "請以指定 specialists 的專業視角評估其範圍，根據各專業方法、階段目標與真實材料指出可核對的缺口。階段評估只判斷指定階段，不代替整個面向。"
-        response = chat_completion(connection, system_prompt=PROMPT + expert_prompt, user_prompt=workflow._canonical(prompt),
-                                   thinking=False, max_tokens=2600 if stage else 8192 if len(dimensions) > 1 else 6400, json_mode=True)
-        result = _validate_result(response, dimensions, context, answer=answer,
-                                  previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage)
+        system = PROMPT + expert_prompt
+        user_prompt = workflow._canonical(prompt)
+        limit = 2600 if stage else 8192 if len(dimensions) > 1 else 6400
+        response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
+                                   thinking=False, max_tokens=limit, json_mode=True)
+        try:
+            result = _validate_result(response, dimensions, context, answer=answer,
+                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            # Only retry model format/validation errors, once. Provider or
+            # permission failures are not retried and invalid text is not logged.
+            system += "上次回覆未通過格式或引用核對，請重新輸出有效完整 JSON；逐一使用 rubric 原有鍵名，所有引文必須逐字取自提供的來源。"
+            response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
+                                       thinking=False, max_tokens=limit, json_mode=True)
+            result = _validate_result(response, dimensions, context, answer=answer,
+                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI 評估暫時無法提供有效回覆，請重試。既有人工評估與答辯紀錄未變更。") from exc
     now = datetime.now(timezone.utc).isoformat()
