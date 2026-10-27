@@ -139,6 +139,74 @@ def stage_result(dimension, stage_key, *, defense='unassessed', evidence='insuff
     return result
 
 
+def test_checklist_item_has_own_committee_defense_and_does_not_change_manual_or_dimension_review(state):
+    dimension = state.start()['review']
+    manual = copy.deepcopy(state.content['research_dashboard_assessment'])
+    state.output = stage_result('theory', 'assumptions', evidence='partial', cited=True)
+    item = state.start(criterion_key='assumptions')['review']
+    assert item['id'] != dimension['id'] and item['dimension'] == 'theory'
+    assert item['criterion_key'] == 'assumptions' and item['criterion_label'] == '理論假設'
+    assert [criterion['key'] for criterion in item['result']['dimensions'][0]['criteria']] == ['assumptions']
+    prompt = json.loads(state.calls[-1]['user_prompt'])
+    assert prompt['rubric'] == {'theory': {'assumptions': '理論假設'}}
+    assert prompt['checklist_item']['record']['status'] == 'missing'
+    assert all(q['criterion'] == 'assumptions' for q in item['result']['questions'])
+    state.output = stage_result('theory', 'assumptions', defense='developing', evidence='partial', cited=True)
+    defended = state.reply(item)['review']
+    assert defended['result']['committee_feedback']['reply'] and len(defended['history']) == 2
+    assert defended['history'][0]['result'] == item['result']
+    assert state.content[service.SESSION_KEY][dimension['id']]['revision'] == 1
+    assert state.content['research_dashboard_assessment'] == manual
+    assert not next(r for r in service.list_ai_reviews(actor(), UUID(int=3))['reviews'] if r['id'] == item['id'])['stale']
+
+
+def test_checklist_item_scope_is_validated_and_immutable(state):
+    for payload in ({'dimension':'paper', 'criterion_key':'assumptions'},
+                    {'dimension':'all', 'criterion_key':'question'},
+                    {'stage_key':'question', 'criterion_key':'question'}):
+        with pytest.raises(HTTPException) as error:
+            state.start(**payload)
+        assert error.value.status_code == 422
+    assert not state.calls
+    state.output = stage_result('paper', 'question')
+    item = state.start(dimension='paper', criterion_key='question')['review']
+    with pytest.raises(HTTPException) as error:
+        state.reply(item, criterion_key='draft')
+    assert error.value.status_code == 422 and len(state.calls) == 1
+
+
+def test_every_dashboard_check_is_available_as_an_independent_defense_scope():
+    for dimension, (_, checks) in workflow.DASHBOARD_CHECKS.items():
+        for key, label in checks:
+            item = service._criterion_for_review(dimension, key)
+            assert item['key'] == key and item['label'] == label and item['fingerprint']
+
+
+def test_item_rubric_change_marks_stale_and_requires_new_review(state, monkeypatch):
+    state.output = stage_result('theory', 'assumptions')
+    item = state.start(criterion_key='assumptions')['review']
+    changed = list(workflow.DASHBOARD_CHECKS['theory'][1])
+    changed[0] = ('assumptions', '更新後的理論假設')
+    monkeypatch.setitem(workflow.DASHBOARD_CHECKS, 'theory', ('理論檢查', tuple(changed)))
+    assert service.list_ai_reviews(actor(), UUID(int=3))['reviews'][0]['stale']
+    with pytest.raises(HTTPException) as error:
+        state.reply(item, refresh_context=True)
+    assert error.value.status_code == 409 and len(state.calls) == 1
+
+
+def test_single_item_dimension_normalization_still_verifies_citations():
+    value = stage_result('paper', 'question', evidence='supported', cited=True)
+    value['dimensions'][0]['key'] = 'question'
+    for question in value['questions']:
+        question['dimension'] = 'question'
+    rubric = {'paper': {'question': '研究問題'}}
+    result = service._validate_result(value, ['paper'], {'sources':[SOURCE]}, answer='', rubric=rubric, criterion_key='question')
+    assert result['dimensions'][0]['key'] == 'paper' and result['questions'][0]['dimension'] == 'paper'
+    value['dimensions'][0]['criteria'][0]['citations'][0]['quote'] = 'fabricated'
+    with pytest.raises(ValueError, match='Citation was not present'):
+        service._validate_result(value, ['paper'], {'sources':[SOURCE]}, answer='', rubric=rubric, criterion_key='question')
+
+
 def test_specialist_stage_and_defense_keep_manual_progress_and_history(state):
     state.project['metadata']['research_discipline'] = 'econometrics'
     manual = copy.deepcopy(state.content['research_dashboard_assessment'])
@@ -496,7 +564,8 @@ def test_context_prefers_current_saved_draft_but_never_mixes_stale_word(monkeypa
         assert context['scope']['latest_word_instead_of_stale_draft'] == [str(UUID(int=4))]
 
 
-def test_stage_context_prefers_pinned_data_and_excludes_old_manuscript(monkeypatch):
+@pytest.mark.parametrize('scope', ['stage', 'item'])
+def test_focused_context_prefers_pinned_data_and_excludes_old_manuscript(monkeypatch, scope):
     project = {'id': UUID(int=3), 'metadata': {'research_discipline': 'econometrics'}}
     current = rows()
     current['files'] = [
@@ -507,6 +576,9 @@ def test_stage_context_prefers_pinned_data_and_excludes_old_manuscript(monkeypat
         {'file_version_id': str(UUID(int=9)), 'role': 'dataset'},
         {'file_version_id': str(UUID(int=6)), 'role': 'report'},
     ]}}}}
+    if scope == 'item':
+        content = {'research_dashboard_assessment': {'theory': {'items': {'assumptions': {
+            'file_version_ids': [str(UUID(int=9)), str(UUID(int=6))]}}}}}
     versions = {
         UUID(int=5): (UUID(int=4), 2, 'manuscript/paper.docx', 'document'),
         UUID(int=6): (UUID(int=4), 1, 'manuscript/paper.docx', 'document'),
@@ -528,9 +600,11 @@ def test_stage_context_prefers_pinned_data_and_excludes_old_manuscript(monkeypat
         yield Session()
     monkeypatch.setattr(service, 'tenant_session', session)
     stage = next(item for item in service.discipline_template('econometrics')['stages'] if item['key'] == 'phenomenon')
-    context = service._context(actor(), {'project': project, 'rows': current, 'content': content}, ['theory'], [], stage)
+    context = service._context(actor(), {'project': project, 'rows': current, 'content': content}, ['theory'], [],
+                               stage if scope == 'stage' else None,
+                               {'key': 'assumptions'} if scope == 'item' else None)
     included = [item['file_version_id'] for item in context['sources']]
     assert included[0] == str(UUID(int=9))  # The stage's fixed data takes precedence over other excerpts.
     assert str(UUID(int=5)) in included and str(UUID(int=6)) not in included
-    assert context['scope']['stage_artifacts_used'] == [str(UUID(int=9))]
-    assert context['scope']['stage_artifacts_not_read'] == [str(UUID(int=6))]
+    assert context['scope'][scope + '_artifacts_used'] == [str(UUID(int=9))]
+    assert context['scope'][scope + '_artifacts_not_read'] == [str(UUID(int=6))]

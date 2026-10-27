@@ -11224,6 +11224,7 @@ COMMANDS = [
             _p("version", "body.expected_dmp_version", "目前 DMP 版本；尚無紀錄時為 0", required=True, ptype="int"),
             _p("dimension", "body.dimension", "paper/data/theory/model；all 同時評估四個面向，預設 paper"),
             _p("stage", "body.stage_key", "本課題所選專業流程的階段 key；提供時評估該階段並保留獨立答辯"),
+            _p("criterion", "body.criterion_key", "指定面向中的單一檢查項 key，獨立評估及答辯；不能與 stage 同時使用"),
         ],
         "examples": ["research assessment ai start --project MK73 --version 0 --dimension theory"],
     },

@@ -97,6 +97,12 @@ def review_summaries(project, rows, dmp):
             signature = workflow._digest({"discipline": discipline, "stage": stage}) if stage else None
             review["stale"] = bool(review["stale"] or review.get("discipline") != discipline
                                    or not signature or signature != review.get("stage_template_fingerprint"))
+        if review.get("criterion_key"):
+            dimension = review.get("dimension")
+            item = review["criterion_key"]
+            checks = dict(workflow.DASHBOARD_CHECKS.get(dimension, (None, ()))[1])
+            signature = workflow._digest({"dimension": dimension, "criterion_key": item, "label": checks[item]}) if item in checks else None
+            review["stale"] = bool(review["stale"] or not signature or signature != review.get("criterion_template_fingerprint"))
     return fingerprint, sorted(reviews, key=lambda item: item.get("updated_at", ""), reverse=True)
 
 
@@ -114,16 +120,20 @@ def _snapshot(actor, project_ref, *, session=None):
         return load(current)
 
 
-def _context(actor, snapshot, dimensions, references, stage=None):
+def _context(actor, snapshot, dimensions, references, stage=None, focus_item=None):
     current = snapshot["rows"]["files"]
     latest_by_file = {str(item["file_id"]): str(item["file_version_id"]) for item in current}
     current = sorted(current, key=lambda item: 0 if research_asset_class(item.get("logical_path"), item.get("file_kind")) == "manuscript" else 1)
     current_ids = [str(item["file_version_id"]) for item in current]
     recorded = discipline_workflow(snapshot["project"], snapshot["content"])["stages"].get(stage["key"], {}) if stage else {}
     stage_refs = [item["file_version_id"] for item in recorded.get("artifacts", [])]
+    item_record = next((item for item in workflow._dashboard_items(workflow._dashboard_saved(snapshot["content"]), dimensions[0])
+                        if item["key"] == focus_item["key"]), {}) if focus_item else {}
+    item_refs = item_record.get("file_version_ids", [])
+    fixed_refs = list(dict.fromkeys(stage_refs + item_refs))
     manuscript_ids = [str(item["file_version_id"]) for item in current
                       if research_asset_class(item.get("logical_path"), item.get("file_kind")) == "manuscript"]
-    identifiers = list(dict.fromkeys(references + manuscript_ids[:1] + stage_refs + current_ids))[:12]
+    identifiers = list(dict.fromkeys(references + manuscript_ids[:1] + fixed_refs + current_ids))[:12]
     candidates, pinned, saved_drafts, stale_drafts = [], [], [], []
     if identifiers:
         with tenant_session(actor.tenant_id) as session:
@@ -144,7 +154,7 @@ def _context(actor, snapshot, dimensions, references, stage=None):
                 asset_class = research_asset_class(item["logical_path"], item["file_kind"])
                 if version_id in references and asset_class == "manuscript" and latest_by_file.get(file_id) != version_id:
                     raise HTTPException(status_code=422, detail="Please reference the latest manuscript version to avoid mixing source versions")
-                if version_id in stage_refs and version_id not in references and asset_class == "manuscript" and latest_by_file.get(file_id) != version_id:
+                if version_id in fixed_refs and version_id not in references and asset_class == "manuscript" and latest_by_file.get(file_id) != version_id:
                     continue  # An old fixed manuscript must not be mixed with the current manuscript or draft.
                 url = f"/api/research/projects/{snapshot['project']['id']}/files/{file_id}/content?version={item['version']}"
                 pinned.append({key: item[key] for key in ("file_version_id", "file_id", "logical_path", "version", "content_sha256")})
@@ -202,8 +212,10 @@ def _context(actor, snapshot, dimensions, references, stage=None):
              "model": r"model|estimat|result|regression|coefficient|robust|diagnos|table"}
     stage_words = [word for word in re.findall(r"[A-Za-z]{4,}", (stage or {}).get("en", ""))
                    if word.lower() not in {"and", "with", "case"}]
+    if focus_item:
+        stage_words.extend(word for word in re.findall(r"[A-Za-z]{4,}", focus_item["key"]))
     pattern = re.compile("|".join([terms[key] for key in dimensions] + [re.escape(word) for word in stage_words]), re.I)
-    candidates.sort(key=lambda item: (0 if item.get("file_version_id") in references else 1 if item.get("file_version_id") in stage_refs else 2,
+    candidates.sort(key=lambda item: (0 if item.get("file_version_id") in references else 1 if item.get("file_version_id") in fixed_refs else 2,
         0 if pattern.search(str(item.get("heading_path", "")) + item["text"]) else 1,
         0 if item.get("block_type") in {"heading", "title", "equation", "table_row"} else 1))
     sources, size, seen_files = [], 0, set()
@@ -229,6 +241,10 @@ def _context(actor, snapshot, dimensions, references, stage=None):
         used_stage = {item["file_version_id"] for item in sources if item.get("file_version_id") in stage_refs}
         scope["stage_artifacts_used"] = [identifier for identifier in stage_refs if identifier in used_stage]
         scope["stage_artifacts_not_read"] = [identifier for identifier in stage_refs if identifier not in used_stage]
+    if focus_item:
+        used_item = {item["file_version_id"] for item in sources if item.get("file_version_id") in item_refs}
+        scope["item_artifacts_used"] = [identifier for identifier in item_refs if identifier in used_item]
+        scope["item_artifacts_not_read"] = [identifier for identifier in item_refs if identifier not in used_item]
     return {"sources": sources, "pinned_files": pinned, "scope": scope,
             "manual_dmp_excerpt": workflow._canonical({key: value for key, value in snapshot["content"].items() if key != SESSION_KEY})[:6000]}
 
@@ -256,7 +272,7 @@ def _citations(values, context):
     return result
 
 
-def _validate_result(value, dimensions, context, *, answer, previous=None, question=None, rubric=None, stage=None,
+def _validate_result(value, dimensions, context, *, answer, previous=None, question=None, rubric=None, stage=None, criterion_key=None,
                      require_committee=False):
     rubric = rubric or {key: dict(workflow.DASHBOARD_CHECKS[key][1]) for key in dimensions}
     if isinstance(value, str):
@@ -268,10 +284,10 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
     # A single-stage specialist can name its dimension after the stage. The
     # stage and its one criterion make the intended mapping unambiguous; do
     # not infer a mapping for missing, duplicate, or unrelated criteria.
-    if stage and len(dimensions) == 1 and isinstance(raw_dimensions, list) and len(raw_dimensions) == 1:
+    if (stage or criterion_key) and len(dimensions) == 1 and isinstance(raw_dimensions, list) and len(raw_dimensions) == 1:
         raw = raw_dimensions[0]
         criteria = raw.get("criteria") if isinstance(raw, dict) else None
-        stage_key = stage["key"]
+        stage_key = stage["key"] if stage else criterion_key
         if (isinstance(criteria, list) and len(criteria) == 1 and isinstance(criteria[0], dict)
                 and criteria[0].get("key") == stage_key and raw.get("key") in {dimensions[0], stage_key}):
             raw_dimensions = [dict(raw, key=dimensions[0])]
@@ -438,6 +454,21 @@ def _stage_for_review(snapshot, stage_key, previous=None):
     return discipline, stage, dimension, specialist
 
 
+def _criterion_for_review(dimension, criterion_key, previous=None):
+    """Resolve an item only from its declared dimension's current rubric."""
+    status_code = 409 if previous else 422
+    if not isinstance(dimension, str) or dimension not in workflow.DASHBOARD_CHECKS or not isinstance(criterion_key, str):
+        raise HTTPException(status_code=status_code, detail="Invalid research assessment item")
+    items = dict(workflow.DASHBOARD_CHECKS[dimension][1])
+    if criterion_key not in items:
+        raise HTTPException(status_code=status_code, detail="This item does not belong to the research dimension")
+    label = items[criterion_key]
+    signature = workflow._digest({"dimension": dimension, "criterion_key": criterion_key, "label": label})
+    if previous and (previous.get("dimensions") != [dimension] or previous.get("criterion_template_fingerprint") != signature):
+        raise HTTPException(status_code=409, detail="研究檢查項目或評估標準已更新，請重新開始評估。")
+    return {"key": criterion_key, "label": label, "fingerprint": signature}
+
+
 def run_ai_review(actor, project_ref, payload, settings, review_id=None):
     _require_write(actor)
     _require_read(actor)
@@ -449,7 +480,7 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         raise HTTPException(status_code=409, detail="研究紀錄已更新，請重新載入；您的答辯內容可保留後再送出。")
     sessions = _sessions(snapshot["content"])
     previous = None
-    stage_key = None
+    stage_key = criterion_key = None
     answer, question, references, refreshed = "", None, [], False
     if review_id is not None:
         previous = sessions.get(str(review_id))
@@ -466,8 +497,11 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
                                or payload["acknowledged_revision"] != previous["revision"]):
             raise HTTPException(status_code=409, detail="請先查看本輪 AI 模擬委員會回覆，再繼續答辯。")
         stage_key = previous.get("stage_key")
+        criterion_key = previous.get("criterion_key")
         if "stage_key" in payload and payload["stage_key"] != stage_key:
             raise HTTPException(status_code=422, detail="A defense reply cannot change the assessed stage")
+        if "criterion_key" in payload and payload["criterion_key"] != criterion_key:
+            raise HTTPException(status_code=422, detail="A defense reply cannot change the assessed item")
         if type(payload.get("refresh_context", False)) is not bool:
             raise HTTPException(status_code=422, detail="refresh_context must be a boolean")
         refreshed = previous["source_fingerprint"] != snapshot["fingerprint"]
@@ -487,12 +521,17 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         dimensions = previous["dimensions"]
     else:
         stage_key = payload.get("stage_key")
+        criterion_key = payload.get("criterion_key")
+        if stage_key is not None and criterion_key is not None:
+            raise HTTPException(status_code=422, detail="Choose either a research stage or a checklist item")
         if stage_key is None:
             dimension = payload.get("dimension", "paper")
             if dimension not in (*workflow.DASHBOARD_CHECKS, "all"):
                 raise HTTPException(status_code=422, detail="Unknown research assessment dimension")
+            if criterion_key is not None and dimension == "all":
+                raise HTTPException(status_code=422, detail="A checklist item must specify one research dimension")
             dimensions = list(workflow.DASHBOARD_CHECKS) if dimension == "all" else [dimension]
-    stage, discipline = None, None
+    stage, discipline, focus_item = None, None, None
     if stage_key is not None:
         discipline, stage, dimension, specialist = _stage_for_review(snapshot, stage_key, previous)
         dimensions = [dimension]
@@ -501,27 +540,37 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         stage_record = discipline_workflow(snapshot["project"], snapshot["content"])["stages"].get(stage_key, {})
         stage_record = {key: value[:1500] if isinstance(value, str) else value
                         for key, value in stage_record.items() if key not in {"updated_by", "updated_at"}}
+    elif criterion_key is not None:
+        dimension = previous.get("dimension") if previous else dimension
+        focus_item = _criterion_for_review(dimension, criterion_key, previous)
+        dimensions = [dimension]
+        rubric = {dimension: {criterion_key: focus_item["label"]}}
+        specialists = [{**SPECIALISTS[dimension], "focus": SPECIALISTS[dimension]["focus"] + "；本輪聚焦：" + focus_item["label"]}]
+        stage_record = None
     else:
         rubric = {key: dict(workflow.DASHBOARD_CHECKS[key][1]) for key in dimensions}
         specialists = [SPECIALISTS[key] for key in dimensions]
         stage_record = None
-    context = _context(actor, snapshot, dimensions, references, stage)
+    context = _context(actor, snapshot, dimensions, references, stage, focus_item)
     prompt = {"rubric": rubric, "specialists": specialists,
               "stage": ({"discipline": discipline, **stage, "record": stage_record} if stage else None),
+              "checklist_item": ({"dimension": dimension, "key": criterion_key, "label": focus_item["label"],
+                  "record": next((item for item in workflow._dashboard_items(workflow._dashboard_saved(snapshot["content"]), dimension)
+                                  if item["key"] == criterion_key), None)} if focus_item else None),
               "sources": context["sources"], "context_scope": context["scope"], "manual_dmp_excerpt": context["manual_dmp_excerpt"],
               "answer": answer, "answered_question": question,
               "previous_review": previous["result"] if previous else None}
     try:
         connection = _connection(actor, settings, thinking=False)
-        expert_prompt = "請以指定 specialists 的專業視角評估其範圍，根據各專業方法、階段目標與真實材料指出可核對的缺口。階段評估只判斷指定階段，不代替整個面向。"
+        expert_prompt = "請以指定 specialists 的專業視角評估其範圍，根據各專業方法、階段目標與真實材料指出可核對的缺口。階段或檢查項評估只判斷所指定的階段或項目，不代替整個面向。"
         system = PROMPT + expert_prompt
         user_prompt = workflow._canonical(prompt)
-        limit = 2600 if stage else 8192 if len(dimensions) > 1 else 6400
+        limit = 2600 if stage or focus_item else 8192 if len(dimensions) > 1 else 6400
         response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
                                    thinking=False, max_tokens=limit, json_mode=True)
         try:
             result = _validate_result(response, dimensions, context, answer=answer,
-                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage,
+                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
                                       require_committee=bool(previous))
         except (ValueError, TypeError, KeyError, AttributeError):
             # Only retry model format/validation errors, once. Provider or
@@ -530,7 +579,7 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
             response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
                                        thinking=False, max_tokens=limit, json_mode=True)
             result = _validate_result(response, dimensions, context, answer=answer,
-                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage,
+                                      previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
                                       require_committee=bool(previous))
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI 評估暫時無法提供有效回覆，請重試。既有人工評估與答辯紀錄未變更。") from exc
@@ -555,6 +604,9 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
     if stage:
         review.update({"stage_key": stage_key, "stage_title": stage["title"], "discipline": discipline,
                        "stage_template_fingerprint": workflow._digest({"discipline": discipline, "stage": stage})})
+    if focus_item:
+        review.update({"criterion_key": criterion_key, "criterion_label": focus_item["label"],
+                       "criterion_template_fingerprint": focus_item["fingerprint"]})
     # The expensive provider call is over before acquiring the project lock.
     with tenant_session(actor.tenant_id) as session:
         project = _project_row(session, snapshot["project"]["id"], lock=True)
