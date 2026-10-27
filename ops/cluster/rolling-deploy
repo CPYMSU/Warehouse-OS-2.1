@@ -143,6 +143,9 @@ upload_node_secret() {
     -o UserKnownHostsFile="${known_hosts}"
     -o ConnectTimeout=15
   )
+  if [[ -n "${WAREHOUSE_DEPLOY_SSH_PROXY_COMMAND:-}" ]]; then
+    scp_options+=(-o "ProxyCommand=${WAREHOUSE_DEPLOY_SSH_PROXY_COMMAND}")
+  fi
   [[ "${scp_legacy}" == 1 ]] && scp_options+=(-O)
   scp -p "${scp_options[@]}" "${source_file}" \
     "${user}@${host}:${incoming}/${remote_name}"

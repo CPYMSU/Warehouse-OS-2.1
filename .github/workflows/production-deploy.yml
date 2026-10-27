@@ -49,6 +49,9 @@ jobs:
       # Preparation uses the standby's existing, host-key-verified SSH route,
       # matching the status and activation control channel.
       WAREHOUSE_STANDBY_PREPARE_HOST: 207.148.120.30
+      # Route the standby transfer through the same verified local proxy used
+      # for checkout when the direct Mac-to-standby connection is unavailable.
+      WAREHOUSE_DEPLOY_SSH_PROXY_COMMAND: /usr/bin/nc -X connect -x 127.0.0.1:7897 %h %p
     steps:
       - uses: actions/checkout@v4
         env:

@@ -44,6 +44,9 @@ ssh_options=(
   -o ServerAliveInterval=20
   -o ServerAliveCountMax=3
 )
+if [[ -n "${WAREHOUSE_DEPLOY_SSH_PROXY_COMMAND:-}" ]]; then
+  ssh_options+=(-o "ProxyCommand=${WAREHOUSE_DEPLOY_SSH_PROXY_COMMAND}")
+fi
 
 usage() {
   cat <<'EOF'
@@ -92,6 +95,7 @@ Environment:
   WAREHOUSE_DEPLOY_MANAGER_SUDO      # 1 for sudo -n, 0 for an unprivileged manager
   WAREHOUSE_DEPLOY_PREPARE_INCOMING  # 1 to create the incoming directory, 0 if pre-provisioned
   WAREHOUSE_DEPLOY_SCP_LEGACY        # 1 for scp -O when a forced-command gate is used
+  WAREHOUSE_DEPLOY_SSH_PROXY_COMMAND # optional scoped transport; strict host checks remain enabled
   WAREHOUSE_DEPLOY_LOCAL_VALIDATION  # adaptive (local default) or basic (GitHub)
   WAREHOUSE_DEPLOY_ALEMBIC           # absolute Alembic executable used for release evidence
   WAREHOUSE_DEPLOY_RELEASE_ID_FILE   # optional controller-owned output path for prepare
