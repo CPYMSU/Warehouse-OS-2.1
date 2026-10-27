@@ -1103,13 +1103,78 @@ const restoredDefenseSelection = (anchor, blocks) => {
 };
 const defenseMessageSelection = message => (message && Array.isArray(message.citations) ? message.citations : [])
   .find(item => item && item.purpose === "defense_explanation") || null;
-const DefenseExplanationBody = ({ body }) => {
+const defenseMessageFormat = message => Number(message && (message.format_version || (defenseMessageSelection(message) || {}).format_version)) || 1;
+const defenseMessageDetail = message => clean(message && (message.detail || (defenseMessageSelection(message) || {}).detail)) || "detailed";
+// Extract math before Markdown consumes LaTeX escapes or treats subscripts as emphasis.
+const protectDefenseMath = (body, formula = false) => {
+  const entries = [], prefix = "BFMATH" + Math.random().toString(36).slice(2) + "TOKEN";
+  const protect = (latex, display) => {
+    const token = prefix + entries.length + "END";
+    entries.push({token,latex:clean(latex).trim(),display});
+    return display ? "\n\n" + token + "\n\n" : token;
+  };
   const source = clean(body);
-  if (window.marked && window.DOMPurify) {
-    const html = window.DOMPurify.sanitize(window.marked.parse(source), {USE_PROFILES:{html:true}});
-    return <div className="rv-defense-answer" data-testid="research-defense-answer" dangerouslySetInnerHTML={{__html:html}}/>;
+  if (formula) {
+    const unwrapped = source.trim().replace(/^```(?:latex|tex|math)?\s*\n([\s\S]*?)\n?```$/i,"$1")
+      .replace(/^`([^`]+)`$/,"$1").replace(/^\\\[([\s\S]*)\\\]$/,"$1")
+      .replace(/^\\\(([\s\S]*)\\\)$/,"$1").replace(/^\$\$([\s\S]*)\$\$$/,"$1")
+      .replace(/^\$([^$]*)\$$/,"$1");
+    return {text:protect(unwrapped,true),entries};
   }
-  return <div className="rv-defense-answer plain" data-testid="research-defense-answer">{source}</div>;
+  const isMath = value => /\\[a-zA-Z]+|[_^]\s*(?:\{|[a-zA-Z0-9])|[=<>≤≥∑∫]/.test(value);
+  const text = source.replace(/```([^\n`]*)\n([\s\S]*?)```|`([^`\n]+)`|(?<!\\)\\\[([\s\S]*?)\\\]|(?<!\\)\\\(([\s\S]*?)\\\)|(?<!\\)\$\$([\s\S]*?)\$\$|(?<!\\)\$(?!\$)([^\n$]+?)(?<!\\)\$(?!\$)/g,
+    (match, language, fenced, inlineCode, bracket, paren, dollars, inlineDollar) => {
+      if (fenced !== undefined) return /^(?:latex|tex|math)\s*$/i.test(language.trim()) || (!language.trim() && isMath(fenced)) ? protect(fenced,true) : match;
+      if (inlineCode !== undefined) return isMath(inlineCode) ? protect(inlineCode,false) : match;
+      if (bracket !== undefined) return protect(bracket,true);
+      if (paren !== undefined) return protect(paren,false);
+      if (dollars !== undefined) return protect(dollars,true);
+      return protect(inlineDollar,false);
+    });
+  return {text,entries};
+};
+const DefenseExplanationBody = ({ body, formula = false, source = false, detail = "brief", formatVersion = 2 }) => {
+  const node = useRef(null);
+  useEffect(() => {
+    const root = node.current;
+    if (!root) return () => {};
+    const protectedBody = protectDefenseMath(body,formula);
+    if (window.marked && window.DOMPurify) {
+      root.innerHTML = window.DOMPurify.sanitize(window.marked.parse(protectedBody.text), {USE_PROFILES:{html:true}});
+    } else root.textContent = protectedBody.text;
+    const textNodes = [], walker = document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    const mathNodes = [];
+    textNodes.forEach(textNode => {
+      if (!protectedBody.entries.length) return;
+      const parts = textNode.textContent.split(new RegExp("(" + protectedBody.entries.map(entry => entry.token).join("|") + ")","g"));
+      if (parts.length === 1) return;
+      const fragment = document.createDocumentFragment();
+      parts.forEach(part => {
+        const entry = protectedBody.entries.find(item => item.token === part);
+        if (!entry) { fragment.appendChild(document.createTextNode(part));return; }
+        const span = document.createElement("span");
+        span.className = "rv-defense-math" + (entry.display ? " display" : "");
+        span.textContent = entry.latex;
+        fragment.appendChild(span);mathNodes.push({span,...entry});
+      });
+      textNode.replaceWith(fragment);
+    });
+    let timer = null, disposed = false;
+    const render = attempts => {
+      if (disposed) return;
+      if (!window.katex) { if(attempts>0) timer=window.setTimeout(()=>render(attempts-1),400);return; }
+      mathNodes.forEach(({span,latex,display}) => {
+        try { window.katex.render(latex,span,{displayMode:display,throwOnError:false,strict:false,trust:false,maxExpand:200,maxSize:12}); }
+        catch (_error) { span.textContent=latex; }
+      });
+    };
+    render(4);
+    return () => {disposed=true;if(timer)window.clearTimeout(timer);};
+  }, [body,formula]);
+  return <div ref={node} className={source ? "rv-defense-source-render" : "rv-defense-answer"}
+    data-testid={source ? "research-defense-source" : "research-defense-answer"}
+    data-detail={detail} data-format-version={formatVersion}/>;
 };
 
 const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onError }) => {
@@ -1135,6 +1200,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const [defenseAnchor, setDefenseAnchor] = useState(null);
   const [defenseStatus, setDefenseStatus] = useState("idle");
   const [defenseResult, setDefenseResult] = useState(null);
+  const [defenseDetail, setDefenseDetail] = useState("brief");
   const [defenseError, setDefenseError] = useState("");
   const [defenseCopy, setDefenseCopy] = useState("");
   const [defenseTrigger, setDefenseTrigger] = useState(0);
@@ -1225,7 +1291,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     setSelectionQuestion(clean(ui.selection_question).slice(0, 30000));
     setSelectionBusy("");
     cancelDefense(); defenseCache.current.clear();
-    setDefenseAuto(ui.defense_auto !== false); setDefenseAnchor(null);
+    setDefenseAuto(ui.defense_auto !== false); setDefenseAnchor(null); setDefenseDetail("brief");
     setDefenseResult(null); setDefenseError(""); setDefenseCopy(""); setDefenseStatus("idle");
     selectionNodes.current = {};
     editSerial.current = 0; savedSerial.current = 0; revisionRef.current = 0;
@@ -1420,7 +1486,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     (Number.isInteger(anchor && anchor.cell_index) ? anchor.cell_index : "-");
   const chooseRefinementSelection = anchor => {
     setSelection(anchor); setAnnotationBody(""); setSelectionQuestion("");
-    cancelDefense(); setDefenseAnchor(anchor); setDefenseResult(null); setDefenseError(""); setDefenseCopy("");
+    cancelDefense(); setDefenseAnchor(anchor); setDefenseDetail("brief"); setDefenseResult(null); setDefenseError(""); setDefenseCopy("");
     setDefenseTrigger(value=>value+1);
     setDefenseStatus(defenseAuto ? "queued" : "idle");
   };
@@ -1442,17 +1508,18 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     if (editSerial.current > savedSerial.current && !await syncDraft()) return false;
     return true;
   };
-  const explainDefense = async (anchor = defenseAnchor, refresh = false) => {
+  const explainDefense = async (anchor = defenseAnchor, refresh = false, detail = "brief") => {
     if (!anchor || !base || !workspace || state === "conflict") return;
     const signature = defenseSelectionKey(anchor), scope = base;
-    const initialKey = scope + "|" + revisionRef.current + "|" + signature;
+    const initialKey = scope + "|v2|" + revisionRef.current + "|" + detail + "|" + signature;
     if (!refresh && defensePending.current === initialKey) return;
     cancelDefense();
     const serial = defenseSerial.current;
     const controller = new AbortController(); defenseController.current = controller;
     defensePending.current = initialKey;
-    setDefenseAnchor(anchor); setDefenseStatus("loading"); setDefenseError(""); setDefenseCopy("");
-    setDefenseResult(previous => previous && defenseSelectionKey(previous.selection || defenseMessageSelection(previous.message)) === signature ? previous : null);
+    setDefenseAnchor(anchor); setDefenseDetail(detail); setDefenseStatus("loading"); setDefenseError(""); setDefenseCopy("");
+    setDefenseResult(previous => previous && defenseMessageFormat(previous.message) >= 2 && defenseMessageDetail(previous.message) === detail &&
+      defenseSelectionKey(previous.selection || defenseMessageSelection(previous.message)) === signature ? previous : null);
     const current = () => serial === defenseSerial.current && defenseScope.current === scope && !controller.signal.aborted;
     try {
       for (let attempt=0; savingRef.current && attempt<60 && current(); attempt++) {
@@ -1461,16 +1528,17 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       if (!current()) return;
       if (savingRef.current || !await ensureSelectionSynced()) throw new Error("草稿尚未完成同步，請稍後重新解釋。");
       if (!current()) return;
-      const key = scope + "|" + revisionRef.current + "|" + signature;
+      const key = scope + "|v2|" + revisionRef.current + "|" + detail + "|" + signature;
       defensePending.current = key;
       const cached = !refresh && defenseCache.current.get(key);
       if (cached) { setDefenseResult({...cached,cached:true}); setDefenseStatus("done"); return; }
       const result = await W2.json(scope + "/defense-explanations", {
         method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,cache:"no-store",
-        body:JSON.stringify({selection:{...anchor,offset_encoding:"utf16"},expected_revision:revisionRef.current,refresh:Boolean(refresh)}),
+        body:JSON.stringify({selection:{...anchor,offset_encoding:"utf16"},expected_revision:revisionRef.current,refresh:Boolean(refresh),detail}),
       });
       if (!current()) return;
       if (!result.message || !clean(result.message.body).trim()) throw new Error("Agent 尚未回傳解釋，請重新嘗試。");
+      result.message = {...result.message,format_version:result.format_version || result.message.format_version,detail:result.detail || result.message.detail || detail};
       defenseCache.current.set(key,result);
       while (defenseCache.current.size>16) defenseCache.current.delete(defenseCache.current.keys().next().value);
       setDefenseResult(result); setDefenseStatus("done");
@@ -1486,13 +1554,13 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     if (!source.trim()) return;
     const anchor = {block_id:clean(block.id),field_name:field,cell_index:null,start_offset:0,end_offset:source.length,quote:source};
     setSelection(null);
-    explainDefense(anchor);
+    explainDefense(anchor,false,"brief");
     if (defensePanelRef.current) defensePanelRef.current.scrollIntoView({behavior:"smooth",block:"start"});
   };
   const defenseKey = defenseSelectionKey(defenseAnchor);
   useEffect(() => {
     if (!defenseAuto || !defenseAnchor || !workspace || state === "conflict") return () => {};
-    const timer = window.setTimeout(() => {defenseAutoTimer.current=null;explainDefense(defenseAnchor);},700);
+    const timer = window.setTimeout(() => {defenseAutoTimer.current=null;explainDefense(defenseAnchor,false,"brief");},700);
     defenseAutoTimer.current=timer;
     return () => {window.clearTimeout(timer);if(defenseAutoTimer.current===timer)defenseAutoTimer.current=null;};
   }, [base,defenseKey,defenseAuto,defenseTrigger]);
@@ -1503,15 +1571,16 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     const saved = Array.isArray(semantic.defense_explanations) ? semantic.defense_explanations : fromThreads;
     const message = saved.find(item => {
       const anchor=defenseMessageSelection(item) || item.selection;
-      return anchor && (!defenseAnchor || defenseSelectionKey(anchor)===defenseKey);
+      return defenseMessageFormat(item) >= 2 && defenseMessageDetail(item) === defenseDetail &&
+        anchor && (!defenseAnchor || defenseSelectionKey(anchor)===defenseKey);
     });
     if (!message) return;
     const anchor=defenseMessageSelection(message) || message.selection;
     const stale=message.stale || Number(message.context_revision)!==Number(revisionRef.current);
-    const result={ok:true,message,selection:anchor,cached:true,stale};
-    if (!stale) defenseCache.current.set(base+"|"+revisionRef.current+"|"+defenseSelectionKey(anchor),result);
+    const result={ok:true,message,selection:anchor,cached:true,stale,format_version:defenseMessageFormat(message),detail:defenseMessageDetail(message)};
+    if (!stale) defenseCache.current.set(base+"|v2|"+revisionRef.current+"|"+defenseDetail+"|"+defenseSelectionKey(anchor),result);
     setDefenseResult(result); setDefenseStatus(stale?"stale":"done");
-  }, [semantic,base,defenseKey]);
+  }, [semantic,base,defenseKey,defenseDetail]);
   const copyDefense = async () => {
     const body=clean(defenseResult && defenseResult.message && defenseResult.message.body);
     if (!body) return;
@@ -1689,6 +1758,11 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       ? "AI 任务需要重试" : "语义资源已同步";
   const defenseBusy = ["queued","loading"].includes(defenseStatus);
   const defenseSource = defenseAnchor || defenseResult && (defenseResult.selection || defenseMessageSelection(defenseResult.message));
+  const defenseSourceBlock = defenseSource && blocks.find(block => clean(block.id) === clean(defenseSource.block_id));
+  const defenseFormulaSource = defenseSource && (defenseSource.field_name === "latex" || Boolean(defenseSourceBlock &&
+    defenseSourceBlock.type === "equation" && defenseSource.start_offset === 0 && defenseSource.end_offset === clean(defenseSourceBlock.text).length));
+  const defenseSourceBody = defenseFormulaSource && defenseSourceBlock && clean(defenseSourceBlock.latex).trim()
+    ? defenseSourceBlock.latex : defenseSource && defenseSource.quote;
   const defenseStale = defenseStatus === "stale" || Boolean(defenseResult &&
     Number((defenseResult.message || {}).context_revision) !== Number(revisionRef.current));
   return <div className="rv-refinement" data-testid="research-refinement-workspace"
@@ -1765,18 +1839,22 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
           <header><div><span>DEFENSE / REAL-WORLD MEANING</span><h3>把理論講清楚。</h3></div><b>↗</b></header>
           <label className="rv-defense-auto"><input type="checkbox" data-testid="research-defense-auto" checked={defenseAuto}
             onChange={event => {setDefenseAuto(event.target.checked);if(!event.target.checked && defenseStatus==="queued")setDefenseStatus("idle");}}/><span>選中後自動解釋</span></label>
-          {defenseSource ? <div className="rv-defense-source"><span>選中原文 · {defenseSource.field_name === "latex" ? "公式" : "論文內容"}</span><q>{defenseSource.quote}</q></div> :
+          {defenseSource ? <div className="rv-defense-source"><span>選中原文 · {defenseFormulaSource ? "公式" : "論文內容"}</span>
+            <DefenseExplanationBody body={defenseSourceBody} formula={Boolean(defenseFormulaSource)} source/></div> :
             <p className="rv-defense-empty">選中一句話、概念或公式，Agent 會結合上下文，用具體數字和生活例子解釋它的現實含義。</p>}
           {defenseBusy && <div className="rv-defense-loading" role="status"><i/><div><b>{defenseStatus === "queued" ? "準備解釋選中內容…" : "正在閱讀上下文，整理數字與生活示例…"}</b><small>一句話含義 → 具體例子 → 答辯說法</small></div></div>}
           {defenseError && <div className="rv-defense-error" role="alert"><b>這次解釋尚未完成</b><p>{defenseError}</p></div>}
           {defenseStale && <p className="rv-defense-stale">論文內容已更新；以下解釋保留在原版本，請重新選取內容取得新的解釋。</p>}
           {defenseResult && <>
-            <div className="rv-defense-version"><b>REV {defenseResult.message.context_revision}</b><span>{defenseResult.cached ? "已保存的解釋" : "依目前選區生成"}</span></div>
-            <DefenseExplanationBody body={defenseResult.message.body}/>
+            <div className="rv-defense-version"><b>REV {defenseResult.message.context_revision} · {defenseDetail === "brief" ? "簡短版" : "深入版"}</b><span>{defenseResult.cached ? "已保存的解釋" : "依目前選區生成"}</span></div>
+            <DefenseExplanationBody body={defenseResult.message.body} detail={defenseDetail} formatVersion={defenseMessageFormat(defenseResult.message)}/>
+            <div className="rv-defense-depth"><span>{defenseDetail === "brief" ? "先用一個例子理解" : "補充推導與適用邊界"}</span>
+              <button type="button" data-testid="research-defense-detail" disabled={!defenseSource || defenseBusy || defenseStale || state === "conflict"}
+                onClick={() => explainDefense(defenseSource,false,defenseDetail === "brief" ? "detailed" : "brief")}>{defenseDetail === "brief" ? "再多講一點 ↗" : "看簡短版 ↗"}</button></div>
             <p className="rv-defense-example-note">示例數字屬教學假設；實證結果以論文為準。</p>
           </>}
           <div className="rv-defense-controls"><button type="button" data-testid="research-defense-generate" disabled={!defenseSource || defenseBusy || state === "conflict"}
-            onClick={() => explainDefense(defenseSource, Boolean(defenseResult || defenseError))}>{defenseResult || defenseError ? "重新解釋" : "產生答辯解釋"}</button>
+            onClick={() => explainDefense(defenseSource, Boolean(defenseResult || defenseError),defenseDetail)}>{defenseResult || defenseError ? "重新解釋" : "產生答辯解釋"}</button>
             <button type="button" data-testid="research-defense-copy" disabled={!defenseResult || defenseBusy} onClick={copyDefense}>複製答辯解釋</button></div>
           {defenseCopy && <p className="rv-defense-copy-status" role="status">{defenseCopy}</p>}
         </section>

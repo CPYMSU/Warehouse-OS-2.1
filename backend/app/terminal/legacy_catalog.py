@@ -10938,7 +10938,7 @@ COMMANDS = [
     {
         "command": "research manuscript defense explain",
         "tool_name": "research_manuscript_defense_explain",
-        "description": "結合論文上下文，用白話、明確標示的數字算例與生活類比解釋選中的句子或公式，並準備答辯講稿",
+        "description": "結合論文上下文，以一句白話和簡單的生活數字算例解釋選中的句子或公式，可按需補充細節",
         "api_method": "POST",
         "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement/defense-explanations",
         "permission": "research.write",
@@ -10949,6 +10949,7 @@ COMMANDS = [
             _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
             _p("selection", "body.selection", "選區錨點 JSON：block_id、field_name、offset_encoding、start_offset、end_offset 與 quote", required=True, ptype="json"),
             _p("revision", "body.expected_revision", "目前精修草稿 revision，用於防止上下文已被其他裝置更新", ptype="int"),
+            _p("detail", "body.detail", "brief（預設）：一句白話與簡單算例；detailed：按需補充符號、原因與適用條件"),
             _p("refresh", "body.refresh", "略過本草稿版本的已有解釋並重新生成", ptype="bool"),
         ],
         "examples": ["research manuscript defense explain --project MK51 --file manuscript/paper.docx --selection @selection.json"],

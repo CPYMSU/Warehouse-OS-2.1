@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -63,7 +64,8 @@ def context(monkeypatch):
                 needle = json.loads(params["needle"])[0]
                 for message in reversed(state.messages):
                     if message["role"] == "assistant" and message["context_revision"] == params["revision"] and any(
-                        citation.get("cache_key") == needle["cache_key"] for citation in message["citations"]
+                        all(citation.get(key) == value for key, value in needle.items())
+                        for citation in message["citations"]
                     ):
                         return Result(copy.deepcopy(message))
                 return Result()
@@ -83,7 +85,8 @@ def context(monkeypatch):
 
     def completion(connection, **kwargs):
         state.calls.append(kwargs)
-        return "## 一句話講清楚\n固定費用加單位成本。\n## 具體數字算一次\n教學假設，並非論文實證結果：X=3，Y=2×3+10=16美元。"
+        return ("總費用等於固定費用加上每件商品的費用。假設每件2美元，另收10美元固定費用，"
+                r"買3件時，\(Y=2\times3+10=16\)美元，也就是總共付16美元。")
 
     monkeypatch.setattr(service, "tenant_session", session)
     monkeypatch.setattr(service, "_draft_target", lambda *args: ({"title": "Simple model"}, {"display_name": "paper.docx"}, state.draft))
@@ -103,13 +106,22 @@ def test_explanation_uses_one_fast_grounded_call_with_teaching_examples(context)
     assert not result["cached"]
     assert len(context.calls) == 1 and context.connection_calls == [{"thinking": False}]
     call = context.calls[0]
-    assert call["thinking"] is False and call["max_tokens"] <= 2400
-    assert "教學假設，並非論文實證結果" in call["system_prompt"]
-    assert "單位" in call["system_prompt"] and "量綱檢查" in call["system_prompt"]
-    assert "30–60秒" in call["system_prompt"] and "不得捏造" in call["system_prompt"]
+    assert call["thinking"] is False and call["max_tokens"] == 650
+    assert "假設" in call["system_prompt"] and "而非論文實證結果" in call["system_prompt"]
+    assert "單位及推論必須正確" in call["system_prompt"] and "不得捏造" in call["system_prompt"]
+    assert "100–180" in call["system_prompt"] and "最多220字" in call["system_prompt"]
+    assert "最多補一句" in call["system_prompt"] and "不加標題" in call["system_prompt"]
+    assert r"\( ... \)" in call["system_prompt"] and r"\[ ... \]" in call["system_prompt"]
+    assert "不要用反引號" in call["system_prompt"] and "以下八個二級標題" not in call["system_prompt"]
     assert "Y = 2X + 10" in call["user_prompt"] and "fixed charge" in call["user_prompt"]
     assert "units purchased" in call["user_prompt"]
+    assert "Simple model" not in call["user_prompt"] and "paper.docx" not in call["user_prompt"]
+    assert result["detail"] == result["message"]["detail"] == "brief"
+    assert result["format_version"] == result["message"]["format_version"] == 2
     assert result["message"]["citations"][0]["purpose"] == "defense_explanation"
+    assert result["message"]["citations"][0]["format_version"] == 2
+    assert result["message"]["citations"][0]["detail"] == "brief"
+    assert r"\(Y=2\times3+10=16\)" in result["message"]["body"]
     assert result["selection"]["quote"] == "𝑌 = 2𝑋 + 10"
     assert [message["role"] for message in context.messages] == ["user", "assistant"]
 
@@ -130,6 +142,33 @@ def test_refresh_bypasses_only_matching_cache(context):
     explain(context)
     assert not explain(context, refresh=True)["cached"]
     assert len(context.calls) == 2
+
+
+def test_detailed_explanation_has_separate_cache_and_bounded_prompt(context):
+    brief = explain(context)
+    detailed = explain(context, detail="detailed")
+    assert not detailed["cached"] and detailed["detail"] == "detailed"
+    assert detailed["message"]["citations"][0]["detail"] == "detailed"
+    assert context.calls[1]["max_tokens"] == 1200
+    assert "最多450" in context.calls[1]["system_prompt"] and "不拆成章節" in context.calls[1]["system_prompt"]
+    assert explain(context, detail="detailed")["message"]["id"] == detailed["message"]["id"]
+    assert explain(context)["message"]["id"] == brief["message"]["id"]
+    assert len(context.calls) == 2 and len(context.messages) == 4
+
+
+def test_previous_prompt_answer_is_preserved_but_not_reused(context):
+    selection = service._validated_defense_selection(context.draft, anchor(context.draft["blocks"][2]))
+    old_key = hashlib.sha256(json.dumps({
+        "version": 1, "draft": str(context.draft["id"]), "revision": context.draft["revision"],
+        "document_hash": service._defense_document_hash(context.draft["blocks"]), "selection": selection,
+    }, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    old = {"id": UUID(int=8), "role": "assistant", "body": "## 舊版長篇解釋",
+           "context_revision": context.draft["revision"],
+           "citations": [{"purpose": "defense_explanation", "cache_key": old_key}]}
+    context.messages.append(old)
+    result = explain(context)
+    assert not result["cached"] and result["format_version"] == 2
+    assert context.messages[0] == old and len(context.calls) == 1
 
 
 def test_late_formula_and_distant_single_letter_definitions_are_prioritized():
@@ -178,7 +217,8 @@ def test_read_only_cannot_call_provider_or_create_messages(context):
 
 
 def test_malformed_requests_do_not_reach_provider(context):
-    for payload in ({"refresh": "false"}, {"expected_revision": True}, {"selection": None}):
+    for payload in ({"refresh": "false"}, {"expected_revision": True}, {"selection": None},
+                    {"detail": "long"}, {"detail": None}, {"detail": []}):
         with pytest.raises(HTTPException) as error:
             explain(context, **payload)
         assert error.value.status_code == 422
