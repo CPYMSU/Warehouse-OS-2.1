@@ -1177,13 +1177,33 @@ const DefenseExplanationBody = ({ body, formula = false, source = false, detail 
     data-detail={detail} data-format-version={formatVersion}/>;
 };
 
-const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onError }) => {
+const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrite = false, onFile, onPublished, onUploadFile, onError }) => {
   const activeFile = files.find(item => clean(item.id) === clean(fileId)) || files[0] || null;
   const [workspace, setWorkspace] = useState(null);
   const [blocks, setBlocks] = useState([]);
   const [state, setState] = useState("loading");
   const [commitMessage, setCommitMessage] = useState("");
   const [publishing, setPublishing] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadMode, setUploadMode] = useState("replace");
+  const [uploadDocument, setUploadDocument] = useState(null);
+  const [uploadPath, setUploadPath] = useState("");
+  const [uploadBusy, setUploadBusy] = useState("");
+  const [uploadError, setUploadError] = useState("");
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [uploadLimit, setUploadLimit] = useState(250 * 1024 * 1024);
+  const [pendingRebase, setPendingRebase] = useState(null);
+  const workspaceRoot = useRef(null);
+  const fullscreenRef = useRef(false);
+  const fullscreenReading = useRef(null);
+  const uploadInput = useRef(null);
+  const uploadController = useRef(null);
+  const uploadSerial = useRef(0);
+  const transferLock = useRef(false);
+  const workspaceEpoch = useRef(0);
+  const projectScope = useRef("");
   const [localWarning, setLocalWarning] = useState("");
   const [semantic, setSemantic] = useState(null);
   const [semanticBusy, setSemanticBusy] = useState(false);
@@ -1227,6 +1247,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     : "";
   const semanticBase = base ? base + "/semantic" : "";
   defenseScope.current = base;
+  projectScope.current = clean(project && project.id);
   const cancelDefense = () => {
     defenseSerial.current += 1;
     defensePending.current = "";
@@ -1235,11 +1256,11 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   };
 
   const loadSemantic = async (quiet = false) => {
-    if (!semanticBase) return null;
-    const scope = base;
+    if (!semanticBase || transferLock.current) return null;
+    const scope = base, epoch = workspaceEpoch.current;
     try {
       const data = await W2.json(semanticBase);
-      if (defenseScope.current !== scope) return null;
+      if (defenseScope.current !== scope || workspaceEpoch.current !== epoch || transferLock.current) return null;
       setSemantic(data);
       return data;
     } catch (reason) {
@@ -1248,7 +1269,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     }
   };
   const queueSemantic = async payload => {
-    if (!semanticBase) return null;
+    if (!semanticBase || transferLock.current || !canWrite) return null;
     setSemanticBusy(true);
     try {
       const result = await W2.post(semanticBase + "/refresh", payload || {});
@@ -1277,6 +1298,9 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   }, [clean(activeFile && activeFile.id)]);
   useEffect(() => {
     let alive = true;
+    workspaceEpoch.current += 1;
+    const epoch=workspaceEpoch.current;
+    savingRef.current = false;
     const remembered = activeFile ? readRefinementLocal(activeFile.id) || {} : {};
     const ui = remembered.ui || {};
     setWorkspace(null); setBlocks([]); setState(base ? "loading" : "empty");
@@ -1295,9 +1319,9 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     setDefenseResult(null); setDefenseError(""); setDefenseCopy(""); setDefenseStatus("idle");
     selectionNodes.current = {};
     editSerial.current = 0; savedSerial.current = 0; revisionRef.current = 0;
-    if (!base) return () => { alive = false; };
+    if (!base || !canWrite) { if(base)setState("readonly");return () => { alive = false; }; }
     W2.post(base, {}).then(data => {
-      if (!alive) return;
+      if (!alive || workspaceEpoch.current!==epoch) return;
       const serverBlocks = ((data.draft || {}).blocks || []).map(item => ({ ...item }));
       const local = readRefinementLocal(activeFile.id);
       const restoreLocal = local && local.dirty === true &&
@@ -1313,11 +1337,11 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       savedSerial.current = 0;
       setState(restoreLocal ? "local" : "saved");
     }).catch(reason => {
-      if (!alive) return;
+      if (!alive || workspaceEpoch.current!==epoch) return;
       setState("error"); onError(clean(reason.message || reason));
     });
     return () => { alive = false; cancelDefense(); };
-  }, [base]);
+  }, [base,canWrite]);
   useEffect(() => {
     if (!workspace || !semanticBase) return () => {};
     let disposed = false;
@@ -1328,7 +1352,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       }
     });
     return () => { disposed = true; };
-  }, [semanticBase, workspace && workspace.draft && workspace.draft.id]);
+  }, [semanticBase, workspace && workspace.draft && workspace.draft.id,workspace && workspace.base_version && workspace.base_version.id]);
   useEffect(() => {
     const run = semantic && semantic.latest_run;
     if (!run || !["queued", "processing"].includes(run.status)) return () => {};
@@ -1338,6 +1362,85 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const refinementMarker = workspace && (
     clean((workspace.draft || {}).id) + ":" + clean((workspace.base_version || {}).id)
   );
+  const restoreFullscreenReading = () => {
+    const saved = fullscreenReading.current;
+    if (!saved) return;
+    const restore = () => {
+      if (!workspaceRoot.current) return;
+      if (saved.node && saved.node.isConnected) {
+        saved.node.focus({preventScroll:true});
+        if (Number.isInteger(saved.start)) saved.node.setSelectionRange(saved.start,saved.end);
+      }
+      if (paperScrollRef.current) paperScrollRef.current.scrollTop=saved.paper;
+      if (inspectorScrollRef.current) inspectorScrollRef.current.scrollTop=saved.inspector;
+    };
+    window.requestAnimationFrame(()=>window.requestAnimationFrame(restore));
+  };
+  const finishFullscreen = () => {
+    if (!fullscreenRef.current) return;
+    fullscreenRef.current=false;setFullscreen(false);
+    setInspectorOpen(fullscreenReading.current ? fullscreenReading.current.inspectorOpen : true);
+    restoreFullscreenReading();
+  };
+  const toggleFullscreen = async () => {
+    const root=workspaceRoot.current;
+    if (!root) return;
+    if (fullscreenRef.current) {
+      if(fullscreenReading.current){
+        const selected=selection && selectionNodes.current[clean(selection.block_id)+":"+clean(selection.field_name||"text")+":"+(Number.isInteger(selection.cell_index)?selection.cell_index:"-")];
+        const node=document.activeElement && document.activeElement.tagName==="TEXTAREA"?document.activeElement:selected;
+        if(node){fullscreenReading.current.node=node;fullscreenReading.current.start=node.selectionStart;fullscreenReading.current.end=node.selectionEnd;}
+        fullscreenReading.current.paper=paperScrollRef.current?paperScrollRef.current.scrollTop:0;
+        fullscreenReading.current.inspector=inspectorScrollRef.current?inspectorScrollRef.current.scrollTop:0;
+      }
+      if (document.fullscreenElement===root && document.exitFullscreen) {
+        try { await document.exitFullscreen(); } catch (_error) {}
+      }
+      finishFullscreen();return;
+    }
+    const selectedNode=selection && selectionNodes.current[clean(selection.block_id)+":"+clean(selection.field_name||"text")+":"+(Number.isInteger(selection.cell_index)?selection.cell_index:"-")];
+    const node=selectedNode || (document.activeElement && document.activeElement.tagName==="TEXTAREA" ? document.activeElement : null);
+    fullscreenReading.current={paper:paperScrollRef.current ? paperScrollRef.current.scrollTop : 0,
+      inspector:inspectorScrollRef.current ? inspectorScrollRef.current.scrollTop : 0,inspectorOpen,node,
+      start:node && node.selectionStart,end:node && node.selectionEnd};
+    fullscreenRef.current=true;setFullscreen(true);setInspectorOpen(false);
+    if (root.requestFullscreen) {
+      try { await root.requestFullscreen(); } catch (_error) { /* The fixed workspace is also usable when native fullscreen is unavailable. */ }
+    }
+    restoreFullscreenReading();
+  };
+  useEffect(() => {
+    const change=()=>{if(fullscreenRef.current && document.fullscreenElement!==workspaceRoot.current)finishFullscreen();};
+    const escape=event=>{if(event.key==="Escape" && fullscreenRef.current){event.preventDefault();toggleFullscreen();}};
+    document.addEventListener("fullscreenchange",change);
+    document.addEventListener("keydown",escape);
+    return ()=>{
+      document.removeEventListener("fullscreenchange",change);document.removeEventListener("keydown",escape);
+      if(document.fullscreenElement===workspaceRoot.current && document.exitFullscreen)document.exitFullscreen().catch(()=>{});
+    };
+  }, []);
+  useEffect(() => {
+    if (!fullscreen) return () => {};
+    const previous=document.body.style.overflow;
+    document.body.style.overflow="hidden";
+    return ()=>{document.body.style.overflow=previous;};
+  }, [fullscreen]);
+  useEffect(() => {
+    uploadSerial.current+=1;
+    if(uploadController.current)uploadController.current.abort();
+    transferLock.current=false;setUploadBusy("");setUploadOpen(false);setUploadDocument(null);
+    setPendingRebase(null);setUploadError("");setUploadStatus("");
+    return ()=>{uploadSerial.current+=1;if(uploadController.current)uploadController.current.abort();};
+  }, [clean(project && project.id)]);
+  useEffect(() => {
+    if (!uploadOpen) return () => {};
+    let alive=true;
+    W2.json("/api/research/formats").then(data=>{
+      const limit=Number(data.upload && data.upload.max_bytes);
+      if(alive && limit>0)setUploadLimit(limit);
+    }).catch(()=>{});
+    return ()=>{alive=false;};
+  }, [uploadOpen]);
   useEffect(() => {
     if (!workspace || !activeFile) return () => {};
     const timer = window.setTimeout(() => {
@@ -1440,10 +1543,11 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     };
   }, [clean(refinementMarker), fontSize]);
 
-  const syncDraft = async () => {
+  const syncDraft = async ({ duringUpload = false } = {}) => {
+    if (!canWrite || (transferLock.current && !duringUpload)) return false;
     if (!workspace || savingRef.current || editSerial.current <= savedSerial.current) return !savingRef.current;
     savingRef.current = true;
-    const serial = editSerial.current;
+    const serial = editSerial.current, epoch = workspaceEpoch.current;
     const snapshot = blocksRef.current.map(item => ({ ...item }));
     setState("saving");
     try {
@@ -1452,6 +1556,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ expected_revision: revisionRef.current, blocks: snapshot }),
       });
+      if (workspaceEpoch.current !== epoch) return false;
       revisionRef.current = Number((data.draft || {}).revision) || revisionRef.current + 1;
       savedSerial.current = serial;
       setWorkspace(current => ({ ...current, ...data, draft: { ...(current || {}).draft, ...(data.draft || {}) } }));
@@ -1460,26 +1565,98 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       } else {
         setState("local"); cache(blocksRef.current, true);
       }
-      queueSemantic({
+      if (!duringUpload) queueSemantic({
         modes: ["translate", "distill"],
         block_ids: snapshot.map(item => clean(item.id)).filter(Boolean),
       });
       return true;
     } catch (reason) {
+      if(workspaceEpoch.current!==epoch)return false;
       const conflict = reason && reason.status === 409;
       setState(conflict ? "conflict" : "local");
       cache(blocksRef.current, true);
       onError(conflict ? "精修草稿已在另一個裝置更新；本機內容仍安全保留，請重新載入後合併。" : clean(reason.message || reason));
       return false;
     } finally {
-      savingRef.current = false;
+      if(workspaceEpoch.current===epoch)savingRef.current = false;
     }
   };
   useEffect(() => {
-    if (!workspace || editSerial.current <= savedSerial.current || state === "conflict") return () => {};
+    if (!canWrite || uploadBusy || transferLock.current || !workspace || editSerial.current <= savedSerial.current || state === "conflict") return () => {};
     const timer = window.setTimeout(() => { syncDraft(); }, 900);
     return () => window.clearTimeout(timer);
-  }, [blocks, workspace && workspace.draft && workspace.draft.id, state === "conflict"]);
+  }, [blocks, workspace && workspace.draft && workspace.draft.id, state === "conflict",uploadBusy,canWrite]);
+
+  const openManuscriptUpload = () => {
+    if(!canWrite || !project || transferLock.current)return;
+    setUploadMode(activeFile?"replace":"new");setUploadPath("");setUploadDocument(null);
+    setUploadError("");setUploadStatus("");setPendingRebase(null);setUploadOpen(true);
+  };
+  const chooseUploadDocument = event => {
+    const file=event.target.files && event.target.files[0];
+    event.target.value="";
+    if(!file)return;
+    setUploadError("");setPendingRebase(null);
+    if(!/\.docx$/i.test(file.name)){setUploadDocument(null);setUploadError("請選擇 .docx 格式的 Word 論文。");return;}
+    if(!file.size || file.size>uploadLimit){setUploadDocument(null);setUploadError("文件不可為空，大小需在 "+Math.floor(uploadLimit/1024/1024)+" MB 以內。");return;}
+    setUploadDocument(file);if(uploadMode==="new")setUploadPath(file.name);
+  };
+  const uploadManuscript = async () => {
+    if(!canWrite || !project || !onUploadFile || transferLock.current || !uploadDocument)return;
+    const replacing=uploadMode==="replace", targetPath=replacing?clean(activeFile && activeFile.logical_path):uploadPath.trim().replace(/\\/g,"/");
+    if(!targetPath || !/\.docx$/i.test(targetPath)){setUploadError("請輸入以 .docx 結尾的新論文路徑。");return;}
+    if(!replacing && allFiles.some(file=>clean(file.logical_path).toLowerCase()===targetPath.toLowerCase())){setUploadError("這個路徑已有文件；請使用新檔名，或選擇替換目前論文。");return;}
+    if(uploadDocument.size>uploadLimit){setUploadError("文件超過伺服器的 "+Math.floor(uploadLimit/1024/1024)+" MB 上限。");return;}
+    const latest=activeFile && (activeFile.versions || [])[0];
+    const expected=clean(latest && latest.id);
+    if(replacing && !expected){setUploadError("無法確認目前正式版本，請重新載入後再更新。");return;}
+    if(state==="conflict"){setUploadError("目前草稿有版本衝突。請先合併並同步草稿，再更新論文。");return;}
+    transferLock.current=true;
+    const serial=++uploadSerial.current, scope=clean(project.id), controller=new AbortController();
+    uploadController.current=controller;
+    const current=()=>uploadSerial.current===serial && projectScope.current===scope && !controller.signal.aborted;
+    setUploadError("");setUploadStatus("");setUploadBusy("sync");cancelDefense();
+    let nextFile="";
+    try {
+      for(let attempt=0;savingRef.current && attempt<100 && current();attempt++)await new Promise(resolve=>window.setTimeout(resolve,100));
+      if(!current())return;
+      if(savingRef.current || (workspace && !await syncDraft({duringUpload:true})))throw new Error("草稿尚未同步成功，原文已保留；請稍後重試。");
+      if(!current())return;
+      let result=pendingRebase;
+      if(!result){
+        setUploadBusy("upload");
+        const form=new FormData();form.append("file",uploadDocument);form.append("logical_path",targetPath);
+        form.append("commit_message",replacing?"從電腦更新論文："+uploadDocument.name:"從電腦新增論文："+uploadDocument.name);
+        if(replacing)form.append("expected_file_version_id",expected);
+        result=await onUploadFile(form,{signal:controller.signal});
+        if(!current())return;
+        if(replacing){setPendingRebase(result);setWorkspace(previous=>previous?{...previous,source_changed:true}:previous);}
+      }
+      if(replacing){
+        setUploadBusy("rebase");
+        const refreshed=await W2.json(base+"/rebase",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,
+          body:JSON.stringify({expected_revision:revisionRef.current,expected_file_version_id:clean(result.version && result.version.id)})});
+        if(!current())return;
+        workspaceEpoch.current+=1;cancelDefense();defenseCache.current.clear();
+        const next=((refreshed.draft || {}).blocks || []).map(block=>({...block}));
+        blocksRef.current=next;setBlocks(next);setWorkspace(refreshed);setSemantic(null);
+        revisionRef.current=Number((refreshed.draft || {}).revision)||0;editSerial.current=0;savedSerial.current=0;
+        setSelection(null);setAnnotationBody("");setSelectionQuestion("");setDefenseAnchor(null);setDefenseResult(null);setDefenseStatus("idle");
+        setState("saved");setPendingRebase(null);
+        writeRefinementLocal(activeFile.id,{base_version_id:clean((refreshed.base_version||{}).id),revision:revisionRef.current,dirty:false,blocks:next,
+          ui:{selection:null,defense_selection:null,annotation_body:"",selection_question:"",paper_position:null,inspector_position:null}});
+        if(paperScrollRef.current)paperScrollRef.current.scrollTop=0;
+        loadSemantic(true);
+      } else nextFile=clean(result.file && result.file.id);
+      setUploadStatus(replacing?"已更新為 V"+clean(result.version && result.version.version)+"；舊 Word 與精修草稿已保留。":"新論文已上傳，正在載入精修工作區。");
+      setUploadOpen(false);setUploadDocument(null);
+    } catch(reason) {
+      if(current() && reason.name!=="AbortError")setUploadError((reason.status===409?"版本已變動，未覆寫其他裝置的草稿。":"")+clean(reason.message||reason));
+    } finally {
+      if(uploadSerial.current===serial){transferLock.current=false;setUploadBusy("");uploadController.current=null;}
+    }
+    if(nextFile && current())onFile(nextFile);
+  };
 
   const selectionKey = anchor => clean(anchor && anchor.block_id) + ":" +
     clean(anchor && anchor.field_name || "text") + ":" +
@@ -1505,11 +1682,12 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     });
   };
   const ensureSelectionSynced = async () => {
+    if(transferLock.current || !canWrite)return false;
     if (editSerial.current > savedSerial.current && !await syncDraft()) return false;
     return true;
   };
   const explainDefense = async (anchor = defenseAnchor, refresh = false, detail = "brief") => {
-    if (!anchor || !base || !workspace || state === "conflict") return;
+    if (!anchor || !base || !workspace || state === "conflict" || transferLock.current) return;
     const signature = defenseSelectionKey(anchor), scope = base;
     const initialKey = scope + "|v2|" + revisionRef.current + "|" + detail + "|" + signature;
     if (!refresh && defensePending.current === initialKey) return;
@@ -1630,6 +1808,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   };
 
   const changeBlocks = updater => {
+    if(!canWrite || transferLock.current)return;
     cancelDefense(); setDefenseStatus(defenseResult ? "stale" : "idle");
     setDefenseResult(current => current ? {...current,stale:true} : null);
     const next = updater(blocksRef.current).map(item => ({ ...item }));
@@ -1742,9 +1921,41 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   }, [semantic]);
   const selectionAnnotations = (semantic && semantic.annotations) || [];
 
+  const workspaceClass="rv-refinement"+(fullscreen?" is-fullscreen":"")+(!inspectorOpen?" inspector-hidden":"");
+  const uploadStage=uploadBusy==="sync"?"正在同步目前草稿…":uploadBusy==="upload"?"正在上傳 Word 並保存版本…":uploadBusy==="rebase"?"正在保留舊稿並載入新 Word…":"";
+  const workspaceChrome=<>
+    <div className="rv-workspace-toolbar" role="toolbar" aria-label="論文工作區工具">
+      <div><span>MANUSCRIPT / WORKSPACE</span><strong>{fullscreen?"專注閱讀":"論文精修"}</strong></div>
+      <button type="button" data-testid="research-manuscript-upload-open" className="primary" disabled={!canWrite || Boolean(uploadBusy) || publishing || Boolean(agentBusy) || Boolean(selectionBusy) || Boolean(activeFile && state==="loading")}
+        onClick={openManuscriptUpload}>從電腦更新／上傳 ↗</button>
+      <button type="button" data-testid="research-refinement-inspector" disabled={!workspace} aria-pressed={inspectorOpen} onClick={()=>setInspectorOpen(value=>!value)}>{inspectorOpen?"收起 AI 側欄":"顯示 AI 側欄"}</button>
+      <button type="button" data-testid="research-refinement-fullscreen" aria-pressed={fullscreen} onClick={toggleFullscreen}>{fullscreen?"退出全屏 ↙":"全屏閱讀 ↗"}</button>
+    </div>
+    {uploadOpen && <section className="rv-manuscript-upload" data-testid="research-manuscript-upload-panel" aria-label="從電腦更新論文">
+      <header><span>01 / LOCAL WORD → RESEARCH</span><strong>把新一版論文帶進來。</strong></header>
+      <div className="rv-manuscript-upload-fields">
+        <label><span>更新方式</span><select data-testid="research-manuscript-upload-mode" value={uploadMode} disabled={Boolean(uploadBusy)} onChange={event=>{
+          setUploadMode(event.target.value);setUploadPath(uploadDocument?uploadDocument.name:"");setPendingRebase(null);setUploadError("");
+        }}><option value="replace" disabled={!activeFile}>替換目前論文</option><option value="new">新增論文</option></select></label>
+        {uploadMode==="replace"?<div className="rv-manuscript-upload-path"><span>保留相同文件與歷史</span><code>{activeFile && activeFile.logical_path}</code></div>:
+          <label><span>新論文路徑</span><input data-testid="research-manuscript-upload-path" value={uploadPath} disabled={Boolean(uploadBusy)} onChange={event=>setUploadPath(event.target.value)} placeholder="例如 manuscript/new-paper.docx"/></label>}
+        <input ref={uploadInput} type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden data-testid="research-manuscript-file" disabled={Boolean(uploadBusy)} onChange={chooseUploadDocument}/>
+        <div className="rv-manuscript-upload-picker"><button type="button" data-testid="research-manuscript-choose-file" disabled={Boolean(uploadBusy)} onClick={()=>uploadInput.current && uploadInput.current.click()}>選擇電腦中的 Word</button>
+          <span>{uploadDocument?uploadDocument.name+" · "+(uploadDocument.size/1024/1024).toFixed(2)+" MB":"僅接受 .docx · 上限 "+Math.floor(uploadLimit/1024/1024)+" MB"}</span></div>
+      </div>
+      <p className="rv-manuscript-upload-notice">{uploadMode==="replace"?"目前草稿會先同步；舊 Word 版本與精修草稿獨立保存。更新後的工作區以所選 Word 為準，可取回舊稿快照。":"目前草稿會先同步，再為這份 Word 建立獨立論文及版本歷史。"}</p>
+      {pendingRebase && <p className="rv-manuscript-upload-notice">新 Word 已完成上傳，舊草稿仍保留；繼續更新會載入已上傳的版本。</p>}
+      {uploadError && <p data-testid="research-manuscript-upload-error" className="rv-manuscript-upload-error" role="alert">{uploadError}</p>}
+      <footer><button type="button" data-testid="research-manuscript-upload-cancel" disabled={Boolean(uploadBusy)} onClick={()=>{setUploadOpen(false);setUploadError("");}}>取消</button>
+        <button type="button" className="primary" data-testid="research-manuscript-upload-submit" disabled={!canWrite || !uploadDocument || Boolean(uploadBusy)} onClick={uploadManuscript}>{uploadBusy?uploadStage:uploadMode==="replace"?"保留舊稿並更新":"上傳新論文"}</button></footer>
+    </section>}
+    {(uploadStatus || uploadBusy) && <p className="rv-manuscript-upload-status" data-testid="research-manuscript-upload-status" role="status" aria-live="polite">{uploadStage || uploadStatus}</p>}
+  </>;
   if (!project) return <EmptyPanel title="先選擇研究課題" copy="論文精修只處理當前課題中的真實 DOCX 主稿。"/>;
-  if (!files.length) return <EmptyPanel title="尚無可精修的 Word 論文" copy="先在課題庫上傳 DOCX；系統會自動提取正文、圖像與表格。"/>;
-  if (!workspace || state === "loading") return <div className="rv-loading block">EXTRACTING MANUSCRIPT CONTENT…</div>;
+  if (!files.length || !canWrite || !workspace || state === "loading") return <div ref={workspaceRoot} className={workspaceClass} data-testid="research-refinement-workspace" data-fullscreen={fullscreen}>
+    {workspaceChrome}{!canWrite?<EmptyPanel title="目前為唯讀權限" copy="可從課題庫閱覽原稿；更新論文與精修草稿需要編輯權限。"/>:
+      !files.length?<EmptyPanel title="尚無可精修的 Word 論文" copy="按上方「從電腦更新／上傳」選擇 DOCX，即可建立論文工作區。"/>:
+      <div className="rv-loading block">{state==="error"?"論文工作區未能載入，請重新載入後再試。":"EXTRACTING MANUSCRIPT CONTENT…"}</div>}</div>;
   const characters = blocks.reduce((sum, item) => sum + clean(item.text).length, 0);
   const figures = blocks.filter(item => item.type === "image").length;
   const tables = new Set(blocks.filter(item => item.type === "table_row").map(item => item.table_key)).size;
@@ -1765,15 +1976,16 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     ? defenseSourceBlock.latex : defenseSource && defenseSource.quote;
   const defenseStale = defenseStatus === "stale" || Boolean(defenseResult &&
     Number((defenseResult.message || {}).context_revision) !== Number(revisionRef.current));
-  return <div className="rv-refinement" data-testid="research-refinement-workspace"
-    data-font-size={fontSize} style={{
+  return <div ref={workspaceRoot} className={workspaceClass} data-testid="research-refinement-workspace"
+    data-fullscreen={fullscreen} data-font-size={fontSize} style={{
       "--rv-refinement-body-size": fontSize + "px",
       "--rv-refinement-title-size": (fontSize * 1.78).toFixed(2) + "px",
       "--rv-refinement-heading-size": (fontSize * 1.36).toFixed(2) + "px",
       "--rv-refinement-support-size": (fontSize * .82).toFixed(2) + "px",
     }}>
+    {workspaceChrome}
     <header className="rv-refinement-head">
-      <label><span>MANUSCRIPT / 選擇主稿</span><select value={clean(activeFile.id)} onChange={event => onFile(clean(event.target.value))}>
+      <label><span>MANUSCRIPT / 選擇主稿</span><select value={clean(activeFile.id)} disabled={Boolean(uploadBusy)} onChange={event => onFile(clean(event.target.value))}>
         {files.map((item, index) => <option key={item.id} value={clean(item.id)}>{String(index + 1).padStart(2, "0")} · {item.logical_path}</option>)}
       </select></label>
       <div><span>BASE VERSION</span><strong>V{(workspace.base_version || {}).version} · {shortSha((workspace.base_version || {}).git_sha)}</strong></div>
@@ -1795,7 +2007,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     </nav>
     {workspace.source_changed && <div className="rv-refinement-conflict">課題庫已有較新的正式版本。這份草稿仍保留，但提交前需要重新基準化。</div>}
     {localWarning && <div className="rv-refinement-conflict">{localWarning}</div>}
-    <div className="rv-refinement-grid">
+    <fieldset className="rv-refinement-grid rv-workspace-editing" disabled={!canWrite || Boolean(uploadBusy)} aria-label="論文編輯內容">
       <main ref={paperScrollRef} className="rv-refinement-paper">
         <div className="rv-refinement-ledger"><span>CONTENT BLOCKS · {blocks.length}</span><b>{characters.toLocaleString()} CHAR</b><b>{figures} FIG</b><b>{tables} TABLE</b></div>
         {selection && <div className="rv-refinement-selection-dock" role="toolbar" aria-label="选中内容操作">
@@ -1892,7 +2104,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
         <button className="rv-refinement-submit" disabled={publishing || state === "saving" || state === "conflict" || workspace.source_changed} onClick={submit}>{publishing ? "ASSEMBLING DOCX…" : "提交正式 DOCX 版本"}</button>
         <small>浏览器负责编辑与公式渲染；平台保存可恢复草稿、语义资源和审计记录。提交时才生成正式 DOCX。</small>
       </aside>
-    </div>
+    </fieldset>
   </div>;
 };
 
@@ -2440,24 +2652,36 @@ const Page = () => {
       }).catch(() => {});
     }
   };
+  const commitResearchFile = async (form, options = {}) => {
+      if(!canWrite || !projectId)throw new Error("目前帳號沒有更新論文的權限。");
+      const targetProject=projectId;
+      const response = await W2.fetch(
+        "/api/research/projects/" + encodeURIComponent(targetProject) + "/files",
+        { method: "POST", body: form,signal:options.signal },
+      );
+      if (!response.ok) {
+        const reason=await apiError(response);reason.status=response.status;
+        if(response.status===409 && clean(activeProjectId.current)===clean(targetProject))await loadDetail(targetProject);
+        throw reason;
+      }
+      const result = await response.json();
+      if(clean(activeProjectId.current)===clean(targetProject)){
+        await loadProjects(targetProject);
+        await loadDetail(targetProject);
+      }
+      return result;
+  };
   const uploadFile = async event => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement=event.currentTarget, form = new FormData(formElement);
     if (!form.get("file") || !projectId) return;
     setUploading(true); setError("");
     try {
-      const response = await W2.fetch(
-        "/api/research/projects/" + encodeURIComponent(projectId) + "/files",
-        { method: "POST", body: form },
-      );
-      if (!response.ok) throw await apiError(response);
-      const result = await response.json();
-      await loadProjects(projectId);
-      await loadDetail(projectId);
+      const result=await commitResearchFile(form);
       setFileId(clean((result.file || {}).id));
       setAssetFilter(clean((result.file || {}).asset_class) || "all");
       setTab(clean((result.file || {}).file_kind) === "document" ? "review" : "preview");
-      event.currentTarget.reset();
+      formElement.reset();
     } catch (reason) { setError(clean(reason.message || reason)); }
     finally { setUploading(false); }
   };
@@ -3026,7 +3250,7 @@ const Page = () => {
           <article><span>COMPUTE LOCATION</span><strong>YOUR<br/>BROWSER</strong><p>Mac mini 不啟動 Office Runtime；平台只處理同步、版本與 Git。</p></article>
         </section>
         <Band no="01" title="MANUSCRIPT REFINEMENT" sub="正文、圖像與表格 · 本地編輯 · 平台自動保存">
-          <RefinementWorkspace project={selectedProject} files={refinementFiles} fileId={fileId}
+          <RefinementWorkspace project={selectedProject} files={refinementFiles} allFiles={researchFiles} fileId={fileId} canWrite={canWrite} onUploadFile={commitResearchFile}
             onFile={setFileId} onError={setError} onPublished={async result => {
               await loadProjects(projectId);
               await loadDetail(projectId);

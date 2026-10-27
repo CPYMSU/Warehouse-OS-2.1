@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -37,7 +38,9 @@ from app.services.research_execution import (
 )
 from app.services.research_refinement import (
     publish_refinement,
+    rebase_refinement,
     refinement_media,
+    refinement_snapshot,
     refinement_workspace,
     save_refinement_draft,
 )
@@ -243,6 +246,7 @@ def research_file_upload(
     commit_message: str | None = Form(default=None),
     expected_sha256: str | None = Form(default=None),
     background_tasks: BackgroundTasks = None,
+    expected_file_version_id: Annotated[UUID | None, Form()] = None,
 ) -> dict[str, object]:
     require_research_write(actor)
     store = LocalContentAddressedObjectStore(settings.asset_storage_root)
@@ -262,6 +266,7 @@ def research_file_upload(
         logical_path=logical_path,
         commit_message=commit_message,
         settings=settings,
+        expected_file_version_id=expected_file_version_id,
     )
     version_id = (result.get("version") or {}).get("id")
     if version_id:
@@ -334,6 +339,30 @@ def research_manuscript_refinement_save(
     """Optimistically synchronize a recoverable structured manuscript draft."""
 
     return save_refinement_draft(actor, project_ref, file_ref, payload)
+
+
+@router.post("/api/research/projects/{project_ref}/files/{file_ref}/refinement/rebase")
+def research_manuscript_rebase(
+    project_ref: str,
+    file_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    payload: dict[str, object] = Body(...),
+) -> dict[str, object]:
+    return rebase_refinement(actor, project_ref, file_ref, payload, settings)
+
+
+@router.get("/api/research/projects/{project_ref}/files/{file_ref}/refinement/snapshots/{sha256}")
+def research_manuscript_snapshot(
+    project_ref: str,
+    file_ref: str,
+    sha256: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    response: Response,
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return refinement_snapshot(actor, project_ref, file_ref, sha256, settings)
 
 
 @router.post("/api/research/projects/{project_ref}/files/{file_ref}/refinement/submit")

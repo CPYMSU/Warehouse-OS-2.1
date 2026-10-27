@@ -735,8 +735,12 @@ def _record_commit(
     settings: Settings,
     project: dict[str, object],
     message: str,
+    *,
+    manifest_extra: dict[str, object] | None = None,
 ) -> tuple[str, str | None, dict[str, object]]:
     manifest = _manifest(session, project)
+    if manifest_extra:
+        manifest.update(manifest_extra)
     git_sha, parent = ResearchGitRepository(
         settings.research_repository_root, actor.tenant_id, project["id"]
     ).commit(
@@ -1109,6 +1113,7 @@ def upload_contract(
                 "logical_path": {"type": "string", "required": False},
                 "commit_message": {"type": "string", "required": False},
                 "expected_sha256": {"type": "sha256", "required": False},
+                "expected_file_version_id": {"type": "uuid", "required": False},
             },
         },
         "effects": [
@@ -1209,8 +1214,14 @@ def add_file_version(
     logical_path: str | None,
     commit_message: str | None,
     settings: Settings,
+    expected_file_version_id: object | None = None,
 ) -> dict[str, object]:
     _require_write(actor)
+    expected_version = None
+    if expected_file_version_id is not None:
+        expected_version = _uuid(expected_file_version_id)
+        if expected_version is None:
+            raise HTTPException(status_code=422, detail="expected_file_version_id must be a UUID")
     safe_filename = Path(original_filename or "research-file").name or "research-file"
     path_value = _logical_path(logical_path, safe_filename)
     media_type = (
@@ -1235,6 +1246,19 @@ def add_file_version(
             .mappings()
             .one_or_none()
         )
+        if expected_version is not None:
+            current_version = None
+            if file_row is not None:
+                current_version = session.execute(
+                    text("SELECT id FROM research.file_versions WHERE file_id=:file_id "
+                         "ORDER BY version DESC LIMIT 1"),
+                    {"file_id": file_row["id"]},
+                ).scalar_one_or_none()
+            if current_version != expected_version:
+                raise HTTPException(status_code=409, detail={
+                    "message": "Research file changed; reload its latest version before replacing",
+                    "current_file_version_id": str(current_version) if current_version else None,
+                })
         if file_row is None:
             file_id = uuid4()
             file_row = (

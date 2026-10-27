@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -28,7 +29,7 @@ from app.services.research_review import (
     ensure_document_index,
     queue_document_index,
 )
-from app.services.research_vault import add_file_version
+from app.services.research_vault import _audit, _json_safe, _project_row, _record_commit, add_file_version
 
 MAX_BLOCKS = 5_000
 MAX_CHARACTERS = 2_000_000
@@ -311,6 +312,120 @@ def refinement_workspace(
         version=base_version,
         source_changed=source_changed,
     )
+
+
+def rebase_refinement(
+    actor: ActorContext,
+    project_ref: object,
+    file_ref: object,
+    payload: dict[str, object],
+    settings: Settings,
+) -> dict[str, object]:
+    """Explicitly load a newer Word, atomically checkpointing the saved draft."""
+    _require_write(actor)
+    expected_revision = payload.get("expected_revision")
+    if type(expected_revision) is not int or expected_revision < 0:
+        raise HTTPException(status_code=422, detail="expected_revision must be a nonnegative integer")
+    try:
+        expected_version = UUID(str(payload.get("expected_file_version_id")))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="expected_file_version_id must be a UUID") from exc
+    project, file_row, latest = _target_rows(actor, project_ref, file_ref, None)
+    if str(latest["id"]) != str(expected_version):
+        raise HTTPException(status_code=409, detail="Source Word changed; reload before updating the draft")
+    if Path(str(latest["original_filename"])).suffix.lower() != ".docx":
+        raise HTTPException(status_code=422, detail="Manuscript refinement currently requires DOCX")
+    # Parsing is pinned to this immutable version and never calls an AI provider.
+    blocks = _initial_blocks(actor, latest, settings)
+    if not blocks:
+        raise HTTPException(status_code=422, detail="The new Word has no editable manuscript content")
+    _normalized_blocks(blocks, existing=blocks)
+    with tenant_session(actor.tenant_id) as session:
+        _project_row(session, project["id"], lock=True)
+        session.execute(
+            text("SELECT id FROM research.files WHERE project_id=:project_id AND id=:file_id FOR UPDATE"),
+            {"project_id": project["id"], "file_id": file_row["id"]},
+        ).scalar_one()
+        current_version = session.execute(
+            text("SELECT id FROM research.file_versions WHERE file_id=:file_id ORDER BY version DESC LIMIT 1"),
+            {"file_id": file_row["id"]},
+        ).scalar_one()
+        current = session.execute(
+            text("SELECT * FROM research.manuscript_drafts WHERE file_id=:file_id FOR UPDATE"),
+            {"file_id": file_row["id"]},
+        ).mappings().one_or_none()
+        if current is None:
+            raise HTTPException(status_code=404, detail="Start manuscript refinement before updating its source")
+        current = dict(current)
+        if int(current["revision"]) != expected_revision or current_version != expected_version:
+            raise HTTPException(status_code=409, detail="Draft or source Word changed; save and reload before updating")
+        if str(current["base_file_version_id"]) == str(expected_version):
+            return {**_draft_payload(current, project=project, file_row=file_row,
+                                    version=latest, source_changed=False), "ok": True, "snapshot": None}
+        if isinstance(current["blocks"], str):
+            current["blocks"] = json.loads(current["blocks"])
+        checkpoint = {"schema": "bonfire.manuscript-draft-snapshot.v1", "draft": _json_safe(current)}
+        encoded = json.dumps(checkpoint, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        store = object_store_for_provider(settings, str(latest["storage_provider"]))
+        stored = store.put_stream(tenant_id=actor.tenant_id, stream=io.BytesIO(encoded),
+                                  max_bytes=settings.research_max_upload_bytes)
+        if store.path_for(stored.object_key).read_bytes() != encoded:
+            raise HTTPException(status_code=409, detail="Saved draft checkpoint failed readback; draft was preserved")
+        archive = {"sha256": stored.sha256, "storage_provider": stored.provider_key,
+                   "object_key": stored.object_key, "snapshot": checkpoint}
+        git_sha, _, _ = _record_commit(
+            session, actor, settings, project, "Preserve saved manuscript before loading updated Word",
+            manifest_extra={"manuscript_draft_snapshot": archive},
+        )
+        updated = session.execute(
+            text("UPDATE research.manuscript_drafts SET base_file_version_id=:version_id, "
+                 "blocks=CAST(:blocks AS jsonb), revision=revision+1, state='active', submitted_at=NULL, "
+                 "updated_by=:user_id, updated_at=now() WHERE id=:id AND revision=:revision RETURNING *"),
+            {"version_id": expected_version, "blocks": json.dumps(blocks, ensure_ascii=False),
+             "user_id": actor.user_id, "id": current["id"], "revision": expected_revision},
+        ).mappings().one()
+        snapshot = {"sha256": stored.sha256, "git_sha": git_sha, "revision": expected_revision,
+                    "base_file_version_id": str(current["base_file_version_id"]),
+                    "url": f"/api/research/projects/{project['id']}/files/{file_row['id']}"
+                           f"/refinement/snapshots/{stored.sha256}"}
+        _audit(session, actor, "research.manuscript.rebased", {
+            "project_id": project["id"], "file_id": file_row["id"], "draft_id": current["id"],
+            "new_file_version_id": expected_version, "new_revision": expected_revision + 1,
+            "snapshot": snapshot,
+        })
+    return {**_draft_payload(dict(updated), project=project, file_row=file_row,
+                            version=latest, source_changed=False), "ok": True, "snapshot": snapshot}
+
+
+def refinement_snapshot(
+    actor: ActorContext,
+    project_ref: object,
+    file_ref: object,
+    sha256: str,
+    settings: Settings,
+) -> dict[str, object]:
+    """Read an intact saved draft checkpoint through its tenant's Git ledger."""
+    _require_write(actor)
+    if re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+        raise HTTPException(status_code=422, detail="Invalid manuscript snapshot SHA-256")
+    project, file_row, _ = _target_rows(actor, project_ref, file_ref, None)
+    with tenant_session(actor.tenant_id) as session:
+        row = session.execute(
+            text("SELECT git_sha, manifest FROM research.commits WHERE project_id=:project_id "
+                 "AND manifest->'manuscript_draft_snapshot'->>'sha256'=:sha256 "
+                 "AND manifest->'manuscript_draft_snapshot'->'snapshot'->'draft'->>'file_id'=:file_id "
+                 "ORDER BY created_at DESC LIMIT 1"),
+            {"project_id": project["id"], "file_id": str(file_row["id"]), "sha256": sha256},
+        ).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Saved manuscript snapshot not found")
+    manifest = json.loads(row["manifest"]) if isinstance(row["manifest"], str) else row["manifest"]
+    archive = manifest["manuscript_draft_snapshot"]
+    path = _source_path(settings, archive)
+    encoded = path.read_bytes()
+    if hashlib.sha256(encoded).hexdigest() != sha256 or json.loads(encoded) != archive["snapshot"]:
+        raise HTTPException(status_code=409, detail="Saved manuscript snapshot integrity check failed")
+    return {"ok": True, "sha256": sha256, "git_sha": str(row["git_sha"]), "snapshot": archive["snapshot"]}
 
 
 def _draft_base_version(actor: ActorContext, row: dict[str, object]) -> int:
