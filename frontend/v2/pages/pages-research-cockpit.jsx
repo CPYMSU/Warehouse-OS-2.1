@@ -28,8 +28,122 @@ const factSummary=(dimension,files)=>{
 };
 const Artifact=({artifact,onOpen})=><button type="button" className="rcp-artifact" data-testid="research-cockpit-artifact" data-file-version-id={artifact.file_version_id}
   onClick={()=>onOpen(artifact)}><b>V{artifact.version||'—'}</b><span>{artifact.logical_path||artifact.display_name||'固定版本研究物件'}</span><i>↗</i></button>;
+const evidenceLabels={insufficient:'證據不足',partial:'部分支持',supported:'已有引證支持'};
+const defenseLabels={unassessed:'尚未答辯',unclear:'理解仍不清楚',developing:'理解待補充',clear:'解釋清楚'};
+const reviewDimension=(review,dimension)=>((review && review.result||{}).dimensions||[]).find(item=>item.key===dimension);
+const reviewFor=(reviews,dimension)=>reviews.filter(review=>review.dimension===dimension||(review.dimensions||[]).includes(dimension))
+  .sort((a,b)=>text(b.updated_at||b.created_at).localeCompare(text(a.updated_at||a.created_at))||Number(b.revision)-Number(a.revision))[0]||null;
 
-W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canWrite,onProject,onNavigate,onOpenFile,onSave,onReload,onAdvanced}){
+const AIReviewPanel=({project,dimension,serverVersion,review,files,checks,RichText,canWrite,manualDirty,onResult,onReload,onBusy,onOpenFile,onNavigate})=>{
+  const [answers,setAnswers]=useState(()=>Object.fromEntries(dimensions.map(([name])=>{
+    const local=readLocal(draftKey(project)+':ai:'+name);
+    return [name,local && typeof local.answer==='string'?{answer:local.answer.slice(0,16000),file_version_ids:Array.isArray(local.file_version_ids)?local.file_version_ids:[],review_id:local.review_id||''}:{answer:'',file_version_ids:[],review_id:''}];
+  })));
+  const [working,setWorking]=useState(null),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const lock=useRef(false),alive=useRef(true),controller=useRef(null),localVersion=useRef(serverVersion);
+  localVersion.current=Math.max(localVersion.current,serverVersion);
+  const base='/api/research/projects/'+encodeURIComponent(project.id)+'/assessment/ai-reviews';
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;if(controller.current)controller.current.abort();onBusy(false);};},[]);
+  useEffect(()=>{setError('');setNotice('');},[dimension]);
+  const answer=answers[dimension]||{answer:'',file_version_ids:[],review_id:''};
+  const updateAnswer=(name,patch)=>{
+    setAnswers(current=>{
+      const next={...(current[name]||{answer:'',file_version_ids:[]}),...patch};
+      try{localStorage.setItem(draftKey(project)+':ai:'+name,JSON.stringify(next));}catch(_error){}
+      return {...current,[name]:next};
+    });
+  };
+  const run=async(kind,refreshContext=false)=>{
+    if(!canWrite || lock.current || (kind==='reply' && (!review || !answer.answer.trim())))return;
+    lock.current=true;const selected=dimension,sourceReview=review,submitted={...answer,file_version_ids:[...(answer.file_version_ids||[])]};
+    const expected=localVersion.current,requestController=new AbortController();controller.current=requestController;
+    setWorking({kind,dimension:selected});setError('');setNotice('');onBusy(true);
+    try{
+      const payload=kind==='initial'?{dimension:selected,expected_dmp_version:expected}:{expected_dmp_version:expected,expected_revision:sourceReview.revision,
+        answer:submitted.answer.trim(),file_version_ids:submitted.file_version_ids,...(refreshContext?{refresh_context:true}:{})};
+      const result=await W2.json(kind==='initial'?base:base+'/'+encodeURIComponent(sourceReview.id)+'/reply',{
+        method:'POST',headers:{'Content-Type':'application/json'},signal:requestController.signal,body:JSON.stringify(payload),
+      });
+      if(!alive.current || requestController.signal.aborted)return;
+      if(!result.review || !result.review.result)throw new Error('AI 尚未回傳可用的評估，請稍後重試。');
+      localVersion.current=Math.max(localVersion.current,Number(result.dmp_version)||0);
+      await onResult(result,expected);
+      if(!alive.current)return;
+      if(kind==='reply'){
+        updateAnswer(selected,{answer:'',file_version_ids:[],review_id:result.review.id});
+        setNotice('答辯與重評已保存；請對照本輪依據與上一輪判斷。');
+      }else setNotice('AI 初評已保存，請確認依據並回答追問。');
+    }catch(reason){
+      if(!alive.current || reason.name==='AbortError')return;
+      setError((reason.status===409?'研究材料或評估版本已更新；答辯草稿仍保留。':'')+text(reason.message||reason));
+      if(reason.status===409){try{const latest=await onReload();if(alive.current && latest)localVersion.current=Math.max(localVersion.current,Number(latest.research_dashboard && latest.research_dashboard.dmp_version)||0);}catch(_error){}}
+    }finally{lock.current=false;if(alive.current){setWorking(null);onBusy(false);}}
+  };
+  const result=reviewDimension(review,dimension),history=review && Array.isArray(review.history)?[...review.history].sort((a,b)=>Number(a.revision)-Number(b.revision)):[];
+  const previous=history.length>1?((history[history.length-2].result||{}).dimensions||[]).find(item=>item.key===dimension):null;
+  const questions=((review && review.result||{}).questions||[]).filter(item=>!item.dimension||item.dimension===dimension).slice(0,3);
+  const pinned=review && review.pinned_files||[];
+  const busy=Boolean(working),sameDimension=working && working.dimension===dimension;
+  const title=(dimensions.find(item=>item[0]===dimension)||[])[1]||dimension;
+  const Body=({body,className='rcp-ai-richtext',testId})=>RichText?<RichText body={body} className={className} testId={testId||'research-cockpit-ai-richtext'}/>:<p className={className}>{text(body)}</p>;
+  const citation=(item,index)=>{
+    const file=pinned.find(entry=>entry.file_version_id===item.file_version_id);
+    const record=item.record_type;
+    return <div className="rcp-ai-citation" data-testid="research-cockpit-ai-citation" key={index}>
+      <span>{item.source_kind==='saved_draft'?'精修草稿 REV '+item.draft_revision:record?item.label||record+' '+text(item.record_id).slice(0,8):file?'V'+file.version+' · '+file.logical_path:'固定版本 · '+text(item.file_version_id).slice(0,8)}</span>
+      {item.quote && <Body body={item.quote}/>}
+      {item.source_kind!=='saved_draft' && file && <button type="button" onClick={()=>onOpenFile(file)}>核對來源 ↗</button>}
+      {record && <button type="button" onClick={()=>onNavigate({section:record==='execution'?'execution':record==='protocol'||record==='run'?'workflow':'evidence',...(record==='execution'?{execution_id:item.record_id}:{})})}>查看研究紀錄 ↗</button>}
+    </div>;
+  };
+  return <section className="rcp-ai" data-testid="research-cockpit-ai-panel" aria-label={title+' AI 初評與答辯'} aria-busy={busy}>
+    <header><div><span>BONFIRE AI / {text(dimension).toUpperCase()}</span><h3>{title} · AI 初評與答辯</h3><small>AI 判斷獨立保存，人工檢查由研究者確認。</small></div>
+      <button type="button" className="primary" data-testid="research-cockpit-ai-start" disabled={!canWrite||busy} onClick={()=>run('initial')}>{review?'重新進行 AI 初評':'Bonfire AI 初評'} ↗</button></header>
+    {manualDirty && <p className="rcp-ai-context-note">AI 讀取已保存的研究紀錄；目前人工檢查仍有未保存的編輯。</p>}
+    {working && <div className="rcp-ai-loading" data-testid="research-cockpit-ai-loading" role="status"><i/><div><b>{sameDimension?(working.kind==='reply'?'正在核對答辯與證據，重新評估…':'正在閱讀固定版本材料，整理判斷與追問…'):'另一個研究面向正在進行 AI 評估…'}</b><span>讀取材料 → 核對依據 → 提出可回答的問題</span></div></div>}
+    {error && <div className="rcp-ai-error" data-testid="research-cockpit-ai-error" role="alert"><p>{error}</p><button type="button" data-testid="research-cockpit-ai-refresh" disabled={busy} onClick={async()=>{try{await onReload();setError('');}catch(reason){setError(text(reason.message||reason));}}}>重新讀取材料與紀錄 ↻</button></div>}
+    {review && result?<>
+      <div className="rcp-ai-source"><b>AI 初評 · 待確認</b><span>評估 R{review.revision} · 來源 DMP V{review.source_dmp_version} · {stamp(review.updated_at||review.created_at)}</span>
+        <details><summary>本輪固定材料 · {pinned.length} 份</summary>{pinned.map(file=><Artifact key={file.file_version_id} artifact={file} onOpen={onOpenFile}/>)}
+          <small>來源指紋 {text(review.source_fingerprint).slice(0,12)}</small></details></div>
+      {review.stale && <p className="rcp-ai-stale" data-testid="research-cockpit-ai-stale">材料或研究紀錄已有更新。以下為舊版本初評；可保留答辯，讀取最新材料後重新評估。</p>}
+      <div className="rcp-ai-grid"><section className="rcp-ai-verdict" data-testid="research-cockpit-ai-verdict">
+        <div className="rcp-ai-levels"><div data-testid="research-cockpit-ai-evidence-verdict"><span>研究證據</span><strong className={result.evidence_verdict}>{evidenceLabels[result.evidence_verdict]||'待判斷'}</strong>
+          {previous && <small>上一輪：{evidenceLabels[previous.evidence_verdict]||'待判斷'}</small>}</div>
+          <div data-testid="research-cockpit-ai-defense-verdict"><span>答辯理解</span><strong>{defenseLabels[result.defense_verdict]||'尚未答辯'}</strong>{previous && <small>上一輪：{defenseLabels[previous.defense_verdict]||'尚未答辯'}</small>}</div></div>
+        <Body body={result.summary||review.result.summary} testId="research-cockpit-ai-summary"/>
+        {!!(result.gaps||[]).length && <div className="rcp-ai-gaps"><span>這一輪仍要補齊</span><ul>{(result.gaps||[]).slice(0,2).map((gap,index)=><li key={index}><Body body={gap}/></li>)}</ul>
+          {result.gaps.length>2 && <details><summary>另外 {result.gaps.length-2} 項待補充</summary><ul>{result.gaps.slice(2).map((gap,index)=><li key={index}><Body body={gap}/></li>)}</ul></details>}</div>}
+        <details className="rcp-ai-basis"><summary>逐項判斷與來源依據 · {(result.criteria||[]).length} 項</summary>{(result.criteria||[]).map(item=><article key={item.key}><header><b>{((checks||[]).find(check=>check.key===item.key)||{}).label||item.key}</b><span>{evidenceLabels[item.evidence_verdict]||'待判斷'} · {item.basis_source==='defense_argument'?'答辯論證':item.basis_source==='project_evidence'?'研究材料':'依據不足'}</span></header>
+          <Body body={item.basis}/>{(item.gaps||[]).map((gap,index)=><Body key={index} body={gap}/>)}{(item.citations||[]).map(citation)}</article>)}{(result.citations||[]).map(citation)}</details>
+        <p className="rcp-ai-separation">答辯理解反映解釋是否清楚；研究證據以可核對的文件、推導與結果為依據。</p>
+      </section><section className="rcp-ai-defense">
+        <header><span>DEFEND / 回應追問</span><b>{questions.length} 個問題</b></header>
+        <ol className="rcp-ai-questions">{questions.slice(0,2).map((question,index)=><li key={question.id||index} data-testid="research-cockpit-ai-question"><b>{String(index+1).padStart(2,'0')}</b><Body body={question.question}/></li>)}</ol>
+        {questions.length>2 && <details className="rcp-ai-more-question"><summary>再看一個追問</summary><div data-testid="research-cockpit-ai-question"><Body body={questions[2].question}/></div></details>}
+        {answer.review_id && answer.review_id!==review.id && answer.answer && <p className="rcp-ai-context-note">已保留上一輪答辯草稿，請依目前追問調整後提交。</p>}
+        <label className="rcp-ai-answer-label"><span>您的答辯 · 可依序回應上方問題</span><textarea data-testid="research-cockpit-ai-answer" value={answer.answer} maxLength={16000} disabled={!canWrite||busy} placeholder="可依序回應上方問題，解釋推導、假設與邊界；有實證或模型結果時，附上下面的固定版本證據。"
+          onChange={event=>updateAnswer(dimension,{answer:event.target.value,review_id:review.id})}/></label>
+        <details className="rcp-ai-attachments"><summary>附上目前課題的固定版本證據 · {(answer.file_version_ids||[]).length} 份</summary>
+          <div className="rcp-file-checks">{files.map(file=><label key={file.file_version_id}><input type="checkbox" data-testid="research-cockpit-ai-evidence" data-file-version-id={file.file_version_id} disabled={!canWrite||busy} checked={(answer.file_version_ids||[]).includes(file.file_version_id)} onChange={event=>updateAnswer(dimension,{file_version_ids:event.target.checked?[...(answer.file_version_ids||[]),file.file_version_id]:(answer.file_version_ids||[]).filter(id=>id!==file.file_version_id),review_id:review.id})}/><span>V{file.version} · {file.logical_path}</span></label>)}</div>
+          {(answer.file_version_ids||[]).filter(id=>!files.some(file=>file.file_version_id===id)).map(id=><label className="rcp-ai-retained-evidence" key={id}><input type="checkbox" checked disabled={!canWrite||busy} onChange={()=>updateAnswer(dimension,{file_version_ids:(answer.file_version_ids||[]).filter(item=>item!==id)})}/><span>保留的舊固定版本 · {id.slice(0,12)}</span></label>)}
+        </details>
+        <footer><small>答辯草稿保留在這部裝置；提交後進入本課題的評估紀錄。</small>
+          <button type="button" className="primary" data-testid="research-cockpit-ai-submit" disabled={!canWrite||busy||!answer.answer.trim()||Boolean(review.stale)} onClick={()=>run('reply')}>提交答辯並重評 ↗</button>
+          {review.stale && <button type="button" data-testid="research-cockpit-ai-refresh-reply" disabled={!canWrite||busy||!answer.answer.trim()} onClick={()=>run('reply',true)}>讀取最新材料並重新評估 ↗</button>}</footer>
+      </section></div>
+      <details className="rcp-ai-history" data-testid="research-cockpit-ai-history"><summary>初評與答辯歷史 · {history.length} 輪</summary>{[...history].reverse().map(entry=>{
+        const value=((entry.result||{}).dimensions||[]).find(item=>item.key===dimension);
+        return <article key={entry.revision}><header><b>R{entry.revision} · {entry.kind==='reply'?'答辯重評':'AI 初評'}</b><time>{stamp(entry.created_at)}</time></header>
+          {value && <p className="rcp-ai-history-level">研究證據：{evidenceLabels[value.evidence_verdict]||'待判斷'} · 答辯理解：{defenseLabels[value.defense_verdict]||'尚未答辯'}</p>}
+          {entry.context_refreshed && <small>本輪已讀取最新材料</small>}{entry.answer && <details><summary>查看這次答辯</summary><Body body={entry.answer}/></details>}{value && <Body body={value.summary}/>}</article>;
+      })}</details>
+    </>:!busy && <p className="rcp-ai-empty">請 Bonfire AI 根據這個課題已保存的材料初評，提出具體追問，再用答辯與證據接續研究。</p>}
+    {notice && <p className="rcp-ai-notice" role="status">{notice}</p>}
+  </section>;
+};
+
+W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canWrite,onProject,onNavigate,onOpenFile,onSave,onReload,onAdvanced,RichText}){
   const dashboard=workflow && project && text((workflow.project||{}).id)===text(project.id)?workflow.research_dashboard:null;
   const [activeDimension,setActiveDimension]=useState('paper');
   const [activeStage,setActiveStage]=useState('');
@@ -39,9 +153,15 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
   const [saving,setSaving]=useState(false);
   const [conflict,setConflict]=useState(false);
   const [message,setMessage]=useState('');
+  const [aiLocal,setAILocal]=useState({}),[aiWorking,setAIWorking]=useState(false);
+  const baseVersionRef=useRef(baseVersion);baseVersionRef.current=baseVersion;
   const initialized=useRef(false),dirtyRef=useRef(false),alive=useRef(true),savingRef=useRef(false),tabs=useRef({});
   const key=project?draftKey(project):'';
   const serverVersion=Number(dashboard && dashboard.dmp_version)||0;
+  const aiRecords=new Map((Array.isArray(dashboard && dashboard.ai_reviews)?dashboard.ai_reviews:[]).map(review=>[review.id,review]));
+  Object.values(aiLocal).forEach(review=>{const saved=aiRecords.get(review.id);if(!saved || Number(saved.revision)<Number(review.revision))aiRecords.set(review.id,review);});
+  const aiFingerprint=text(dashboard && dashboard.ai_current_fingerprint);
+  const aiReviews=Array.from(aiRecords.values()).map(review=>({...review,stale:Boolean(review.stale || (aiFingerprint && review.source_fingerprint!==aiFingerprint))}));
   useEffect(()=>()=>{alive.current=false;},[]);
   useEffect(()=>{
     if(!dashboard)return;
@@ -64,7 +184,7 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
     setDraft(current=>({...current,[dimension]:{...(current[dimension]||{}),items:{...((current[dimension]||{}).items||{}),[item]:{...(((current[dimension]||{}).items||{})[item]||{}),...patch}}}}));
   };
   const save=async()=>{
-    if(!project || !dashboard || !canWrite || savingRef.current || conflict || !dirty)return;
+    if(!project || !dashboard || !canWrite || savingRef.current || aiWorking || conflict || !dirty)return;
     savingRef.current=true;setSaving(true);setMessage('');
     try{
       const result=await onSave({expected_dmp_version:baseVersion,assessment:draft});
@@ -85,6 +205,13 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
       dirtyRef.current=false;setDirty(false);setConflict(false);setMessage('已載入最新評估。');
       try{localStorage.removeItem(key);}catch(_error){}
     }catch(reason){if(alive.current)setMessage(text(reason.message||reason));}
+  };
+  const acceptAIResult=async(result,expectedVersion)=>{
+    if(!alive.current)return;
+    setAILocal(current=>({...current,[result.review.id]:result.review}));
+    const version=Number(result.dmp_version)||0;
+    if(baseVersionRef.current===expectedVersion && version){setBaseVersion(version);baseVersionRef.current=version;setConflict(false);}
+    try{await onReload();}catch(reason){if(alive.current)setMessage('AI 評估已保存；面板重新讀取失敗：'+text(reason.message||reason));}
   };
   const graph=dashboard && dashboard.stage_graph || {},nodes=graph.nodes||[];
   const selectedStage=nodes.find(node=>node.key===activeStage)||nodes.find(node=>node.key===graph.current_stage)||nodes[0];
@@ -114,12 +241,15 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
     {!project?<p className="rcp-empty">選擇或建立課題，將論文、資料、推導與模型放回同一個研究脈絡。</p>:!dashboard?<p className="rcp-empty" role="status">{message || (busy?'正在讀取課題的登記資料與評估…':'研究面板尚未載入，請重新整理。')}</p>:<>
       <div className="rcp-dimensions" role="tablist" aria-label="四個研究面向">{dimensions.map(([dimension,title,en],index)=>{
         const item=(dashboard.dimensions||[]).find(entry=>entry.key===dimension)||{key:dimension,completed:null,total:0};
+        const aiReview=reviewFor(aiReviews,dimension),aiResult=reviewDimension(aiReview,dimension);
         return <button key={dimension} ref={node=>{tabs.current[dimension]=node;}} type="button" role="tab" aria-selected={activeDimension===dimension}
           aria-controls={'rcp-assessment-'+project.id} tabIndex={activeDimension===dimension?0:-1} className={'rcp-dimension '+dimension+(activeDimension===dimension?' selected':'')}
           data-testid={'research-cockpit-dimension-'+dimension} onKeyDown={event=>keyboardTab(event,index)} onClick={()=>chooseDimension(dimension)}>
           <header><span>{String(index+1).padStart(2,'0')} / {en}</span><b>↗</b></header><h3>{title}</h3>
-          <strong className={item.completed==null?'unknown':''}>{item.completed==null?'待評估':item.completed+' / '+item.total}</strong>
-          <small>{item.completed==null?'尚未完成研究者檢查':'已完成的檢查項目'}</small><footer>{factSummary(item,files)}</footer>
+          <strong className={item.completed==null?'unknown'+(aiReview?' ai-reviewed':''):''}>{item.completed==null?(aiReview?(aiReview.stale?'需要重評':'AI 已初評'):'待評估'):item.completed+' / '+item.total}</strong>
+          <small>{item.completed==null?(aiReview?'人工檢查仍待研究者確認':'尚未完成研究者檢查'):'已完成的人工檢查項目'}</small>
+          {aiReview && <span className={'rcp-ai-card-flag'+(aiReview.stale?' stale':'')} data-testid="research-cockpit-ai-card-status" data-dimension={dimension}>{aiReview.stale?'AI 初評已過期':(evidenceLabels[aiResult && aiResult.evidence_verdict]||'AI 初評')+' · 待確認'}</span>}
+          <footer>{factSummary(item,files)}</footer>
         </button>;
       })}</div>
       <div className="rcp-evidence-key"><span><i/>實際登記：文件、資料與執行紀錄</span><span><i/>研究者評估：檢查項目與缺口</span><small>檢查數量表示紀錄覆蓋，研究結論仍需證據與覆核。</small></div>
@@ -129,6 +259,9 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
           <span>{String(index+1).padStart(2,'0')}<i>{statusNames[node.status]||'待標記'}</i></span><strong>{node.title}</strong><small>{(node.evidence||[]).length?(node.evidence||[]).length+' 份固定版本證據':'尚未連結證據'}</small></button></li>)}</ol>
         {!nodes.length && <p className="rcp-empty">尚未建立專業研究路線。可在專業與流程中選擇這個課題的方法。</p>}
       </section>
+      <AIReviewPanel project={project} dimension={activeDimension} serverVersion={serverVersion} review={reviewFor(aiReviews,activeDimension)} files={files}
+        checks={selectedDimension && selectedDimension.items||[]} RichText={RichText} canWrite={canWrite&&!saving} manualDirty={dirty} onResult={acceptAIResult}
+        onReload={onReload} onBusy={setAIWorking} onOpenFile={onOpenFile} onNavigate={onNavigate}/>
       <div className="rcp-workgrid"><section className="rcp-stage" data-testid="research-cockpit-stage-detail">
         <header><span>02 / STAGE DETAIL</span><b>{selectedStage?statusNames[selectedStage.status]||'待標記':'待建立'}</b></header>
         <h3>{selectedStage?selectedStage.title:'選擇一個研究步驟'}</h3>
@@ -161,7 +294,7 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
         {conflict && <div className="rcp-conflict" role="alert">伺服器評估已有新版本；本機編輯仍保留。可先複製備註，再放棄本機評估並載入最新版本。
           <button type="button" data-testid="research-cockpit-reload" disabled={saving} onClick={reload}>放棄本機評估，載入最新</button></div>}
         {message && <p className={'rcp-message'+(conflict?' error':'')} data-testid="research-cockpit-message" role="status">{message}</p>}
-        <footer><span>研究者逐項標記 · 版本化保存</span><button type="button" data-testid="research-cockpit-save" disabled={!canWrite||!dirty||saving||conflict} onClick={save}>{saving?'正在保存…':'保存評估'}</button></footer>
+        <footer><span>研究者逐項標記 · 版本化保存</span><button type="button" data-testid="research-cockpit-save" disabled={!canWrite||!dirty||saving||aiWorking||conflict} onClick={save}>{saving?'正在保存…':'保存評估'}</button></footer>
       </section></div>
       {dashboard.next_action && <section className="rcp-next"><span>NEXT / 建議接續</span><strong>{dashboard.next_action.label}</strong><button type="button" onClick={()=>{if(dashboard.next_action.dimension)chooseDimension(dashboard.next_action.dimension);if(dashboard.next_action.action)act(dashboard.next_action.action);}}>處理這一步 →</button></section>}
       <div className="rcp-register-grid"><section className="rcp-register"><header><span>04 / REGISTERED MATERIAL</span><h3>文件與資料版本</h3><b>{files.length}</b></header>

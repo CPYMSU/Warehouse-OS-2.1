@@ -1133,7 +1133,7 @@ const protectDefenseMath = (body, formula = false) => {
     });
   return {text,entries};
 };
-const DefenseExplanationBody = ({ body, formula = false, source = false, detail = "brief", formatVersion = 2 }) => {
+const DefenseExplanationBody = ({ body, formula = false, source = false, detail = "brief", formatVersion = 2, className = "", testId = "" }) => {
   const node = useRef(null);
   useEffect(() => {
     const root = node.current;
@@ -1172,8 +1172,8 @@ const DefenseExplanationBody = ({ body, formula = false, source = false, detail 
     render(4);
     return () => {disposed=true;if(timer)window.clearTimeout(timer);};
   }, [body,formula]);
-  return <div ref={node} className={source ? "rv-defense-source-render" : "rv-defense-answer"}
-    data-testid={source ? "research-defense-source" : "research-defense-answer"}
+  return <div ref={node} className={className || (source ? "rv-defense-source-render" : "rv-defense-answer")}
+    data-testid={testId || (source ? "research-defense-source" : "research-defense-answer")}
     data-detail={detail} data-format-version={formatVersion}/>;
 };
 
@@ -3201,7 +3201,7 @@ const Page = () => {
 
       {section === "dashboard" && <W2.ResearchCockpit key={projectId||"no-project"} project={selectedProject} projects={projects}
         workflow={workflow} busy={workflowBusy || detailBusy} canWrite={canWrite} onProject={selectProject} onNavigate={navigateDashboard}
-        onOpenFile={openDashboardArtifact} onSave={saveDashboardAssessment} onReload={()=>loadWorkflow(projectId)} onAdvanced={openDashboardAdvanced}/>}
+        onOpenFile={openDashboardArtifact} onSave={saveDashboardAssessment} onReload={()=>loadWorkflow(projectId)} onAdvanced={openDashboardAdvanced} RichText={DefenseExplanationBody}/>}
 
       {section === "guide" && <>
         {selectedProject && W2.researchDisciplineOf(selectedProject) !== "unclassified" &&

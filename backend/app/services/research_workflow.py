@@ -198,7 +198,11 @@ def _research_dashboard(project: dict, rows: dict, current_dmp: dict | None, art
             stamp = item.get("version_created_at") if kind == "file" else item.get("created_at")
             if stamp:
                 activity.append({"kind": kind, "label": label, "created_at": str(stamp)})
+    from app.services.research_ai_assessment import review_summaries
+
+    ai_fingerprint, ai_reviews = review_summaries(project, rows, current_dmp)
     return {"schema_version": 1, "dmp_version": int(current_dmp["version"]) if current_dmp else 0,
+            "ai_current_fingerprint": ai_fingerprint, "ai_reviews": ai_reviews,
             "dimensions": dimensions, "files": files, "blockers": blockers,
             "next_action": ({"label": blockers[0]["label"], "dimension": blockers[0]["dimension"],
                              "action": blockers[0]["action"]} if blockers else None),
@@ -294,6 +298,8 @@ def _workflow_rows(
                    v.id AS file_version_id, v.version, v.content_sha256, v.size_bytes,
                    v.created_at AS version_created_at, v.version_count,
                    i.status AS index_status, i.block_count, d.revision AS draft_revision,
+                   d.id AS draft_id, d.base_file_version_id AS draft_base_file_version_id,
+                   md5(d.blocks::text) AS draft_content_hash,
                    COALESCE(d.base_file_version_id <> v.id, false) AS source_changed
             FROM research.files f
             JOIN ranked_versions v ON v.file_id=f.id AND v.rank=1

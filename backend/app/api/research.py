@@ -36,6 +36,7 @@ from app.services.research_execution import (
     promote_artifact,
     retry_execution,
 )
+from app.services.research_ai_assessment import list_ai_reviews, run_ai_review
 from app.services.research_refinement import (
     publish_refinement,
     rebase_refinement,
@@ -618,6 +619,37 @@ def research_assessment_save(
     payload: dict[str, object] = Body(...),
 ) -> dict[str, object]:
     return save_research_assessment(actor, project_ref, payload)
+
+
+@router.get("/api/research/projects/{project_ref}/assessment/ai-reviews")
+def research_ai_review_list(
+    project_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    response: Response,
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return list_ai_reviews(actor, project_ref)
+
+
+@router.post("/api/research/projects/{project_ref}/assessment/ai-reviews")
+def research_ai_review_start(
+    project_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    payload: dict[str, object] = Body(...),
+) -> dict[str, object]:
+    return run_ai_review(actor, project_ref, payload, settings)
+
+
+@router.post("/api/research/projects/{project_ref}/assessment/ai-reviews/{review_id}/reply")
+def research_ai_review_reply(
+    project_ref: str,
+    review_id: UUID,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    payload: dict[str, object] = Body(...),
+) -> dict[str, object]:
+    return run_ai_review(actor, project_ref, payload, settings, str(review_id))
 
 
 @router.get("/api/research/projects/{project_ref}/dmp")
