@@ -160,6 +160,10 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
   const pinned=review && review.pinned_files||[];
   const busy=Boolean(working || retryChecking),sameDimension=working && working.dimension===scope;
   const title=stage?stage.title:item?item.label:(dimensions.find(entry=>entry[0]===dimension)||[])[1]||dimension;
+  const scopeLabel=stage?'研究流程步驟：'+stage.title:item?'單項檢查：'+item.label:title+'整體';
+  const oldScopeQuestions=Boolean(review && Number(review.question_policy_version||0)<2 &&
+    ((!stage && !item && dimension==='paper') || (item && dimension==='paper' && item.key==='question') ||
+     (stage && stage.key==='question')));
   const specialist=(specialistFor(review,dimension)||{}).name||(review?'Bonfire AI（既有評估）':stage?'本步專業 Agent':specialistNames[dimension]||'研究評估 Agent');
   const Body=({body,className='rcp-ai-richtext',testId,formula=false})=>RichText?<RichText body={body} formula={formula} className={className} testId={testId||'research-cockpit-ai-richtext'}/>:<p className={className}>{text(body)}</p>;
   const citation=(item,index)=>{
@@ -188,8 +192,9 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
       {question.citations.length>1 && <details><summary>更多依據 · {question.citations.length-1} 項</summary>{question.citations.slice(1).map(citation)}</details>}</div>}
   </div></li>;
   return <section className="rcp-ai" data-testid="research-cockpit-ai-panel" aria-label={title+' AI 初評與答辯'} aria-busy={busy}>
-    <header><div><span>BONFIRE AI / {stage?'STAGE':item?'CHECK':'DIMENSION'} / {text(dimension).toUpperCase()}</span><h3>{title} · 專家評估與答辯</h3><small>{specialist} · AI 判斷獨立保存，人工檢查由研究者確認。</small></div>
+    <header><div><span>BONFIRE AI / {stage?'STAGE':item?'CHECK':'DIMENSION'} / {text(dimension).toUpperCase()}</span><h3>{title} · 專家評估與答辯</h3><small data-testid="research-cockpit-review-scope">範圍：{scopeLabel} · 與其他範圍的答辯分開保存</small><br/><small>{specialist} · AI 判斷獨立保存，人工檢查由研究者確認。</small></div>
       <button type="button" className="primary" data-testid="research-cockpit-ai-start" disabled={!canWrite||busy} onClick={()=>run('initial')}>{review?'重新進行專家評估':item?'為此項產生答辯問題':'請專家評估'} ↗</button></header>
+    {oldScopeQuestions && <p className="rcp-ai-context-note" data-testid="research-cockpit-scope-update">這份問題在範圍區分更新前產生，可能與其他部分相似。可重新進行專家評估；已有答辯與草稿會保留。</p>}
     {review && answer.answer.trim() && <p className="rcp-ai-context-note">重新評估會建立新紀錄；未提交的草稿會保留在「其他評估紀錄」中。</p>}
     {manualDirty && <p className="rcp-ai-context-note">AI 讀取已保存的研究紀錄；目前人工檢查仍有未保存的編輯。</p>}
     {working && <div className="rcp-ai-loading" data-testid="research-cockpit-ai-loading" role="status"><i/><div><b>{sameDimension?(working.kind==='reply'?'正在核對答辯與證據，重新評估…':'正在閱讀固定版本材料，整理判斷與追問…'):'另一個研究面向正在進行 AI 評估…'}</b><span>讀取材料 → 核對依據 → 提出可回答的問題</span></div></div>}
@@ -224,6 +229,7 @@ const AIReviewPanel=({project,dimension,stage,item,discipline,serverVersion,revi
         <p className="rcp-ai-separation">答辯理解反映解釋是否清楚；研究證據以可核對的文件、推導與結果為依據。</p>
       </section><section className="rcp-ai-defense">
         <header><span>DEFEND / 回應追問</span><b>{questions.length} 個問題</b></header>
+        {review && review.result && (review.result.question_overlap_warning===true || Number(review.result.omitted_repeated_questions)>0) && <p className="rcp-ai-context-note" data-testid="research-cockpit-question-overlap" role="note">{Number(review.result.omitted_repeated_questions)>0?'已略去重複題。':''}{review.result.question_overlap_warning===true?'本輪問題仍可能與其他部分重複，可重新產生。':''}</p>}
         {hasQuestionGroups?<div className="rcp-question-groups" data-testid="research-cockpit-question-groups">{questionGroups.map((group,index)=>group.key==='theory'||index===0?
           <section className="rcp-question-group" key={group.key} data-testid={'research-cockpit-question-group-'+group.key}><h4>{group.title}</h4><ol className="rcp-ai-questions">{group.items.map(({question,displayIndex})=>questionRow(question,displayIndex))}</ol></section>:
           <details className="rcp-question-group rcp-question-group-more" key={group.key} data-testid={'research-cockpit-question-group-'+group.key}><summary>{group.title} · {group.items.length} 題</summary><ol className="rcp-ai-questions">{group.items.map(({question,displayIndex})=>questionRow(question,displayIndex))}</ol></details>)}</div>:

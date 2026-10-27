@@ -366,6 +366,164 @@ def test_single_item_dimension_normalization_still_verifies_citations():
     assert item['evidence_verdict'] == 'insufficient' and not item['citations'] and 'fabricated' not in json.dumps(item)
 
 
+def test_research_question_scope_distinguishes_whole_paper_and_preserves_defense(state):
+    state.project['metadata']['research_discipline'] = 'econometrics'
+    state.output = model_result('paper')
+    overview = state.start(dimension='paper')['review']
+    assert overview['question_policy_version'] == 2 and overview['question_focus']['key'] == 'paper_overview'
+    original_questions = [entry['question'] for entry in overview['result']['questions']]
+    state.output = stage_result('paper', 'question')
+    item = state.start(dimension='paper', criterion_key='question')['review']
+    item_prompt = json.loads(state.calls[-1]['user_prompt'])
+    assert item['question_focus']['key'] == 'research_question'
+    assert item['criterion_key'] == 'question' and not item.get('stage_key')
+    assert item_prompt['recent_project_questions_for_distinct_angles'][0]['question'] == original_questions[0]
+    assert '研究對象' in state.calls[-1]['system_prompt']
+    stage = state.start(stage_key='question')['review']
+    assert stage['question_focus']['key'] == 'stage_question' and stage['stage_key'] == 'question'
+    assert len({overview['id'], item['id'], stage['id']}) == 3
+    replied = state.reply(item)['review']
+    reply_prompt = json.loads(state.calls[-1]['user_prompt'])
+    assert reply_prompt['recent_project_questions_for_distinct_angles'] == []
+    assert reply_prompt['previous_review']['questions'] == item['result']['questions']
+    assert replied['revision'] == 2 and replied['result']['committee_feedback']
+    assert overview['id'] in state.content[service.SESSION_KEY]
+    assert stage['id'] in state.content[service.SESSION_KEY]
+
+
+def test_research_question_context_prioritizes_actual_question_and_preserves_boundaries():
+    generic = [{'asset_class': 'manuscript', 'block_type': 'paragraph', 'ordinal': index,
+                'text': 'Technical detail about a mathematical threshold and model. ' * 2,
+                'heading_path': ['Model']} for index in range(12)]
+    actual = {'asset_class': 'manuscript', 'block_type': 'paragraph', 'ordinal': 30,
+              'text': 'This paper examines whether bilateral sales track the particular trade outcome, not aggregate welfare.',
+              'heading_path': ['Introduction']}
+    result = service._research_question_excerpts(generic + [actual])
+    assert result[0] == actual and len(result) == 8
+    assert service._question_focus(['paper'])['key'] == 'paper_overview'
+    assert service._question_focus(['paper'], focus_item={'key': 'question', 'label': '研究問題'})['key'] == 'research_question'
+    assert service._question_focus(['paper'], stage={'key': 'question', 'title': '確定研究問題'})['key'] == 'stage_question'
+
+
+def test_duplicate_detection_distinguishes_rephrased_threshold_from_welfare_scope():
+    prior = {'question': '近似門檻 πiηi>vi 在油價大幅下跌時是否仍與精確條件同向，何時會改變逆轉結論？',
+             'scope_key': 'paper_overview', 'sources': [SOURCE]}
+    repeated = {'question': '就小額下跌而言的近似此門檻，在何種油價跌幅或傳導條件下仍與精確逆轉判定同向？', 'citations': [SOURCE]}
+    distinct = {'question': '若只觀察雙邊銷售，能否判斷低油價對進口國整體福利的影響？'}
+    assert service._question_is_repeated(repeated, [prior], 'research_question')
+    assert not service._question_is_repeated(distinct, [prior], 'research_question')
+    assert not service._question_is_repeated({'question': repeated['question']}, [prior], 'research_question')
+    original = {'question': '思想實驗：若πiηi恰等於該對數門檻，模型是否仍稱逆轉？'}
+    close = {'question': '思想實驗：若πiηi恰等於該對數門檻，模型稱逆轉嗎？請依原式說明等號邊界。'}
+    assert service._question_is_repeated(close, [original], 'paper_overview')
+    financial = {'question': '若金融渠道而非所得渠道主導，負擔逆轉的解釋是否仍成立？',
+                 'scope_key': 'paper_overview', 'sources': [SOURCE]}
+    same_claim = {'question': '若油價下跌同時經金融渠道壓縮進口，逆轉還能歸因收入與可延遲品兩開關嗎？',
+                  'citations': [SOURCE]}
+    assert service._question_is_repeated(same_claim, [financial], 'research_question')
+    assert not service._question_is_repeated({'question': same_claim['question']}, [financial], 'research_question')
+    assert not service._question_is_repeated({'question': '金融渠道如何影響研究對象及比較範圍？', 'citations': [SOURCE]},
+                                             [financial], 'research_question')
+    prior_switch = {'question': '僅匯率傳遞成立、可延後性不足，是否仍預測雙邊銷售逆轉？',
+                    'scope_key': 'paper_overview', 'sources': [SOURCE]}
+    other_block = {**SOURCE, 'block_id': 'another-block'}
+    switch = {'question': '非延後性資本品為主但匯率傳遞很高時，兩個開關是否仍能界定逆轉？',
+              'citations': [other_block]}
+    assert service._question_is_repeated(switch, [prior_switch], 'research_question')
+    different_paper = {**other_block, 'file_version_id': str(UUID(int=6))}
+    assert not service._question_is_repeated({**switch, 'citations': [different_paper]}, [prior_switch], 'research_question')
+    assert not service._question_is_repeated({'question': '匯率傳遞與進口商品如何界定研究範圍？', 'citations': [other_block]},
+                                             [prior_switch], 'research_question')
+
+
+def test_dedup_never_silently_removes_the_only_required_theory_question():
+    recent = [{'question': '在雙邊銷售下，如何界定研究對象與福利？'}]
+    result = {'questions': [
+        {'id': 'q1', 'category': 'theory', 'question': '在雙邊銷售下，如何界定研究對象與福利？'},
+        {'id': 'q2', 'category': 'evidence', 'question': '哪些變量需要獨立資料驗證？'},
+    ]}
+    assert service._distinct_initial_questions(result, recent, 'research_question', True) is None
+    kept = service._distinct_initial_questions(result, recent, 'research_question', False)
+    assert len(kept['questions']) == 1 and kept['questions'][0]['category'] == 'evidence'
+
+
+def test_initial_discards_duplicate_question_but_preserves_a_distinct_one(state):
+    state.output = model_result('paper')
+    state.output['questions'][0]['question'] = '思想實驗：若πiηi恰等於該對數門檻，模型是否仍稱逆轉？'
+    overview = state.start(dimension='paper')['review']
+    state.output = stage_result('paper', 'question')
+    state.output['questions'][0]['question'] = '思想實驗：若πiηi恰等於該對數門檻，模型稱逆轉嗎？請依原式說明等號邊界。'
+    state.output['questions'][1]['question'] = '雙邊銷售的變化能否代表進口國整體福利？'
+    before = len(state.calls)
+    item = state.start(dimension='paper', criterion_key='question')['review']
+    assert len(state.calls) == before + 1  # A distinct question needs no retry.
+    assert item['result']['omitted_repeated_questions'] == 1
+    assert [question['id'] for question in item['result']['questions']] == ['q1']
+    assert '整體福利' in item['result']['questions'][0]['question']
+    assert overview['id'] in state.content[service.SESSION_KEY]
+
+
+def test_all_repeated_questions_retry_once_and_preserve_followup(state):
+    state.output = model_result('paper')
+    state.output['questions'][0]['question'] = '思想實驗：若πiηi恰等於該對數門檻，模型是否仍稱逆轉？'
+    state.output['questions'][1]['question'] = '分類規則準確率低於從不逆轉時是否動搖條件命題的定位？'
+    source_ref = {'file_version_id': SOURCE['file_version_id'], 'block_id': SOURCE['block_id']}
+    state.output['questions'][1]['source_refs'] = [source_ref]
+    state.start(dimension='paper')
+    duplicate = stage_result('paper', 'question')
+    duplicate['questions'][0]['question'] = '思想實驗：若πiηi恰等於該對數門檻，模型稱逆轉嗎？請依原式說明等號邊界。'
+    duplicate['questions'][1]['question'] = '分類規則不如從不逆轉時研究問題是否仍應是條件命題？'
+    duplicate['questions'][1]['source_refs'] = [source_ref]
+    unique = copy.deepcopy(duplicate)
+    unique['questions'][0]['question'] = '雙邊銷售的變化能否代表進口國整體福利？'
+    outputs = iter([duplicate, unique])
+    state.mutate = lambda: setattr(state, 'output', next(outputs))
+    before = len(state.calls)
+    item = state.start(dimension='paper', criterion_key='question')['review']
+    assert len(state.calls) == before + 2
+    assert len(item['result']['questions']) == 1 and '整體福利' in item['result']['questions'][0]['question']
+    assert not item['result'].get('question_overlap_warning')
+    # A later defense must be allowed to keep probing an unresolved question.
+    state.mutate = None
+    state.output = duplicate
+    before = len(state.calls)
+    reply = state.reply(item)['review']
+    assert len(state.calls) == before + 1 and len(reply['result']['questions']) == 2
+
+
+def test_all_repeated_retry_failure_is_explicit_and_does_not_fabricate(state):
+    state.output = model_result('paper')
+    overview = state.start(dimension='paper')['review']
+    duplicate = stage_result('paper', 'question')
+    duplicate['questions'][0]['question'] = overview['result']['questions'][0]['question']
+    duplicate['questions'][1]['question'] = overview['result']['questions'][1]['question']
+    state.output = duplicate
+    before = len(state.calls)
+    item = state.start(dimension='paper', criterion_key='question')['review']
+    assert len(state.calls) == before + 2
+    assert item['result']['question_overlap_warning'] is True
+    assert item['result']['questions'] == duplicate['questions']
+
+
+def test_duplicate_retry_provider_failure_keeps_validated_review_with_warning(state):
+    state.output = model_result('paper')
+    overview = state.start(dimension='paper')['review']
+    duplicate = stage_result('paper', 'question')
+    duplicate['questions'][0]['question'] = overview['result']['questions'][0]['question']
+    duplicate['questions'][1]['question'] = overview['result']['questions'][1]['question']
+    attempts = iter([duplicate, None])
+    def on_call():
+        output = next(attempts)
+        if output is None:
+            raise RuntimeError('provider unavailable')
+        state.output = output
+    state.mutate = on_call
+    before = len(state.calls)
+    item = state.start(dimension='paper', criterion_key='question')['review']
+    assert len(state.calls) == before + 2 and item['result']['question_overlap_warning'] is True
+    assert item['result']['questions'] == duplicate['questions']
+
+
 def test_specialist_stage_and_defense_keep_manual_progress_and_history(state):
     state.project['metadata']['research_discipline'] = 'econometrics'
     manual = copy.deepcopy(state.content['research_dashboard_assessment'])

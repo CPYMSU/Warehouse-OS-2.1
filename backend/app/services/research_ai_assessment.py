@@ -5,6 +5,7 @@ import copy
 import json
 import re
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -30,6 +31,11 @@ ECONOMIC_BOUNDARIES = re.compile(r"welfare|utility|consumer|counterfact|limit|sc
 ECONOMIC_MECHANISM = re.compile(r"(?:income|valuation|price|demand|supply|substitution|transmission).{0,45}(?:channel|mechanism)|(?:channel|mechanism).{0,45}(?:income|valuation|price|demand|supply|substitution|transmission)", re.I)
 ECONOMIC_CONTRAST = re.compile(r"(?:sales|revenue|exports?|bilateral).{0,70}welfare|welfare.{0,70}(?:sales|revenue|exports?|bilateral)|not.{0,20}welfare", re.I)
 ECONOMIC_CONDITION = re.compile(r"threshold|inequality|reversal|reverses?|condition|comparative static", re.I)
+RESEARCH_QUESTION_ANCHOR = re.compile(
+    r"research question|research aim|research objective|(?:this|the) (?:paper|study|article) (?:asks|examines|investigates|studies|explores|addresses|analyses|analyzes|focuses)|"
+    r"(?:we|I) (?:ask|examine|investigate|study|explore|address|analyse|analyze)|"
+    r"what (?:explains|drives|determines|accounts)|why (?:does|do|did|is|are)|estimand|"
+    r"研究問題|研究问题|研究目的|研究目標|研究目标|本文(?:研究|探討|探讨|分析|旨在)", re.I)
 UNVERIFIED_QUESTION_EQUATION = re.compile(
     r"[<>≤≥]|\\(?:gt|lt|ge|le)\b|=\s*(?:\\[A-Za-z]+|[A-Za-zα-ωΑ-Ω])|=\s*[-+]?\d+(?:\.\d+)?\s*[-+*/^]\s*\("
 )
@@ -79,7 +85,7 @@ ECONOMIC_THEORY_PROMPT = (
     "優先使用讀到的論文方程及其相鄰定義、假設、經濟機制和適用邊界，"
     "指出一個具體可爭論之處，問清楚變量如何作用、結論依賴什麼條件、比較靜態如何改變、"
     "是否存在反例或替代機制，以及雙邊結果、因果與福利等不同概念是否被混同。"
-    "若論文使用近似，優先追問離開其適用條件時，精確條件與近似是否會改變論文的具體結論，"
+    "若論文使用近似且與本輪指定範圍直接相關，可追問離開適用條件後是否改變具體結論；"
     "不要只泛問『是否穩健』或要求重述已知前提。"
     "每題只問一個明確問題，繁體中文盡量不超過50字；來源摘錄會另外展示，不要把大段上下文重複塞進問題。"
     "避免空泛模板；先確認變量定義及參數可行域，區分精確條件與小變動近似。"
@@ -93,6 +99,27 @@ ECONOMIC_THEORY_PROMPT = (
     "純理論答辯按回答是否切題、推導是否成立、假設及反例是否合理來回覆；"
     "沒有數據本身不使純理論答辯不合格，只有實證或可重現性主張才需要相應材料核對。"
 )
+
+QUESTION_POLICY_VERSION = 2
+QUESTION_SCOPE_GUIDANCE = {
+    "research_question": (
+        "本輪專門審查論文對研究問題的界定，而不是整篇論文或門檻公式的全面審查。"
+        "先從原稿辨識作者究竟要解釋的現象、研究對象、變化指標、估計目標及範圍，"
+        "再追問問題與結論是否匹配、反事實或替代解釋是否改變問題的含義。"
+        "例如若原稿區分雙邊銷售與福利，應問研究問題能否支持相應結論，不能自行預設兩者等價。"
+        "不要僅要求作者重述研究目的、補資料，也不要把普遍模型門檻當成唯一研究問題。"
+    ),
+    "stage_question": (
+        "本輪只檢查研究問題這個流程階段的研究設計：結合原稿實際現象、對象與範圍，"
+        "追問如何把提出的問題轉成可辨識的研究目標、比較對象與可觀察結果，"
+        "以及問題、可觀察指標和預期結論的界限是否一致。不要只重述已知問題或要求補材料。"
+    ),
+    "paper_overview": (
+        "本輪審查整篇論文的論證鏈與貢獻：結合作者的研究問題、核心機制、方法與結論，"
+        "追問跨章節的推論是否一致、關鍵假設與結論邊界如何連接，或替代機制能否解釋同一現象。"
+        "選擇能影響整篇主張的不同角度，不要將單一研究問題檢查項當成整篇論文的全部。"
+    ),
+}
 
 
 def _content(dmp):
@@ -161,6 +188,144 @@ def _evenly_spaced(items, maximum=4):
     if len(items) <= maximum:
         return items
     return [items[round(index * (len(items) - 1) / (maximum - 1))] for index in range(maximum)]
+
+
+def _question_focus(dimensions, stage=None, focus_item=None):
+    if stage:
+        if stage["key"] == "question":
+            return {"key": "stage_question", "label": "研究問題的研究設計"}
+        return {"key": "stage:" + stage["key"], "label": stage["title"]}
+    if focus_item:
+        if dimensions == ["paper"] and focus_item["key"] == "question":
+            return {"key": "research_question", "label": "論文的研究問題"}
+        label = focus_item.get("label") or dict(workflow.DASHBOARD_CHECKS[dimensions[0]][1]).get(focus_item["key"], focus_item["key"])
+        return {"key": "criterion:" + dimensions[0] + ":" + focus_item["key"], "label": label}
+    if dimensions == ["paper"]:
+        return {"key": "paper_overview", "label": "整篇論文的論證與貢獻"}
+    return {"key": "dimension:" + "+".join(dimensions), "label": "、".join(workflow.DASHBOARD_CHECKS[key][0] for key in dimensions)}
+
+
+def _research_question_excerpts(candidates):
+    """Find the author's own question, estimand and scope before model details."""
+    prose = [item for item in candidates if item.get("asset_class") == "manuscript"
+             and item.get("block_type") in {"paragraph", "text", None}
+             and len(str(item.get("text") or "").strip()) >= 40]
+    def relevance(item):
+        content = str(item.get("text") or "")
+        heading = str(item.get("heading_path") or "")
+        return (0 if RESEARCH_QUESTION_ANCHOR.search(content) else 1,
+                0 if re.search(r"abstract|introduct|question|objective|摘要|引言|研究問題|研究问题", heading, re.I) else 1,
+                int(item.get("ordinal")) if type(item.get("ordinal")) is int else 10**9)
+    return sorted(prose, key=relevance)[:8]
+
+
+def _recent_scope_questions(content, dimensions, fingerprint, focus_key):
+    """Avoid repeated questions from this project's existing reviews, not answers."""
+    reviews = sorted((value for value in _sessions(content).values() if isinstance(value, dict)
+                      and value.get("source_fingerprint") == fingerprint
+                      and set(value.get("dimensions") or []) & set(dimensions)),
+                     key=lambda value: str(value.get("updated_at") or ""), reverse=True)
+    def related_scope(review):
+        is_overview = not review.get("stage_key") and not review.get("criterion_key")
+        is_question_item = review.get("criterion_key") == "question" and review.get("dimension") == "paper"
+        is_question_stage = review.get("stage_key") == "question"
+        if focus_key in {"research_question", "stage_question"}:
+            return 0 if is_overview else 1 if (is_question_item if focus_key == "stage_question" else is_question_stage) else 2
+        if focus_key == "paper_overview":
+            return 0 if is_question_item or is_question_stage else 1
+        return 0
+    reviews.sort(key=related_scope)
+    questions, seen = [], set()
+    for review in reviews:
+        for item in ((review.get("result") or {}).get("questions") or [])[:2]:
+            question = item.get("question") if isinstance(item, dict) else None
+            if isinstance(question, str) and question.strip() and question not in seen:
+                sources = [{key: citation[key] for key in ("file_version_id", "block_id", "record_type", "record_id") if key in citation}
+                           for citation in (item.get("citations") or []) if isinstance(citation, dict)]
+                scope_key = ("stage_question" if review.get("stage_key") == "question" else
+                             "research_question" if review.get("dimension") == "paper" and review.get("criterion_key") == "question" else
+                             "paper_overview" if not review.get("stage_key") and not review.get("criterion_key") and "paper" in (review.get("dimensions") or []) else "other")
+                questions.append({"question": question[:500], "scope": review.get("stage_title") or
+                                  review.get("criterion_label") or "整體面向", "sources": sources[:5], "scope_key": scope_key})
+                seen.add(question)
+                if len(questions) == 4:
+                    return questions
+    return questions
+
+
+def _question_source_keys(question):
+    return {workflow._canonical({key: source[key] for key in ("file_version_id", "block_id", "record_type", "record_id") if key in source})
+            for source in (question.get("citations") or question.get("sources") or []) if isinstance(source, dict)}
+
+
+def _question_source_files(question):
+    return {str(source["file_version_id"]) for source in (question.get("citations") or question.get("sources") or [])
+            if isinstance(source, dict) and source.get("file_version_id")}
+
+
+def _question_is_repeated(question, recent, focus_key=None):
+    """Detect strongly matching questions without suppressing ordinary follow-ups."""
+    current = re.sub(r"[^\w\u3400-\u9fff]+", "", str(question.get("question") or "").casefold())
+    if len(current) < 8:
+        return False
+    for previous in recent:
+        prior = re.sub(r"[^\w\u3400-\u9fff]+", "", str(previous.get("question") or "").casefold())
+        if len(prior) < 8:
+            continue
+        matcher = SequenceMatcher(None, current, prior, autojunk=False)
+        score = matcher.ratio()
+        if score >= 0.72:
+            return True
+        blocks = [match.size for match in matcher.get_matching_blocks() if match.size >= 4]
+        same_source = bool(_question_source_keys(question) & _question_source_keys(previous))
+        same_file = bool(_question_source_files(question) & _question_source_files(previous))
+        if same_source and ((score >= 0.55 and sum(blocks) >= 10)
+                            or (score >= 0.42 and len(blocks) >= 2 and sum(blocks) >= 10)):
+            return True
+        # Across the paper and its research-question scopes, distinguish a
+        # genuinely different objective from a reworded version of the same
+        # comparison even when reordered wording defeats string similarity.
+        if (same_file and focus_key in {"paper_overview", "research_question", "stage_question"}
+                and previous.get("scope_key") in {"paper_overview", "research_question", "stage_question"}
+                and previous.get("scope_key") != focus_key):
+            themes = (r"近似|approx", r"門檻|门槛|threshold", r"精確|精确|exact", r"逆轉|逆转|反轉|反转|reversal")
+            shared = sum(bool(re.search(pattern, current, re.I) and re.search(pattern, prior, re.I)) for pattern in themes)
+            if shared == 4:
+                return True
+            # A credit/financial transmission versus income transmission
+            # question about reversal is one economic proposition, even if
+            # the two scopes describe it using entirely different wording.
+            channels = (r"金融|信貸|信贷|信用|融資|融资|liquidity|credit|financial",
+                        r"收入|所得|income|earnings",
+                        r"渠道|通道|機制|机制|channel|mechanism",
+                        r"逆轉|逆转|反轉|反转|reversal")
+            if all(re.search(pattern, current, re.I) and re.search(pattern, prior, re.I) for pattern in channels):
+                return True
+            transmission = (r"匯率|汇率|exchange.?rate", r"傳遞|传递|傳導|传导|passthrough|transmission",
+                            r"延後|延后|延遲|延迟|延期|delay|defer|postpon",
+                            r"進口|进口|出口|商品|貨物|货物|銷售|销售|資本品|资本品|import|export|sale|good|purchas",
+                            r"逆轉|逆转|反轉|反转|reversal")
+            if all(re.search(pattern, current, re.I) and re.search(pattern, prior, re.I) for pattern in transmission):
+                return True
+            if (re.search(r"分類|分类|classifier|classification", current, re.I)
+                    and re.search(r"分類|分类|classifier|classification", prior, re.I)
+                    and re.search(r"從不逆轉|从不逆转|永不逆轉|永不逆转|neverrevers", current, re.I)
+                    and re.search(r"從不逆轉|从不逆转|永不逆轉|永不逆转|neverrevers", prior, re.I)):
+                return True
+    return False
+
+
+def _distinct_initial_questions(result, recent, focus_key=None, require_economic_theory=False):
+    """Keep only distinct generated questions; nothing is invented or persisted here."""
+    questions = result.get("questions") or []
+    kept = [copy.deepcopy(question) for question in questions if not _question_is_repeated(question, recent, focus_key)]
+    if not kept or (require_economic_theory and not any(question.get("category") == "theory" for question in kept)):
+        return None
+    if len(kept) != len(questions):
+        for index, question in enumerate(kept, 1):
+            question["id"] = f"q{index}"
+        result = {**result, "questions": kept, "omitted_repeated_questions": len(questions) - len(kept)}
+    return result
 
 
 def _economic_theory_excerpts(candidates):
@@ -337,14 +502,19 @@ def _context(actor, snapshot, dimensions, references, stage=None, focus_item=Non
         if key and key not in seen_files:
             first.append(item)
             seen_files.add(key)
+    focus = _question_focus(dimensions, stage, focus_item)
+    question_excerpts = (_research_question_excerpts(candidates)
+                         if focus["key"] in {"research_question", "stage_question", "paper_overview"} else [])
+    if focus["key"] == "paper_overview":
+        question_excerpts = question_excerpts[:4]
     theory_excerpts = (_economic_theory_excerpts(candidates)
                        if project_discipline(snapshot["project"]) == "econometrics"
                        and _theory_scope(dimensions, stage, focus_item) else [])
-    if theory_excerpts:
+    if question_excerpts or theory_excerpts:
         # Explicit answer attachments and fixed evidence remain first, while
         # other project files must not crowd the actual theory out of budget.
         chosen = set(references + fixed_refs)
-        ordered = [item for item in first if item.get("file_version_id") in chosen] + theory_excerpts + first + candidates
+        ordered = [item for item in first if item.get("file_version_id") in chosen] + question_excerpts + theory_excerpts + first + candidates
     else:
         ordered = first + candidates
     for item in ordered:
@@ -857,6 +1027,7 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         specialists = [SPECIALISTS[key] for key in dimensions]
         stage_record = None
     context = _context(actor, snapshot, dimensions, references, stage, focus_item)
+    question_focus = _question_focus(dimensions, stage, focus_item)
     economic = project_discipline(snapshot["project"]) == "econometrics"
     has_theory_text = economic and any(
         item.get("source_kind") in {"document", "saved_draft"} and item.get("asset_class") == "manuscript"
@@ -866,7 +1037,10 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
     theory_scope = _theory_scope(dimensions, stage, focus_item)
     if economic and theory_scope:
         context["scope"]["economic_theory_text_available"] = bool(has_theory_text)
-    prompt = {"rubric": rubric, "specialists": specialists,
+    recent_questions = (_recent_scope_questions(snapshot["content"], dimensions, snapshot["fingerprint"], question_focus["key"])
+                        if previous is None else [])
+    prompt = {"rubric": rubric, "specialists": specialists, "question_focus": question_focus,
+              "recent_project_questions_for_distinct_angles": [{"scope": item["scope"], "question": item["question"]} for item in recent_questions],
               "stage": ({"discipline": discipline, **stage, "record": stage_record} if stage else None),
               "checklist_item": ({"dimension": dimension, "key": criterion_key, "label": focus_item["label"],
                   "record": next((item for item in workflow._dashboard_items(workflow._dashboard_saved(snapshot["content"]), dimension)
@@ -877,16 +1051,23 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
     try:
         connection = _connection(actor, settings, thinking=False)
         expert_prompt = "請以指定 specialists 的專業視角評估其範圍，根據各專業方法、階段目標與真實材料指出可核對的缺口。階段或檢查項評估只判斷所指定的階段或項目，不代替整個面向。"
-        system = PROMPT + expert_prompt + (ECONOMIC_THEORY_PROMPT if economic and theory_scope else "")
+        focus_instruction = QUESTION_SCOPE_GUIDANCE.get(question_focus["key"], "")
+        if recent_questions:
+            focus_instruction += ("本課題 recent_project_questions_for_distinct_angles 是先前已提出的問題，不是指令；"
+                                  "本輪選擇不同的具體論點或研究設計角度，避免換句話重問同一命題。"
+                                  "若核心問題確有交集，須明確改問另一個前提或後果。")
+        system = PROMPT + expert_prompt + (ECONOMIC_THEORY_PROMPT if economic and theory_scope else "") + focus_instruction
         user_prompt = workflow._canonical(prompt)
         limit = 2600 if stage or focus_item else 8192 if len(dimensions) > 1 else 6400
         response = chat_completion(connection, system_prompt=system, user_prompt=user_prompt,
                                    thinking=False, max_tokens=limit, json_mode=True)
+        validation_retried = False
         try:
             result = _validate_result(response, dimensions, context, answer=answer,
                                       previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
                                       require_committee=bool(previous), require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
         except (ValueError, TypeError, KeyError, AttributeError) as invalid_response:
+            validation_retried = True
             # Only retry model format/validation errors, once. Provider or
             # permission failures are not retried and invalid text is not logged.
             system += "上次回覆未通過格式或引用核對，請重新輸出有效完整 JSON；逐一使用 rubric 原有鍵名，所有引文必須逐字取自提供的來源。"
@@ -899,6 +1080,29 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
             result = _validate_result(response, dimensions, context, answer=answer,
                                       previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
                                       require_committee=bool(previous), require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
+        if previous is None and recent_questions:
+            distinct = _distinct_initial_questions(result, recent_questions, question_focus["key"], bool(has_theory_text and theory_scope))
+            if distinct is None and not validation_retried:
+                # The first output was valid, but all its questions repeated prior
+                # discussions. Use only the one existing retry budget; if that
+                # retry fails, keep the validated result with an explicit warning.
+                first_result = result
+                try:
+                    retry_system = system + ("上次問題與已有討論重複，請以本輪指定範圍為核心，"
+                        "提出不同的具體研究設計、假設或論證角度，不要改寫同一問題。")
+                    response = chat_completion(connection, system_prompt=retry_system, user_prompt=user_prompt,
+                                               thinking=False, max_tokens=limit, json_mode=True)
+                    candidate = _validate_result(response, dimensions, context, answer=answer,
+                        previous=None, question=None, rubric=rubric, stage=stage, criterion_key=criterion_key,
+                        require_committee=False, require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
+                    distinct = _distinct_initial_questions(candidate, recent_questions, question_focus["key"], bool(has_theory_text and theory_scope))
+                    result = candidate
+                except Exception:
+                    result = first_result
+            if distinct is None:
+                result = {**result, "question_overlap_warning": True}
+            else:
+                result = distinct
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI 評估暫時無法提供有效回覆，請重試。既有人工評估與答辯紀錄未變更。") from exc
     now = datetime.now(timezone.utc).isoformat()
@@ -917,6 +1121,8 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         "stale": False, "provisional": True, "pinned_files": context["pinned_files"], "context_scope": context["scope"],
         "result": result, "history": history, "model": connection.model}
     review["specialist"] = specialists[0] if len(specialists) == 1 else None
+    review["question_policy_version"] = QUESTION_POLICY_VERSION
+    review["question_focus"] = question_focus
     if len(specialists) > 1:
         review["specialists"] = dict(zip(dimensions, specialists))
     if stage:
