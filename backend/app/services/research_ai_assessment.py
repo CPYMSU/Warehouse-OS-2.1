@@ -1061,7 +1061,9 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         if economic and stage and stage["key"] == "regularities":
             focus_instruction += ("For this estimation stage, grounded method and evidence questions are valid; "
                                   "ask specifically about estimates, identification, robustness and economic interpretation. "
-                                  "Do not merely request uploaded material. Theory questions are optional but must cite the manuscript.")
+                                  "Do not merely request uploaded material. Theory questions are optional but must cite the manuscript. "
+                                  "State sample periods or other numbers as facts only when the cited source explicitly establishes "
+                                  "the complete sample definition and time coverage; otherwise ask conditionally and do not assert guesses.")
         system = PROMPT + expert_prompt + (ECONOMIC_THEORY_PROMPT if economic and theory_scope else "") + focus_instruction
         user_prompt = workflow._canonical(prompt)
         limit = 2600 if stage or focus_item else 8192 if len(dimensions) > 1 else 6400

@@ -311,6 +311,8 @@ def test_econometric_regularity_accepts_grounded_method_questions_without_weaken
     assert [question['category'] for question in review['result']['questions']] == ['method', 'evidence']
     assert all(q['citations'][0]['quote'] == source['text'] for q in review['result']['questions'])
     assert len(state.calls) == 1 and 'identification' in state.calls[0]['system_prompt']
+    assert 'complete sample definition and time coverage' in state.calls[0]['system_prompt']
+    assert 'ask conditionally and do not assert guesses' in state.calls[0]['system_prompt']
 
     value = stage_result('model', 'regularities')
     value['questions'][0].update(category='theory', source_refs=['S1'], question='In the paper, x=y+999. Why?')
