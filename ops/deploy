@@ -161,6 +161,15 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
+sftp_batch_path() {
+  local path="$1"
+  [[ "${path}" != *$'\n'* && "${path}" != *$'\r'* ]] \
+    || fail "SFTP batch paths must not contain line breaks"
+  path="${path//\\/\\\\}"
+  path="${path//\"/\\\"}"
+  printf '"%s"' "${path}"
+}
+
 [[ "${TARGET}" =~ ^[A-Za-z0-9._-]{1,40}$ ]] \
   || fail "WAREHOUSE_DEPLOY_TARGET is invalid"
 [[ "${TRANSPORT}" =~ ^(ssh|local)$ ]] \
@@ -541,8 +550,35 @@ else
   if [[ "${SCP_LEGACY}" == 1 ]]; then
     scp_options=(-O "${scp_options[@]}")
   fi
-  scp "${scp_options[@]}" "${package}" "${checksum_file}" \
-    "${USER}@${HOST}:${REMOTE_INCOMING}/"
+  if scp "${scp_options[@]}" "${package}" "${checksum_file}" \
+    "${USER}@${HOST}:${REMOTE_INCOMING}/"; then
+    :
+  else
+    upload_status=$?
+    # Forced-command legacy gates do not necessarily allow the SFTP subsystem.
+    [[ "${SCP_LEGACY}" == 0 ]] || exit "${upload_status}"
+    require_command sftp
+    upload_batch="${work_dir}/upload.sftp"
+    package_source="$(sftp_batch_path "${package}")"
+    package_destination="$(sftp_batch_path "${REMOTE_INCOMING}/$(basename "${package}")")"
+    checksum_source="$(sftp_batch_path "${checksum_file}")"
+    checksum_destination="$(sftp_batch_path "${REMOTE_INCOMING}/$(basename "${checksum_file}")")"
+    printf 'put -a %s %s\nput -a %s %s\n' \
+      "${package_source}" "${package_destination}" \
+      "${checksum_source}" "${checksum_destination}" > "${upload_batch}"
+    for upload_attempt in 1 2 3; do
+      printf '==> resume immutable upload via SFTP attempt %s/3\n' "${upload_attempt}"
+      if sftp "${ssh_options[@]}" -b "${upload_batch}" "${USER}@${HOST}"; then
+        upload_status=0
+        break
+      else
+        upload_status=$?
+      fi
+      if [[ "${upload_attempt}" != 3 ]]; then sleep 2; fi
+    done
+    # The manager verifies the unchanged package checksum before preparing it.
+    [[ "${upload_status}" == 0 ]] || exit "${upload_status}"
+  fi
 fi
 
 if [[ -n "${RELEASE_ID_FILE}" ]]; then
