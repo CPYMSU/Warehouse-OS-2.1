@@ -33,6 +33,15 @@ const defenseLabels={unassessed:'尚未答辯',unclear:'理解仍不清楚',deve
 const reviewDimension=(review,dimension)=>((review && review.result||{}).dimensions||[]).find(item=>item.key===dimension);
 const reviewFor=(reviews,dimension)=>reviews.filter(review=>review.dimension===dimension||(review.dimensions||[]).includes(dimension))
   .sort((a,b)=>text(b.updated_at||b.created_at).localeCompare(text(a.updated_at||a.created_at))||Number(b.revision)-Number(a.revision))[0]||null;
+const aiErrorMessage=reason=>{
+  const message=typeof reason==='string'?reason.trim():reason && typeof reason.message==='string'?reason.message.trim():'';
+  if(reason && reason.status===409)return '研究材料或評估版本已更新；答辯草稿仍保留。'+(message && message!=='Error'?message:'');
+  if(reason && reason.status>=500 && (!message || /^(error|bad gateway|gateway timeout|service unavailable|internal server error)$/i.test(message)))
+    return 'Bonfire AI 暫時無法完成評估，請稍後重試；答辯草稿仍會保留。';
+  if(!message || /^(error|failed to fetch|load failed|networkerror.*)$/i.test(message))
+    return '暫時無法完成評估，請檢查連線後重試；答辯草稿仍會保留。';
+  return message;
+};
 
 const AIReviewPanel=({project,dimension,serverVersion,review,files,checks,RichText,canWrite,manualDirty,onResult,onReload,onBusy,onOpenFile,onNavigate})=>{
   const [answers,setAnswers]=useState(()=>Object.fromEntries(dimensions.map(([name])=>{
@@ -75,7 +84,7 @@ const AIReviewPanel=({project,dimension,serverVersion,review,files,checks,RichTe
       }else setNotice('AI 初評已保存，請確認依據並回答追問。');
     }catch(reason){
       if(!alive.current || reason.name==='AbortError')return;
-      setError((reason.status===409?'研究材料或評估版本已更新；答辯草稿仍保留。':'')+text(reason.message||reason));
+      setError(aiErrorMessage(reason));
       if(reason.status===409){try{const latest=await onReload();if(alive.current && latest)localVersion.current=Math.max(localVersion.current,Number(latest.research_dashboard && latest.research_dashboard.dmp_version)||0);}catch(_error){}}
     }finally{lock.current=false;if(alive.current){setWorking(null);onBusy(false);}}
   };
@@ -101,7 +110,7 @@ const AIReviewPanel=({project,dimension,serverVersion,review,files,checks,RichTe
       <button type="button" className="primary" data-testid="research-cockpit-ai-start" disabled={!canWrite||busy} onClick={()=>run('initial')}>{review?'重新進行 AI 初評':'Bonfire AI 初評'} ↗</button></header>
     {manualDirty && <p className="rcp-ai-context-note">AI 讀取已保存的研究紀錄；目前人工檢查仍有未保存的編輯。</p>}
     {working && <div className="rcp-ai-loading" data-testid="research-cockpit-ai-loading" role="status"><i/><div><b>{sameDimension?(working.kind==='reply'?'正在核對答辯與證據，重新評估…':'正在閱讀固定版本材料，整理判斷與追問…'):'另一個研究面向正在進行 AI 評估…'}</b><span>讀取材料 → 核對依據 → 提出可回答的問題</span></div></div>}
-    {error && <div className="rcp-ai-error" data-testid="research-cockpit-ai-error" role="alert"><p>{error}</p><button type="button" data-testid="research-cockpit-ai-refresh" disabled={busy} onClick={async()=>{try{await onReload();setError('');}catch(reason){setError(text(reason.message||reason));}}}>重新讀取材料與紀錄 ↻</button></div>}
+    {error && <div className="rcp-ai-error" data-testid="research-cockpit-ai-error" role="alert"><p>{error}</p><button type="button" data-testid="research-cockpit-ai-refresh" disabled={busy} onClick={async()=>{try{await onReload();setError('');}catch(reason){setError(aiErrorMessage(reason));}}}>重新讀取材料與紀錄 ↻</button></div>}
     {review && result?<>
       <div className="rcp-ai-source"><b>AI 初評 · 待確認</b><span>評估 R{review.revision} · 來源 DMP V{review.source_dmp_version} · {stamp(review.updated_at||review.created_at)}</span>
         <details><summary>本輪固定材料 · {pinned.length} 份</summary>{pinned.map(file=><Artifact key={file.file_version_id} artifact={file} onOpen={onOpenFile}/>)}

@@ -32,9 +32,11 @@ PROMPT = (
     "只輸出 JSON：{summary,dimensions:[{key,summary,gaps:[文字],citations:[],criteria:["
     "{key,evidence_verdict,defense_verdict,basis_source,basis,gaps:[文字],citations:[]}]}],"
     "questions:[{id,dimension,criterion,question}]}。dimensions 和 criteria 必須完整對應 supplied rubric，不能增減鍵。"
-    "basis_source 只能 project_evidence/defense_argument/insufficient；每項 basis 最多80字，gap 最多一項，簡明具體。"
+    "dimensions 必須與 rubric 的外層維度一一對應；例如 rubric 只有 paper，dimensions 只能有一個 key=paper 的物件，"
+    "該物件的 criteria 包含 paper 下全部標準，不能把每個標準拆成獨立 dimension。"
+    "basis_source 只能 project_evidence/defense_argument/insufficient；每項 basis 最多40字，gap 最多一項，簡明具體。"
     "citation 用 {file_version_id,block_id,quote}，或 {record_type,record_id,quote}；只能引用 sources 中提供的身份，"
-    "quote 必須逐字取自其 text（20–160字內的連續原文），不可捏造引用、數字或來源。最多每項兩個引文。"
+    "quote 必須逐字取自其 text（20–80字內的連續原文），不可捏造引用、數字或來源。每項最多一個引文。"
     "總結只用1–2句、100字以內；優先提出2個短而具體的問題（必要時最多3個），id 使用 q1/q2/q3，綁定所評估的 dimension 和 criterion。"
     r"如有公式，以 \( ... \) 或 \[ ... \] 表達，不使用程式碼框。"
 )
@@ -226,6 +228,43 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
     if not isinstance(value, dict) or set(value) - {"summary", "dimensions", "questions"}:
         raise ValueError("Invalid review structure")
     raw_dimensions = value.get("dimensions")
+    # Some providers split one dimension into one object per criterion. Merge
+    # only when the complete, unique rubric proves every object belongs to it.
+    if len(dimensions) == 1 and isinstance(raw_dimensions, list) and len(raw_dimensions) > 1:
+        dimension = dimensions[0]
+        allowed = {name for name, _ in workflow.DASHBOARD_CHECKS[dimension][1]}
+        all_criteria, all_gaps, all_citations = [], [], []
+        safe_split = True
+        for part in raw_dimensions:
+            if not isinstance(part, dict) or not isinstance(part.get("criteria"), list):
+                safe_split = False
+                break
+            criteria = part["criteria"]
+            part_keys = [item.get("key") if isinstance(item, dict) else None for item in criteria]
+            part_key = part.get("key")
+            if not criteria or (part_key != dimension and (len(part_keys) != 1 or part_key != part_keys[0])):
+                safe_split = False
+                break
+            gaps = part.get("gaps", [])
+            citations = part.get("citations", [])
+            if not isinstance(gaps, list) or len(gaps) > 3:
+                safe_split = False
+                break
+            # Validate all citations, including those beyond the display limit.
+            _citations(citations, context)
+            all_criteria.extend(criteria)
+            all_gaps.extend(gaps)
+            all_citations.extend(citations)
+        keys = [item.get("key") if isinstance(item, dict) else None for item in all_criteria]
+        if safe_split and len(keys) == len(allowed) and set(keys) == allowed:
+            raw_dimensions = [{"key": dimension, "summary": value.get("summary"),
+                               "gaps": all_gaps[:3], "citations": all_citations[:5], "criteria": all_criteria}]
+            questions = value.get("questions")
+            if isinstance(questions, list):
+                value = dict(value)
+                value["questions"] = [dict(item, dimension=dimension)
+                    if isinstance(item, dict) and item.get("dimension") == item.get("criterion")
+                    and item.get("criterion") in allowed else item for item in questions]
     if not isinstance(raw_dimensions, list) or len(raw_dimensions) != len(dimensions):
         raise ValueError("Wrong review dimensions")
     result = {"summary": _text(value.get("summary"), 1000), "dimensions": [], "questions": []}
@@ -358,7 +397,7 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
     try:
         connection = _connection(actor, settings, thinking=False)
         response = chat_completion(connection, system_prompt=PROMPT, user_prompt=workflow._canonical(prompt),
-                                   thinking=False, max_tokens=4200 if len(dimensions) > 1 else 2600, json_mode=True)
+                                   thinking=False, max_tokens=8192 if len(dimensions) > 1 else 6400, json_mode=True)
         result = _validate_result(response, dimensions, context, answer=answer,
                                   previous=previous["result"] if previous else None, question=question)
     except Exception as exc:

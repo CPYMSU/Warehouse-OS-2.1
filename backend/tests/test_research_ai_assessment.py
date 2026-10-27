@@ -114,13 +114,41 @@ def test_initial_review_is_fast_grounded_and_preserves_manual_assessment(state):
     result = state.start()
     review = result['review']
     assert len(state.calls) == 1 and state.calls[0]['thinking'] is False
-    assert state.calls[0]['json_mode'] is True and state.calls[0]['max_tokens'] <= 2600
+    assert state.calls[0]['json_mode'] is True and state.calls[0]['max_tokens'] == 6400
     assert SOURCE['text'] in state.calls[0]['user_prompt']
     assert state.content['research_dashboard_assessment'] == manual
     assert review['revision'] == 1 and review['provisional'] and len(review['result']['questions']) == 2
     readback = service.list_ai_reviews(actor(), UUID(int=3))
     assert readback['reviews'][0]['stale'] is False
     assert readback['reviews'][0]['history'][0]['kind'] == 'initial'
+
+
+def test_split_single_dimension_is_safely_reassembled_with_verified_citations():
+    response = model_result('paper', evidence='supported', cited=True)
+    whole = response['dimensions'][0]
+    response['dimensions'] = [{**whole, 'key': criterion['key'], 'criteria': [criterion]}
+                              for criterion in whole['criteria']]
+    response['questions'][0]['dimension'] = response['questions'][0]['criterion']
+    result = service._validate_result(response, ['paper'], {'sources': [SOURCE]}, answer='')
+    assert len(result['dimensions']) == 1 and result['dimensions'][0]['key'] == 'paper'
+    assert len(result['dimensions'][0]['criteria']) == len(workflow.DASHBOARD_CHECKS['paper'][1])
+    assert result['questions'][0]['dimension'] == 'paper'
+    assert all(item['citations'][0]['quote'] == SOURCE['text'] for item in result['dimensions'][0]['criteria'])
+
+
+def test_split_dimension_rejects_duplicates_and_unverified_citations():
+    response = model_result('paper', evidence='supported', cited=True)
+    whole = response['dimensions'][0]
+    response['dimensions'] = [{**whole, 'key': criterion['key'], 'criteria': [criterion]}
+                              for criterion in whole['criteria']]
+    response['dimensions'][-1] = copy.deepcopy(response['dimensions'][0])
+    with pytest.raises(ValueError, match='Wrong review dimensions'):
+        service._validate_result(response, ['paper'], {'sources': [SOURCE]}, answer='')
+    response['dimensions'][-1] = {**whole, 'key': whole['criteria'][-1]['key'], 'criteria': [whole['criteria'][-1]]}
+    response['dimensions'][-1]['citations'] = [{
+        'file_version_id': SOURCE['file_version_id'], 'block_id': SOURCE['block_id'], 'quote': 'fabricated'}]
+    with pytest.raises(ValueError, match='Citation was not present'):
+        service._validate_result(response, ['paper'], {'sources': [SOURCE]}, answer='')
 
 
 def test_answer_can_improve_defense_without_creating_scientific_evidence(state):
