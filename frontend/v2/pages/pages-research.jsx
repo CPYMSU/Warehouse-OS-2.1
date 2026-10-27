@@ -61,12 +61,12 @@ const apiError = async response => {
 };
 const RESEARCH_TABS = [
   ["dashboard", "研究面板"],
+  ["committee", "答辯委員會"],
   ["overview", "總覽"],
   ["disciplines", "專業與流程"],
   ["showcase", "研究展示"],
   ["projects", "課題庫"],
   ["refinement", "論文精修"],
-  ["committee", "模擬答辯"],
   ["evidence", "證據與覆核"],
   ["execution", "重現運算"],
   ["revisions", "版本譜系"],
