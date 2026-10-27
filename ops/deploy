@@ -170,6 +170,56 @@ sftp_batch_path() {
   printf '"%s"' "${path}"
 }
 
+resume_sftp_upload() {
+  local upload_batch="${work_dir}/upload.sftp"
+  local listing_batch="${work_dir}/upload-list.sftp"
+  local listing="${work_dir}/upload-list.txt"
+  local package_source package_destination checksum_source checksum_destination
+  local package_name package_size remote_size upload_attempt upload_status=1
+  package_name="$(basename "${package}")"
+  package_size="$(wc -c < "${package}" | tr -d '[:space:]')"
+  package_source="$(sftp_batch_path "${package}")" || return
+  package_destination="$(sftp_batch_path "${REMOTE_INCOMING}/${package_name}")" || return
+  checksum_source="$(sftp_batch_path "${checksum_file}")" || return
+  checksum_destination="$(sftp_batch_path "${REMOTE_INCOMING}/$(basename "${checksum_file}")")" || return
+  printf 'ls -ln %s\n' "$(sftp_batch_path "${REMOTE_INCOMING}/")" > "${listing_batch}"
+  for upload_attempt in 1 2 3; do
+    printf '==> resume immutable upload via SFTP attempt %s/3\n' "${upload_attempt}"
+    # Listing must succeed: a failed connection is never evidence of absence.
+    if sftp "${ssh_options[@]}" -b "${listing_batch}" "${USER}@${HOST}" > "${listing}"; then
+      remote_size="$(awk -v name="${package_name}" '
+        { entry=$NF; sub(/^.*\//, "", entry) }
+        entry == name {
+          if ($1 !~ /^-/ || $5 !~ /^[0-9]+$/ || found++) { invalid=1; exit }
+          size=$5
+        }
+        END { if (invalid) exit 1; if (found) print size; else print "missing" }
+      ' "${listing}")" || return 1
+      : > "${upload_batch}"
+      if [[ "${remote_size}" == missing ]]; then
+        printf 'put %s %s\n' "${package_source}" "${package_destination}" >> "${upload_batch}"
+      elif (( remote_size < package_size )); then
+        printf 'put -a %s %s\n' "${package_source}" "${package_destination}" >> "${upload_batch}"
+      elif (( remote_size > package_size )); then
+        printf 'deploy error: remote immutable package is larger than its source\n' >&2
+        return 1
+      fi
+      # Native put -a fails for missing and already-complete files. The tiny
+      # checksum is always replaced; an equal-size archive is verified by SHA.
+      printf 'put %s %s\n' "${checksum_source}" "${checksum_destination}" >> "${upload_batch}"
+      if sftp "${ssh_options[@]}" -b "${upload_batch}" "${USER}@${HOST}"; then
+        return 0
+      else
+        upload_status=$?
+      fi
+    else
+      upload_status=$?
+    fi
+    if [[ "${upload_attempt}" != 3 ]]; then sleep 2; fi
+  done
+  return "${upload_status}"
+}
+
 [[ "${TARGET}" =~ ^[A-Za-z0-9._-]{1,40}$ ]] \
   || fail "WAREHOUSE_DEPLOY_TARGET is invalid"
 [[ "${TRANSPORT}" =~ ^(ssh|local)$ ]] \
@@ -558,26 +608,8 @@ else
     # Forced-command legacy gates do not necessarily allow the SFTP subsystem.
     [[ "${SCP_LEGACY}" == 0 ]] || exit "${upload_status}"
     require_command sftp
-    upload_batch="${work_dir}/upload.sftp"
-    package_source="$(sftp_batch_path "${package}")"
-    package_destination="$(sftp_batch_path "${REMOTE_INCOMING}/$(basename "${package}")")"
-    checksum_source="$(sftp_batch_path "${checksum_file}")"
-    checksum_destination="$(sftp_batch_path "${REMOTE_INCOMING}/$(basename "${checksum_file}")")"
-    printf 'put -a %s %s\nput -a %s %s\n' \
-      "${package_source}" "${package_destination}" \
-      "${checksum_source}" "${checksum_destination}" > "${upload_batch}"
-    for upload_attempt in 1 2 3; do
-      printf '==> resume immutable upload via SFTP attempt %s/3\n' "${upload_attempt}"
-      if sftp "${ssh_options[@]}" -b "${upload_batch}" "${USER}@${HOST}"; then
-        upload_status=0
-        break
-      else
-        upload_status=$?
-      fi
-      if [[ "${upload_attempt}" != 3 ]]; then sleep 2; fi
-    done
+    resume_sftp_upload
     # The manager verifies the unchanged package checksum before preparing it.
-    [[ "${upload_status}" == 0 ]] || exit "${upload_status}"
   fi
 fi
 
