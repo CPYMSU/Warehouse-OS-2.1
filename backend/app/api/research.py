@@ -52,6 +52,7 @@ from app.services.research_review import (
 )
 from app.services.research_semantic_refinement import (
     agent_chat,
+    defense_explanation,
     create_manuscript_annotation,
     queue_semantic_run,
     resolve_finding,
@@ -407,6 +408,19 @@ def research_manuscript_semantic_refresh(
     if result.get("status") == "queued":
         background_tasks.add_task(run_semantic_ai, actor, result["run_id"], settings)
     return result
+
+
+@router.post("/api/research/projects/{project_ref}/files/{file_ref}/refinement/defense-explanations")
+def research_manuscript_defense_explain(
+    project_ref: str,
+    file_ref: str,
+    actor: Annotated[ActorContext, Depends(current_actor)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    response: Response,
+    payload: dict[str, object] = Body(default={}),
+) -> dict[str, object]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return defense_explanation(actor, project_ref, file_ref, payload, settings)
 
 
 @router.post(

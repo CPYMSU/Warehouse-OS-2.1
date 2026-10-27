@@ -10936,6 +10936,24 @@ COMMANDS = [
         ],
     },
     {
+        "command": "research manuscript defense explain",
+        "tool_name": "research_manuscript_defense_explain",
+        "description": "結合論文上下文，用白話、明確標示的數字算例與生活類比解釋選中的句子或公式，並準備答辯講稿",
+        "api_method": "POST",
+        "api_path": "/api/research/projects/{project_ref}/files/{file_ref}/refinement/defense-explanations",
+        "permission": "research.write",
+        "writes": True,
+        "risk": "low",
+        "params": [
+            _p("project", "path.project_ref", "課題 ID 或課題代碼", required=True),
+            _p("file", "path.file_ref", "DOCX 文件 ID 或邏輯路徑", required=True),
+            _p("selection", "body.selection", "選區錨點 JSON：block_id、field_name、offset_encoding、start_offset、end_offset 與 quote", required=True, ptype="json"),
+            _p("revision", "body.expected_revision", "目前精修草稿 revision，用於防止上下文已被其他裝置更新", ptype="int"),
+            _p("refresh", "body.refresh", "略過本草稿版本的已有解釋並重新生成", ptype="bool"),
+        ],
+        "examples": ["research manuscript defense explain --project MK51 --file manuscript/paper.docx --selection @selection.json"],
+    },
+    {
         "command": "research manuscript annotation status",
         "tool_name": "research_manuscript_annotation_status",
         "description": "完成或重新開啟一項精修草稿批注，保留原字符錨點與審計身份",
@@ -12190,6 +12208,12 @@ _RESEARCH_SEMANTIC_MATRIX = {
         "create_content_hash_bound_manuscript_annotation",
         "annotation_anchor_invalidates_when_source_content_changes",
         "annotation_anchor_content_hash_and_author_readback",
+    ),
+    "research_manuscript_defense_explain": (
+        "research.defense_explanation",
+        "explain_selected_manuscript_for_an_oral_defense",
+        "explanation_is_pinned_to_current_draft_selection_and_never_changes_manuscript_text",
+        "source_selection_revision_context_and_illustrative_explanation_readback",
     ),
     "research_manuscript_annotation_status": (
         "research.manuscript_annotation",

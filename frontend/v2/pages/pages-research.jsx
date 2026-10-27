@@ -1090,6 +1090,28 @@ const restoredRefinementSelection = (anchor, blocks) => {
   };
 };
 
+const defenseSelectionKey = anchor => anchor ? [anchor.block_id, anchor.field_name || "text",
+  Number.isInteger(anchor.cell_index) ? anchor.cell_index : "-", anchor.start_offset,
+  anchor.end_offset, anchor.quote].map(clean).join("|") : "";
+const restoredDefenseSelection = (anchor, blocks) => {
+  if (!anchor || !Array.isArray(blocks)) return null;
+  if (anchor.field_name !== "latex") return restoredRefinementSelection(anchor, blocks);
+  const block = blocks.find(item => clean(item.id) === clean(anchor.block_id));
+  const source = clean(block && block.latex), start = Number(anchor.start_offset), end = Number(anchor.end_offset);
+  return block && Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start &&
+    source.slice(start, end) === clean(anchor.quote) ? {...anchor, block_id:clean(block.id),field_name:"latex",cell_index:null} : null;
+};
+const defenseMessageSelection = message => (message && Array.isArray(message.citations) ? message.citations : [])
+  .find(item => item && item.purpose === "defense_explanation") || null;
+const DefenseExplanationBody = ({ body }) => {
+  const source = clean(body);
+  if (window.marked && window.DOMPurify) {
+    const html = window.DOMPurify.sanitize(window.marked.parse(source), {USE_PROFILES:{html:true}});
+    return <div className="rv-defense-answer" data-testid="research-defense-answer" dangerouslySetInnerHTML={{__html:html}}/>;
+  }
+  return <div className="rv-defense-answer plain" data-testid="research-defense-answer">{source}</div>;
+};
+
 const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onError }) => {
   const activeFile = files.find(item => clean(item.id) === clean(fileId)) || files[0] || null;
   const [workspace, setWorkspace] = useState(null);
@@ -1109,6 +1131,20 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const [annotationBody, setAnnotationBody] = useState("");
   const [selectionQuestion, setSelectionQuestion] = useState("");
   const [selectionBusy, setSelectionBusy] = useState("");
+  const [defenseAuto, setDefenseAuto] = useState(true);
+  const [defenseAnchor, setDefenseAnchor] = useState(null);
+  const [defenseStatus, setDefenseStatus] = useState("idle");
+  const [defenseResult, setDefenseResult] = useState(null);
+  const [defenseError, setDefenseError] = useState("");
+  const [defenseCopy, setDefenseCopy] = useState("");
+  const [defenseTrigger, setDefenseTrigger] = useState(0);
+  const defenseController = useRef(null);
+  const defenseAutoTimer = useRef(null);
+  const defenseSerial = useRef(0);
+  const defenseCache = useRef(new Map());
+  const defensePending = useRef("");
+  const defenseScope = useRef("");
+  const defensePanelRef = useRef(null);
   const blocksRef = useRef([]);
   const revisionRef = useRef(0);
   const editSerial = useRef(0);
@@ -1124,11 +1160,20 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     ? "/api/research/projects/" + encodeURIComponent(project.id) + "/files/" + encodeURIComponent(activeFile.id) + "/refinement"
     : "";
   const semanticBase = base ? base + "/semantic" : "";
+  defenseScope.current = base;
+  const cancelDefense = () => {
+    defenseSerial.current += 1;
+    defensePending.current = "";
+    if (defenseController.current) defenseController.current.abort();
+    if (defenseAutoTimer.current != null) { window.clearTimeout(defenseAutoTimer.current);defenseAutoTimer.current=null; }
+  };
 
   const loadSemantic = async (quiet = false) => {
     if (!semanticBase) return null;
+    const scope = base;
     try {
       const data = await W2.json(semanticBase);
+      if (defenseScope.current !== scope) return null;
       setSemantic(data);
       return data;
     } catch (reason) {
@@ -1179,6 +1224,9 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     setAnnotationBody(clean(ui.annotation_body).slice(0, 20000));
     setSelectionQuestion(clean(ui.selection_question).slice(0, 30000));
     setSelectionBusy("");
+    cancelDefense(); defenseCache.current.clear();
+    setDefenseAuto(ui.defense_auto !== false); setDefenseAnchor(null);
+    setDefenseResult(null); setDefenseError(""); setDefenseCopy(""); setDefenseStatus("idle");
     selectionNodes.current = {};
     editSerial.current = 0; savedSerial.current = 0; revisionRef.current = 0;
     if (!base) return () => { alive = false; };
@@ -1193,6 +1241,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       const next = restoreLocal ? local.blocks : serverBlocks;
       setWorkspace(data); setBlocks(next); blocksRef.current = next;
       setSelection(restoredRefinementSelection(ui.selection, next));
+      setDefenseAnchor(restoredDefenseSelection(ui.defense_selection || ui.selection, next));
       revisionRef.current = Number((data.draft || {}).revision) || 0;
       editSerial.current = restoreLocal ? 1 : 0;
       savedSerial.current = 0;
@@ -1201,7 +1250,7 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
       if (!alive) return;
       setState("error"); onError(clean(reason.message || reason));
     });
-    return () => { alive = false; };
+    return () => { alive = false; cancelDefense(); };
   }, [base]);
   useEffect(() => {
     if (!workspace || !semanticBase) return () => {};
@@ -1235,11 +1284,13 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
         selection: selection || null,
         annotation_body: annotationBody.slice(0, 20000),
         selection_question: selectionQuestion.slice(0, 30000),
+        defense_auto: defenseAuto,
+        defense_selection: defenseAnchor || null,
       }});
     }, 120);
     return () => window.clearTimeout(timer);
   }, [clean(refinementMarker), semanticLayer, fontSize, agentType, agentMessage, commitMessage,
-    selection, annotationBody, selectionQuestion]);
+    selection, annotationBody, selectionQuestion, defenseAuto, defenseAnchor]);
   useEffect(() => {
     if (!workspace || !activeFile || !paperScrollRef.current || !inspectorScrollRef.current) {
       return () => {};
@@ -1369,6 +1420,9 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
     (Number.isInteger(anchor && anchor.cell_index) ? anchor.cell_index : "-");
   const chooseRefinementSelection = anchor => {
     setSelection(anchor); setAnnotationBody(""); setSelectionQuestion("");
+    cancelDefense(); setDefenseAnchor(anchor); setDefenseResult(null); setDefenseError(""); setDefenseCopy("");
+    setDefenseTrigger(value=>value+1);
+    setDefenseStatus(defenseAuto ? "queued" : "idle");
   };
   const focusRefinementSelection = anchor => {
     if (!anchor) return;
@@ -1387,6 +1441,82 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const ensureSelectionSynced = async () => {
     if (editSerial.current > savedSerial.current && !await syncDraft()) return false;
     return true;
+  };
+  const explainDefense = async (anchor = defenseAnchor, refresh = false) => {
+    if (!anchor || !base || !workspace || state === "conflict") return;
+    const signature = defenseSelectionKey(anchor), scope = base;
+    const initialKey = scope + "|" + revisionRef.current + "|" + signature;
+    if (!refresh && defensePending.current === initialKey) return;
+    cancelDefense();
+    const serial = defenseSerial.current;
+    const controller = new AbortController(); defenseController.current = controller;
+    defensePending.current = initialKey;
+    setDefenseAnchor(anchor); setDefenseStatus("loading"); setDefenseError(""); setDefenseCopy("");
+    setDefenseResult(previous => previous && defenseSelectionKey(previous.selection || defenseMessageSelection(previous.message)) === signature ? previous : null);
+    const current = () => serial === defenseSerial.current && defenseScope.current === scope && !controller.signal.aborted;
+    try {
+      for (let attempt=0; savingRef.current && attempt<60 && current(); attempt++) {
+        await new Promise(resolve => window.setTimeout(resolve,100));
+      }
+      if (!current()) return;
+      if (savingRef.current || !await ensureSelectionSynced()) throw new Error("草稿尚未完成同步，請稍後重新解釋。");
+      if (!current()) return;
+      const key = scope + "|" + revisionRef.current + "|" + signature;
+      defensePending.current = key;
+      const cached = !refresh && defenseCache.current.get(key);
+      if (cached) { setDefenseResult({...cached,cached:true}); setDefenseStatus("done"); return; }
+      const result = await W2.json(scope + "/defense-explanations", {
+        method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,cache:"no-store",
+        body:JSON.stringify({selection:{...anchor,offset_encoding:"utf16"},expected_revision:revisionRef.current,refresh:Boolean(refresh)}),
+      });
+      if (!current()) return;
+      if (!result.message || !clean(result.message.body).trim()) throw new Error("Agent 尚未回傳解釋，請重新嘗試。");
+      defenseCache.current.set(key,result);
+      while (defenseCache.current.size>16) defenseCache.current.delete(defenseCache.current.keys().next().value);
+      setDefenseResult(result); setDefenseStatus("done");
+    } catch (reason) {
+      if (current() && reason.name !== "AbortError") {
+        setDefenseError(clean(reason.message || reason)); setDefenseStatus("error");
+      }
+    } finally { if (serial===defenseSerial.current) defensePending.current=""; }
+  };
+  const explainEquation = block => {
+    const field = clean(block.text).trim() ? "text" : "latex";
+    const source = clean(block[field]);
+    if (!source.trim()) return;
+    const anchor = {block_id:clean(block.id),field_name:field,cell_index:null,start_offset:0,end_offset:source.length,quote:source};
+    setSelection(null);
+    explainDefense(anchor);
+    if (defensePanelRef.current) defensePanelRef.current.scrollIntoView({behavior:"smooth",block:"start"});
+  };
+  const defenseKey = defenseSelectionKey(defenseAnchor);
+  useEffect(() => {
+    if (!defenseAuto || !defenseAnchor || !workspace || state === "conflict") return () => {};
+    const timer = window.setTimeout(() => {defenseAutoTimer.current=null;explainDefense(defenseAnchor);},700);
+    defenseAutoTimer.current=timer;
+    return () => {window.clearTimeout(timer);if(defenseAutoTimer.current===timer)defenseAutoTimer.current=null;};
+  }, [base,defenseKey,defenseAuto,defenseTrigger]);
+  useEffect(() => {
+    if (!semantic || defenseResult || defensePending.current) return;
+    const fromThreads = (semantic.threads || []).flatMap(thread => thread.messages || [])
+      .filter(message => message.role === "assistant" && defenseMessageSelection(message));
+    const saved = Array.isArray(semantic.defense_explanations) ? semantic.defense_explanations : fromThreads;
+    const message = saved.find(item => {
+      const anchor=defenseMessageSelection(item) || item.selection;
+      return anchor && (!defenseAnchor || defenseSelectionKey(anchor)===defenseKey);
+    });
+    if (!message) return;
+    const anchor=defenseMessageSelection(message) || message.selection;
+    const stale=message.stale || Number(message.context_revision)!==Number(revisionRef.current);
+    const result={ok:true,message,selection:anchor,cached:true,stale};
+    if (!stale) defenseCache.current.set(base+"|"+revisionRef.current+"|"+defenseSelectionKey(anchor),result);
+    setDefenseResult(result); setDefenseStatus(stale?"stale":"done");
+  }, [semantic,base,defenseKey]);
+  const copyDefense = async () => {
+    const body=clean(defenseResult && defenseResult.message && defenseResult.message.body);
+    if (!body) return;
+    try { await navigator.clipboard.writeText(body);setDefenseCopy("答辯解釋已複製。"); }
+    catch (_error) { setDefenseCopy("瀏覽器未開放複製，請選取解釋內容後複製。"); }
   };
   const saveSelectionAnnotation = async annotationType => {
     if (!selection || selectionBusy) return;
@@ -1431,6 +1561,8 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   };
 
   const changeBlocks = updater => {
+    cancelDefense(); setDefenseStatus(defenseResult ? "stale" : "idle");
+    setDefenseResult(current => current ? {...current,stale:true} : null);
     const next = updater(blocksRef.current).map(item => ({ ...item }));
     blocksRef.current = next; setBlocks(next);
     editSerial.current += 1; setState("local"); cache(next, true);
@@ -1502,6 +1634,8 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
           (accept ? "/accept" : "/reject"), {}
       );
       if (accept && result.block) {
+        cancelDefense(); setDefenseStatus(defenseResult ? "stale" : "idle");
+        setDefenseResult(current => current ? {...current,stale:true} : null);
         const next = blocksRef.current.map(item => clean(item.id) === clean(result.block.id)
           ? { ...item, ...result.block } : item);
         blocksRef.current = next; setBlocks(next);
@@ -1553,6 +1687,10 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
   const semanticStatus = semanticRun && ["queued", "processing"].includes(semanticRun.status)
     ? "多线程 Agent 正在工作" : semanticRun && semanticRun.status === "failed"
       ? "AI 任务需要重试" : "语义资源已同步";
+  const defenseBusy = ["queued","loading"].includes(defenseStatus);
+  const defenseSource = defenseAnchor || defenseResult && (defenseResult.selection || defenseMessageSelection(defenseResult.message));
+  const defenseStale = defenseStatus === "stale" || Boolean(defenseResult &&
+    Number((defenseResult.message || {}).context_revision) !== Number(revisionRef.current));
   return <div className="rv-refinement" data-testid="research-refinement-workspace"
     data-font-size={fontSize} style={{
       "--rv-refinement-body-size": fontSize + "px",
@@ -1591,6 +1729,8 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
           <button disabled={Boolean(selectionBusy)} onClick={() => saveSelectionAnnotation("highlight")}>{selectionBusy === "highlight" ? "标记中…" : "高亮标记"}</button>
           <button disabled={Boolean(selectionBusy)} onClick={() => { selectionPanelRef.current && selectionPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" }); }}>写批注</button>
           <button className="ai" disabled={Boolean(selectionBusy)} onClick={() => askSelectionAI()}>{selectionBusy === "ai" ? "AI 阅读中…" : "询问 AI"}</button>
+          <button type="button" className="rv-defense-action" data-testid="research-defense-action" disabled={defenseBusy}
+            onClick={() => explainDefense(selection)}>答辯解釋 ↗</button>
           <button className="clear" onClick={() => setSelection(null)}>×</button>
         </div>}
         {documentDigest && semanticLayer !== "original" && <section className="rv-refinement-document-digest">
@@ -1605,7 +1745,10 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
               : block.type === "table_row" ? <div className="rv-refinement-table-row" role="row">{(block.cells || []).map((cell, cellIndex) => <RefinementAutoTextarea register={node => { const key = clean(block.id) + ":cell:" + cellIndex; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} key={cellIndex} role="cell" style={{ gridColumn: "span " + Math.max(1, Number((((block.cell_spans || [])[cellIndex] || {}).colspan) || 1)) }} value={cell} onMouseUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, cellIndex, chooseRefinementSelection)} onChange={event => {
                 const cells = [...(block.cells || [])]; cells[cellIndex] = event.target.value; updateBlock(block.id, { cells, text: cells.join(" | ") });
               }}/>)}</div>
-              : block.type === "equation" ? <div className="rv-refinement-equation"><RefinementEquation latex={block.latex} fallback={block.text}/><RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} aria-label="公式语义文本"/></div>
+              : block.type === "equation" ? <div className="rv-refinement-equation"><RefinementEquation latex={block.latex} fallback={block.text}/>
+                <button type="button" className="rv-defense-equation-action" data-testid="research-defense-equation" disabled={!clean(block.text || block.latex).trim()}
+                  onClick={() => explainEquation(block)}>解釋這個公式 ↗</button>
+                <RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} aria-label="公式语义文本"/></div>
               : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
                 <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
               </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
@@ -1617,6 +1760,26 @@ const RefinementWorkspace = ({ project, files, fileId, onFile, onPublished, onEr
         </article>
       </main>
       <aside ref={inspectorScrollRef} className="rv-refinement-inspector">
+        <section ref={defensePanelRef} className={"rv-defense-panel" + (defenseBusy ? " is-busy" : "")}
+          data-testid="research-defense-panel" aria-label="答辯解釋" aria-busy={defenseBusy}>
+          <header><div><span>DEFENSE / REAL-WORLD MEANING</span><h3>把理論講清楚。</h3></div><b>↗</b></header>
+          <label className="rv-defense-auto"><input type="checkbox" data-testid="research-defense-auto" checked={defenseAuto}
+            onChange={event => {setDefenseAuto(event.target.checked);if(!event.target.checked && defenseStatus==="queued")setDefenseStatus("idle");}}/><span>選中後自動解釋</span></label>
+          {defenseSource ? <div className="rv-defense-source"><span>選中原文 · {defenseSource.field_name === "latex" ? "公式" : "論文內容"}</span><q>{defenseSource.quote}</q></div> :
+            <p className="rv-defense-empty">選中一句話、概念或公式，Agent 會結合上下文，用具體數字和生活例子解釋它的現實含義。</p>}
+          {defenseBusy && <div className="rv-defense-loading" role="status"><i/><div><b>{defenseStatus === "queued" ? "準備解釋選中內容…" : "正在閱讀上下文，整理數字與生活示例…"}</b><small>一句話含義 → 具體例子 → 答辯說法</small></div></div>}
+          {defenseError && <div className="rv-defense-error" role="alert"><b>這次解釋尚未完成</b><p>{defenseError}</p></div>}
+          {defenseStale && <p className="rv-defense-stale">論文內容已更新；以下解釋保留在原版本，請重新選取內容取得新的解釋。</p>}
+          {defenseResult && <>
+            <div className="rv-defense-version"><b>REV {defenseResult.message.context_revision}</b><span>{defenseResult.cached ? "已保存的解釋" : "依目前選區生成"}</span></div>
+            <DefenseExplanationBody body={defenseResult.message.body}/>
+            <p className="rv-defense-example-note">示例數字屬教學假設；實證結果以論文為準。</p>
+          </>}
+          <div className="rv-defense-controls"><button type="button" data-testid="research-defense-generate" disabled={!defenseSource || defenseBusy || state === "conflict"}
+            onClick={() => explainDefense(defenseSource, Boolean(defenseResult || defenseError))}>{defenseResult || defenseError ? "重新解釋" : "產生答辯解釋"}</button>
+            <button type="button" data-testid="research-defense-copy" disabled={!defenseResult || defenseBusy} onClick={copyDefense}>複製答辯解釋</button></div>
+          {defenseCopy && <p className="rv-defense-copy-status" role="status">{defenseCopy}</p>}
+        </section>
         <section ref={selectionPanelRef} className="rv-refinement-selection-panel">
           <header><span>SELECTION / 选区标注</span><strong>{selectionAnnotations.filter(item => item.status === "open").length} OPEN</strong></header>
           {selection ? <div className="rv-refinement-selection-composer">
