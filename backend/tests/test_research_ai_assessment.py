@@ -919,6 +919,22 @@ def test_fingerprint_excludes_ai_history_and_indexing_but_tracks_saved_content()
     assert service.assessment_fingerprint(project, actual, content) != before
 
 
+def test_fingerprint_preserves_reviews_when_title_is_anchored_but_tracks_research_changes():
+    project = {'id': UUID(int=3), 'title': 'MK73', 'metadata': {'discipline': 'econometrics'}}
+    actual = rows()
+    content = {'research_question': 'Original'}
+    original = service.assessment_fingerprint(project, actual, content)
+
+    renamed = {**project, 'title': 'MK73 — New title',
+               'metadata': {**project['metadata'], '_assessment_title_anchor': project['title']}}
+    assert service.assessment_fingerprint(renamed, actual, content) == original
+    assert service.assessment_fingerprint({**project, 'title': 'New title'}, actual, content) != original
+    assert service.assessment_fingerprint(renamed, actual, {'research_question': 'Changed'}) != original
+    changed_metadata = {**renamed, 'metadata': {**renamed['metadata'], 'discipline': 'engineering'}}
+    assert service.assessment_fingerprint(changed_metadata, actual, content) != original
+    assert project['metadata'] == {'discipline': 'econometrics'}
+
+
 @pytest.mark.parametrize('fresh', [True, False])
 def test_context_prefers_current_saved_draft_but_never_mixes_stale_word(monkeypatch, fresh):
     project = {'id': UUID(int=3)}

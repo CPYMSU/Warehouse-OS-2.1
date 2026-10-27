@@ -145,7 +145,14 @@ def assessment_fingerprint(project, rows, content):
     records = {key: sorted([{name: value for name, value in item.items() if name not in omit}
                             for item in rows.get(key, [])], key=workflow._canonical)
                for key in ("protocols", "runs", "claims", "evidence", "reviews", "executions", "reproduction_checks", "releases")}
-    return workflow._digest({"project": {key: project.get(key) for key in ("id", "title", "metadata", "research_area")},
+    project_material = {key: project.get(key) for key in ("id", "title", "metadata", "research_area")}
+    metadata = project_material["metadata"]
+    if isinstance(metadata, dict) and isinstance(metadata.get("_assessment_title_anchor"), str):
+        # A display rename must not invalidate reviews made under the original title.
+        project_material["title"] = metadata["_assessment_title_anchor"]
+        project_material["metadata"] = {key: value for key, value in metadata.items()
+                                        if key != "_assessment_title_anchor"}
+    return workflow._digest({"project": project_material,
                              "files": sorted(files, key=workflow._canonical), "dmp": material, "records": records})
 
 
