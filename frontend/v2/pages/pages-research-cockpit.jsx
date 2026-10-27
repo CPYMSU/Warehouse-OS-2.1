@@ -406,13 +406,13 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
           await acceptAIResult(result,version,true);version=result.dmp_version;
         }catch(reason){
           if(!alive.current||controller.signal.aborted)return;
-          failures.push({title:task.title,message:aiErrorMessage(reason)});
+          failures.push({kind:'task',title:task.title,message:aiErrorMessage(reason)});
           if(reason.status===409){done++;break;}
         }
         done++;
       }
       if(alive.current){
-        try{await onReload();}catch(reason){failures.push({title:'重新讀取',message:aiErrorMessage(reason)});}
+        try{await onReload();}catch(reason){failures.push({kind:'reload',title:'重新讀取',message:aiErrorMessage(reason)});}
         if(alive.current)setBatch({running:false,done,total:tasks.length,current:'',failures:[...failures],stopped:batchStop.current});
       }
     }finally{batchLock.current=false;batchController.current=null;if(alive.current)setAIWorking(false);}
@@ -432,13 +432,13 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
       <section className="rcp-experts" aria-label="專家團隊評估">
         <div><span>EXPERT TEAM / BONFIRE AI</span><h3>專家評估研究全程</h3><small>分別檢查四個研究面向與每個流程步驟，提供依據與答辯追問。</small></div>
         <button type="button" data-testid="research-cockpit-ai-batch" disabled={!canWrite||saving||aiWorking||!pendingTasks.length} onClick={runBatch}>
-          {pendingTasks.length?'評估全部待評項目 · '+pendingTasks.length+' ↗':'全部已有專家評估'}</button>
+          {pendingTasks.length?((batch && batch.failures.some(item=>item.kind==='task')?'重試未完成項目':'評估全部待評項目')+' · '+pendingTasks.length+' ↗'):'全部已有專家評估'}</button>
         {batch && <div className="rcp-batch-progress" data-testid="research-cockpit-ai-batch-progress" role="status" aria-live="polite">
           <div><b>{batch.running?(batch.stopping?'完成目前項目後停止':'專家正在評估'):(batch.stopped?'已暫停':'本輪已結束')}</b>
-            <span>{batch.done} / {batch.total}{batch.current?' · '+batch.current:''}</span></div>
-          <progress max={batch.total||1} value={batch.done}/>
+            <span>已處理 {batch.done} / {batch.total} · 成功 {batch.done-batch.failures.filter(item=>item.kind==='task').length}{batch.failures.some(item=>item.kind==='task')?' · 未完成 '+batch.failures.filter(item=>item.kind==='task').length:''}{batch.current?' · '+batch.current:''}</span></div>
+          <progress aria-label={'已處理 '+batch.done+' / '+batch.total+' 項'} max={batch.total||1} value={batch.done}/>
           {batch.running && <button type="button" data-testid="research-cockpit-ai-batch-stop" disabled={batch.stopping} onClick={()=>{batchStop.current=true;setBatch(current=>({...current,stopping:true}));}}>完成本項後停止</button>}
-          {!!batch.failures.length && <details><summary>{batch.failures.length} 項未完成 · 可再次評估待評項</summary>{batch.failures.map((item,index)=><p key={index}>{item.title}：{item.message}</p>)}</details>}
+          {!!batch.failures.length && <details><summary>{batch.failures.some(item=>item.kind==='task')?batch.failures.filter(item=>item.kind==='task').length+' 項未完成 · 可重試':'最新紀錄未能讀取'}{batch.failures.some(item=>item.kind==='task')&&batch.failures.some(item=>item.kind==='reload')?' · 最新紀錄未能讀取':''}</summary>{batch.failures.map((item,index)=><p key={index}>{item.title}：{item.message}</p>)}</details>}
         </div>}
       </section>
       <div className="rcp-dimensions" role="tablist" aria-label="四個研究面向">{dimensions.map(([dimension,title,en],index)=>{

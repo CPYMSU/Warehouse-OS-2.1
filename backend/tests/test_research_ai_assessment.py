@@ -297,6 +297,34 @@ def stage_result(dimension, stage_key, *, defense='unassessed', evidence='insuff
     return result
 
 
+
+def test_econometric_regularity_accepts_grounded_method_questions_without_weakening_theory_safety(state, monkeypatch):
+    state.project['metadata']['research_discipline'] = 'econometrics'
+    source = {**SOURCE, 'text': SOURCE['text'] + ' This economic model discusses identification and estimates.'}
+    context = {'sources': [source], 'pinned_files': [{'file_version_id': SOURCE['file_version_id']}],
+               'scope': {'truncated': False, 'characters': 100, 'included_blocks': 1}, 'manual_dmp_excerpt': 'Manual notes'}
+    monkeypatch.setattr(service, '_context', lambda *args: copy.deepcopy(context))
+    state.output = stage_result('model', 'regularities')
+    for question, category in zip(state.output['questions'], ('method', 'evidence')):
+        question.update(category=category, source_refs=['S1'])
+    review = state.start(stage_key='regularities')['review']
+    assert [question['category'] for question in review['result']['questions']] == ['method', 'evidence']
+    assert all(q['citations'][0]['quote'] == source['text'] for q in review['result']['questions'])
+    assert len(state.calls) == 1 and 'identification' in state.calls[0]['system_prompt']
+
+    value = stage_result('model', 'regularities')
+    value['questions'][0].update(category='theory', source_refs=['S1'], question='In the paper, x=y+999. Why?')
+    rubric = {'model': {'regularities': 'Estimates'}}
+    with pytest.raises(ValueError, match='without rewriting'):
+        service._validate_result(value, ['model'], context, answer='', rubric=rubric, validate_economic_theory=True)
+    value['questions'][0].update(question='What assumption matters?', source_refs=['invented'])
+    with pytest.raises(ValueError, match='Question source was not present'):
+        service._validate_result(value, ['model'], context, answer='', rubric=rubric, validate_economic_theory=True)
+    value['questions'][0].update(source_refs=[])
+    with pytest.raises(ValueError, match='requires a verified manuscript citation'):
+        service._validate_result(value, ['model'], context, answer='', rubric=rubric, validate_economic_theory=True)
+
+
 def test_checklist_item_has_own_committee_defense_and_does_not_change_manual_or_dimension_review(state):
     dimension = state.start()['review']
     manual = copy.deepcopy(state.content['research_dashboard_assessment'])

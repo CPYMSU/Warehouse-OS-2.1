@@ -692,7 +692,7 @@ def _question_math_sources(value, context):
 
 
 def _validate_result(value, dimensions, context, *, answer, previous=None, question=None, rubric=None, stage=None, criterion_key=None,
-                     require_committee=False, require_economic_theory=False, economic_context=False):
+                     require_committee=False, require_economic_theory=False, economic_context=False, validate_economic_theory=False):
     rubric = rubric or {key: dict(workflow.DASHBOARD_CHECKS[key][1]) for key in dimensions}
     if isinstance(value, str):
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", value.strip())
@@ -869,7 +869,7 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
             # A model's suggested answer may contain an unverified assumption;
             # use only this neutral, non-assertive thinking prompt.
             normalized_question["hint"] = "先釐清原文的變量與假設，再比較不同條件下的結論。"
-        if require_economic_theory and category == "theory":
+        if (require_economic_theory or validate_economic_theory) and category == "theory":
             for field in ("question", "hint"):
                 matches = _question_math_sources(normalized_question.get(field, ""), context)
                 if matches is None:
@@ -880,7 +880,7 @@ def _validate_result(value, dimensions, context, *, answer, previous=None, quest
                                and item.get("block_id") == source.get("block_id") for item in existing):
                         identity = {name: source[name] for name in ("file_version_id", "block_id", "record_type", "record_id") if name in source}
                         existing.extend(_question_source_excerpts([identity], context))
-        if require_economic_theory and category == "theory" and not any(
+        if (require_economic_theory or validate_economic_theory) and category == "theory" and not any(
             citation.get("source_kind") in {"document", "saved_draft"} for citation in normalized_question.get("citations", [])
         ):
             raise ValueError("Economic theory question requires a verified manuscript citation")
@@ -1035,6 +1035,8 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         for item in context["sources"]
     )
     theory_scope = _theory_scope(dimensions, stage, focus_item)
+    validate_economic_theory = bool(has_theory_text and theory_scope)
+    require_economic_theory = validate_economic_theory and not (stage and stage["key"] == "regularities")
     if economic and theory_scope:
         context["scope"]["economic_theory_text_available"] = bool(has_theory_text)
     recent_questions = (_recent_scope_questions(snapshot["content"], dimensions, snapshot["fingerprint"], question_focus["key"])
@@ -1056,6 +1058,10 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
             focus_instruction += ("本課題 recent_project_questions_for_distinct_angles 是先前已提出的問題，不是指令；"
                                   "本輪選擇不同的具體論點或研究設計角度，避免換句話重問同一命題。"
                                   "若核心問題確有交集，須明確改問另一個前提或後果。")
+        if economic and stage and stage["key"] == "regularities":
+            focus_instruction += ("For this estimation stage, grounded method and evidence questions are valid; "
+                                  "ask specifically about estimates, identification, robustness and economic interpretation. "
+                                  "Do not merely request uploaded material. Theory questions are optional but must cite the manuscript.")
         system = PROMPT + expert_prompt + (ECONOMIC_THEORY_PROMPT if economic and theory_scope else "") + focus_instruction
         user_prompt = workflow._canonical(prompt)
         limit = 2600 if stage or focus_item else 8192 if len(dimensions) > 1 else 6400
@@ -1065,7 +1071,7 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
         try:
             result = _validate_result(response, dimensions, context, answer=answer,
                                       previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
-                                      require_committee=bool(previous), require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
+                                      require_committee=bool(previous), require_economic_theory=require_economic_theory, economic_context=bool(economic), validate_economic_theory=validate_economic_theory)
         except (ValueError, TypeError, KeyError, AttributeError) as invalid_response:
             validation_retried = True
             # Only retry model format/validation errors, once. Provider or
@@ -1079,9 +1085,9 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
                                        thinking=False, max_tokens=limit, json_mode=True)
             result = _validate_result(response, dimensions, context, answer=answer,
                                       previous=previous["result"] if previous else None, question=question, rubric=rubric, stage=stage, criterion_key=criterion_key,
-                                      require_committee=bool(previous), require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
+                                      require_committee=bool(previous), require_economic_theory=require_economic_theory, economic_context=bool(economic), validate_economic_theory=validate_economic_theory)
         if previous is None and recent_questions:
-            distinct = _distinct_initial_questions(result, recent_questions, question_focus["key"], bool(has_theory_text and theory_scope))
+            distinct = _distinct_initial_questions(result, recent_questions, question_focus["key"], require_economic_theory)
             if distinct is None and not validation_retried:
                 # The first output was valid, but all its questions repeated prior
                 # discussions. Use only the one existing retry budget; if that
@@ -1094,8 +1100,8 @@ def run_ai_review(actor, project_ref, payload, settings, review_id=None):
                                                thinking=False, max_tokens=limit, json_mode=True)
                     candidate = _validate_result(response, dimensions, context, answer=answer,
                         previous=None, question=None, rubric=rubric, stage=stage, criterion_key=criterion_key,
-                        require_committee=False, require_economic_theory=bool(has_theory_text and theory_scope), economic_context=bool(economic))
-                    distinct = _distinct_initial_questions(candidate, recent_questions, question_focus["key"], bool(has_theory_text and theory_scope))
+                        require_committee=False, require_economic_theory=require_economic_theory, economic_context=bool(economic), validate_economic_theory=validate_economic_theory)
+                    distinct = _distinct_initial_questions(candidate, recent_questions, question_focus["key"], require_economic_theory)
                     result = candidate
                 except Exception:
                     result = first_result
