@@ -2309,7 +2309,7 @@ const ResearchShowcase = () => {
         </svg><small>示意圖 · 從問題走向可檢查的解釋</small>
         <div className="rv-atlas-stats"><div><b>{documents.filter(item => item.kind === "paper").length.toString().padStart(2, "0")}</b><span>論文與摘要</span></div>
           <div><b>{documents.filter(item => item.kind !== "paper").length.toString().padStart(2, "0")}</b><span>研究與模型頁面</span></div>
-          <div><b>03</b><span>閱讀主題</span></div></div>
+          <div><b>{String((catalog && catalog.groups || []).length).padStart(2, "0")}</b><span>閱讀主題</span></div></div>
       </div>
     </section>
     {error && <div className="rv-atlas-state" role="alert">{error}</div>}
@@ -3120,7 +3120,7 @@ const Page = () => {
       {section === "showcase" && <ResearchShowcase/>}
 
       {section === "overview" && <>
-        <button type="button" className="rv-atlas-entry" onClick={() => selectSection("showcase")}><span>NEW / THE RESEARCH ATLAS</span><strong>研究展示</strong><p>MK73 博士論文 · MK77 期刊研究 · 互動模型與方法學習</p><b>走進研究 →</b></button>
+        <button type="button" className="rv-atlas-entry" onClick={() => selectSection("showcase")}><span>NEW / THE RESEARCH ATLAS</span><strong>研究展示</strong><p>MK73 / MK77 / MK78 / MK79 · 論文、互動模型與方法學習</p><b>走進研究 →</b></button>
         <section className="rv-poster-grid" aria-label="科研數據海報">
           <article className="rv-poster rv-poster-main">
             <span className="rv-poster-index">RESEARCH / 01—04</span>

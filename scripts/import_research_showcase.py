@@ -25,12 +25,25 @@ from urllib.request import urlopen
 GROUPS = [
     {"id": "mk73", "code": "MK73", "title": "博士論文", "subtitle": "外部條件與中俄相互貿易", "description": "從研究問題、選擇集與理論模型，讀到各章的證據與邊界。"},
     {"id": "mk77", "code": "MK77", "title": "期刊研究", "subtitle": "油價下跌時誰受損", "description": "從價格與數量開始，逐步推導中俄貿易的負擔反轉條件。"},
+    {"id": "mk78", "code": "MK78", "title": "禁油與其他出口", "subtitle": "外匯市場與出口調整", "description": "探索禁油後外匯市場與其他出口的短期和長期調整。"},
+    {"id": "mk79", "code": "MK79", "title": "誰接手", "subtitle": "排除後的供應商替代", "description": "探索不同運輸重量下，供應商替代與繞道成本。"},
     {"id": "learn", "code": "METHODS", "title": "方法學習", "subtitle": "同一問題，不同模型", "description": "比較計量模型、均衡模型與 DSGE 的問題、假設與回答。"},
 ]
 DOCUMENTS = [
     ("mk73", "papers/mk73-dissertation.pdf", "MK73 博士論文", "博士論文全文 · PDF", "paper"),
     ("mk73", "papers/mk73-autoreferat.pdf", "MK73 自述摘要", "論文的問題、貢獻與結論 · PDF", "paper"),
     ("mk77", "papers/mk77-manuscript.pdf", "MK77 期刊稿", "油價下跌時誰受損：中俄貿易的負擔反轉 · PDF", "paper"),
+    ("mk79", "papers/mk79-manuscript.pdf", "MK79 英文論文", "誰接手：供應商替代與繞道成本 · PDF", "paper"),
+    ("mk78", "mk78/index.html", "禁油與其他出口", "外匯市場和出口在短期與長期的調整。", "interactive"),
+    ("mk78", "mk78/index_v1.html", "比例吸收 · 歷史版本 1", "MK78 模型的歷史版本。", "interactive"),
+    ("mk78", "mk78/index_v2.html", "好蘋果 · 歷史版本 2", "MK78 模型的歷史版本。", "interactive"),
+    ("mk78", "mk78/index_v3.html", "好蘋果 · 歷史版本 3", "MK78 模型的歷史版本。", "interactive"),
+    ("mk78", "mk78/index_v4.html", "兩個買家 · 歷史版本 4", "MK78 模型的歷史版本。", "interactive"),
+    ("mk78", "mk78/index_v5.html", "兩個買家 · 歷史版本 5", "MK78 模型的歷史版本。", "interactive"),
+    ("mk78", "mk78/index_v6.html", "兩個買家 · 歷史版本 6", "MK78 模型的歷史版本。", "interactive"),
+    ("mk78", "mk78/model_v1.html", "零件鎖定模型 · 版本 1", "MK78 的零件鎖定模型。", "interactive"),
+    ("mk78", "mk78/model_v2.html", "零件鎖定模型 · 版本 2", "MK78 的零件鎖定模型。", "interactive"),
+    ("mk79", "mk79/index.html", "誰接手", "供應商替代、運輸重量與繞道成本。", "interactive"),
     ("mk77", "mk77/derive.html", "一步一步推導負擔反轉", "從價格 × 數量出發，用九個步驟推導兩個方向的銷售變化。", "interactive"),
     ("mk77", "mk77/index.html", "五張圖讀懂核心機制", "油的需求、收入傳導、兩條線的比較、原油緩衝與恩格爾曲線。", "interactive"),
     ("mk73", "mk73/index.html", "論文總覽", "題目、定理、證據與各章的閱讀地圖。", "page"),
@@ -42,7 +55,7 @@ DOCUMENTS = [
     ("mk73", "mk73/manifest.html", "修訂段落清單", "從 v29 到選擇集修訂的逐段記錄。", "page"),
     ("learn", "learn/models.html", "三種模型，三種回答", "計量模型、均衡模型、DSGE：各自能回答什麼。", "interactive"),
 ]
-ALLOWED_ROOTS = {"mk73", "mk77", "learn", "papers"}
+ALLOWED_ROOTS = {"mk73", "mk77", "mk78", "mk79", "learn", "papers"}
 ALLOWED_SUFFIXES = {".html", ".pdf", ".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".woff", ".woff2", ".json"}
 SANDBOX_COMPAT = """<script>
 // Reading pages keep their own step state; opaque sandbox documents cannot

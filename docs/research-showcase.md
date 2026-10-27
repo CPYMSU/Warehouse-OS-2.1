@@ -17,7 +17,7 @@ the ordinary live `current_actor` authentication and `research.read` permission.
 An edition is scoped to exactly one tenant UUID. Other tenants receive an
 explicit empty state. Both endpoints use private, uncached responses.
 
-The importer follows only the selected site's `mk73`, `mk77`, `learn` and
+The importer follows only the selected site's `mk73`, `mk77`, `mk78`, `mk79`, `learn` and
 `papers` routes. It embeds local image, stylesheet and script dependencies,
 records original and exported SHA-256 hashes, and keeps linked historical
 HTML editions. It does not import project directories, raw data, credentials
