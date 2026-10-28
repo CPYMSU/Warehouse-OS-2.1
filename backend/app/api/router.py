@@ -5,7 +5,7 @@ from queue import Empty, Queue
 from threading import Thread
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from starlette.background import BackgroundTask
@@ -88,6 +88,7 @@ from app.services.runtime_api_keys import (
     revoke_runtime_api_key,
 )
 from app.services.runtime_output import public_message
+from app.services.auth_sessions import COOKIE_NAME, authenticate_session, issue_session, revoke_session
 from app.services.templates import get_template_detail, list_template_summaries
 from app.services.topology import map_zones_payload
 from app.services.warehouse_operations import (
@@ -236,7 +237,7 @@ def api_health() -> dict[str, str]:
 
 
 @router.post("/api/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest, settings: Settings = Depends(get_settings)) -> LoginResponse:
+def login(request: Request, response: Response, payload: LoginRequest, settings: Settings = Depends(get_settings)) -> LoginResponse:
     username = payload.username.strip().lower()
     with system_session() as session:
         account = (
@@ -260,11 +261,15 @@ def login(payload: LoginRequest, settings: Settings = Depends(get_settings)) -> 
     if membership is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if needs_password_rehash(account["password_hash"]):
+        new_password_hash = hash_password(payload.password)
         with system_session() as session:
             session.execute(
                 text("UPDATE iam.users SET password_hash = :password_hash WHERE id = :user_id"),
-                {"password_hash": hash_password(payload.password), "user_id": account["id"]},
+                {"password_hash": new_password_hash, "user_id": account["id"]},
             )
+        account = {**dict(account), "password_hash": new_password_hash}
+    issue_session(request, response, user_id=account["id"], tenant_id=membership["id"], settings=settings,
+                  expected_password_hash=str(account["password_hash"]))
     return _login_response(
         account=dict(account), membership=membership, memberships=memberships, settings=settings
     )
@@ -310,9 +315,41 @@ def switch_tenant(
     )
 
 
+@router.post("/api/auth/refresh")
+def refresh_session(request: Request, response: Response,
+                    payload: dict[str, object] = Body(default={}),
+                    settings: Settings = Depends(get_settings)) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
+    with authenticate_session(request, settings) as (account, original_tenant_id, session):
+        requested = str(payload.get("tenant") or "").strip().lower()
+        if requested:
+            tenant = session.execute(text("SELECT id,slug FROM iam.tenants WHERE slug=:slug AND status='active'"),
+                                     {"slug": requested}).mappings().one_or_none()
+            if tenant is None:
+                raise HTTPException(status_code=403, detail="Company access is unavailable")
+        else:
+            tenant = session.execute(text("SELECT id,slug FROM iam.tenants WHERE id=:id AND status='active'"),
+                                     {"id": original_tenant_id}).mappings().one_or_none()
+            if tenant is None:
+                raise HTTPException(status_code=401, detail="Refresh session is unavailable or expired")
+        # Use the same connection and tenant RLS transaction as the locked
+        # session. Opening a second connection here can exhaust the pool when
+        # several tabs concurrently wait on that same session row.
+        session.execute(text("SELECT set_config('app.tenant_id', CAST(:tenant AS text), true)"),
+                        {"tenant": str(tenant["id"])})
+        member = session.execute(text("SELECT 1 FROM iam.memberships WHERE tenant_id=:tenant "
+                                      "AND user_id=:user_id AND active"),
+                                 {"tenant": tenant["id"], "user_id": account["id"]}).scalar_one_or_none()
+        if not member:
+            raise HTTPException(status_code=403, detail="Company access is unavailable")
+        return {"token": create_access_token(settings=settings, user_id=account["id"], tenant_id=tenant["id"]),
+                "tenant": str(tenant["slug"]), "token_type": "bearer"}
+
+
 @router.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout() -> Response:
-    # JWTs are short lived. Revocation and refresh sessions are introduced with the IAM slice.
+def logout(request: Request, settings: Settings = Depends(get_settings)) -> Response:
+    if request.cookies.get(COOKIE_NAME):
+        revoke_session(request, settings)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

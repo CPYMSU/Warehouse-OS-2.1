@@ -22,22 +22,32 @@ W2.storageSet = (key, value) => {
   } catch (e) { return false; }
 };
 W2.token = () => W2.storageGet(W2.TOKEN_KEY);
-W2.setToken = (t) => W2.storageSet(W2.TOKEN_KEY, t);
+W2.setToken = (t) => {
+  const saved = W2.storageSet(W2.TOKEN_KEY, t);
+  scheduleAuthRenewal();
+  return saved;
+};
 W2.tenant = () => W2.storageGet(W2.TENANT_KEY);
 W2.setTenant = (s) => W2.storageSet(W2.TENANT_KEY, s);
-W2.hasUsableToken = () => {
-  const token = W2.token();
-  if (!token) return false;
+const authTokenClaims = token => {
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return false;
+    if (parts.length !== 3) return null;
     const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
-    const payload = JSON.parse(window.atob(padded));
-    return Number.isFinite(Number(payload.exp)) && Number(payload.exp) > Date.now() / 1000 + 5;
+    return JSON.parse(window.atob(padded));
   } catch (error) {
-    return false;
+    return null;
   }
+};
+W2.sameTokenPrincipal = (left, right) => {
+  const a = authTokenClaims(left), b = authTokenClaims(right);
+  return Boolean(a && b && a.sub && a.tenant_id &&
+    String(a.sub) === String(b.sub) && String(a.tenant_id) === String(b.tenant_id));
+};
+W2.hasUsableToken = () => {
+  const claims = authTokenClaims(W2.token());
+  return Boolean(claims && Number.isFinite(Number(claims.exp)) && Number(claims.exp) > Date.now() / 1000 + 5);
 };
 
 const transientGetStatuses = new Set([502, 503, 504]);
@@ -67,10 +77,126 @@ const isSameOriginGet = (path, options) => {
   try { return new URL(String(path), window.location.href).origin === window.location.origin; }
   catch (error) { return false; }
 };
+// A 401 can describe an endpoint-specific credential or a failed password,
+// not the account session. Confirm the captured bearer with /auth/me before
+// clearing it. Requests for the same identity share one bounded check.
+const authCheckFlights = new Map();
+const authRefreshFlights = new Map();
+const unavailableRefreshes = new Set();
+let authRenewalTimer = null;
+const isCurrentAuthIdentity = (token, tenant) => Boolean(token) &&
+  W2.token() === token && W2.tenant() === tenant;
+const expireCurrentAuthIdentity = (token, tenant) => {
+  if (!isCurrentAuthIdentity(token, tenant)) return;
+  W2.setToken("");
+  window.dispatchEvent(new Event("w2-auth-expired"));
+};
+const authRefreshUnavailable = () => {
+  const error = new Error("暫時無法更新登入狀態，請檢查連線後重試。");
+  error.status = 503;
+  error.code = "AUTH_REFRESH_UNAVAILABLE";
+  return error;
+};
+const confirmSessionInvalid = (token, tenant) => {
+  const key = token + "\u0000" + tenant;
+  if (authCheckFlights.has(key)) return authCheckFlights.get(key);
+  const check = (async () => {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timeout = controller ? window.setTimeout(() => controller.abort(), 5000) : null;
+    try {
+      const headers = new Headers({ Authorization: "Bearer " + token });
+      if (tenant) headers.set("X-Tenant-Slug", tenant);
+      const response = await fetch(W2.API_BASE + "/api/auth/me", {
+        method: "GET", headers, cache: "no-store", ...(controller ? { signal: controller.signal } : {}),
+      });
+      return response.status === 401;
+    } catch (_error) {
+      // A transient network/server problem does not prove session expiry.
+      return false;
+    } finally {
+      if (timeout != null) window.clearTimeout(timeout);
+    }
+  })();
+  authCheckFlights.set(key, check);
+  check.finally(() => { if (authCheckFlights.get(key) === check) authCheckFlights.delete(key); });
+  return check;
+};
+// The server keeps the renewable credential in an HttpOnly cookie. Decoding
+// JWT claims here is only an identity fence; all authorization remains server-side.
+W2.refreshSession = (token = W2.token(), tenant = W2.tenant()) => {
+  const claims = authTokenClaims(token);
+  if (!token || !tenant || !claims || !claims.sub || !claims.tenant_id) return Promise.resolve("unavailable");
+  if (!isCurrentAuthIdentity(token, tenant)) return Promise.resolve("superseded");
+  const key = token + "\u0000" + tenant;
+  if (unavailableRefreshes.has(key)) return Promise.resolve("invalid");
+  if (authRefreshFlights.has(key)) return authRefreshFlights.get(key);
+  const refresh = (async () => {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timeout = controller ? window.setTimeout(() => controller.abort(), 5000) : null;
+    try {
+      const response = await fetch(W2.API_BASE + "/api/auth/refresh", {
+        method: "POST", credentials: "same-origin", cache: "no-store",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant }),
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+      if (response.status === 401) { unavailableRefreshes.add(key); return "invalid"; }
+      if (!response.ok) return "transient";
+      const data = await response.json();
+      const next = data && authTokenClaims(data.token || "");
+      if (!next || String(next.sub) !== String(claims.sub) ||
+          String(next.tenant_id) !== String(claims.tenant_id) || data.tenant !== tenant ||
+          !Number.isFinite(Number(next.exp)) || Number(next.exp) <= Date.now() / 1000 + 5) return "transient";
+      if (!isCurrentAuthIdentity(token, tenant)) return "superseded";
+      W2.setToken(data.token);
+      unavailableRefreshes.delete(key);
+      return "refreshed";
+    } catch (_error) {
+      return "transient";
+    } finally {
+      if (timeout != null) window.clearTimeout(timeout);
+    }
+  })();
+  authRefreshFlights.set(key, refresh);
+  refresh.finally(() => { if (authRefreshFlights.get(key) === refresh) authRefreshFlights.delete(key); });
+  return refresh;
+};
+function scheduleAuthRenewal() {
+  if (authRenewalTimer != null) window.clearTimeout(authRenewalTimer);
+  authRenewalTimer = null;
+  const token = W2.token(), claims = authTokenClaims(token);
+  if (!token || !claims || !Number.isFinite(Number(claims.exp))) return;
+  const delay = Math.max(1000, (Number(claims.exp) - Date.now() / 1000 - 300) * 1000);
+  authRenewalTimer = window.setTimeout(async () => {
+    authRenewalTimer = null;
+    const current = W2.token(), tenant = W2.tenant();
+    if (!current || !tenant) return;
+    const result = await W2.refreshSession(current, tenant);
+    if (result === "transient" && isCurrentAuthIdentity(current, tenant)) {
+      authRenewalTimer = window.setTimeout(scheduleAuthRenewal, 30000);
+    }
+  }, delay);
+}
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    const token = W2.token(), tenant = W2.tenant(), claims = authTokenClaims(token);
+    if (token && tenant && claims && Number(claims.exp) <= Date.now() / 1000 + 300) {
+      W2.refreshSession(token, tenant);
+    }
+  });
+}
+scheduleAuthRenewal();
 W2.fetch = async (path, options = {}) => {
   const requestOptions = { ...options };
   const suppressAuthExpired = !!requestOptions.suppressAuthExpired;
   const url = /^https?:/.test(path) ? path : W2.API_BASE + path;
+  let requestUrl;
+  try { requestUrl = new URL(String(url), window.location.href); } catch (_error) {}
+  const sameOrigin = Boolean(requestUrl && requestUrl.origin === window.location.origin);
+  const pathName = requestUrl ? requestUrl.pathname.replace(/\/+$/, "") || "/" : "";
+  const isAuthEntry = pathName === "/api/auth/login" || pathName === "/api/auth/register" ||
+    pathName === "/api/auth/refresh" || pathName === "/api/auth/logout" ||
+    pathName.startsWith("/api/auth/passkeys/login/");
   const retryTransientGet = requestOptions.retryTransientGet !== false && isSameOriginGet(url, requestOptions);
   const requestedRetries = Number(requestOptions.transientGetRetries);
   const transientGetRetries = Number.isFinite(requestedRetries)
@@ -78,11 +204,25 @@ W2.fetch = async (path, options = {}) => {
   delete requestOptions.suppressAuthExpired;
   delete requestOptions.retryTransientGet;
   delete requestOptions.transientGetRetries;
+  const initialToken = W2.token(), initialTenant = W2.tenant();
+  const initialClaims = authTokenClaims(initialToken);
+  if (sameOrigin && !isAuthEntry && initialTenant && initialClaims &&
+      Number(initialClaims.exp) <= Date.now() / 1000 + 300) {
+    const refresh = await W2.refreshSession(initialToken, initialTenant);
+    if (requestOptions.signal && requestOptions.signal.aborted) throw abortError();
+    const currentClaims = authTokenClaims(W2.token());
+    if (W2.tenant() !== initialTenant || !currentClaims ||
+        String(currentClaims.sub) !== String(initialClaims.sub) ||
+        String(currentClaims.tenant_id) !== String(initialClaims.tenant_id)) throw abortError();
+    if (refresh === "transient" && Number(initialClaims.exp) <= Date.now() / 1000 + 5 && W2.token() === initialToken) {
+      throw authRefreshUnavailable();
+    }
+  }
   const headers = new Headers(options.headers || {});
-  const t = W2.token();
-  if (t) headers.set("Authorization", "Bearer " + t);
-  const slug = W2.tenant();
-  if (slug) headers.set("X-Tenant-Slug", slug);
+  const t = W2.token(), slug = W2.tenant();
+  // Never attach the account credential to a different origin.
+  if (sameOrigin && t) headers.set("Authorization", "Bearer " + t);
+  if (sameOrigin && slug) headers.set("X-Tenant-Slug", slug);
   let res;
   for (let attempt = 0; attempt <= transientGetRetries; attempt += 1) {
     try {
@@ -104,10 +244,25 @@ W2.fetch = async (path, options = {}) => {
     const jitter = Math.floor(Math.random() * 90);
     await waitForRetry(base + jitter, requestOptions.signal);
   }
-  /* A failed WebAuthn assertion is also a 401, but does not invalidate the
-     bearer session.  Security-sensitive callers can suppress only that
-     global side effect and still receive the original error response. */
-  if (res.status === 401 && !suppressAuthExpired) { W2.setToken(""); window.dispatchEvent(new Event("w2-auth-expired")); }
+  /* Never let a late response for an old account or tenant end a newer
+     session. Endpoint-specific failures leave the account signed in. */
+  if (res.status === 401 && !suppressAuthExpired && sameOrigin && !isAuthEntry && isCurrentAuthIdentity(t, slug)) {
+    if (pathName === "/api/auth/me" || await confirmSessionInvalid(t, slug)) {
+      const refresh = await W2.refreshSession(t, slug);
+      if (refresh === "invalid" || refresh === "unavailable") {
+        expireCurrentAuthIdentity(t, slug);
+      } else if (refresh === "refreshed" && retryTransientGet && W2.tenant() === slug) {
+        // Only idempotent GETs may be retried after receiving a fresh token.
+        // A write/stream keeps its original 401 for an explicit user retry.
+        const refreshedHeaders = new Headers(headers);
+        refreshedHeaders.set("Authorization", "Bearer " + W2.token());
+        res = await fetch(url, { ...requestOptions, headers: refreshedHeaders });
+        if (res.status === 401 && pathName === "/api/auth/me") throw authRefreshUnavailable();
+      } else if (refresh === "transient") {
+        throw authRefreshUnavailable();
+      }
+    }
+  }
   return res;
 };
 W2.json = async (path, options) => {

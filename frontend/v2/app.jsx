@@ -3093,6 +3093,9 @@ const App2 = () => {
     const requestSeq = ++checkRequestSeq.current;
     const requestSlug = W2.tenant();
     const requestToken = W2.token();
+    const rotatedForSameActor = slug => requestSeq === checkRequestSeq.current &&
+      slug === W2.tenant() && requestToken !== W2.token() &&
+      W2.sameTokenPrincipal(requestToken, W2.token());
     const switchRequest = switchSnapshot ? {
       sequence: requestSeq,
       targetTenant: requestSlug,
@@ -3106,7 +3109,10 @@ const App2 = () => {
         requestSeq !== checkRequestSeq.current ||
         requestSlug !== W2.tenant() ||
         requestToken !== W2.token()
-      ) return;
+      ) {
+        if (rotatedForSameActor(requestSlug)) return check(allowRetry, switchSnapshot, tenantlessRetry);
+        return;
+      }
       /* W2.fetch owns real 401 expiry.  A tenant-specific 4xx/5xx is not
          evidence that the global bearer expired, so keep it and roll back. */
       if (switchSnapshot && (!error || error.status !== 401)) {
@@ -3125,6 +3131,7 @@ const App2 = () => {
          default; a second transport/server error remains recoverable in UI. */
       if (
         allowRetry && !tenantlessRetry && requestToken && requestSlug &&
+        (!error || error.code !== "AUTH_REFRESH_UNAVAILABLE") &&
         (!error || error.status !== 401)
       ) {
         checkRequestSeq.current++;
@@ -3151,7 +3158,10 @@ const App2 = () => {
       requestSeq !== checkRequestSeq.current ||
       requestSlug !== W2.tenant() ||
       requestToken !== W2.token()
-    ) return;
+    ) {
+      if (rotatedForSameActor(requestSlug)) return check(allowRetry, switchSnapshot, tenantlessRetry);
+      return;
+    }
     const active = (data.companies || []).filter(c => c.status === "active");
     setCompanies(active);
     if (data.authenticated && data.user) {
@@ -3195,7 +3205,10 @@ const App2 = () => {
           requestSeq !== checkRequestSeq.current ||
           effectiveSlug !== W2.tenant() ||
           requestToken !== W2.token()
-        ) return;
+        ) {
+          if (rotatedForSameActor(effectiveSlug)) return check(allowRetry, switchSnapshot, tenantlessRetry);
+          return;
+        }
         if (switchSnapshot && (!e || e.status !== 401)) {
           restoreTenantSwitch(
             switchSnapshot,
@@ -3215,7 +3228,10 @@ const App2 = () => {
         requestSeq !== checkRequestSeq.current ||
         effectiveSlug !== W2.tenant() ||
         requestToken !== W2.token()
-      ) return;
+      ) {
+        if (rotatedForSameActor(effectiveSlug)) return check(allowRetry, switchSnapshot, tenantlessRetry);
+        return;
+      }
       setNotice("");
       readySession.current = true;
       setPhase("ready");
@@ -3260,19 +3276,102 @@ const App2 = () => {
   }, [user, loadBoot, loadRuntimePreferences, loadBranding, restoreTenantSwitch]);
 
   $e(() => {
-    if (!W2.hasUsableToken()) {
-      W2.setToken("");
-      W2.setTenant("");
-      setTenant("");
-      setPhase("login");
-      return;
-    }
-    check(true).catch(error => {
-      if (error && error.status === 401) return;
-      setNotice((error && error.message) || t("服務器暫時無法確認登入狀態,請重試"));
-      setPhase("auth-error");
-    });
+    let active = true;
+    const restore = async () => {
+      if (!W2.hasUsableToken()) {
+        const previousToken = W2.token(), previousTenant = W2.tenant();
+        const result = previousToken && previousTenant
+          ? await W2.refreshSession(previousToken, previousTenant) : "unavailable";
+        if (!active) return;
+        if (!W2.hasUsableToken()) {
+          if (result === "transient") {
+            setNotice(t("服務器暫時無法確認登入狀態,請重試"));
+            setPhase("auth-error");
+            return;
+          }
+          // A missing/expired cookie alone does not prove the bearer is
+          // invalid (for example the browser clock can be out of sync).
+          // Confirm it with the authoritative endpoint before discarding it.
+          if ((result === "invalid" || result === "unavailable") && previousToken && previousTenant &&
+              W2.token() === previousToken && W2.tenant() === previousTenant) {
+            let response;
+            try { response = await W2.fetch("/api/auth/me", { suppressAuthExpired: true }); }
+            catch (_error) {
+              if (!active) return;
+              setNotice(t("服務器暫時無法確認登入狀態,請重試")); setPhase("auth-error");
+              return;
+            }
+            if (!active) return;
+            if (W2.token() !== previousToken || W2.tenant() !== previousTenant) {
+              if (W2.hasUsableToken()) return check(true);
+              setPhase(W2.token() ? "auth-error" : "login");
+              return;
+            }
+            if (response.ok) return check(true);
+            if (response.status !== 401) {
+              setNotice(t("服務器暫時無法確認登入狀態,請重試")); setPhase("auth-error");
+              return;
+            }
+          }
+          // A late recovery must not erase another tab's newer account.
+          if (W2.token() === previousToken && W2.tenant() === previousTenant) {
+            W2.setToken(""); W2.setTenant(""); setTenant("");
+          }
+          if (!W2.token()) {
+            if (previousToken) setNotice("登入已到期，請重新登入一次，以啟用自動續期。");
+            setPhase("login");
+          } else {
+            setNotice(t("服務器暫時無法確認登入狀態,請重試"));
+            setPhase("auth-error");
+          }
+          return;
+        }
+      }
+      try { await check(true); }
+      catch (error) {
+        if (!active || (error && error.status === 401)) return;
+        setNotice((error && error.message) || t("服務器暫時無法確認登入狀態,請重試"));
+        setPhase("auth-error");
+      }
+    };
+    restore();
+    return () => { active = false; };
   }, []);
+
+  // localStorage is shared between tabs, but its events arrive only in the
+  // other tabs. Do not leave an old account/tenant visible after a switch or
+  // explicit sign-out elsewhere; a same-principal token renewal is silent.
+  $e(() => {
+    let observedToken = W2.token(), observedTenant = W2.tenant(), timer = null;
+    const changed = event => {
+      if (event.key !== W2.TOKEN_KEY && event.key !== W2.TENANT_KEY) return;
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        const nextToken = W2.token(), nextTenant = W2.tenant();
+        const identityChanged = observedTenant !== nextTenant ||
+          !W2.sameTokenPrincipal(observedToken, nextToken);
+        observedToken = nextToken; observedTenant = nextTenant;
+        if (!nextToken) {
+          if (readySession.current || window.W2_USER) window.dispatchEvent(new Event("w2-auth-expired"));
+          return;
+        }
+        if (!identityChanged || !readySession.current) return;
+        readySession.current = false;
+        checkRequestSeq.current++; runtimeRequestSeq.current++; soundPolicyGeneration.current++;
+        W2.setAlertSoundEnabled(false);
+        if (W2.clearBusinessContext) W2.clearBusinessContext();
+        setPhase("checking");
+        check(true).catch(error => {
+          if (error && error.status === 401) return;
+          setNotice((error && error.message) || t("服務器暫時無法確認登入狀態,請重試"));
+          setPhase("auth-error");
+        });
+      }, 50);
+    };
+    window.addEventListener("storage", changed);
+    return () => { window.removeEventListener("storage", changed); if (timer != null) window.clearTimeout(timer); };
+  }, [check]);
 
   const switchTenant = async (slug) => {
     const previousTenant = W2.tenant();

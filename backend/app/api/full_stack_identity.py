@@ -40,6 +40,7 @@ from app.services.conversation_history import (
 )
 from app.services.organization import NAVIGATION_CATALOG
 from app.services.passkey_grants import issue_step_up_grant
+from app.services.auth_sessions import issue_session
 from app.services.integrations import (
     VoiceIntegrationError,
     correct_voice_transcript,
@@ -240,11 +241,16 @@ def _login_payload(
     account: dict[str, object],
     requested_tenant: str | None,
     settings: Settings,
+    request: Request | None = None,
+    http_response: Response | None = None,
 ) -> dict[str, object]:
     memberships = _active_memberships(account["id"])
     membership = _default_membership(memberships, requested_tenant)
     if membership is None:
         raise HTTPException(status_code=401, detail="No active company membership")
+    if request is not None and http_response is not None:
+        issue_session(request, http_response, user_id=account["id"], tenant_id=membership["id"], settings=settings,
+                      expected_password_hash=str(account["password_hash"]) if "password_hash" in account else None)
     response = _login_response(
         account=account,
         membership=membership,
@@ -260,6 +266,8 @@ def _login_payload(
 
 @router.post("/api/auth/login")
 def login_full(
+    request: Request,
+    response: Response,
     payload: dict[str, object] = Body(default={}),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
@@ -277,7 +285,7 @@ def login_full(
         ).mappings().one_or_none()
     if account is None or not verify_password(password, str(account["password_hash"])):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    return _login_payload(dict(account), str(payload.get("tenant") or "") or None, settings)
+    return _login_payload(dict(account), str(payload.get("tenant") or "") or None, settings, request, response)
 
 
 @router.get("/api/auth/me")
@@ -2014,6 +2022,8 @@ def passkey_login_options(
 
 @router.post("/api/auth/passkeys/login/verify")
 def passkey_login_verify(
+    request: Request,
+    response: Response,
     payload: dict[str, object] = Body(default={}),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
@@ -2072,7 +2082,7 @@ def passkey_login_verify(
             )
     if account is None:
         raise HTTPException(status_code=401, detail="Passkey account is unavailable")
-    return _login_payload(dict(account), None, settings)
+    return _login_payload(dict(account), None, settings, request, response)
 
 
 @router.post("/api/auth/passkeys/register/options")

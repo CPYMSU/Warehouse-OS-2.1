@@ -5,7 +5,7 @@ import binascii
 import hashlib
 import hmac
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import jwt
 from fastapi import HTTPException, status
@@ -60,7 +60,7 @@ def create_access_token(
     lifetime = settings.jwt_access_token_minutes if expires_minutes is None else expires_minutes
     expires_at = datetime.now(UTC) + timedelta(minutes=max(1, min(int(lifetime), 1440)))
     return jwt.encode(
-        {"sub": str(user_id), "tenant_id": str(tenant_id), "exp": expires_at},
+        {"sub": str(user_id), "tenant_id": str(tenant_id), "exp": expires_at, "jti": str(uuid4())},
         settings.jwt_secret,
         algorithm="HS256",
     )
