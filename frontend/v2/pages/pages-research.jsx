@@ -1240,6 +1240,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   const workspaceRoot = useRef(null);
   const fullscreenRef = useRef(false);
   const fullscreenReading = useRef(null);
+  const toggleFullscreenRef = useRef(null);
   const uploadInput = useRef(null);
   const uploadController = useRef(null);
   const uploadSerial = useRef(0);
@@ -1447,7 +1448,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     fullscreenRef.current=false;setFullscreen(false);
     restoreFullscreenReading();
   };
-  const toggleFullscreen = async () => {
+  const toggleFullscreen = () => {
     const root=workspaceRoot.current;
     if (!root) return;
     if (fullscreenRef.current) {
@@ -1458,9 +1459,6 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
         fullscreenReading.current.paper=paperScrollRef.current?paperScrollRef.current.scrollTop:0;
         fullscreenReading.current.inspector=inspectorScrollRef.current?inspectorScrollRef.current.scrollTop:0;
       }
-      if (document.fullscreenElement===root && document.exitFullscreen) {
-        try { await document.exitFullscreen(); } catch (_error) {}
-      }
       finishFullscreen();return;
     }
     const selectedNode=selection && selectionNodes.current[clean(selection.block_id)+":"+clean(selection.field_name||"text")+":"+(Number.isInteger(selection.cell_index)?selection.cell_index:"-")];
@@ -1469,21 +1467,23 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
       inspector:inspectorScrollRef.current ? inspectorScrollRef.current.scrollTop : 0,node,
       start:node && node.selectionStart,end:node && node.selectionEnd};
     fullscreenRef.current=true;setFullscreen(true);
-    if (root.requestFullscreen) {
-      try { await root.requestFullscreen(); } catch (_error) { /* The fixed workspace is also usable when native fullscreen is unavailable. */ }
-    }
     restoreFullscreenReading();
   };
+  toggleFullscreenRef.current = toggleFullscreen;
   useEffect(() => {
-    const change=()=>{if(fullscreenRef.current && document.fullscreenElement!==workspaceRoot.current)finishFullscreen();};
-    const escape=event=>{if(event.key==="Escape" && fullscreenRef.current){event.preventDefault();toggleFullscreen();}};
-    document.addEventListener("fullscreenchange",change);
+    const escape=event=>{if(event.key==="Escape" && fullscreenRef.current){event.preventDefault();toggleFullscreenRef.current?.();}};
     document.addEventListener("keydown",escape);
-    return ()=>{
-      document.removeEventListener("fullscreenchange",change);document.removeEventListener("keydown",escape);
-      if(document.fullscreenElement===workspaceRoot.current && document.exitFullscreen)document.exitFullscreen().catch(()=>{});
-    };
+    return ()=>document.removeEventListener("keydown",escape);
   }, []);
+  useLayoutEffect(() => {
+    if (!fullscreen) return () => {};
+    // The entry animation makes this ancestor a containing block even after
+    // it finishes. Remove its transform while the viewport overlay is open.
+    const anchor = workspaceRoot.current?.closest(".band.rise");
+    if (!anchor) return () => {};
+    anchor.classList.add("rv-refinement-viewport-anchor");
+    return () => anchor.classList.remove("rv-refinement-viewport-anchor");
+  }, [fullscreen]);
   useEffect(() => {
     if (!fullscreen) return () => {};
     const previous=document.body.style.overflow;
@@ -2004,7 +2004,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
       <button type="button" data-testid="research-manuscript-upload-open" className="primary" disabled={!canWrite || Boolean(uploadBusy) || publishing || Boolean(agentBusy) || Boolean(selectionBusy) || Boolean(activeFile && state==="loading")}
         onClick={openManuscriptUpload}>從電腦更新／上傳 ↗</button>
       <button type="button" data-testid="research-refinement-inspector" disabled={!workspace} aria-pressed={inspectorOpen} onClick={()=>setInspectorOpen(value=>!value)}>{inspectorOpen?"收起 AI 側欄":"顯示 AI 側欄"}</button>
-      <button type="button" data-testid="research-refinement-fullscreen" aria-pressed={fullscreen} onClick={toggleFullscreen}>{fullscreen?"退出全屏 ↙":"全屏閱讀 ↗"}</button>
+      <button type="button" data-testid="research-refinement-fullscreen" aria-pressed={fullscreen} onClick={toggleFullscreen}>{fullscreen?"退出全屏 ↙":"網頁全屏 ↗"}</button>
     </div>
     {uploadOpen && <section className="rv-manuscript-upload" data-testid="research-manuscript-upload-panel" aria-label="從電腦更新論文">
       <header><span>01 / LOCAL WORD → RESEARCH</span><strong>把新一版論文帶進來。</strong></header>
