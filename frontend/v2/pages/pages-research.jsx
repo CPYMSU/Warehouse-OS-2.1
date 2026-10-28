@@ -1075,14 +1075,25 @@ const RefinementAutoTextarea = ({ register, fontSize, value, ...props }) => {
     rows={1} data-refinement-autosize="true"/>;
 };
 
-const RefinementSemanticLayer = ({ artifact, layer, eligible, pendingLabel }) => {
+const RefinementSemanticLayer = ({ artifact, layer, eligible, pendingLabel, expanded, onToggle, index }) => {
   const content = artifact && artifact.content || {};
-  if (layer === "original" || (!artifact && !eligible)) return null;
-  const showTranslation = layer === "all" || layer === "translation";
-  const showDistillation = layer === "all" || layer === "distillation";
-  return <div className="rv-refinement-semantic-layer">
-    {showTranslation && <article><b>简体中文</b><p data-testid={!content.translation_zh_cn && eligible ? "research-translation-pending" : undefined}>{content.translation_zh_cn || pendingLabel || "等待翻譯"}</p></article>}
-    {showDistillation && artifact && <article><b>段落蒸馏</b><p>{content.distillation || "等待蒸馏"}</p>{content.argument_role && <small>{content.argument_role}</small>}</article>}
+  if (!artifact && !eligible) return null;
+  // An individually opened paragraph always offers both the translation and
+  // its distilled explanation, even while the document is in original mode.
+  const showTranslation = layer === "all" || layer === "translation" || layer === "original";
+  const showDistillation = layer === "all" || layer === "distillation" || layer === "original";
+  const panelId = "rv-semantic-" + encodeURIComponent(clean(index));
+  return <div className="rv-refinement-semantic-disclosure">
+    <button type="button" className="rv-refinement-semantic-toggle" data-testid="research-translation-toggle"
+      aria-expanded={expanded} aria-controls={panelId} aria-label={(expanded ? "收起" : "展開") + "第 " + (index + 1) + " 段翻譯與蒸餾"} onClick={onToggle}>
+      <span>{expanded ? "收起翻譯" : "查看翻譯與蒸餾"}</span><b aria-hidden="true">{expanded ? "−" : "+"}</b>
+    </button>
+    <div id={panelId} hidden={!expanded}>
+      {expanded && <div className="rv-refinement-semantic-layer">
+        {showTranslation && <article><b>简体中文</b><p data-testid={!content.translation_zh_cn && eligible ? "research-translation-pending" : undefined}>{content.translation_zh_cn || pendingLabel || "等待翻譯"}</p></article>}
+        {showDistillation && artifact && <article><b>段落蒸馏</b><p>{content.distillation || "等待蒸馏"}</p>{content.argument_role && <small>{content.argument_role}</small>}</article>}
+      </div>}
+    </div>
   </div>;
 };
 
@@ -1254,6 +1265,8 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   const translationAttempts = useRef(new Set());
   const translationQueuePending = useRef(false);
   const [semanticLayer, setSemanticLayer] = useState("all");
+  const [semanticCollapsed, setSemanticCollapsed] = useState(false);
+  const [semanticOverrides, setSemanticOverrides] = useState(() => new Set());
   const [fontSize, setFontSize] = useState(REFINEMENT_FONT_DEFAULT);
   const [agentType, setAgentType] = useState("neutrality");
   const [agentMessage, setAgentMessage] = useState("");
@@ -1353,6 +1366,8 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     setCommitMessage(clean(ui.commit_message).slice(0, 20000));
     setLocalWarning(""); setSemantic(null); setTranslationQueueFailed(false);
     setSemanticLayer(["all", "original", "translation", "distillation"].includes(ui.semantic_layer) ? ui.semantic_layer : "all");
+    setSemanticCollapsed(ui.semantic_collapsed === true);
+    setSemanticOverrides(new Set(Array.isArray(ui.semantic_overrides) ? ui.semantic_overrides.map(clean).slice(0, 2000) : []));
     setFontSize(normalizedRefinementFontSize(ui.font_size));
     setAgentType(REFINEMENT_AGENTS.some(item => item[0] === ui.agent_type) ? ui.agent_type : "neutrality");
     setAgentMessage(clean(ui.agent_message).slice(0, 30000));
@@ -1511,6 +1526,8 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     const timer = window.setTimeout(() => {
       writeRefinementLocal(activeFile.id, { ui: {
         semantic_layer: semanticLayer,
+        semantic_collapsed: semanticCollapsed,
+        semantic_overrides: Array.from(semanticOverrides),
         font_size: fontSize,
         agent_type: agentType,
         agent_message: agentMessage.slice(0, 30000),
@@ -1523,7 +1540,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
       }});
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [clean(refinementMarker), semanticLayer, fontSize, agentType, agentMessage, commitMessage,
+  }, [clean(refinementMarker), semanticLayer, semanticCollapsed, semanticOverrides, fontSize, agentType, agentMessage, commitMessage,
     selection, annotationBody, selectionQuestion, defenseAuto, defenseAnchor]);
   useEffect(() => {
     if (!workspace || !activeFile || !paperScrollRef.current || !inspectorScrollRef.current) {
@@ -1996,6 +2013,33 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   }, [semantic]);
   const selectionAnnotations = (semantic && semantic.annotations) || [];
 
+  // Keep the paragraph currently being read in place while the surrounding
+  // translation panels are expanded or collapsed.
+  const preserveSemanticReading = update => {
+    const paper = paperScrollRef.current;
+    const edge = paper && paper.getBoundingClientRect().top;
+    const anchor = paper && Array.from(paper.querySelectorAll(".rv-refinement-block"))
+      .find(item => item.getBoundingClientRect().bottom > edge + 1);
+    const before = anchor && anchor.getBoundingClientRect().top;
+    update();
+    if (paper && anchor) window.requestAnimationFrame(() => {
+      if (anchor.isConnected && paper.isConnected) paper.scrollTop += anchor.getBoundingClientRect().top - before;
+    });
+  };
+  const semanticDefaultExpanded = !semanticCollapsed && semanticLayer !== "original";
+  const setAllSemantic = collapsed => preserveSemanticReading(() => {
+    setSemanticCollapsed(collapsed);
+    setSemanticOverrides(new Set());
+    if (!collapsed && semanticLayer === "original") setSemanticLayer("all");
+  });
+  const toggleSemanticBlock = blockId => preserveSemanticReading(() => {
+    setSemanticOverrides(current => {
+      const next = new Set(current);
+      if (next.has(blockId)) next.delete(blockId); else next.add(blockId);
+      return next;
+    });
+  });
+
   const workspaceClass="rv-refinement"+(fullscreen?" is-fullscreen":"")+(!inspectorOpen?" inspector-hidden":"");
   const uploadStage=uploadBusy==="sync"?"正在同步目前草稿…":uploadBusy==="upload"?"正在上傳 Word 並保存版本…":uploadBusy==="rebase"?"正在保留舊稿並載入新 Word…":"";
   const workspaceChrome=<>
@@ -2077,7 +2121,11 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     <nav className="rv-refinement-layers" aria-label="论文语义显示层">
       <span>DOCUMENT TWIN</span>
       {[['original','原文'],['translation','简中'],['distillation','蒸馏'],['all','三层对照']].map(item =>
-        <button key={item[0]} className={semanticLayer === item[0] ? "active" : ""} onClick={() => setSemanticLayer(item[0])}>{item[1]}</button>)}
+        <button key={item[0]} className={semanticLayer === item[0] ? "active" : ""} onClick={() => {setSemanticLayer(item[0]); setSemanticCollapsed(false); setSemanticOverrides(new Set());}}>{item[1]}</button>)}
+      <div className="rv-semantic-global-actions" role="group" aria-label="全部翻譯顯示">
+        <button type="button" data-testid="research-translation-collapse-all" onClick={() => setAllSemantic(true)}>收起全部翻譯</button>
+        <button type="button" data-testid="research-translation-expand-all" onClick={() => setAllSemantic(false)}>展開全部翻譯</button>
+      </div>
       <div className="rv-refinement-font-controls" role="group" aria-label="同步调整原文、翻译和蒸馏字号">
         <button type="button" aria-label="减小文本" title="减小文本" disabled={fontSize <= REFINEMENT_FONT_MIN}
           onClick={() => setFontSize(value => normalizedRefinementFontSize(value - 1))}>−</button>
@@ -2102,7 +2150,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
             onClick={() => explainDefense(selection)}>答辯解釋 ↗</button>
           <button className="clear" onClick={() => setSelection(null)}>×</button>
         </div>}
-        {documentDigest && semanticLayer !== "original" && <section className="rv-refinement-document-digest">
+        {documentDigest && !semanticCollapsed && semanticLayer !== "original" && <section className="rv-refinement-document-digest">
           <b>全文蒸馏</b><p>{documentDigest.content.summary}</p>
           <dl><div><dt>研究问题</dt><dd>{documentDigest.content.research_question || "—"}</dd></div><div><dt>方法</dt><dd>{documentDigest.content.method || "—"}</dd></div><div><dt>局限</dt><dd>{documentDigest.content.limitations || "—"}</dd></div></dl>
         </section>}
@@ -2121,7 +2169,11 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
               : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
                 <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
               </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
-              <RefinementSemanticLayer artifact={semanticByBlock[clean(block.id)]} layer={semanticLayer} eligible={refinementTranslationEligible(block)} pendingLabel={translationPendingLabel}/>
+              <RefinementSemanticLayer artifact={semanticByBlock[clean(block.id)]}
+                layer={semanticOverrides.has(clean(block.id)) && !semanticDefaultExpanded ? "all" : semanticLayer}
+                eligible={refinementTranslationEligible(block)} pendingLabel={translationPendingLabel} index={index}
+                expanded={semanticOverrides.has(clean(block.id)) ? !semanticDefaultExpanded : semanticDefaultExpanded}
+                onToggle={() => toggleSemanticBlock(clean(block.id))}/>
               {(annotationsByBlock[clean(block.id)] || []).length > 0 && <div className="rv-refinement-block-annotations">{annotationsByBlock[clean(block.id)].map(item => <button key={item.id} className={item.status + " " + item.color} onClick={() => focusRefinementSelection(item)}><span>{item.annotation_type === "highlight" ? "MARK" : "NOTE"}</span><q>{item.quote.slice(0, 90)}</q></button>)}</div>}
             </div>
           </section>)}
