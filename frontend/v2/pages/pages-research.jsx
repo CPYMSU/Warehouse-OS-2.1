@@ -2,7 +2,7 @@
    Swiss data workspace: native Git commits, inline previews and semantic diffs. */
 (() => {
 const W2 = window.W2;
-const { useState, useEffect, useLayoutEffect, useMemo, useRef } = React;
+const { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } = React;
 const { Folio, Band } = W2;
 
 const clean = value => value == null ? "" : String(value);
@@ -1012,42 +1012,83 @@ const RefinementEquation = ({ latex, fallback }) => {
 const REFINEMENT_FONT_DEFAULT = 14;
 const REFINEMENT_FONT_MIN = 10;
 const REFINEMENT_FONT_MAX = 22;
+const nativeRefinementSizing = Boolean(window.CSS && window.CSS.supports && window.CSS.supports("field-sizing", "content"));
 const normalizedRefinementFontSize = value => Math.min(
   REFINEMENT_FONT_MAX,
   Math.max(REFINEMENT_FONT_MIN, Math.round(Number(value) || REFINEMENT_FONT_DEFAULT))
 );
-const resizeRefinementTextarea = node => {
-  if (!node) return;
-  node.style.height = "0px";
-  const style = window.getComputedStyle(node);
-  const minimum = Number.parseFloat(style.minHeight) || 0;
-  const borders = style.boxSizing === "border-box"
-    ? (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0)
-    : 0;
-  node.style.height = Math.ceil(Math.max(minimum, node.scrollHeight + borders)) + "px";
+// Read all heights together after clearing them, then write them together. A
+// long manuscript can contain hundreds of fields; alternating each write and
+// read forces a full layout for every single field.
+const resizeRefinementTextareas = input => {
+  const nodes = Array.from(new Set(input)).filter(node => node && node.isConnected);
+  const scrolls = new Map();
+  nodes.forEach(node => {
+    const paper = node.closest(".rv-refinement-paper");
+    if (paper && !scrolls.has(paper)) scrolls.set(paper, [paper.scrollLeft, paper.scrollTop]);
+  });
+  const pagePosition = [window.scrollX, window.scrollY];
+  nodes.forEach(node => { node.style.height = "0px"; });
+  const heights = nodes.map(node => {
+    const style = window.getComputedStyle(node);
+    const minimum = Number.parseFloat(style.minHeight) || 0;
+    const borders = style.boxSizing === "border-box"
+      ? (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0)
+      : 0;
+    return Math.ceil(Math.max(minimum, node.scrollHeight + borders));
+  });
+  nodes.forEach((node, index) => { node.style.height = heights[index] + "px"; });
+  // A table/grid can settle to a slightly narrower width after the first
+  // write. Read all residual overflow once and grow only affected fields.
+  const overflow = nodes.map(node => Math.max(0, node.scrollHeight - node.clientHeight));
+  nodes.forEach((node, index) => {
+    if (overflow[index] > 1) node.style.height = (heights[index] + overflow[index]) + "px";
+  });
+  // The temporary shrink may clamp a long document's scroll offset.
+  scrolls.forEach(([left, top], paper) => { paper.scrollLeft = left; paper.scrollTop = top; });
+  if (window.scrollX !== pagePosition[0] || window.scrollY !== pagePosition[1]) window.scrollTo(...pagePosition);
+};
+const pendingRefinementTextareas = new Set();
+let refinementTextareaFrame = null;
+const scheduleRefinementTextarea = node => {
+  if (!node || nativeRefinementSizing) return;
+  pendingRefinementTextareas.add(node);
+  if (refinementTextareaFrame != null) return;
+  refinementTextareaFrame = window.requestAnimationFrame(() => {
+    refinementTextareaFrame = null;
+    const nodes = Array.from(pendingRefinementTextareas);
+    pendingRefinementTextareas.clear();
+    resizeRefinementTextareas(nodes);
+  });
 };
 const RefinementAutoTextarea = ({ register, fontSize, value, ...props }) => {
   const node = useRef(null);
-  const assign = current => {
+  const registerRef = useRef(register);
+  registerRef.current = register;
+  // Keep the callback stable even though the parent creates register inline.
+  const assign = useCallback(current => {
     node.current = current;
-    if (register) register(current);
-    if (current) resizeRefinementTextarea(current);
-  };
-  useLayoutEffect(() => { resizeRefinementTextarea(node.current); }, [value, fontSize]);
+    if (registerRef.current) registerRef.current(current);
+  }, []);
+  useLayoutEffect(() => { scheduleRefinementTextarea(node.current); }, [value, fontSize]);
   return <textarea {...props} ref={assign} value={value == null ? "" : value}
     rows={1} data-refinement-autosize="true"/>;
 };
 
-const RefinementSemanticLayer = ({ artifact, layer }) => {
+const RefinementSemanticLayer = ({ artifact, layer, eligible, pendingLabel }) => {
   const content = artifact && artifact.content || {};
-  if (!artifact || artifact.stale || layer === "original") return null;
+  if (layer === "original" || (!artifact && !eligible)) return null;
   const showTranslation = layer === "all" || layer === "translation";
   const showDistillation = layer === "all" || layer === "distillation";
   return <div className="rv-refinement-semantic-layer">
-    {showTranslation && <article><b>简体中文</b><p>{content.translation_zh_cn || "等待翻译"}</p></article>}
-    {showDistillation && <article><b>段落蒸馏</b><p>{content.distillation || "等待蒸馏"}</p>{content.argument_role && <small>{content.argument_role}</small>}</article>}
+    {showTranslation && <article><b>简体中文</b><p data-testid={!content.translation_zh_cn && eligible ? "research-translation-pending" : undefined}>{content.translation_zh_cn || pendingLabel || "等待翻譯"}</p></article>}
+    {showDistillation && artifact && <article><b>段落蒸馏</b><p>{content.distillation || "等待蒸馏"}</p>{content.argument_role && <small>{content.argument_role}</small>}</article>}
   </div>;
 };
+
+const refinementTranslationEligible = block => Boolean(block &&
+  ["title", "heading", "paragraph", "list_item", "caption", "equation", "table_row", "image"].includes(block.type) &&
+  (clean(block.text).trim() || (Array.isArray(block.cells) && block.cells.some(cell => clean(cell).trim()))));
 
 const refinementSelectionFromTextarea = (block, event, cellIndex, onSelect) => {
   const target = event.currentTarget;
@@ -1208,6 +1249,9 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   const [localWarning, setLocalWarning] = useState("");
   const [semantic, setSemantic] = useState(null);
   const [semanticBusy, setSemanticBusy] = useState(false);
+  const [translationQueueFailed, setTranslationQueueFailed] = useState(false);
+  const translationAttempts = useRef(new Set());
+  const translationQueuePending = useRef(false);
   const [semanticLayer, setSemanticLayer] = useState("all");
   const [fontSize, setFontSize] = useState(REFINEMENT_FONT_DEFAULT);
   const [agentType, setAgentType] = useState("neutrality");
@@ -1306,7 +1350,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     const ui = remembered.ui || {};
     setWorkspace(null); setBlocks([]); setState(base ? "loading" : "empty");
     setCommitMessage(clean(ui.commit_message).slice(0, 20000));
-    setLocalWarning(""); setSemantic(null);
+    setLocalWarning(""); setSemantic(null); setTranslationQueueFailed(false);
     setSemanticLayer(["all", "original", "translation", "distillation"].includes(ui.semantic_layer) ? ui.semantic_layer : "all");
     setFontSize(normalizedRefinementFontSize(ui.font_size));
     setAgentType(REFINEMENT_AGENTS.some(item => item[0] === ui.agent_type) ? ui.agent_type : "neutrality");
@@ -1346,20 +1390,41 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   useEffect(() => {
     if (!workspace || !semanticBase) return () => {};
     let disposed = false;
-    loadSemantic(true).then(data => {
-      if (disposed || !data) return;
-      if (!(data.artifacts || []).length && !data.latest_run) {
-        queueSemantic({ modes: ["translate", "distill"] });
-      }
-    });
+    loadSemantic(true).then(() => { if (disposed) return; });
     return () => { disposed = true; };
-  }, [semanticBase, workspace && workspace.draft && workspace.draft.id,workspace && workspace.base_version && workspace.base_version.id]);
+  }, [semanticBase, workspace && workspace.draft && workspace.draft.id,workspace && workspace.base_version && workspace.base_version.id,workspace && workspace.draft && workspace.draft.revision]);
   useEffect(() => {
-    const run = semantic && semantic.latest_run;
-    if (!run || !["queued", "processing"].includes(run.status)) return () => {};
+    const runs = semantic ? [semantic.latest_run, semantic.translation_run] : [];
+    if (!runs.some(run => run && ["queued", "processing"].includes(run.status))) return () => {};
     const timer = window.setTimeout(() => loadSemantic(true), 1800);
     return () => window.clearTimeout(timer);
-  }, [semantic && semantic.latest_run]);
+  }, [semantic && semantic.latest_run, semantic && semantic.translation_run]);
+  const translationCoverage = semantic && semantic.coverage;
+  const currentTranslationRun = semantic && (semantic.translation_run ||
+    (semantic.latest_run && (semantic.latest_run.modes || []).includes("translate") ? semantic.latest_run : null));
+  const savedRevision = workspace && workspace.draft && Number(workspace.draft.revision);
+  const semanticCurrent = Boolean(semantic && semantic.draft && workspace && workspace.draft &&
+    clean(semantic.draft.id) === clean(workspace.draft.id) && Number(semantic.draft.revision) === savedRevision);
+  const translationCurrent = Boolean(currentTranslationRun && Number(currentTranslationRun.source_revision) === savedRevision);
+  const translationRunning = Boolean(translationCurrent && ["queued", "processing"].includes(currentTranslationRun.status));
+  const hasUnsavedRefinement = ["local", "saving", "conflict"].includes(state) || editSerial.current > savedSerial.current;
+  const requestMissingTranslation = async () => {
+    if (!canWrite || !semanticCurrent || hasUnsavedRefinement || translationRunning || translationQueuePending.current || transferLock.current) return;
+    translationQueuePending.current = true;
+    setTranslationQueueFailed(false);
+    const scope = base, epoch = workspaceEpoch.current;
+    const result = await queueSemantic({ modes: ["translate"] });
+    translationQueuePending.current = false;
+    if (defenseScope.current === scope && workspaceEpoch.current === epoch && !result) setTranslationQueueFailed(true);
+  };
+  useEffect(() => {
+    if (!semanticCurrent || !translationCoverage || !Number(translationCoverage.missing_count) || !canWrite ||
+        hasUnsavedRefinement || translationRunning || translationCurrent || semanticBusy || uploadBusy || transferLock.current) return;
+    const key = [semanticBase, clean(workspace.draft.id), savedRevision].join(":");
+    if (translationAttempts.current.has(key)) return;
+    translationAttempts.current.add(key);
+    requestMissingTranslation();
+  }, [semantic, semanticBase, savedRevision, state, semanticBusy, uploadBusy, canWrite]);
   const refinementMarker = workspace && (
     clean((workspace.draft || {}).id) + ":" + clean((workspace.base_version || {}).id)
   );
@@ -1380,7 +1445,6 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   const finishFullscreen = () => {
     if (!fullscreenRef.current) return;
     fullscreenRef.current=false;setFullscreen(false);
-    setInspectorOpen(fullscreenReading.current ? fullscreenReading.current.inspectorOpen : true);
     restoreFullscreenReading();
   };
   const toggleFullscreen = async () => {
@@ -1402,9 +1466,9 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     const selectedNode=selection && selectionNodes.current[clean(selection.block_id)+":"+clean(selection.field_name||"text")+":"+(Number.isInteger(selection.cell_index)?selection.cell_index:"-")];
     const node=selectedNode || (document.activeElement && document.activeElement.tagName==="TEXTAREA" ? document.activeElement : null);
     fullscreenReading.current={paper:paperScrollRef.current ? paperScrollRef.current.scrollTop : 0,
-      inspector:inspectorScrollRef.current ? inspectorScrollRef.current.scrollTop : 0,inspectorOpen,node,
+      inspector:inspectorScrollRef.current ? inspectorScrollRef.current.scrollTop : 0,node,
       start:node && node.selectionStart,end:node && node.selectionEnd};
-    fullscreenRef.current=true;setFullscreen(true);setInspectorOpen(false);
+    fullscreenRef.current=true;setFullscreen(true);
     if (root.requestFullscreen) {
       try { await root.requestFullscreen(); } catch (_error) { /* The fixed workspace is also usable when native fullscreen is unavailable. */ }
     }
@@ -1517,10 +1581,8 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   }, [clean(refinementMarker), clean(activeFile && activeFile.id)]);
   useEffect(() => {
     const paper = paperScrollRef.current;
-    if (!workspace || !paper) return () => {};
-    const resizeAll = () => {
-      Object.values(selectionNodes.current).forEach(resizeRefinementTextarea);
-    };
+    if (!workspace || !paper || nativeRefinementSizing) return () => {};
+    const resizeAll = () => resizeRefinementTextareas(Object.values(selectionNodes.current));
     const schedule = () => {
       if (textareaResizeFrame.current != null) {
         window.cancelAnimationFrame(textareaResizeFrame.current);
@@ -1530,13 +1592,25 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
         resizeAll();
       });
     };
-    const observer = window.ResizeObserver ? new window.ResizeObserver(schedule) : null;
-    if (observer) observer.observe(paper);
-    window.addEventListener("resize", schedule);
-    schedule();
+    // The article's width, not its content height, determines wrapping.
+    // Watching height here creates a feedback loop as the textareas grow.
+    const article = paper.querySelector("article") || paper;
+    let lastWidth = null;
+    const updateWidth = () => {
+      const width = article.getBoundingClientRect().width;
+      if (lastWidth != null && Math.abs(width - lastWidth) < 0.5) return;
+      lastWidth = width;
+      schedule();
+    };
+    const observer = window.ResizeObserver ? new window.ResizeObserver(updateWidth) : null;
+    if (observer) observer.observe(article);
+    window.addEventListener("resize", updateWidth);
+    if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener("loadingdone", schedule);
+    updateWidth();
     return () => {
       if (observer) observer.disconnect();
-      window.removeEventListener("resize", schedule);
+      window.removeEventListener("resize", updateWidth);
+      if (document.fonts && document.fonts.removeEventListener) document.fonts.removeEventListener("loadingdone", schedule);
       if (textareaResizeFrame.current != null) {
         window.cancelAnimationFrame(textareaResizeFrame.current);
         textareaResizeFrame.current = null;
@@ -1964,10 +2038,18 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     : state === "local" ? "本機草稿已保存"
     : state === "conflict" ? "等待合併衝突"
     : state === "submitted" ? "正式版本已提交" : "平台草稿已同步";
-  const semanticRun = semantic && semantic.latest_run;
-  const semanticStatus = semanticRun && ["queued", "processing"].includes(semanticRun.status)
-    ? "多线程 Agent 正在工作" : semanticRun && semanticRun.status === "failed"
-      ? "AI 任务需要重试" : "语义资源已同步";
+  const translationTotal = semanticCurrent && translationCoverage ? Number(translationCoverage.total) || 0 : 0;
+  const translatedCount = semanticCurrent && translationCoverage ? Number(translationCoverage.translated) || 0 : 0;
+  const translationMissing = semanticCurrent && translationCoverage ? Number(translationCoverage.missing_count) || 0 : 0;
+  const semanticStatus = !semanticCurrent || !translationCoverage ? "正在讀取翻譯進度"
+    : hasUnsavedRefinement ? "保存草稿後更新翻譯"
+    : translationRunning ? `正在翻譯 ${translatedCount}/${translationTotal}`
+    : translationMissing ? `已翻譯 ${translatedCount}/${translationTotal} · 尚缺 ${translationMissing} 段`
+    : translationTotal ? `翻譯完成 ${translatedCount}/${translationTotal}` : "目前沒有需要翻譯的內容";
+  const translationNeedsRetry = Boolean(translationMissing && !hasUnsavedRefinement && !translationRunning &&
+    (translationQueueFailed || (translationCurrent && ["failed", "ready"].includes(currentTranslationRun.status))));
+  const translationPendingLabel = !semanticCurrent ? "正在讀取翻譯狀態" : hasUnsavedRefinement ? "保存草稿後更新翻譯"
+    : translationRunning ? "正在翻譯" : translationNeedsRetry ? "翻譯未完成，請重試" : "等待翻譯";
   const defenseBusy = ["queued","loading"].includes(defenseStatus);
   const defenseSource = defenseAnchor || defenseResult && (defenseResult.selection || defenseMessageSelection(defenseResult.message));
   const defenseSourceBlock = defenseSource && blocks.find(block => clean(block.id) === clean(defenseSource.block_id));
@@ -2004,7 +2086,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
         <button type="button" aria-label="增大文本" title="增大文本" disabled={fontSize >= REFINEMENT_FONT_MAX}
           onClick={() => setFontSize(value => normalizedRefinementFontSize(value + 1))}>＋</button>
       </div>
-      <small>{semanticStatus}</small>
+      <small data-testid="research-translation-status" aria-live="polite">{semanticStatus}{translationNeedsRetry && <button type="button" data-testid="research-translation-retry" disabled={semanticBusy} onClick={requestMissingTranslation}>重新翻譯 ↻</button>}</small>
     </nav>
     {workspace.source_changed && <div className="rv-refinement-conflict">課題庫已有較新的正式版本。這份草稿仍保留，但提交前需要重新基準化。</div>}
     {localWarning && <div className="rv-refinement-conflict">{localWarning}</div>}
@@ -2039,7 +2121,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
               : <div className="rv-refinement-text"><select value={block.type} onChange={event => updateBlock(block.id, { type: event.target.value, level: event.target.value === "heading" ? (block.level || 1) : null })}>
                 <option value="title">TITLE</option><option value="heading">HEADING</option><option value="paragraph">PARAGRAPH</option><option value="list_item">LIST</option><option value="caption">CAPTION</option><option value="equation">EQUATION</option>
               </select>{block.type === "heading" && <select className="level" value={block.level || 1} onChange={event => updateBlock(block.id, { level: Number(event.target.value) })}>{[1,2,3,4,5,6].map(level => <option key={level} value={level}>H{level}</option>)}</select>}<RefinementAutoTextarea register={node => { const key = clean(block.id) + ":text:-"; if (node) selectionNodes.current[key] = node; else delete selectionNodes.current[key]; }} fontSize={fontSize} value={block.text || ""} onChange={event => updateBlock(block.id, { text: event.target.value })} onMouseUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} onKeyUp={event => refinementSelectionFromTextarea(block, event, null, chooseRefinementSelection)} placeholder="輸入論文內容…"/>{block.contains_math && <code>FORMULA · {block.latex || "保留原始 Word 公式"}</code>}</div>}
-              <RefinementSemanticLayer artifact={semanticByBlock[clean(block.id)]} layer={semanticLayer}/>
+              <RefinementSemanticLayer artifact={semanticByBlock[clean(block.id)]} layer={semanticLayer} eligible={refinementTranslationEligible(block)} pendingLabel={translationPendingLabel}/>
               {(annotationsByBlock[clean(block.id)] || []).length > 0 && <div className="rv-refinement-block-annotations">{annotationsByBlock[clean(block.id)].map(item => <button key={item.id} className={item.status + " " + item.color} onClick={() => focusRefinementSelection(item)}><span>{item.annotation_type === "highlight" ? "MARK" : "NOTE"}</span><q>{item.quote.slice(0, 90)}</q></button>)}</div>}
             </div>
           </section>)}

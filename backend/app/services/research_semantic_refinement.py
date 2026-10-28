@@ -32,8 +32,10 @@ MAX_CONTEXT_CHARACTERS = 52_000
 MAX_BATCH_CHARACTERS = 10_000
 MAX_BATCH_BLOCKS = 14
 MAX_PARALLEL_CALLS = 4
+MAX_SEMANTIC_BATCH_ATTEMPTS = 2
 DOCUMENT_BLOCK_ID = "__document__"
 SEMANTIC_MODES = frozenset({"translate", "distill"})
+SEMANTIC_BLOCK_TYPES = frozenset({"title", "heading", "paragraph", "list_item", "caption", "equation", "table_row", "image"})
 AGENT_TYPES = frozenset({"neutrality", "logic", "clarity", "professional", "chief"})
 AGENT_LABELS = {
     "neutrality": "用词中立化评审",
@@ -364,6 +366,7 @@ def _parse_model_json(value: str) -> dict[str, object]:
 def _artifact_rows(
     actor: ActorContext,
     draft_id: object,
+    current_hashes: dict[str, str] | None = None,
 ) -> list[dict[str, object]]:
     with tenant_session(actor.tenant_id) as session:
         rows = (
@@ -375,10 +378,12 @@ def _artifact_rows(
                            source_revision, content, model, updated_at
                     FROM research.manuscript_artifacts
                     WHERE draft_id=:draft_id
-                    ORDER BY block_id, artifact_kind, locale, updated_at DESC
+                    ORDER BY block_id, artifact_kind, locale,
+                             CASE WHEN source_sha256 = (CAST(:current_hashes AS jsonb) ->> block_id)
+                                  THEN 0 ELSE 1 END, updated_at DESC
                     """
                 ),
-                {"draft_id": draft_id},
+                {"draft_id": draft_id, "current_hashes": json.dumps(current_hashes or {})},
             )
             .mappings()
             .all()
@@ -629,13 +634,14 @@ def semantic_workspace(
     _require_write(actor)
     project, file_row, draft = _draft_target(actor, project_ref, file_ref)
     blocks = _blocks(draft.get("blocks"))
-    artifacts = _artifact_rows(actor, draft["id"])
     current_hashes = {str(item.get("id") or ""): _block_hash(item) for item in blocks}
     current_hashes[DOCUMENT_BLOCK_ID] = _document_hash(blocks)
+    artifacts = _artifact_rows(actor, draft["id"], current_hashes)
     for artifact in artifacts:
         artifact["stale"] = current_hashes.get(str(artifact["block_id"])) != str(
             artifact["source_sha256"]
         )
+    coverage = _translation_coverage(blocks, artifacts)
     with tenant_session(actor.tenant_id) as session:
         latest_run = (
             session.execute(
@@ -648,15 +654,28 @@ def semantic_workspace(
             .mappings()
             .one_or_none()
         )
-    run = dict(latest_run) if latest_run else None
-    if run:
-        for key in ("id", "draft_id"):
-            run[key] = str(run[key])
-        run["modes"] = _json(run.get("modes")) or []
-        run["block_ids"] = _json(run.get("block_ids")) or []
-        run["result"] = _json(run.get("result")) or {}
-        for key in ("created_at", "updated_at", "started_at", "finished_at"):
-            run[key] = str(run[key]) if run.get(key) else None
+        latest_translation_run = (
+            session.execute(
+                text("SELECT * FROM research.manuscript_ai_runs WHERE draft_id=:draft_id "
+                     "AND modes @> CAST(:modes AS jsonb) ORDER BY created_at DESC LIMIT 1"),
+                {"draft_id": draft["id"], "modes": json.dumps(["translate"])},
+            ).mappings().one_or_none()
+        )
+
+    def public_run(row):
+        value = dict(row) if row else None
+        if value:
+            for key in ("id", "draft_id"):
+                value[key] = str(value[key])
+            value["modes"] = _json(value.get("modes")) or []
+            value["block_ids"] = _json(value.get("block_ids")) or []
+            value["result"] = _json(value.get("result")) or {}
+            for key in ("created_at", "updated_at", "started_at", "finished_at"):
+                value[key] = str(value[key]) if value.get(key) else None
+        return value
+
+    run = public_run(latest_run)
+    translation_run = public_run(latest_translation_run)
     threads = _thread_rows(actor, draft["id"])
     defense_explanations = []
     for thread in threads:
@@ -674,6 +693,8 @@ def semantic_workspace(
         "file": {"id": str(file_row["id"]), "display_name": file_row["display_name"]},
         "draft": {"id": str(draft["id"]), "revision": int(draft["revision"])},
         "latest_run": run,
+        "translation_run": translation_run,
+        "coverage": coverage,
         "artifacts": artifacts,
         "threads": threads,
         "defense_explanations": list(reversed(defense_explanations))[:30],
@@ -720,6 +741,14 @@ def queue_semantic_run(
         {str(item).strip() for item in raw_block_ids if str(item).strip() in valid_ids}
     )
     with tenant_session(actor.tenant_id) as session:
+        # Serialize the check-and-insert for a draft, so concurrent refreshes
+        # cannot create separate jobs for the same revision and scope.
+        revision = session.execute(
+            text("SELECT revision FROM research.manuscript_drafts WHERE id=:id FOR UPDATE"),
+            {"id": draft["id"]},
+        ).scalar_one()
+        if int(revision) != int(draft["revision"]):
+            raise HTTPException(status_code=409, detail="Draft changed; reload before starting manuscript AI")
         active = (
             session.execute(
                 text(
@@ -878,7 +907,13 @@ def _store_artifact(
                   CAST(:content AS jsonb), :model
                 ) ON CONFLICT (
                   tenant_id, draft_id, block_id, artifact_kind, source_sha256, locale
-                ) DO UPDATE SET content=EXCLUDED.content, source_revision=EXCLUDED.source_revision,
+                ) DO UPDATE SET content=research.manuscript_artifacts.content || (
+                    SELECT COALESCE(jsonb_object_agg(key, value), '{}'::jsonb)
+                    FROM jsonb_each(EXCLUDED.content)
+                    WHERE value <> 'null'::jsonb
+                      AND (jsonb_typeof(value) <> 'string' OR btrim(value #>> '{}') <> '')
+                      AND value <> '[]'::jsonb
+                ), source_revision=EXCLUDED.source_revision,
                   model=EXCLUDED.model, updated_at=now()
                 """
             ),
@@ -898,16 +933,44 @@ def _store_artifact(
         )
 
 
-def _existing_hashes(actor: ActorContext, draft_id: object) -> set[tuple[str, str]]:
+def _semantic_content_complete(content: object, modes: set[str]) -> bool:
+    """An artifact is complete only for the requested non-empty outputs."""
+    value = _json(content)
+    if not isinstance(value, dict):
+        return False
+    fields = []
+    if "translate" in modes:
+        fields.append("translation_zh_cn")
+    if "distill" in modes:
+        fields.append("distillation")
+    return all(isinstance(value.get(field), str) and value[field].strip() for field in fields)
+
+
+def _has_semantic_text(block: dict[str, object]) -> bool:
+    cells = block.get("cells") if isinstance(block.get("cells"), list) else []
+    return bool(str(block.get("text") or "").strip() or any(str(cell or "").strip() for cell in cells))
+
+
+def _translation_coverage(blocks: list[dict[str, object]], artifacts: list[dict[str, object]]) -> dict[str, int]:
+    eligible = {str(block.get("id") or ""): _block_hash(block) for block in blocks
+                if block.get("type") in SEMANTIC_BLOCK_TYPES and _has_semantic_text(block)}
+    translated = {str(artifact.get("block_id") or "") for artifact in artifacts
+                  if artifact.get("artifact_kind") == "block_semantics"
+                  and eligible.get(str(artifact.get("block_id") or "")) == str(artifact.get("source_sha256") or "")
+                  and _semantic_content_complete(artifact.get("content"), {"translate"})}
+    return {"total": len(eligible), "translated": len(translated), "missing_count": len(eligible) - len(translated)}
+
+
+def _existing_hashes(actor: ActorContext, draft_id: object, modes: set[str]) -> set[tuple[str, str]]:
     with tenant_session(actor.tenant_id) as session:
         rows = session.execute(
             text(
-                "SELECT block_id,source_sha256 FROM research.manuscript_artifacts "
+                "SELECT block_id,source_sha256,content FROM research.manuscript_artifacts "
                 "WHERE draft_id=:draft_id AND artifact_kind='block_semantics'"
             ),
             {"draft_id": draft_id},
         ).all()
-    return {(str(row[0]), str(row[1])) for row in rows}
+    return {(str(row[0]), str(row[1])) for row in rows if _semantic_content_complete(row[2], modes)}
 
 
 def _document_digest(
@@ -1011,7 +1074,9 @@ def _review_context(
     *,
     include_findings: bool,
 ) -> str:
-    artifacts = _artifact_rows(actor, draft["id"])
+    current_hashes = {str(item.get("id") or ""): _block_hash(item) for item in blocks}
+    current_hashes[DOCUMENT_BLOCK_ID] = _document_hash(blocks)
+    artifacts = _artifact_rows(actor, draft["id"], current_hashes)
     current = {
         (str(item["block_id"]), str(item["source_sha256"])): item
         for item in artifacts
@@ -1175,13 +1240,16 @@ def run_semantic_ai(
     parsed_id = UUID(str(run_id))
     run = _run_row(actor, parsed_id)
     with tenant_session(actor.tenant_id) as session:
-        session.execute(
+        claimed = session.execute(
             text(
                 "UPDATE research.manuscript_ai_runs SET status='processing', "
-                "started_at=now(), error=NULL WHERE id=:id AND status IN ('queued','failed')"
+                "started_at=now(), error=NULL WHERE id=:id AND status IN ('queued','failed') RETURNING id"
             ),
             {"id": parsed_id},
-        )
+        ).scalar_one_or_none()
+        if claimed is None:
+            # A concurrent request already claimed or finished this run.
+            return {"status": "already_claimed"}
         draft_row = (
             session.execute(
                 text("SELECT * FROM research.manuscript_drafts WHERE id=:id"),
@@ -1200,44 +1268,61 @@ def run_semantic_ai(
         "source_revision": run["source_revision"],
     }
     try:
+        if int(draft["revision"]) != int(run["source_revision"]):
+            raise ValueError("研究稿件已更新，請重新啟動未完成的語義處理。")
         if SEMANTIC_MODES.intersection(modes):
             connection = _connection(actor, settings)
-            existing = _existing_hashes(actor, draft["id"])
+            requested = SEMANTIC_MODES.intersection(modes)
+            existing = _existing_hashes(actor, draft["id"], requested)
             eligible = [
                 item
                 for item in blocks
                 if (not target_ids or str(item.get("id") or "") in target_ids)
-                and str(item.get("type") or "")
-                in {
-                    "title",
-                    "heading",
-                    "paragraph",
-                    "list_item",
-                    "caption",
-                    "equation",
-                    "table_row",
-                    "image",
-                }
+                and str(item.get("type") or "") in SEMANTIC_BLOCK_TYPES
+                and _has_semantic_text(item)
                 and (str(item.get("id") or ""), _block_hash(item)) not in existing
             ]
-            batches = _batches(eligible)
-            if batches:
+            pending = eligible
+            for attempt in range(MAX_SEMANTIC_BATCH_ATTEMPTS):
+                batches = _batches(pending)
+                if attempt:
+                    # A large JSON response may be truncated. A single bounded
+                    # retry uses smaller batches for only the unfinished blocks.
+                    batches = [batch[index:index + 4] for batch in batches for index in range(0, len(batch), 4)]
+                if not batches:
+                    break
                 with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_CALLS, len(batches))) as pool:
-                    futures = [pool.submit(_semantic_batch, connection, batch) for batch in batches]
+                    futures = {pool.submit(_semantic_batch, connection, batch): batch for batch in batches}
                     for future in as_completed(futures):
-                        for artifact in future.result():
+                        try:
+                            produced = future.result()
+                        except Exception:
+                            # Other completed batches are still saved; only missing
+                            # blocks will be retried by the bounded next pass.
+                            continue
+                        seen = set()
+                        for artifact in produced:
+                            block_id = str(artifact["block_id"])
+                            if block_id in seen:
+                                continue
+                            seen.add(block_id)
                             _store_artifact(
-                                actor,
-                                draft,
-                                block_id=str(artifact["block_id"]),
-                                artifact_kind="block_semantics",
+                                actor, draft, block_id=block_id, artifact_kind="block_semantics",
                                 source_sha256=str(artifact["source_sha256"]),
-                                content=dict(artifact["content"]),
-                                model=connection.model,
+                                content=dict(artifact["content"]), model=connection.model,
                             )
                             result["artifacts"] = int(result["artifacts"]) + 1
+                # Re-read merged persisted fields: one pass may supply a valid
+                # translation while a later pass supplies its missing digest.
+                existing = _existing_hashes(actor, draft["id"], requested)
+                pending = [item for item in pending
+                           if (str(item.get("id") or ""), _block_hash(item)) not in existing]
+            result["missing_count"] = len(pending)
+            result["eligible_count"] = len(eligible)
             if "distill" in modes and _document_digest(actor, draft, blocks, connection):
                 result["artifacts"] = int(result["artifacts"]) + 1
+            if pending:
+                raise ValueError("部分段落未完成翻譯或蒸餾，請重試未完成部分。")
         review_modes = [
             item.removeprefix("review:")
             for item in modes
@@ -1269,12 +1354,12 @@ def run_semantic_ai(
         with tenant_session(actor.tenant_id) as session:
             session.execute(
                 text(
-                    "UPDATE research.manuscript_ai_runs SET status='failed', error=:error, "
+                    "UPDATE research.manuscript_ai_runs SET status='failed', error=:error, result=CAST(:result AS jsonb), "
                     "finished_at=now() WHERE id=:id"
                 ),
-                {"id": parsed_id, "error": str(exc)[:2000]},
+                {"id": parsed_id, "error": str(exc)[:2000], "result": json.dumps(result, ensure_ascii=False)},
             )
-        return {"status": "failed", "error": str(exc)[:2000]}
+        return {"status": "failed", "error": str(exc)[:2000], **result}
 
 
 def defense_explanation(

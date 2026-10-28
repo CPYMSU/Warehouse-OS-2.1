@@ -9,4 +9,6 @@
 .rv-refinement-block.heading textarea[data-refinement-autosize="true"]{font-size:var(--rv-refinement-heading-size,19px)}
 .rv-refinement-block.caption textarea[data-refinement-autosize="true"],.rv-refinement-table-row textarea[data-refinement-autosize="true"],.rv-refinement-block figure textarea[data-refinement-autosize="true"],.rv-refinement-equation textarea[data-refinement-autosize="true"]{font-size:var(--rv-refinement-support-size,11px)}
 .rv-refinement-semantic-layer p{font-size:var(--rv-refinement-body-size,14px);line-height:1.65}
+.rv-refinement-layers>small button[data-testid="research-translation-retry"]{height:auto;margin-left:8px;padding:5px 7px;border:1px solid var(--ink);background:#fff;color:var(--ink);font-size:9px;cursor:pointer}
+.rv-refinement-layers>small button[data-testid="research-translation-retry"]:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:680px){.rv-refinement-layers{grid-template-columns:repeat(4,1fr)}.rv-refinement-font-controls{grid-column:1/-1;justify-content:end;border-top:1px solid var(--ink)}.rv-refinement-layers>small{border-top:1px solid var(--ink)}}
