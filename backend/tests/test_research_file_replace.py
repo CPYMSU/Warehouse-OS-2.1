@@ -8,12 +8,63 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from fastapi import HTTPException, UploadFile
+from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from app.api import research as api
 from app.core.config import Settings
 from app.services import research_refinement as refinement, research_vault as vault
 from app.services.object_storage import LocalContentAddressedObjectStore
+
+
+def test_rebase_schedules_missing_translation_without_waiting_for_ai(monkeypatch):
+    calls = []
+    original = {"ok": True, "draft": {"revision": 6}, "snapshot": {"sha256": "old"}}
+    monkeypatch.setattr(api, "rebase_refinement", lambda *args: original.copy())
+    def queue(user, project, file, payload):
+        calls.append((user, project, file, payload))
+        return {"accepted": True, "run_id": "run-1", "status": "queued"}
+    monkeypatch.setattr(api, "queue_semantic_run", queue)
+    tasks = BackgroundTasks()
+    user = actor()
+    settings = Settings()
+    response = api.research_manuscript_rebase("project", "file", tasks, user, settings, {"expected_revision": 5})
+    assert response["snapshot"] == original["snapshot"]
+    assert response["translation_auto"]["status"] == "queued"
+    assert calls == [(user, "project", "file", {"modes": ["translate"]})]
+    assert len(tasks.tasks) == 1
+    assert tasks.tasks[0].func is api.run_semantic_ai
+    assert tasks.tasks[0].args == (user, "run-1", settings)
+
+
+def test_rebase_keeps_saved_version_when_translation_queue_fails(monkeypatch):
+    monkeypatch.setattr(api, "rebase_refinement", lambda *args: {"ok": True, "snapshot": {"sha256": "old"}})
+    def fail(*args):
+        raise RuntimeError("private provider detail")
+    monkeypatch.setattr(api, "queue_semantic_run", fail)
+    tasks = BackgroundTasks()
+    response = api.research_manuscript_rebase("project", "file", tasks, actor(), Settings(), {})
+    assert response["ok"] and response["snapshot"]["sha256"] == "old"
+    assert response["translation_auto"]["status"] == "failed"
+    assert response["translation_auto"]["retryable"] is True
+    assert "private provider detail" not in str(response)
+    assert not tasks.tasks
+
+
+def test_rebase_does_not_launch_duplicate_processing_run_or_queue_after_conflict(monkeypatch):
+    tasks = BackgroundTasks()
+    monkeypatch.setattr(api, "rebase_refinement", lambda *args: {"ok": True})
+    monkeypatch.setattr(api, "queue_semantic_run", lambda *args: {"run_id": "existing", "status": "processing"})
+    response = api.research_manuscript_rebase("project", "file", tasks, actor(), Settings(), {})
+    assert response["translation_auto"]["status"] == "processing" and not tasks.tasks
+    def conflict(*args):
+        raise HTTPException(status_code=409, detail="Draft or source Word changed")
+    monkeypatch.setattr(api, "rebase_refinement", conflict)
+    def unexpected(*args):
+        pytest.fail("Conflicted rebases must not enqueue translation")
+    monkeypatch.setattr(api, "queue_semantic_run", unexpected)
+    with pytest.raises(HTTPException) as error:
+        api.research_manuscript_rebase("project", "file", tasks, actor(), Settings(), {})
+    assert error.value.status_code == 409
 
 
 def actor(write=True):

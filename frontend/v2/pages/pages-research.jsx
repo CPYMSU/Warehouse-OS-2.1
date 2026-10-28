@@ -1248,6 +1248,7 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
   const [uploadStatus, setUploadStatus] = useState("");
   const [uploadLimit, setUploadLimit] = useState(250 * 1024 * 1024);
   const [pendingRebase, setPendingRebase] = useState(null);
+  const [batchRows, setBatchRows] = useState([]);
   const workspaceRoot = useRef(null);
   const fullscreenRef = useRef(false);
   const fullscreenReading = useRef(null);
@@ -1683,6 +1684,12 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     if(!canWrite || !project || transferLock.current)return;
     setUploadMode(activeFile?"replace":"new");setUploadPath("");setUploadDocument(null);
     setUploadError("");setUploadStatus("");setPendingRebase(null);setUploadOpen(true);
+    const summaryName = /(?:^|[/_. -])(?:abstract|autoreferat|summary)(?=$|[/_. -])/i;
+    const mainName = /(?:^|[/_. -])(?:dissertation|manuscript|thesis)(?=$|[/_. -])/i;
+    const summaryCandidates = files.filter(item => summaryName.test(clean(item.logical_path)));
+    const mainCandidates = files.filter(item => mainName.test(clean(item.logical_path)) && !summaryName.test(clean(item.logical_path)));
+    const uniqueId = candidates => candidates.length === 1 ? clean(candidates[0].id) : "";
+    setBatchRows([uniqueId(mainCandidates),uniqueId(summaryCandidates)].map(target => ({target, document: null, status: "", uploaded: null, message: ""})));
   };
   const chooseUploadDocument = event => {
     const file=event.target.files && event.target.files[0];
@@ -1703,6 +1710,8 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
     const expected=clean(latest && latest.id);
     if(replacing && !expected){setUploadError("無法確認目前正式版本，請重新載入後再更新。");return;}
     if(state==="conflict"){setUploadError("目前草稿有版本衝突。請先合併並同步草稿，再更新論文。");return;}
+    const activeLocal = activeFile && readRefinementLocal(activeFile.id);
+    if (activeLocal && activeLocal.dirty === true && editSerial.current <= savedSerial.current) { setUploadError("目前文件有無法自動載入的本機未同步草稿；請先處理版本衝突，本機內容已保留。"); return; }
     transferLock.current=true;
     const serial=++uploadSerial.current, scope=clean(project.id), controller=new AbortController();
     uploadController.current=controller;
@@ -1724,10 +1733,13 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
         if(!current())return;
         if(replacing){setPendingRebase(result);setWorkspace(previous=>previous?{...previous,source_changed:true}:previous);}
       }
+      let translationNotice = "";
       if(replacing){
         setUploadBusy("rebase");
         const refreshed=await W2.json(base+"/rebase",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,
           body:JSON.stringify({expected_revision:revisionRef.current,expected_file_version_id:clean(result.version && result.version.id)})});
+        const auto = refreshed.translation_auto || {};
+        translationNotice = auto.status === "failed" ? "自動翻譯暫未啟動，可在翻譯進度中重試。" : auto.accepted ? "Bonfire AI 已在背景處理翻譯。" : "";
         if(!current())return;
         workspaceEpoch.current+=1;cancelDefense();defenseCache.current.clear();
         const next=((refreshed.draft || {}).blocks || []).map(block=>({...block}));
@@ -1740,14 +1752,89 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
         if(paperScrollRef.current)paperScrollRef.current.scrollTop=0;
         loadSemantic(true);
       } else nextFile=clean(result.file && result.file.id);
-      setUploadStatus(replacing?"已更新為 V"+clean(result.version && result.version.version)+"；舊 Word 與精修草稿已保留。":"新論文已上傳，正在載入精修工作區。");
+      setUploadStatus((replacing?"已更新為 V"+clean(result.version && result.version.version)+"；舊 Word 與精修草稿已保留。"+translationNotice:"新論文已上傳，正在載入精修工作區。")+(result.refresh_warning?"文件列表刷新失敗，請重新載入頁面。":""));
       setUploadOpen(false);setUploadDocument(null);
     } catch(reason) {
       if(current() && reason.name!=="AbortError")setUploadError((reason.status===409?"版本已變動，未覆寫其他裝置的草稿。":"")+clean(reason.message||reason));
     } finally {
-      if(uploadSerial.current===serial){transferLock.current=false;setUploadBusy("");uploadController.current=null;}
+      if(uploadSerial.current===serial){transferLock.current=false;setUploadBusy("");uploadController.current=null;window.setTimeout(()=>loadSemantic(true),0);}
     }
     if(nextFile && current())onFile(nextFile);
+  };
+
+  const updateBatchRow = (index, changes) => setBatchRows(rows => rows.map((row, i) => i === index ? { ...row, ...changes } : row));
+  const uploadManuscriptBatch = async () => {
+    if (!canWrite || !project || !onUploadFile || transferLock.current || batchRows.length !== 2) return;
+    const rows = batchRows.map(row => ({ ...row }));
+    if (!rows.every(row => row.target && row.document && /\.docx$/i.test(row.document.name) && row.document.size > 0 && row.document.size <= uploadLimit) || rows[0].target === rows[1].target) {
+      setUploadError("請為主論文及摘要分別選擇不同的現有文件與有效的 Word。文件不可為空，且須在大小上限內。"); return;
+    }
+    if (state === "conflict") { setUploadError("目前草稿有版本衝突；請先合併並同步草稿。"); return; }
+    const activeLocal = activeFile && readRefinementLocal(activeFile.id);
+    if (activeLocal && activeLocal.dirty === true && editSerial.current <= savedSerial.current) {
+      setUploadError("目前文件有無法自動載入的本機未同步草稿；請先處理版本衝突，本機內容已保留。"); return;
+    }
+    // An inactive document may have edits that only exist in this browser. Never
+    // overwrite those edits merely because the server has an older clean draft.
+    const dirtyOther = () => rows.find(row => row.target !== clean(activeFile && activeFile.id) && (readRefinementLocal(row.target) || {}).dirty === true);
+    if (dirtyOther()) { setUploadError("另一份文件有尚未同步的本機草稿。請先切換到該文件，確認並同步草稿後再更新；本機內容已保留。"); return; }
+    transferLock.current = true;
+    const serial = ++uploadSerial.current, scope = clean(project.id), controller = new AbortController();
+    uploadController.current = controller;
+    const current = () => uploadSerial.current === serial && projectScope.current === scope && !controller.signal.aborted;
+    setUploadError(""); setUploadStatus(""); setUploadBusy("sync"); cancelDefense();
+    try {
+      for (let attempt = 0; savingRef.current && attempt < 100 && current(); attempt++) await new Promise(resolve => window.setTimeout(resolve, 100));
+      if (!current()) return;
+      if (savingRef.current || (workspace && !await syncDraft({ duringUpload: true }))) throw new Error("目前草稿尚未同步成功，原文及本機編輯已保留。");
+      for (let index = 0; index < rows.length && current(); index++) {
+        const row = rows[index];
+        if (row.status === "done") continue;
+        try {
+          if (dirtyOther()) throw new Error("另一份文件有未同步的本機草稿；請先切換並同步，已上傳內容及本機草稿均保留。");
+          const target = files.find(item => clean(item.id) === row.target);
+          if (!target) throw new Error("找不到所選文件，請重新載入後再試。");
+          const targetBase = "/api/research/projects/" + encodeURIComponent(project.id) + "/files/" + encodeURIComponent(target.id) + "/refinement";
+          const isActive = row.target === clean(activeFile && activeFile.id);
+          const draft = isActive ? { draft: { revision: revisionRef.current } } : await W2.post(targetBase, {});
+          if (!current()) return;
+          let result = row.uploaded;
+          if (!result) {
+            const expected = clean(((target.versions || [])[0] || {}).id);
+            if (!expected) throw new Error("無法確認文件目前版本，請重新載入後再試。");
+            setUploadBusy("upload"); updateBatchRow(index, { status: "working", message: "正在上傳 Word…" });
+            const form = new FormData(); form.append("file", row.document); form.append("logical_path", target.logical_path);
+            form.append("commit_message", "從電腦更新論文：" + row.document.name); form.append("expected_file_version_id", expected);
+            result = await onUploadFile(form, { signal: controller.signal });
+            if (!current()) return;
+            row.uploaded = result; updateBatchRow(index, { uploaded: result, message: "Word 已上傳，正在載入新版本…" });
+          }
+          if (dirtyOther()) throw new Error("發現未同步的本機草稿；Word 已保存，草稿未覆寫。請先同步後繼續。");
+          setUploadBusy("rebase");
+          const refreshed = await W2.json(targetBase + "/rebase", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+            body: JSON.stringify({ expected_revision: Number((draft.draft || {}).revision), expected_file_version_id: clean(result.version && result.version.id) }) });
+          if (!current()) return;
+          if (isActive) {
+            workspaceEpoch.current += 1; cancelDefense(); defenseCache.current.clear();
+            const next = ((refreshed.draft || {}).blocks || []).map(block => ({ ...block }));
+            blocksRef.current = next; setBlocks(next); setWorkspace(refreshed); setSemantic(null);
+            revisionRef.current = Number((refreshed.draft || {}).revision) || 0; editSerial.current = 0; savedSerial.current = 0;
+            setSelection(null); setAnnotationBody(""); setSelectionQuestion(""); setDefenseAnchor(null); setDefenseResult(null); setDefenseStatus("idle"); setState("saved");
+            writeRefinementLocal(target.id, { base_version_id: clean((refreshed.base_version || {}).id), revision: revisionRef.current, dirty: false, blocks: next,
+              ui: { selection: null, defense_selection: null, annotation_body: "", selection_question: "", paper_position: null, inspector_position: null } });
+            if (paperScrollRef.current) paperScrollRef.current.scrollTop = 0;
+          }
+          const auto = refreshed.translation_auto || {};
+          const message = (auto.status === "failed" ? "Word 已更新；自動翻譯暫未啟動，請到翻譯進度重試。" : auto.accepted ? "Word 已更新，Bonfire AI 正在背景處理翻譯。" : "Word 已更新；打開精修頁可查看翻譯進度。") + (result.refresh_warning ? "文件列表刷新失敗，請重新載入頁面。" : "");
+          row.status = "done"; updateBatchRow(index, { status: "done", message });
+        } catch (reason) {
+          if (!current()) return;
+          updateBatchRow(index, { status: "error", message: (reason.status === 409 ? "版本或草稿已變動；請重新載入並確認。" : clean(reason.message || reason)) });
+          break;
+        }
+      }
+    } catch (reason) { if (current()) setUploadError(clean(reason.message || reason)); }
+    finally { if (uploadSerial.current === serial) { transferLock.current = false; setUploadBusy(""); uploadController.current = null; window.setTimeout(() => loadSemantic(true), 0); } }
   };
 
   const selectionKey = anchor => clean(anchor && anchor.block_id) + ":" +
@@ -2055,18 +2142,27 @@ const RefinementWorkspace = ({ project, files, allFiles = files, fileId, canWrit
       <div className="rv-manuscript-upload-fields">
         <label><span>更新方式</span><select data-testid="research-manuscript-upload-mode" value={uploadMode} disabled={Boolean(uploadBusy)} onChange={event=>{
           setUploadMode(event.target.value);setUploadPath(uploadDocument?uploadDocument.name:"");setPendingRebase(null);setUploadError("");
-        }}><option value="replace" disabled={!activeFile}>替換目前論文</option><option value="new">新增論文</option></select></label>
-        {uploadMode==="replace"?<div className="rv-manuscript-upload-path"><span>保留相同文件與歷史</span><code>{activeFile && activeFile.logical_path}</code></div>:
+        }}><option value="replace" disabled={!activeFile}>替換目前論文</option><option value="batch" disabled={files.length < 2}>主論文與摘要一起更新</option><option value="new">新增論文</option></select></label>
+        {uploadMode === "batch" ? <div className="rv-manuscript-upload-path"><span>QUICK UPDATE / 兩份 Word</span><code>各自保留版本與已同步草稿</code></div> : uploadMode==="replace"?<div className="rv-manuscript-upload-path"><span>保留相同文件與歷史</span><code>{activeFile && activeFile.logical_path}</code></div>:
           <label><span>新論文路徑</span><input data-testid="research-manuscript-upload-path" value={uploadPath} disabled={Boolean(uploadBusy)} onChange={event=>setUploadPath(event.target.value)} placeholder="例如 manuscript/new-paper.docx"/></label>}
+        {uploadMode === "batch" ? batchRows.map((row,index) => <div className="rv-batch-row" key={index} data-testid={"research-batch-row-"+index}>
+          <strong>{index === 0 ? "01 / 主論文" : "02 / 摘要"}</strong>
+          <label><span>更新網站中的文件</span><select value={row.target} disabled={Boolean(uploadBusy) || Boolean(row.uploaded) || row.status === "done"} onChange={event=>updateBatchRow(index,{target:event.target.value,status:"",message:""})}>
+            <option value="">請選擇現有文件</option>{files.map(file=><option key={clean(file.id)} value={clean(file.id)}>{clean(file.logical_path)}</option>)}
+          </select></label>
+          <label><span>選擇電腦上的新版 Word</span><input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={Boolean(uploadBusy) || Boolean(row.uploaded) || row.status === "done"} onChange={event=>updateBatchRow(index,{document:event.target.files && event.target.files[0] || null,status:"",message:""})}/></label>
+          {row.message && <p role={row.status === "error" ? "alert" : "status"}>{row.message}</p>}
+        </div>) : <>
         <input ref={uploadInput} type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden data-testid="research-manuscript-file" disabled={Boolean(uploadBusy)} onChange={chooseUploadDocument}/>
         <div className="rv-manuscript-upload-picker"><button type="button" data-testid="research-manuscript-choose-file" disabled={Boolean(uploadBusy)} onClick={()=>uploadInput.current && uploadInput.current.click()}>選擇電腦中的 Word</button>
           <span>{uploadDocument?uploadDocument.name+" · "+(uploadDocument.size/1024/1024).toFixed(2)+" MB":"僅接受 .docx · 上限 "+Math.floor(uploadLimit/1024/1024)+" MB"}</span></div>
+        </>}
       </div>
-      <p className="rv-manuscript-upload-notice">{uploadMode==="replace"?"目前草稿會先同步；舊 Word 版本與精修草稿獨立保存。更新後的工作區以所選 Word 為準，可取回舊稿快照。":"目前草稿會先同步，再為這份 Word 建立獨立論文及版本歷史。"}</p>
+      <p className="rv-manuscript-upload-notice">{uploadMode === "batch" ? "兩份文件依次更新；目前草稿會先同步，舊 Word 與已同步草稿會保留。另一份若有未同步的本機草稿，請先切換並同步。翻譯由 Bonfire AI 背景處理，無需等待。此處更新 Word，不更新展示 PDF。" : uploadMode==="replace"?"目前草稿會先同步；舊 Word 版本與精修草稿獨立保存。更新後的工作區以所選 Word 為準，可取回舊稿快照。":"目前草稿會先同步，再為這份 Word 建立獨立論文及版本歷史。"}</p>
       {pendingRebase && <p className="rv-manuscript-upload-notice">新 Word 已完成上傳，舊草稿仍保留；繼續更新會載入已上傳的版本。</p>}
       {uploadError && <p data-testid="research-manuscript-upload-error" className="rv-manuscript-upload-error" role="alert">{uploadError}</p>}
       <footer><button type="button" data-testid="research-manuscript-upload-cancel" disabled={Boolean(uploadBusy)} onClick={()=>{setUploadOpen(false);setUploadError("");}}>取消</button>
-        <button type="button" className="primary" data-testid="research-manuscript-upload-submit" disabled={!canWrite || !uploadDocument || Boolean(uploadBusy)} onClick={uploadManuscript}>{uploadBusy?uploadStage:uploadMode==="replace"?"保留舊稿並更新":"上傳新論文"}</button></footer>
+        <button type="button" className="primary" data-testid="research-manuscript-upload-submit" disabled={!canWrite || Boolean(uploadBusy) || (uploadMode === "batch" ? batchRows.length !== 2 || batchRows.every(row=>row.status === "done") : !uploadDocument)} onClick={uploadMode === "batch" ? uploadManuscriptBatch : uploadManuscript}>{uploadBusy?uploadStage:uploadMode === "batch" ? batchRows.some(row=>row.status === "error") ? "繼續更新" : "一起更新兩份 Word" : uploadMode==="replace"?"保留舊稿並更新":"上傳新論文"}</button></footer>
     </section>}
     {(uploadStatus || uploadBusy) && <p className="rv-manuscript-upload-status" data-testid="research-manuscript-upload-status" role="status" aria-live="polite">{uploadStage || uploadStatus}</p>}
   </>;
@@ -2823,8 +2919,10 @@ const Page = () => {
       }
       const result = await response.json();
       if(clean(activeProjectId.current)===clean(targetProject)){
-        await loadProjects(targetProject);
-        await loadDetail(targetProject);
+        // The upload has committed. A subsequent list-refresh failure must not
+        // erase its version ID or cause the caller to upload the same file again.
+        try { await loadProjects(targetProject); await loadDetail(targetProject); }
+        catch (_error) { result.refresh_warning = true; }
       }
       return result;
   };

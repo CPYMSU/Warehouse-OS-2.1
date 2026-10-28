@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
@@ -97,6 +98,7 @@ from app.services.research_workflow import (
 )
 
 router = APIRouter(tags=["research-vault"])
+logger = logging.getLogger(__name__)
 
 
 def _research_cli_path() -> Path:
@@ -348,11 +350,28 @@ def research_manuscript_refinement_save(
 def research_manuscript_rebase(
     project_ref: str,
     file_ref: str,
+    background_tasks: BackgroundTasks,
     actor: Annotated[ActorContext, Depends(current_actor)],
     settings: Annotated[Settings, Depends(get_settings)],
     payload: dict[str, object] = Body(...),
 ) -> dict[str, object]:
-    return rebase_refinement(actor, project_ref, file_ref, payload, settings)
+    result = rebase_refinement(actor, project_ref, file_ref, payload, settings)
+    # A saved Word must remain a successful update even if the AI provider or
+    # its queue is temporarily unavailable. Reuse the same scope as the
+    # browser's missing-translation refresh so concurrent requests coalesce.
+    try:
+        translation = queue_semantic_run(actor, project_ref, file_ref, {"modes": ["translate"]})
+        if translation.get("status") == "queued":
+            background_tasks.add_task(run_semantic_ai, actor, translation["run_id"], settings)
+        result["translation_auto"] = translation
+    except Exception:
+        logger.exception("Could not queue manuscript translation after rebase")
+        result["translation_auto"] = {
+            "status": "failed",
+            "retryable": True,
+            "message": "論文已更新；自動翻譯暫未啟動，請在翻譯進度中重試。",
+        }
+    return result
 
 
 @router.get("/api/research/projects/{project_ref}/files/{file_ref}/refinement/snapshots/{sha256}")
