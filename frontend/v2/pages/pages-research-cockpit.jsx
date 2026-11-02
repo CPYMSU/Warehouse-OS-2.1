@@ -427,14 +427,18 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
     <header className="rcp-head"><div><span>PROJECT / RESEARCH CONTROL</span><h2>研究面板</h2></div>
       <label><span>目前課題</span><select data-testid="research-cockpit-project" value={text(project && project.id)} onChange={event=>onProject(event.target.value)}>
         {!projects.length && <option value="">尚無研究課題</option>}{projects.map(item=><option key={item.id} value={text(item.id)}>{item.title}</option>)}</select></label>
-      <div className="rcp-version"><b>{project?text(project.slug||project.title).match(/MK\d+/i)?.[0]||'PROJECT':'—'}</b><span>{dashboard?'DMP V'+serverVersion:busy?'讀取中':'未選課題'}</span></div>
+      <div className="rcp-version"><b>{project?text(project.slug||project.title).match(/MK\d+/i)?.[0]||'PROJECT':'—'}</b><span>{dashboard?'DMP V'+serverVersion:busy?'讀取中':project?'資料未載入':'未選課題'}</span></div>
     </header>
     <nav className="rcp-tools" aria-label="研究工作區"><button type="button" disabled={!project} onClick={()=>act({section:'projects',asset_class:'dataset'})}>資料與資料庫 ↗</button>
       <button type="button" disabled={!project} onClick={()=>act({section:'refinement'})}>論文精修 ↗</button><button type="button" disabled={!project} onClick={()=>act({section:'execution'})}>模型執行與結果 ↗</button>
       <button type="button" disabled={!project} onClick={()=>act({section:'disciplines'})}>專業研究流程 ↗</button><button type="button" disabled={!project || busy} onClick={async()=>{try{await onReload();}catch(reason){setMessage(text(reason.message||reason));}}}>重新整理 ↻</button></nav>
-    {!project?<p className="rcp-empty">選擇或建立課題，將論文、資料、推導與模型放回同一個研究脈絡。</p>:!dashboard?<p className="rcp-empty" role="status">{message || (busy?'正在讀取課題的登記資料與評估…':'研究面板尚未載入，請重新整理。')}</p>:<>
+    {!project?<p className="rcp-empty">選擇或建立課題，將論文、資料、推導與模型放回同一個研究脈絡。</p>:!dashboard?<section className="rcp-mission" aria-label="研究共同使命" data-testid="research-cockpit-mission-loading">
+      <header><div><span>BONFIRE AI / SHARED MISSION</span><h3>共同使命</h3><p className="rcp-mission-subtitle">一起理解，推進研究。</p></div>
+        <button type="button" disabled={busy} onClick={async()=>{setMessage('');try{await onReload();}catch(reason){setMessage(text(reason.message||reason));}}}>重新讀取 ↻</button></header>
+      <p className="rcp-empty" role="status">{message || (busy?'正在讀取本課題的研究問題、假設與進度…':'研究資料尚未載入，請重新讀取。')}</p>
+    </section>:<>
       <section className="rcp-mission" aria-label="研究共同使命" data-testid="research-cockpit-mission">
-        <header><div><span>BONFIRE AI / SHARED MISSION</span><h3>一起理解，推進研究。</h3></div>
+        <header><div><span>BONFIRE AI / SHARED MISSION</span><h3>共同使命</h3><p className="rcp-mission-subtitle">一起理解，推進研究。</p></div>
           <button type="button" onClick={()=>act({section:'workflow',target:'research_question'})}>{canWrite?'編輯':'查看'}研究問題與假設 ↗</button></header>
         <div className="rcp-mission-grid">
           <article><b>01 / 研究問題</b><p>{missionQuestion || '尚未記錄；在進階設定的資料管理計畫中填寫。'}</p></article>
