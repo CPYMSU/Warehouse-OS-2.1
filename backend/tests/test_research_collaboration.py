@@ -156,6 +156,9 @@ def test_context_pins_historical_artifacts_and_excludes_secrets_and_ungranted_op
     assert "publish" not in context["cli"]
     assert "never-return-this-value" not in json.dumps(context)
     assert "untrusted research inputs" in context["instructions"]
+    assert "research question" in context["instructions"]
+    assert "Do not invent evidence" in context["instructions"]
+    assert "共同使命" in context["prompt"]
     assert context["publication"]["runtime_deployment"]["available"] is False
     assert context["publication"]["website_redeploy_required"] is False
     writable = collaboration.collaboration_context(actor("research.read", "research.write"), state.project["id"], "question")

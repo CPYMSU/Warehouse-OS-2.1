@@ -89,6 +89,34 @@ def test_21_member_practice_preserves_manual_work_and_history(practice):
     assert listed['session']['id'] == session['id'] and len(listed['sessions'][0]['turns']) == 21
 
 
+def test_committee_receives_bounded_saved_project_context_and_current_source(practice, monkeypatch):
+    import json
+    practice.project.update({'research_area': 'econometrics', 'summary': 'A' * 2000})
+    practice.snapshot['content'].update({
+        'research_question': 'How did exclusion change trade?',
+        'hypothesis': 'Partners replace excluded suppliers.',
+        'discipline_workflows': {'econometrics': {'question': {
+            'status': 'in_progress', 'updated_at': '2026-11-03T00:00:00Z',
+            'blockers': 'Clarify the boundary.', 'next_action': 'Explain an example.'}}},
+        'unrelated_private_field': 'must not be included',
+    })
+    captured = {}
+    def completion(connection, **kwargs):
+        captured.update(kwargs)
+        return {'question': '排除供應商後，貿易如何改變？', 'hint': '先說替代。', 'source_id': 'S1'}
+    monkeypatch.setattr(service, 'chat_completion', completion)
+    result = service.start_committee(practice.actor, practice.project['id'], None)
+    prompt = json.loads(captured['user_prompt'])
+    assert prompt['saved_project_context']['research_question'] == 'How did exclusion change trade?'
+    assert prompt['saved_project_context']['hypothesis'] == 'Partners replace excluded suppliers.'
+    assert 'project_summary' not in prompt['saved_project_context']
+    assert prompt['saved_project_context']['recent_saved_stages'][0]['next_action'] == 'Explain an example.'
+    assert 'unrelated_private_field' not in prompt['saved_project_context']
+    assert prompt['sources'][0]['text'] == 'A real excerpt.'
+    assert result['session']['current']['source']['id'] == 'S1'
+    assert '只能作為交流背景' in captured['system_prompt']
+
+
 def test_stale_revision_and_changed_material_keep_answer_history(practice):
     session = service.start_committee(practice.actor, practice.project['id'], None)['session']
     identifier = UUID(session['id'])

@@ -2987,7 +2987,14 @@ const Page = () => {
   const navigateDashboard = action => {
     if(!action)return;
     if(action.section==="disciplines" && action.stage_key){setDisciplineStageTarget(clean(action.stage_key));selectSection("disciplines");return;}
-    if(action.section==="workflow"){selectSection("dashboard");openDashboardAdvanced();return;}
+    if(action.section==="workflow"){
+      selectSection("dashboard");openDashboardAdvanced();
+      if(action.target==="research_question")window.requestAnimationFrame(()=>window.requestAnimationFrame(()=>{
+        const form=document.querySelector('[data-testid="research-dmp-plan"]');
+        if(form)form.scrollIntoView({behavior:"smooth",block:"start"});
+      }));
+      return;
+    }
     if(action.section==="projects")setAssetFilter(action.asset_class||"all");
     if(action.section)selectSection(action.section);
     if(action.execution_id)loadExecution(projectId,action.execution_id).catch(reason=>setError(clean(reason.message||reason)));
@@ -3734,7 +3741,7 @@ const Page = () => {
             right={<span className={"rv-status " + clean(workflow && workflow.dmp && workflow.dmp.status)}>
               {workflow && workflow.dmp ? "V" + workflow.dmp.version + " · " + workflow.dmp.status : "NOT STARTED"}
             </span>}>
-            <form className="rv-dmp-grid" onSubmit={saveDmpForm} key={workflow && workflow.dmp && workflow.dmp.id || "empty"}>
+            <form className="rv-dmp-grid" data-testid="research-dmp-plan" onSubmit={saveDmpForm} key={workflow && workflow.dmp && workflow.dmp.id || "empty"}>
               <label><span>01 · RESEARCH QUESTION</span><textarea name="research_question" defaultValue={dmpContent.research_question || ""} placeholder="這項研究要回答什麼問題？"/></label>
               <label><span>02 · HYPOTHESIS</span><textarea name="hypothesis" defaultValue={dmpContent.hypothesis || ""} placeholder="可以被證偽的假設與成功標準"/></label>
               <label><span>03 · COLLECTION</span><textarea name="data_collection" defaultValue={dmpContent.data_collection || ""} placeholder="資料如何產生、收集與文件化"/></label>

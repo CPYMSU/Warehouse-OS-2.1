@@ -419,6 +419,10 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
   };
   const runStatus={queued:'排隊中',preparing:'準備中',running:'執行中',succeeded:'成功',failed:'失敗',cancelled:'已取消',timed_out:'逾時'};
   const act=action=>{if(action)onNavigate(action);};
+  const missionContent=workflow && workflow.dmp && workflow.dmp.content || {};
+  const missionQuestion=text(missionContent.research_question).trim();
+  const missionHypothesis=text(missionContent.hypothesis).trim();
+  const missionStage=nodes.find(node=>node.key===graph.current_stage);
   return <div className="rcp" data-testid="research-cockpit">
     <header className="rcp-head"><div><span>PROJECT / RESEARCH CONTROL</span><h2>研究面板</h2></div>
       <label><span>目前課題</span><select data-testid="research-cockpit-project" value={text(project && project.id)} onChange={event=>onProject(event.target.value)}>
@@ -429,6 +433,17 @@ W2.ResearchCockpit=function ResearchCockpit({project,projects,workflow,busy,canW
       <button type="button" disabled={!project} onClick={()=>act({section:'refinement'})}>論文精修 ↗</button><button type="button" disabled={!project} onClick={()=>act({section:'execution'})}>模型執行與結果 ↗</button>
       <button type="button" disabled={!project} onClick={()=>act({section:'disciplines'})}>專業研究流程 ↗</button><button type="button" disabled={!project || busy} onClick={async()=>{try{await onReload();}catch(reason){setMessage(text(reason.message||reason));}}}>重新整理 ↻</button></nav>
     {!project?<p className="rcp-empty">選擇或建立課題，將論文、資料、推導與模型放回同一個研究脈絡。</p>:!dashboard?<p className="rcp-empty" role="status">{message || (busy?'正在讀取課題的登記資料與評估…':'研究面板尚未載入，請重新整理。')}</p>:<>
+      <section className="rcp-mission" aria-label="研究共同使命" data-testid="research-cockpit-mission">
+        <header><div><span>BONFIRE AI / SHARED MISSION</span><h3>一起理解，推進研究。</h3></div>
+          <button type="button" onClick={()=>act({section:'workflow',target:'research_question'})}>{canWrite?'編輯':'查看'}研究問題與假設 ↗</button></header>
+        <div className="rcp-mission-grid">
+          <article><b>01 / 研究問題</b><p>{missionQuestion || '尚未記錄；在進階設定的資料管理計畫中填寫。'}</p></article>
+          <article><b>02 / 研究假設</b><p>{missionHypothesis || '尚未記錄；可以先從可檢驗的想法開始。'}</p></article>
+          <article><b>03 / 目前階段</b><p>{missionStage ? missionStage.title : '尚未標記進行中的階段。'}</p>
+            {missionStage && missionStage.task && missionStage.task.next_action && <small>下一步：{missionStage.task.next_action}</small>}</article>
+        </div>
+        <p className="rcp-mission-note">專家評估參考已保存的研究問題與假設；階段評估也參考本步紀錄。答辯接續本項已保存的討論，最終判斷由研究者作出。</p>
+      </section>
       <section className="rcp-experts" aria-label="專家團隊評估">
         <div><span>EXPERT TEAM / BONFIRE AI</span><h3>專家評估研究全程</h3><small>分別檢查四個研究面向與每個流程步驟，提供依據與答辯追問。</small></div>
         <button type="button" data-testid="research-cockpit-ai-batch" disabled={!canWrite||saving||aiWorking||!pendingTasks.length} onClick={runBatch}>
