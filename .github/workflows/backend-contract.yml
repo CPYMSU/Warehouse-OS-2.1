@@ -28,6 +28,9 @@ jobs:
           # Scope the existing local Clash proxy to GitHub transport only.
           HTTPS_PROXY: http://127.0.0.1:7897
           HTTP_PROXY: http://127.0.0.1:7897
+          # Override the runner's inherited GitHub bypass entries, just as the
+          # production workflow does, so checkout actually uses the proxy.
+          no_proxy: localhost,127.0.0.1,::1
       - name: Verify committed release contract
         run: |
           set -euo pipefail

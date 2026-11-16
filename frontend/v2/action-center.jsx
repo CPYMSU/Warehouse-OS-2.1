@@ -231,6 +231,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
   const [result, setResult] = useState(null);
   const [confirmationAction, setConfirmationAction] = useState(null);
   const [governedError, setGovernedError] = useState("");
+  const [credentialPending, setCredentialPending] = useState(false);
   const [busy, setBusy] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState(() => new Set());
   const [expandedBranches, setExpandedBranches] = useState(() => new Set());
@@ -266,6 +267,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
 
   useEffect(() => {
     const handler = event => {
+      if (credentialPending) return;
       const detail = event && event.detail && typeof event.detail === "object" ? event.detail : {};
       pendingSelection.current = textOf(detail.tool_name || detail.toolName);
       pendingArguments.current = detail.arguments && typeof detail.arguments === "object" ? detail.arguments : {};
@@ -287,7 +289,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
     };
     window.addEventListener(EVENT, handler);
     return () => window.removeEventListener(EVENT, handler);
-  }, [catalogue, loading]);
+  }, [catalogue, loading, credentialPending]);
 
   useEffect(() => {
     setCatalogue(null); setSelectedName(""); setOpen(false);
@@ -316,14 +318,14 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
     const locked = ["pending", "authorized", "executing"].includes(
       String(confirmationAction && confirmationAction.status || "")
     );
-    const close = event => { if (event.key === "Escape" && !busy && !locked) setOpen(false); };
+    const close = event => { if (event.key === "Escape" && !busy && !locked && !credentialPending) setOpen(false); };
     window.addEventListener("keydown", close);
     document.documentElement.classList.add("business-action-open");
     return () => {
       window.removeEventListener("keydown", close);
       document.documentElement.classList.remove("business-action-open");
     };
-  }, [open, busy, confirmationAction]);
+  }, [open, busy, confirmationAction, credentialPending]);
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -402,6 +404,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
   };
 
   const choose = action => {
+    if (credentialPending) return;
     if (["pending", "authorized", "executing"].includes(
       String(confirmationAction && confirmationAction.status || "")
     )) return;
@@ -503,7 +506,10 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
         "/api/business/actions/confirmation-actions/" + encodeURIComponent(actionId) + "/execute-authorized",
         { authorization_keychain_id: keychainId }
       );
-      if (response && response.action) setConfirmationAction(response.action);
+      if (response && response.action) {
+        if (Array.isArray(response.action.credential_deliveries) && response.action.credential_deliveries.length) setCredentialPending(true);
+        setConfirmationAction(response.action);
+      }
       if (response && response.action && response.action.status === "completed") {
         await announceCompletion(response);
       }
@@ -515,6 +521,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
           { cache: "no-store" }
         );
         if (latest && latest.action) {
+          if (Array.isArray(latest.action.credential_deliveries) && latest.action.credential_deliveries.length) setCredentialPending(true);
           setConfirmationAction(latest.action);
           if (latest.action.status === "completed") {
             unresolved = false;
@@ -553,7 +560,7 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
   ]));
   const canExecute = selected && selected.manual_execution !== "unavailable";
   const confirmationStatus = String(confirmationAction && confirmationAction.status || "");
-  const confirmationLocked = ["pending", "authorized", "executing"].includes(confirmationStatus);
+  const confirmationLocked = credentialPending || ["pending", "authorized", "executing"].includes(confirmationStatus);
 
   return <div className="business-action-overlay" role="presentation" onMouseDown={event => {
     if (event.target === event.currentTarget && !busy && !confirmationLocked) setOpen(false);
@@ -720,7 +727,8 @@ const BusinessActionCenter = ({ tenant, route, onComplete }) => {
                 <span><em>03</em><b>{t("公司 AI 執行")}</b><small>{t("領取 Keychain、執行並回讀")}</small></span>
               </div>
               <W2.OperationConfirmation confirmation={{ action: confirmationAction }}
-                onActionChange={setConfirmationAction} onTerminal={handleGovernedTerminal}/>
+                onActionChange={setConfirmationAction} onTerminal={handleGovernedTerminal}
+                inlineCredentials onCredentialStateChange={setCredentialPending}/>
               {!!governedError && <div className="business-action-error business-action-governed-error" role="alert">
                 <span>{governedError}</span>
                 {confirmationStatus === "authorized" && confirmationAction.authorization_keychain && <button type="button" className="btn sm"

@@ -1522,7 +1522,7 @@ const secretaryCredentialDeliveryEnvelope = (delivery, actionKey = "") => {
   return { ...delivery, action_key: expectedActionKey, fetch_path: fetchPath, ack_path: ackPath };
 };
 
-const CredentialBubble = ({ credential, deliveryKey = "", credentialDelivery = null, onClear }) => {
+const CredentialBubble = ({ credential, deliveryKey = "", credentialDelivery = null, onClear, showAck = true }) => {
   const t = window.W2_LANG.t;
   const [visible, setVisible] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
@@ -1574,9 +1574,9 @@ const CredentialBubble = ({ credential, deliveryKey = "", credentialDelivery = n
       <div className="row g6" style={{ marginTop: 7 }}>
         <button className="btn ghost sm" onClick={() => setVisible(v => !v)}>{visible ? t("隱藏") : t("揭示")}</button>
         <button className="btn sm" onClick={copy}>{copied ? t("已複製") : t("複製")}</button>
-        <button className="btn primary sm" disabled={ackBusy} onClick={acknowledge}>
+        {showAck && <button className="btn primary sm" disabled={ackBusy} onClick={acknowledge}>
           {ackBusy ? t("安全清除中…") : t("已安全保存，清除")}
-        </button>
+        </button>}
       </div>
       {ackError && <div role="alert" style={{ color: "var(--danger)", fontSize: 10.5, lineHeight: 1.45, marginTop: 6 }}>{ackError}</div>}
       <div className="muted" style={{ fontSize: 10.5, lineHeight: 1.5, marginTop: 6 }}>
@@ -2463,7 +2463,7 @@ const operationStatusLabel = (status, t) => ({
   failed: t("執行失敗"), expired: t("已逾期"), outcome_unknown: t("結果待核對"),
 }[status] || t("狀態異常"));
 
-const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMutationStart }) => {
+const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMutationStart, inlineCredentials = false, onCredentialStateChange }) => {
   const t = window.W2_LANG.t;
   const initialAction = operationConfirmationAction(confirmation);
   const [action, setAction] = React.useState(initialAction);
@@ -2476,12 +2476,14 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
   const [syncError, setSyncError] = React.useState("");
   const [syncNonce, setSyncNonce] = React.useState(0);
   const [credentialDeliveryVersion, setCredentialDeliveryVersion] = React.useState(0);
+  const [inlineCredentialItems, setInlineCredentialItems] = React.useState([]);
   const busyRef = React.useRef(false);
   const passkeyOperationRef = React.useRef(null);
   const passkeyFallbackRef = React.useRef(null);
   const terminalDeliveryRef = React.useRef(new Set());
   const credentialFetchInFlightRef = React.useRef(new Set());
   const credentialFetchDeliveredRef = React.useRef(new Set());
+  const inlinePendingRef = React.useRef(new Set());
   const mountedRef = React.useRef(true);
   const actionKey = action && typeof action.action_key === "string" ? action.action_key : "";
   const actionId = operationConfirmationId(action);
@@ -2534,6 +2536,10 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
       if (credentialFetchInFlightRef.current.has(deliveryId)
           || credentialFetchDeliveredRef.current.has(deliveryId)) return;
       credentialFetchInFlightRef.current.add(deliveryId);
+      if (inlineCredentials) {
+        inlinePendingRef.current.add(deliveryId);
+        if (typeof onCredentialStateChange === "function") onCredentialStateChange(true);
+      }
       W2.post(delivery.fetch_path, {
         delivery_id: deliveryId,
         credential_client_id: secretaryCredentialClientId(),
@@ -2552,6 +2558,16 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
         }
         credentialFetchDeliveredRef.current.add(deliveryId);
         setCredentialDeliveryVersion(version => version + 1);
+        if (inlineCredentials) {
+          const items = credentials.map((credential, index) => ({
+            credential,
+            delivery: responseDelivery,
+            key: `${deliveryId}:${index}`,
+            showAck: index === credentials.length - 1,
+          }));
+          setInlineCredentialItems(previous => [...previous.filter(item => item.delivery.delivery_id !== deliveryId), ...items]);
+          return;
+        }
         onTerminal({
           ...terminalDetail,
           credentials,
@@ -2560,6 +2576,10 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
         });
       }).catch((error) => {
         if (mountedRef.current) {
+          if (inlineCredentials && error && error.status === 410) {
+            inlinePendingRef.current.delete(deliveryId);
+            if (typeof onCredentialStateChange === "function") onCredentialStateChange(inlinePendingRef.current.size > 0);
+          }
           setLocalError((error && error.message)
             || t("操作已完成，但一次性憑證尚未領取；切回此頁或按重新核對即可重試"));
         }
@@ -2626,6 +2646,7 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
     if (!shouldApplyOperationAction(actionRef.current, next)) return;
     actionRef.current = next;
     setAction(next);
+    if (inlineCredentials) emitOperationTerminal({ action: next }, next);
   }, [confirmation]);
   React.useEffect(() => {
     if (status !== "pending") setEditing(false);
@@ -2942,7 +2963,17 @@ const OperationConfirmation = ({ confirmation, onActionChange, onTerminal, onMut
         {syncError}
         <button type="button" className="btn ghost sm" style={{ marginLeft: 8 }} disabled={syncState === "loading"} onClick={() => setSyncNonce(value => value + 1)}>{t("重新核對")}</button>
       </div>}
-      {localError && <div role="alert" style={{ color: "var(--danger)", fontSize: 11.2, lineHeight: 1.5, marginTop: 9 }}>{localError}</div>}
+      {localError && <div role="alert" style={{ color: "var(--danger)", fontSize: 11.2, lineHeight: 1.5, marginTop: 9 }}>{localError}
+        {inlineCredentials && inlinePendingRef.current.size > 0 && <button type="button" className="btn ghost sm"
+          onClick={() => setSyncNonce(value => value + 1)}>{t("重新核對")}</button>}
+      </div>}
+      {inlineCredentialItems.map(item => <CredentialBubble key={item.key}
+        credential={item.credential} deliveryKey={item.key} credentialDelivery={item.delivery} showAck={item.showAck}
+        onClear={() => {
+          inlinePendingRef.current.delete(item.delivery.delivery_id);
+          setInlineCredentialItems(previous => previous.filter(row => row.delivery.delivery_id !== item.delivery.delivery_id));
+          if (typeof onCredentialStateChange === "function") onCredentialStateChange(inlinePendingRef.current.size > 0);
+        }}/>) }
       {status !== "pending" && verification && (verification.verified === true || verification.method === "webauthn") && <div style={{ marginTop: 10, padding: 9, border: "1px solid var(--ok)", background: "var(--surface-2)" }}>
         <div className="label" style={{ color: "var(--ok)" }}>PASSKEY · {t("已驗證")}</div>
         <div className="mono" style={{ fontSize: 9.8, lineHeight: 1.7, marginTop: 5, overflowWrap: "anywhere" }}>

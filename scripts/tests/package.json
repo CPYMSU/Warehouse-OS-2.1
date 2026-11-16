@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "test:credential-delivery": "node test_business_credential_delivery.cjs"
+  },
+  "devDependencies": {
+    "react": "18.3.1",
+    "react-test-renderer": "18.3.1"
+  }
+}
