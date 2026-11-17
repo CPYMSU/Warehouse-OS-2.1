@@ -507,11 +507,12 @@ def _private_uhv_error(status_code: int, detail: object) -> HTTPException:
     )
 
 
-async def _stream_private_uhv(route, request, internal_url, suffix, headers, prefix, is_upload):
-    """Stream only the authenticated MK7 UHV byte endpoints without retries.
+async def _stream_private_uhv(route, request, upstreams, suffix, headers, prefix, is_upload):
+    """Stream MK7 UHV downloads and protected uploads without retries.
 
-    Authorization remains upstream; this function never examines or stores
-    contents. No automatic replay after a partial upload or response.
+    Authorization for management writes remains upstream; reading can be
+    public. GET/HEAD can try the next upstream if connection fails before
+    response headers arrive; uploads and started responses are never replayed.
     """
     timeout = httpx.Timeout(connect=10, read=120, write=120, pool=10)
     client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
@@ -533,9 +534,23 @@ async def _stream_private_uhv(route, request, internal_url, suffix, headers, pre
         content = incoming()
     else:
         content = None
+    selected = upstreams[0]
     try:
-        outgoing = client.build_request(request.method, internal_url + suffix, headers=headers, content=content)
-        upstream = await client.send(outgoing, stream=True)
+        # An upload body is a one-shot stream. Only public read requests are
+        # safe to retry on a different upstream before any headers are sent.
+        candidates = upstreams[:1] if is_upload else upstreams
+        for internal_url in candidates:
+            outgoing = client.build_request(request.method, internal_url + suffix, headers=headers, content=content)
+            try:
+                upstream = await client.send(outgoing, stream=True)
+            except httpx.HTTPError:
+                if is_upload:
+                    raise
+                continue
+            selected = internal_url
+            break
+        if upstream is None:
+            raise httpx.ConnectError('all upstreams unavailable')
     except (httpx.HTTPError, ValueError):
         if upstream is not None: await upstream.aclose()
         await client.aclose()
@@ -572,7 +587,7 @@ async def _stream_private_uhv(route, request, internal_url, suffix, headers, pre
     for key, value in upstream.headers.multi_items():
         lower = key.lower()
         if lower in allowed:
-            response.headers.append(key, _rewrite_location(value, internal_url, prefix) if lower == 'location' else value)
+            response.headers.append(key, _rewrite_location(value, selected, prefix) if lower == 'location' else value)
         elif lower == 'set-cookie':
             response.headers.append(key, _rewrite_cookie(value, prefix))
     response.headers['Cache-Control'] = 'private, no-store, no-cache, max-age=0'
@@ -616,9 +631,8 @@ async def _proxy_response(
             ("x-request-id", request.headers.get("x-request-id", "")),
         ]
     )
-    # MK7 private resources only: the hostname middleware has already bound
-    # this exact public authority to the matching workspace. Never trust an
-    # arbitrary forwarded Host supplied by a caller on the shared route.
+    # MK7 reading is public on both its dedicated and compatibility routes.
+    # Management/ingestion stays restricted to the dedicated trusted route.
     pages = getattr(request.state, "pages_hostname_route", None)
     private_uhv = (
         isinstance(pages, dict)
@@ -628,6 +642,11 @@ async def _proxy_response(
         and (runtime_path == "api/v1/uhv" or runtime_path.startswith(("api/v1/uhv/", "api/v1/uhv-intake/", "api/v1/uhv-publish/")))
     )
     is_uhv_path = runtime_path == "api/v1/uhv" or runtime_path.startswith(("api/v1/uhv/", "api/v1/uhv-intake/", "api/v1/uhv-publish/"))
+    is_read_path = runtime_path == "api/v1/uhv" or runtime_path.startswith("api/v1/uhv/")
+    is_public_read = is_read_path and (request.method in ("GET", "HEAD") or (
+        request.method == "POST" and runtime_path == "api/v1/uhv/documents/search"
+    ))
+    shared_public_uhv = False
     if is_uhv_path and not private_uhv and workspace_key == "mk7-workspace":
         # The trusted Pages binding, not a guessed tenant slug or caller Host,
         # decides whether a compatibility request targets this MK7 instance.
@@ -639,12 +658,15 @@ async def _proxy_response(
             raise _private_uhv_error(503, "uhv_route_binding_unavailable")
         if (bound.get("tenant_slug") == tenant_slug
                 and bound.get("workspace_key") == workspace_key):
-            raise _private_uhv_error(403, "uhv_isolated_origin_required")
+            if not is_public_read:
+                raise _private_uhv_error(403, "uhv_isolated_origin_required")
+            shared_public_uhv = True
+    protected_uhv_transport = private_uhv or shared_public_uhv
     if not upstreams:
-        if private_uhv:
+        if protected_uhv_transport:
             raise _private_uhv_error(502, "Hosted Runtime has no active upstream")
         raise HTTPException(status_code=502, detail="Hosted Runtime has no active upstream")
-    if private_uhv:
+    if protected_uhv_transport:
         # Narrow the private-resource boundary; do not forward arbitrary
         # client-controlled proxy or hop-by-hop headers to the application.
         allowed_request_headers = {
@@ -654,7 +676,10 @@ async def _proxy_response(
         }
         headers = [(key, value) for key, value in request.headers.items()
                    if key.lower() in allowed_request_headers]
-        headers.append(("host", "mk7-workspace.bonfirework.org"))
+        # A compatibility-path read must reach the app with the actual host,
+        # not a forged dedicated authority. Only the trusted dedicated route
+        # has a fixed isolated host.
+        headers.append(("host", "mk7-workspace.bonfirework.org" if private_uhv else request.headers.get("host", "")))
         is_upload = request.method == "PUT" and bool(re.fullmatch(
             r"api/v1/uhv-intake/sessions/[0-9a-f-]{36}/parts/[0-9]+", runtime_path))
         is_file = request.method in ("GET", "HEAD") and bool(re.fullmatch(
@@ -683,8 +708,8 @@ async def _proxy_response(
                 if chunk:
                     raise _private_uhv_error(413, "request_body_forbidden")
         if is_upload or is_file:
-            return await _stream_private_uhv(route, request, upstreams[0], suffix, headers, prefix, is_upload)
-    if private_uhv and request.method in ("POST", "PUT"):
+            return await _stream_private_uhv(route, request, upstreams, suffix, headers, prefix, is_upload)
+    if protected_uhv_transport and request.method in ("POST", "PUT"):
         chunks = []
         observed = 0
         async for chunk in request.stream():
@@ -695,7 +720,7 @@ async def _proxy_response(
         if observed != declared:
             raise _private_uhv_error(400, "body_length_mismatch")
         body = b"".join(chunks)
-    elif private_uhv:
+    elif protected_uhv_transport:
         body = b""
     else:
         body = await request.body()
@@ -727,7 +752,7 @@ async def _proxy_response(
                 "retryable": True,
                 "next_action": "inspect deployment health and Runtime logs",
             },
-            headers={"Cache-Control": "private, no-store, no-cache, max-age=0", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff"} if private_uhv else None,
+            headers={"Cache-Control": "private, no-store, no-cache, max-age=0", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff"} if protected_uhv_transport else None,
         ) from last_error
     content_type = upstream.headers.get("content-type", "application/octet-stream")
     is_head = request.method == "HEAD"

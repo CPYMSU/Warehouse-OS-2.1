@@ -13,11 +13,11 @@ class Stream(httpx.AsyncByteStream):
         yield b'abc';yield b'def'
     async def aclose(self):self.closed=True
 
-def request(method,path,body=b'',headers=(),private=True):
+def request(method,path,body=b'',headers=(),private=True,host='mk7-workspace.bonfirework.org'):
     async def receive():return {'type':'http.request','body':body,'more_body':False}
     state={'pages_hostname_route':{'tenant_slug':'acme','workspace_key':'mk7-workspace'}} if private else {}
     return Request({'type':'http','method':method,'scheme':'https','server':('mk7-workspace.bonfirework.org',443),'path':'/'+path,'query_string':b'',
-                    'state':state,'headers':[(b'host',b'mk7-workspace.bonfirework.org'),*headers]},receive)
+                    'state':state,'headers':[(b'host',host.encode()),*headers]},receive)
 
 def proxy(req,path):return g._proxy_response({'internal_url':'http://runtime:8080','deployment_id':'fixture'},path,req,'acme','mk7-workspace')
 
@@ -61,6 +61,41 @@ def test_untrusted_host_and_large_request_are_denied_before_read(monkeypatch):
         with pytest.raises(HTTPException) as e:await proxy(request('POST',path,b'',[(b'content-length',b'5000')]),path)
         assert e.value.status_code==413
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('method', ['GET', 'HEAD'])
+def test_shared_public_file_is_streamed_without_session_or_origin(monkeypatch, method):
+    monkeypatch.setattr(g, 'resolve_pages_site_key', lambda _key: {'tenant_slug':'acme','workspace_key':'mk7-workspace'})
+    seen=[];stream=Stream()
+    async def handler(req):
+        seen.append(req)
+        return httpx.Response(200,headers={'Content-Length':'6'},stream=stream)
+    install(monkeypatch,handler)
+    path='api/v1/uhv/documents/'+'a'*64+'/file'
+    req=request(method,path,private=False,host='bonfirework.org')
+    async def run():
+        response=await proxy(req,path)
+        assert response.status_code==200
+        if method=='GET': assert b''.join([x async for x in response.body_iterator])==b'abcdef'
+        else: assert response.body==b'' and response.headers['content-length']=='6'
+    asyncio.run(run())
+    assert seen[0].headers['host']=='bonfirework.org'
+    assert 'origin' not in seen[0].headers and 'cookie' not in seen[0].headers
+    assert stream.closed
+
+
+def test_shared_public_search_without_session_or_origin(monkeypatch):
+    monkeypatch.setattr(g, 'resolve_pages_site_key', lambda _key: {'tenant_slug':'acme','workspace_key':'mk7-workspace'})
+    seen=[]
+    async def handler(req):
+        seen.append((req.headers,await req.aread()))
+        return httpx.Response(200,json={'items':[]})
+    install(monkeypatch,handler)
+    path='api/v1/uhv/documents/search';body=b'{"q":"fixture"}'
+    req=request('POST',path,body,[(b'content-length',str(len(body)).encode()),(b'content-type',b'application/json')],private=False,host='bonfirework.org')
+    result=asyncio.run(proxy(req,path))
+    assert result.status_code==200 and seen[0][1]==body
+    assert seen[0][0]['host']=='bonfirework.org' and 'origin' not in seen[0][0] and 'cookie' not in seen[0][0]
 
 
 @pytest.mark.parametrize('method,path', [
@@ -114,6 +149,69 @@ def test_failed_upstream_does_not_retry_or_leak(monkeypatch):
         with pytest.raises(HTTPException) as exc:await proxy(request('GET',path),path)
         assert exc.value.status_code==502 and 'synthetic failure' not in str(exc.value.detail)
     asyncio.run(run());assert len(calls)==1
+
+
+@pytest.mark.parametrize('method', ['GET', 'HEAD'])
+def test_download_fails_over_only_before_response_headers(monkeypatch, method):
+    calls = []; stream = Stream()
+    async def handler(req):
+        calls.append(req.url.host)
+        if req.url.host == 'first':
+            raise httpx.ConnectError('first unavailable', request=req)
+        return httpx.Response(206, headers={'Content-Length': '6', 'Content-Range': 'bytes 0-5/10'}, stream=stream)
+    install(monkeypatch, handler)
+    path = 'api/v1/uhv/documents/' + 'a' * 64 + '/file'
+    route = {'internal_urls': ['http://first:8080', 'http://second:8080'], 'deployment_id': 'fixture'}
+    async def run():
+        result = await g._proxy_response(route, path, request(method, path, headers=[(b'range', b'bytes=0-5')]), 'acme', 'mk7-workspace')
+        assert result.status_code == 206 and result.headers['content-range'] == 'bytes 0-5/10'
+        if method == 'GET':
+            assert b''.join([part async for part in result.body_iterator]) == b'abcdef'
+        else:
+            assert result.body == b'' and result.headers['content-length'] == '6'
+    asyncio.run(run())
+    assert calls == ['first', 'second'] and stream.closed
+
+
+def test_upload_never_replays_after_an_upstream_failure(monkeypatch):
+    calls = []
+    async def handler(req):
+        calls.append(req.url.host)
+        await req.aread()
+        raise httpx.ConnectError('synthetic failure', request=req)
+    install(monkeypatch, handler)
+    path = 'api/v1/uhv-intake/sessions/00000000-0000-4000-8000-000000000001/parts/0'
+    route = {'internal_urls': ['http://first:8080', 'http://second:8080'], 'deployment_id': 'fixture'}
+    async def run():
+        with pytest.raises(HTTPException) as exc:
+            await g._proxy_response(route, path, request('PUT', path, b'xyz', [(b'content-length', b'3')]), 'acme', 'mk7-workspace')
+        assert exc.value.status_code == 502
+    asyncio.run(run())
+    assert calls == ['first']
+
+
+def test_download_never_replays_after_response_headers(monkeypatch):
+    calls = []
+    class BrokenStream(httpx.AsyncByteStream):
+        def __init__(self): self.closed = False
+        async def __aiter__(self):
+            yield b'abc'
+            raise httpx.ReadError('synthetic disconnect')
+        async def aclose(self): self.closed = True
+    stream = BrokenStream()
+    async def handler(req):
+        calls.append(req.url.host)
+        return httpx.Response(200, stream=stream)
+    install(monkeypatch, handler)
+    path = 'api/v1/uhv/documents/' + 'a' * 64 + '/file'
+    route = {'internal_urls': ['http://first:8080', 'http://second:8080'], 'deployment_id': 'fixture'}
+    async def run():
+        result = await g._proxy_response(route, path, request('GET', path), 'acme', 'mk7-workspace')
+        with pytest.raises(httpx.ReadError):
+            async for _ in result.body_iterator:
+                pass
+    asyncio.run(run())
+    assert calls == ['first'] and stream.closed
 
 
 @pytest.mark.parametrize('method',['GET','HEAD','DELETE','PATCH'])

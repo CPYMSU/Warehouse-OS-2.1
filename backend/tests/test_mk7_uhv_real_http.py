@@ -1,8 +1,8 @@
 """Loopback-only synthetic HTTP integration for the private UHV gateway.
 
 This exercises actual sockets and HTTP framing between two disposable local
-processes. The fixture simulates authenticated upstream behavior; it is not
-the production ingress, Pages resolver, identity database, or user data.
+processes. Reading is public; the fixture simulates protected admin writes. It
+is not the production ingress, Pages resolver, identity database, or user data.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def upstream_app():
     @app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT"])
     async def serve(path: str, request: Request):
         state["forwarded"] += 1
-        if path.startswith("api/v1/uhv"):
+        if path.startswith(("api/v1/uhv-intake/", "api/v1/uhv-publish/")):
             if request.headers.get("cookie") != "fixture_session=valid":
                 return JSONResponse({"detail": "unauthenticated"}, 401)
             if request.headers.get("origin") != ORIGIN:
@@ -78,6 +78,7 @@ def upstream_app():
 
 def gateway_app(upstream_port: int):
     app = FastAPI()
+    gateway.resolve_pages_site_key = lambda _key: {"tenant_slug": "fixture", "workspace_key": "mk7-workspace"}
 
     @app.get("/_test/health")
     async def health():
@@ -88,8 +89,11 @@ def gateway_app(upstream_port: int):
     @app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT"])
     async def proxy(path: str, request: Request):
         other = path.startswith("_other/")
+        shared = path.startswith("_shared/")
         if other:
             path = path[len("_other/"):]
+        elif shared:
+            path = path[len("_shared/"):]
         else:
             request.state.pages_hostname_route = {"tenant_slug": "fixture", "workspace_key": "mk7-workspace"}
         return await gateway._proxy_response(
@@ -147,8 +151,14 @@ def test_loopback_range_head_origin_and_other_workspace(local_servers):
         part = client.get(url, headers=auth_headers() | {"range": "bytes=3-12"})
         assert part.status_code == 206 and part.content == BLOCK[3:13] and part.headers["content-range"] == f"bytes 3-12/{FILE_SIZE}"
         assert "no-store" in part.headers["cache-control"]
-        assert client.get(url, headers={"host": ISOLATED_HOST, "origin": ORIGIN}).status_code == 401
-        assert client.get(url, headers=auth_headers() | {"origin": "https://outside.invalid"}).status_code == 403
+        assert client.head(url, headers={"host": ISOLATED_HOST}).status_code == 200
+        assert client.head(url, headers={"host": ISOLATED_HOST, "origin": "https://outside.invalid"}).status_code == 200
+        shared = client.get(route + "/_shared/" + FILE_PATH, headers={"host":"bonfirework.org", "range":"bytes=3-12"})
+        assert shared.status_code == 206 and shared.content == BLOCK[3:13]
+        denied = client.put(route + "/_shared/" + UPLOAD_PATH, headers={"host":"bonfirework.org", "content-length":"0"})
+        assert denied.status_code == 403
+        missing_admin = client.put(route + "/" + UPLOAD_PATH, headers={"host":ISOLATED_HOST, "content-length":"0"})
+        assert missing_admin.status_code == 401
         # Header is not forwarded to the protected upstream from a caller.
         info = client.get(route + "/api/v1/uhv/documents", headers=auth_headers() | {"x-forwarded-host": "attacker.invalid"})
         assert info.status_code == 200 and info.json()["forwarded"] is None
