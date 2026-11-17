@@ -19,7 +19,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from app.api import digital_assets as legacy
 from app.core.config import Settings, get_settings
@@ -494,6 +494,96 @@ def _pages_shell_response(
     )
 
 
+def _private_uhv_error(status_code: int, detail: object) -> HTTPException:
+    """Prevent caching even when the gateway rejects before the app runs."""
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+        headers={
+            "Cache-Control": "private, no-store, no-cache, max-age=0",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+async def _stream_private_uhv(route, request, internal_url, suffix, headers, prefix, is_upload):
+    """Stream only the authenticated MK7 UHV byte endpoints without retries.
+
+    Authorization remains upstream; this function never examines or stores
+    contents. No automatic replay after a partial upload or response.
+    """
+    timeout = httpx.Timeout(connect=10, read=120, write=120, pool=10)
+    client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    upstream = None
+    headers = [(k, v) for k, v in headers if k.lower() != 'accept-encoding']
+    headers.append(('accept-encoding', 'identity'))
+    if is_upload:
+        declared = int(request.headers['content-length'])
+        headers.append(('content-length', str(declared)))
+        async def incoming():
+            observed = 0
+            async for chunk in request.stream():
+                observed += len(chunk)
+                if observed > declared or observed > 16 * 1024 * 1024:
+                    raise ValueError('body_limit_exceeded')
+                yield chunk
+            if observed != declared:
+                raise ValueError('body_length_mismatch')
+        content = incoming()
+    else:
+        content = None
+    try:
+        outgoing = client.build_request(request.method, internal_url + suffix, headers=headers, content=content)
+        upstream = await client.send(outgoing, stream=True)
+    except (httpx.HTTPError, ValueError):
+        if upstream is not None: await upstream.aclose()
+        await client.aclose()
+        raise _private_uhv_error(502, 'hosted_runtime_unavailable') from None
+    except BaseException:
+        if upstream is not None: await upstream.aclose()
+        await client.aclose()
+        raise
+    allowed = {'accept-ranges','content-range','content-length','content-encoding','content-type',
+               'content-disposition','etag','last-modified','vary','retry-after','location',
+               'content-security-policy','cross-origin-resource-policy','www-authenticate'}
+    async def outgoing_body():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+    class ClosingStreamingResponse(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                # Also close when the client disconnects before the generator
+                # is first iterated; closing an unstarted async generator alone
+                # does not execute its finally block.
+                await upstream.aclose()
+                await client.aclose()
+    if request.method == 'HEAD':
+        response = Response(content=b'', status_code=upstream.status_code)
+        if 'content-length' in response.headers: del response.headers['content-length']
+    else:
+        response = ClosingStreamingResponse(outgoing_body(), status_code=upstream.status_code)
+    for key, value in upstream.headers.multi_items():
+        lower = key.lower()
+        if lower in allowed:
+            response.headers.append(key, _rewrite_location(value, internal_url, prefix) if lower == 'location' else value)
+        elif lower == 'set-cookie':
+            response.headers.append(key, _rewrite_cookie(value, prefix))
+    response.headers['Cache-Control'] = 'private, no-store, no-cache, max-age=0'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Warehouse-Deployment'] = str(route['deployment_id'])
+    if request.method == 'HEAD':
+        await upstream.aclose()
+        await client.aclose()
+    return response
+
+
 async def _proxy_response(
     route: dict[str, object],
     runtime_path: str,
@@ -506,8 +596,6 @@ async def _proxy_response(
         for value in (route.get("internal_urls") or [route.get("internal_url")])
         if value
     ]
-    if not upstreams:
-        raise HTTPException(status_code=502, detail="Hosted Runtime has no active upstream")
     prefix = _public_prefix(request, tenant_slug, workspace_key)
     suffix = "/" + runtime_path.lstrip("/")
     if request.url.query:
@@ -528,7 +616,89 @@ async def _proxy_response(
             ("x-request-id", request.headers.get("x-request-id", "")),
         ]
     )
-    body = await request.body()
+    # MK7 private resources only: the hostname middleware has already bound
+    # this exact public authority to the matching workspace. Never trust an
+    # arbitrary forwarded Host supplied by a caller on the shared route.
+    pages = getattr(request.state, "pages_hostname_route", None)
+    private_uhv = (
+        isinstance(pages, dict)
+        and pages.get("tenant_slug") == tenant_slug
+        and pages.get("workspace_key") == workspace_key == "mk7-workspace"
+        and request.headers.getlist("host") == ["mk7-workspace.bonfirework.org"]
+        and (runtime_path == "api/v1/uhv" or runtime_path.startswith(("api/v1/uhv/", "api/v1/uhv-intake/", "api/v1/uhv-publish/")))
+    )
+    is_uhv_path = runtime_path == "api/v1/uhv" or runtime_path.startswith(("api/v1/uhv/", "api/v1/uhv-intake/", "api/v1/uhv-publish/"))
+    if is_uhv_path and not private_uhv and workspace_key == "mk7-workspace":
+        # The trusted Pages binding, not a guessed tenant slug or caller Host,
+        # decides whether a compatibility request targets this MK7 instance.
+        bound = resolve_pages_site_key("mk7-workspace")
+        if (not isinstance(bound, dict) or bound.get("workspace_key") != "mk7-workspace"
+                or not isinstance(bound.get("tenant_slug"), str) or not bound.get("tenant_slug")):
+            # Ambiguous same-name workspace while binding is unavailable:
+            # do not buffer the request or guess its tenant identity.
+            raise _private_uhv_error(503, "uhv_route_binding_unavailable")
+        if (bound.get("tenant_slug") == tenant_slug
+                and bound.get("workspace_key") == workspace_key):
+            raise _private_uhv_error(403, "uhv_isolated_origin_required")
+    if not upstreams:
+        if private_uhv:
+            raise _private_uhv_error(502, "Hosted Runtime has no active upstream")
+        raise HTTPException(status_code=502, detail="Hosted Runtime has no active upstream")
+    if private_uhv:
+        # Narrow the private-resource boundary; do not forward arbitrary
+        # client-controlled proxy or hop-by-hop headers to the application.
+        allowed_request_headers = {
+            "accept", "content-type", "cookie", "origin", "range", "if-range",
+            "if-none-match", "if-modified-since", "sec-fetch-site", "user-agent",
+            "x-csrf-token", "x-content-sha256",
+        }
+        headers = [(key, value) for key, value in request.headers.items()
+                   if key.lower() in allowed_request_headers]
+        headers.append(("host", "mk7-workspace.bonfirework.org"))
+        is_upload = request.method == "PUT" and bool(re.fullmatch(
+            r"api/v1/uhv-intake/sessions/[0-9a-f-]{36}/parts/[0-9]+", runtime_path))
+        is_file = request.method in ("GET", "HEAD") and bool(re.fullmatch(
+            r"api/v1/uhv/documents/[0-9a-f]{64}/file", runtime_path))
+        if request.method in ("POST", "PUT"):
+            lengths = request.headers.getlist("content-length")
+            if lengths and request.headers.getlist("transfer-encoding"):
+                # Never pass ambiguous HTTP framing to an upstream server.
+                raise _private_uhv_error(400, "ambiguous_request_framing")
+            if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit():
+                raise _private_uhv_error(411, "content_length_required")
+            if len(lengths[0]) > 20:
+                # Bound integer parsing before processing attacker-controlled lengths.
+                raise _private_uhv_error(413, "request_too_large")
+            declared = int(lengths[0]); limit = 16 * 1024 * 1024 if is_upload else 4096
+            if declared > limit:
+                raise _private_uhv_error(413, "request_too_large")
+        else:
+            # Read no data for methods that do not use a request body. Check
+            # actual ASGI frames too, including a lying or absent length.
+            lengths = request.headers.getlist("content-length")
+            if (len(lengths) > 1 or (lengths and lengths[0] != "0")
+                    or request.headers.getlist("transfer-encoding")):
+                raise _private_uhv_error(413, "request_body_forbidden")
+            async for chunk in request.stream():
+                if chunk:
+                    raise _private_uhv_error(413, "request_body_forbidden")
+        if is_upload or is_file:
+            return await _stream_private_uhv(route, request, upstreams[0], suffix, headers, prefix, is_upload)
+    if private_uhv and request.method in ("POST", "PUT"):
+        chunks = []
+        observed = 0
+        async for chunk in request.stream():
+            observed += len(chunk)
+            if observed > declared or observed > limit:
+                raise _private_uhv_error(413, "request_too_large")
+            chunks.append(chunk)
+        if observed != declared:
+            raise _private_uhv_error(400, "body_length_mismatch")
+        body = b"".join(chunks)
+    elif private_uhv:
+        body = b""
+    else:
+        body = await request.body()
     upstream = None
     selected = upstreams[0]
     last_error: Exception | None = None
@@ -557,6 +727,7 @@ async def _proxy_response(
                 "retryable": True,
                 "next_action": "inspect deployment health and Runtime logs",
             },
+            headers={"Cache-Control": "private, no-store, no-cache, max-age=0", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff"} if private_uhv else None,
         ) from last_error
     content_type = upstream.headers.get("content-type", "application/octet-stream")
     is_head = request.method == "HEAD"
